@@ -376,17 +376,35 @@ fn under(p: &Path, target: &Path) -> bool {
     }
 }
 
+/// `p` with its nearest existing folder resolved (links, short 8.3 names
+/// such as `RUNNER~1`) and the parts that do not exist yet added back, so a
+/// file and its folder resolve the same way whether or not they exist.
+fn resolved(p: &Path) -> std::path::PathBuf {
+    let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut missing = Vec::new();
+    let mut cur = abs.as_path();
+    loop {
+        if let Ok(mut full) = std::fs::canonicalize(cur) {
+            for name in missing.iter().rev() {
+                full.push(name);
+            }
+            return full;
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(dir), Some(name)) => {
+                missing.push(name.to_os_string());
+                cur = dir;
+            }
+            _ => return abs,
+        }
+    }
+}
+
 /// A path as comparable text: resolved where it (or its folder) still
 /// exists, without the `\\?\` long-path prefix, a network path as
 /// `\\server\share`, small letters on Windows.
 fn full_text(p: &Path) -> String {
-    let full = std::fs::canonicalize(p)
-        .or_else(|e| match (p.parent(), p.file_name()) {
-            (Some(dir), Some(name)) => std::fs::canonicalize(dir).map(|d| d.join(name)),
-            _ => Err(e),
-        })
-        .or_else(|_| std::path::absolute(p))
-        .unwrap_or_else(|_| p.to_path_buf());
+    let full = resolved(p);
     let mut text = full.display().to_string();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         text = format!(r"\\{rest}");

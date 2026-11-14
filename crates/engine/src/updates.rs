@@ -506,6 +506,7 @@ impl Document {
                 for (i, &(id, r, _)) in part.iter().enumerate() {
                     let vr = k * 4096 + i;
                     reader.read(self, id, &mut buf);
+                    #[allow(clippy::needless_range_loop)] // c also indexes the row and values
                     for c in 0..cols as usize {
                         if index.map[c].is_none() {
                             continue;

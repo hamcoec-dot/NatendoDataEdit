@@ -2917,6 +2917,7 @@ impl Cube {
         let mut cols = Vec::with_capacity(show_c * nv);
         for c in clines {
             let path = ct.path(self, self.nr, c.node);
+            #[allow(clippy::needless_range_loop)] // v is also the value number
             for v in 0..nv {
                 cols.push(GridCol {
                     kind: c.kind,
@@ -2944,6 +2945,7 @@ impl Cube {
         let mut ancs = Vec::new();
         for h in 0..hrows {
             let mut row: Vec<HeadCell> = Vec::new();
+            #[allow(clippy::needless_range_loop)] // spec.rows is read on one branch only
             for lc in 0..label_cols {
                 let text = if h + 1 == hrows {
                     if self.nr == 0 {

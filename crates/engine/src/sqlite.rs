@@ -147,7 +147,7 @@ pub fn read_table(path: &Path, table: &str, progress: &Progress) -> Result<Docum
         let mut st = c
             .prepare(&format!("SELECT * FROM {}", quote(table)))
             .map_err(db_err)?;
-        let names: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
+        let names: Vec<String> = st.column_names().map(|s| s.to_string()).collect();
         let n = names.len();
         let mut sink = Sink::new(None);
         sink.row(&names)?;
