@@ -44,5 +44,7 @@ bundle/
 Thumbs.db
 desktop.ini
 
-# Claude local settings
-.claude/settings.local.json
+# Private working notes: kept on the PC and in the project's shared files,
+# never in this public repo.
+/plans/
+/.claude/
