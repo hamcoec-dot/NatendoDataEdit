@@ -188,7 +188,7 @@ everything is also in command search.
   matching tool shows at once, with the menu it lives in and a line from this
   page saying what it does. Everyday words work too ("dedupe", "vlookup",
   "trim", "mail merge"), and small typing slips are forgiven. Arrows and Enter
-  or a click open the tool; Esc closes.
+  or a click open the tool; Esc or Alt+Q again closes.
 - Custom shortcuts, Ctrl+/ for the list of shortcuts, a file browser panel,
   an activity panel, and a start page with recent files.
 

@@ -94,6 +94,18 @@ const out = process.argv[2];
   });
   ok(t < 50, `average ${t.toFixed(1)} ms per key press (incl. a frame)`);
   await p.screenshot({ path: `${out}/launcher-remove-blank.png` });
+
+  // 7. Alt+Q again closes it (a toggle), also when focus left the typing box.
+  await p.keyboard.press("Alt+q");
+  await p.waitForTimeout(200);
+  ok(!(await p.isVisible("[aria-label='Search for a command']")), "Alt+Q again closes the pop-up");
+  await p.keyboard.press("Alt+q");
+  await p.waitForTimeout(200);
+  ok(await p.isVisible("[aria-label='Search for a command']"), "Alt+Q opens it again");
+  await p.evaluate(() => document.activeElement?.blur());
+  await p.keyboard.press("Alt+q");
+  await p.waitForTimeout(200);
+  ok(!(await p.isVisible("[aria-label='Search for a command']")), "Alt+Q closes it with focus outside the box");
   ok(errors.length === 0, `no page errors ${errors.join("; ")}`);
   await b.close();
 })();

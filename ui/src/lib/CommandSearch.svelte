@@ -2,9 +2,10 @@
   // Command search (Alt+Q): a small launcher. Type a few letters or words
   // (a command's name, an everyday word for it, or words from the README's
   // description) and the best matches show at once with where they live and
-  // what they do. Arrows to pick, Enter or click to run, Esc to close.
+  // what they do. Arrows to pick, Enter or click to run, Esc or the opening shortcut
+  // (Alt+Q) to close.
   import { onMount, tick, untrack } from "svelte";
-  import type { Command } from "./commands";
+  import { keyOf, type Command } from "./commands";
   import type { FeatureDoc } from "./featureIndex";
   import { prepare, rank } from "./launcher";
 
@@ -60,6 +61,16 @@
     else onUnavailable(name);
   }
 
+  // The shortcut that opens the search also closes it (a toggle), wherever
+  // focus is inside the box.
+  function toggleKey(e: KeyboardEvent): void {
+    if (!e.repeat && keyOf(e) === hotkey) {
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    }
+  }
+
   function key(e: KeyboardEvent): void {
     const last = found.length - 1;
     if (e.key === "Escape") {
@@ -84,6 +95,8 @@
     }
   }
 </script>
+
+<svelte:window onkeydowncapture={toggleKey} />
 
 <div class="backdrop" role="presentation" onclick={onClose}></div>
 <div class="search" role="dialog" aria-label="Search for a command">
@@ -121,7 +134,7 @@
       <li class="none">Nothing matches “{query.trim()}”. Try another word.</li>
     {/each}
   </ul>
-  <div class="foot">↑ ↓ to pick · Enter to open · Esc to close · {hotkey} opens this search</div>
+  <div class="foot">↑ ↓ to pick · Enter to open · Esc or {hotkey} to close</div>
 </div>
 
 <style>
