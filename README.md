@@ -480,7 +480,7 @@ The installer lands in `target/release/bundle/nsis/`.
 | `ui` | The screen (Vite, Svelte 5, TypeScript). |
 | `plans` | Design notes and results for each milestone. |
 | `docs/screenshots` | The screenshots in this README (made-up sample data). |
-| `assets/icon.svg` | Source for the app icon. |
+| `assets/icon.svg` | Source for the app icon (a grid with the active cell highlighted). After changing it, render it to a 1024 px PNG and run `npx tauri icon <png> -o src-tauri/icons` to rebuild the Windows, Mac and Linux icon files; also copy it to `ui/public/favicon.svg`. |
 
 ## Command line (`natendo-cli`)
 
