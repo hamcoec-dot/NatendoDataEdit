@@ -1,0 +1,41 @@
+[package]
+name = "natendo-engine"
+description = "Data engine for Natendo Data Edit: load, parse, view and save delimited text."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "natendo_engine"
+
+[dependencies]
+memchr = "2.7"
+encoding_rs = "0.8"
+chardetng = "0.1"
+rayon = "1.10"
+regex = "1.11"
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
+# Spreadsheet files (.xlsx/.ods) are read and written by our own small ZIP
+# and XML code; these three crates are already in the app's tree via Tauri.
+flate2 = "1.1"
+crc32fast = "1.5"
+quick-xml = "0.42"
+# Keyed scramble (HMAC-SHA-256) for privacy masking; already in the tree.
+sha2 = "0.10"
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "getrandom"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[target.'cfg(windows)'.dependencies]
+memmap2 = "0.9"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "engine"
+harness = false

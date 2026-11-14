@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Natendo Data Edit",
+  "version": "0.2.0",
+  "identifier": "com.natendo.dataedit",
+  "build": {
+    "beforeDevCommand": "npm run dev -w ui",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build -w ui",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Natendo Data Edit",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 640,
+        "minHeight": 400
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "Natendo",
+    "shortDescription": "Editor for CSV, TSV and other table files",
+    "longDescription": "Natendo Data Edit opens, edits, cleans and saves CSV, TSV and any delimited, fixed-width or log file, of any size.",
+    "copyright": "Natendo",
+    "category": "Productivity",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./windows/hooks.nsh",
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

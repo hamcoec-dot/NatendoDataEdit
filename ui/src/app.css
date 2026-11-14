@@ -1,0 +1,46 @@
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #d9dde3;
+  --text: #1d2330;
+  --muted: #5d6676;
+  --accent: #1f7a6d;
+  --accent-ink: #ffffff;
+  --header: #eef0f3;
+  --grid-line: #e3e6ea;
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15181e;
+    --surface: #1d2129;
+    --border: #2e3440;
+    --text: #e4e7ec;
+    --muted: #98a1b0;
+    --accent: #3fb8a5;
+    --accent-ink: #0b1513;
+    --header: #232832;
+    --grid-line: #2a303b;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #15181e;
+  --surface: #1d2129;
+  --border: #2e3440;
+  --text: #e4e7ec;
+  --muted: #98a1b0;
+  --accent: #3fb8a5;
+  --accent-ink: #0b1513;
+  --header: #232832;
+  --grid-line: #2a303b;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body { background: var(--bg); }

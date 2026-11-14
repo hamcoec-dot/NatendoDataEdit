@@ -1,0 +1,7 @@
+# export from a field logger
+# units: metres, seconds
+run,distance,time
+1,400,61.2
+2,400,59.8
+3,800,131.0
+4,800,128.4

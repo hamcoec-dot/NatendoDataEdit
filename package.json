@@ -1,0 +1,18 @@
+{
+  "name": "natendo-data-edit",
+  "private": true,
+  "version": "0.2.0",
+  "workspaces": [
+    "ui"
+  ],
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build --config src-tauri/tauri.installer.json",
+    "tauri": "tauri",
+    "test": "npm run test -w ui",
+    "check": "npm run check -w ui"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}

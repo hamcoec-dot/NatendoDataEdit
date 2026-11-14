@@ -1,0 +1,41 @@
+name: Release
+
+# Builds the Windows installer and publishes it as a GitHub release when a
+# version tag (v1.2.3) is pushed. Release notes come from docs/releases/<tag>.md.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test -w ui
+      - run: cargo test --workspace --release
+      - name: Build installer
+        run: npm run build
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $installer = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $installer) { throw "installer not found" }
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
+          $notes = Get-Content "docs/releases/$env:TAG.md" -Raw
+          $notes += "`n`nSHA-256 of the installer: ``$hash``"
+          Set-Content -Path release-notes.md -Value $notes -Encoding utf8
+          gh release create $env:TAG $installer.FullName --title "Natendo Data Edit $($env:TAG.TrimStart('v'))" --notes-file release-notes.md

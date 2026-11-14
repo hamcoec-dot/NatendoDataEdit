@@ -1,0 +1,589 @@
+//! `convert`, `compute`, `validate` and JSON output.
+
+use std::path::Path;
+
+use natendo_engine::export::{ExportFormat, ExportOptions};
+use natendo_engine::expr::ComputeSpec;
+use natendo_engine::import::{self, ImportOptions};
+use natendo_engine::validate::{CheckSpec, MAX_CHECKS};
+use natendo_engine::{
+    Dialect, Document, Encoding, Format, LineBreak, Progress, Quoting, SaveOptions,
+};
+use serde_json::{json, Value};
+
+use crate::{delimiter_name, quote_name, USAGE};
+
+/// Largest checks file read.
+const MAX_CHECKS_FILE: u64 = 4 << 20;
+
+pub fn print_json(v: &Value) {
+    println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
+}
+
+pub fn sniff_json(d: &Document) -> Value {
+    let choices: Vec<Value> = d
+        .detection()
+        .map(|f| {
+            f.choices
+                .iter()
+                .map(|c| {
+                    json!({
+                        "separator": delimiter_name(&c.dialect),
+                        "quote": quote_name(&c.dialect),
+                        "columns": c.columns,
+                        "lines_above": c.skip_lines,
+                        "score": c.score,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({
+        "separator": delimiter_name(&d.format().dialect),
+        "confidence": d.detection().map(|f| f.confidence),
+        "choices": choices,
+    })
+}
+
+pub fn info_json(d: &Document) -> Value {
+    let f = d.format();
+    let s = d.index().stats();
+    json!({
+        "encoding": f.encoding.to_string(),
+        "bom": f.bom,
+        "separator": delimiter_name(&f.dialect),
+        "quote": quote_name(&f.dialect),
+        "lines_above_table": d.preamble_lines(),
+        "line_breaks": format!("{:?}", f.line_break),
+        "mixed_line_breaks": s.mixed_line_breaks(),
+        "rows": d.row_count(),
+        "columns": d.col_count(),
+        "usual_columns": s.usual_fields(),
+        "repaired_rows": s.repair_count,
+        "lossy": d.is_lossy(),
+    })
+}
+
+pub fn view_json(d: &Document, first: u64, count: u64) -> Result<(), String> {
+    let end = first.saturating_add(count.min(10_000)).min(d.row_count());
+    let mut rows = Vec::new();
+    for r in first..end {
+        rows.push(json!({ "row": r + 1, "cells": d.row_values(r).map_err(|e| e.to_string())? }));
+    }
+    print_json(&json!({ "rows": rows, "total_rows": d.row_count() }));
+    Ok(())
+}
+
+fn ext_of(p: &str) -> Option<String> {
+    Path::new(p)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+}
+
+const IMPORT_TYPES: &[&str] = &[
+    "xlsx", "xlsm", "ods", "json", "jsonl", "ndjson", "geojson", "xml", "html", "htm", "md",
+    "markdown", "log", "prn", "fwf",
+];
+
+/// Open any table file: delimited text directly, other formats by import.
+pub(crate) fn load(path: &str, sheet: u32) -> Result<Document, String> {
+    let ext = ext_of(path);
+    if !ext.as_deref().is_some_and(|e| IMPORT_TYPES.contains(&e)) {
+        return crate::open(path);
+    }
+    let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
+    if meta.len() > import::MAX_TEXT_INPUT as u64 {
+        return Err(format!("{path}: too large to import"));
+    }
+    let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let opts = ImportOptions {
+        part: sheet,
+        ..Default::default()
+    };
+    let t = import::import(&data, ext.as_deref(), &opts, None, &Progress::new())
+        .map_err(|e| format!("{path}: {e}"))?;
+    t.into_document().map_err(|e| format!("{path}: {e}"))
+}
+
+enum Target {
+    Delimited(u8),
+    Export(ExportFormat),
+}
+
+fn target(out: &str, to: Option<&str>) -> Result<Target, String> {
+    let kind = match to {
+        Some(t) => t.to_ascii_lowercase(),
+        None => ext_of(out).ok_or("give the output a file extension, or use --to")?,
+    };
+    Ok(match kind.as_str() {
+        "csv" => Target::Delimited(b','),
+        "tsv" | "tab" | "txt" => Target::Delimited(b'\t'),
+        "psv" => Target::Delimited(b'|'),
+        "ssv" => Target::Delimited(b';'),
+        "json" => Target::Export(ExportFormat::Json),
+        "xml" => Target::Export(ExportFormat::Xml),
+        "html" | "htm" => Target::Export(ExportFormat::Html),
+        "md" | "markdown" => Target::Export(ExportFormat::Markdown),
+        "xlsx" => Target::Export(ExportFormat::Xlsx),
+        "pdf" => Target::Export(ExportFormat::Pdf),
+        "fixed" | "prn" => Target::Export(ExportFormat::FixedWidth),
+        "sql" => Target::Export(ExportFormat::Sql),
+        k => return Err(format!("unknown output type {k}")),
+    })
+}
+
+pub(crate) struct Out<'a> {
+    pub path: &'a str,
+    pub to: Option<&'a str>,
+    pub header: bool,
+    pub landscape: bool,
+    pub overwrite: bool,
+}
+
+/// Write a document to `out` (delimited text or an export format).
+pub(crate) fn write_out(d: &mut Document, input: &str, o: &Out) -> Result<String, String> {
+    let out_path = Path::new(o.path);
+    let same = matches!(
+        (std::fs::canonicalize(input), std::fs::canonicalize(out_path)),
+        (Ok(a), Ok(b)) if a == b
+    );
+    if same {
+        return Err("write to a different file than the input".into());
+    }
+    if out_path.exists() && !o.overwrite {
+        return Err(format!(
+            "{} already exists; add --overwrite to replace it",
+            o.path
+        ));
+    }
+    match target(o.path, o.to)? {
+        Target::Delimited(sep) => {
+            let dialect = Dialect::new(sep, Some(b'"')).map_err(|e| e.to_string())?;
+            let r = d
+                .save(SaveOptions {
+                    path: Some(out_path.to_path_buf()),
+                    format: Some(Format {
+                        encoding: Encoding::Utf8,
+                        bom: false,
+                        dialect,
+                        line_break: LineBreak::CrLf,
+                    }),
+                    convert_line_breaks: true,
+                    rewrite: true,
+                    quoting: Quoting::Needed,
+                    ..Default::default()
+                })
+                .map_err(|e| format!("{}: {e}", o.path))?;
+            Ok(format!("saved {} rows to {}", r.rows, r.path.display()))
+        }
+        Target::Export(format) => {
+            let mut opts = ExportOptions {
+                format,
+                header: o.header,
+                ..Default::default()
+            };
+            opts.page.landscape = o.landscape;
+            opts.page.title = Path::new(input)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let r = d
+                .export_file(out_path, &opts, &Progress::new())
+                .map_err(|e| format!("{}: {e}", o.path))?;
+            Ok(format!("wrote {} rows to {}", r.rows, o.path))
+        }
+    }
+}
+
+struct Args<'a> {
+    plain: Vec<&'a str>,
+    out: Option<&'a str>,
+    to: Option<&'a str>,
+    sheet: u32,
+    header: bool,
+    landscape: bool,
+    overwrite: bool,
+    expr: Option<&'a str>,
+    title: Option<&'a str>,
+    checks: Option<&'a str>,
+    force: bool,
+    dry_run: bool,
+}
+
+fn parse<'a>(args: &[&'a str], allowed: &[&str]) -> Result<Args<'a>, String> {
+    let mut a = Args {
+        plain: Vec::new(),
+        out: None,
+        to: None,
+        sheet: 0,
+        header: true,
+        landscape: false,
+        overwrite: false,
+        expr: None,
+        title: None,
+        checks: None,
+        force: false,
+        dry_run: false,
+    };
+    let mut it = args.iter();
+    while let Some(&x) = it.next() {
+        if x.starts_with('-') && !allowed.contains(&x) {
+            return Err(format!("unknown option {x}\n{USAGE}"));
+        }
+        let mut value = || {
+            it.next()
+                .copied()
+                .ok_or_else(|| format!("{x} needs a value"))
+        };
+        match x {
+            "-o" | "--out" => a.out = Some(value()?),
+            "--to" => a.to = Some(value()?),
+            "--sheet" => {
+                a.sheet = value()?
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(|n| n.checked_sub(1))
+                    .ok_or("--sheet takes a sheet number from 1")?
+            }
+            "--no-header" => a.header = false,
+            "--landscape" => a.landscape = true,
+            "--overwrite" => a.overwrite = true,
+            "--expr" => a.expr = Some(value()?),
+            "--title" => a.title = Some(value()?),
+            "--checks" => a.checks = Some(value()?),
+            "--force" => a.force = true,
+            "--dry-run" => a.dry_run = true,
+            _ => a.plain.push(x),
+        }
+    }
+    Ok(a)
+}
+
+/// Run a recipe saved in the app on a file: the steps are listed first,
+/// the file's columns are checked against the recipe's (`--force` runs it
+/// anyway), and the result is written to `-o` (`--dry-run` only lists).
+pub fn run(args: &[&str]) -> Result<(), String> {
+    let a = parse(
+        args,
+        &[
+            "-o",
+            "--out",
+            "--to",
+            "--sheet",
+            "--no-header",
+            "--overwrite",
+            "--force",
+            "--dry-run",
+        ],
+    )?;
+    let [recipe_path, input] = a.plain.as_slice() else {
+        return Err(USAGE.to_string());
+    };
+    let size = std::fs::metadata(recipe_path)
+        .map_err(|e| format!("{recipe_path}: {e}"))?
+        .len();
+    if size > 16 << 20 {
+        return Err(format!("{recipe_path}: a recipe file can be at most 16 MB"));
+    }
+    let bytes = std::fs::read(recipe_path).map_err(|e| format!("{recipe_path}: {e}"))?;
+    let recipe = natendo_engine::recipe::Recipe::from_json(&bytes)
+        .map_err(|e| format!("{recipe_path}: {e}"))?;
+    println!(
+        "Recipe{}: {} step(s)",
+        if recipe.name.is_empty() {
+            String::new()
+        } else {
+            format!(" \"{}\"", recipe.name)
+        },
+        recipe.steps.len()
+    );
+    for (i, s) in recipe.steps.iter().enumerate() {
+        println!("  {}. {}", i + 1, s.describe());
+    }
+    for l in &recipe.left_out {
+        println!("  (not in the recipe: {l})");
+    }
+    let mut d = load(input, a.sheet)?;
+    let problems = recipe.column_problems(&d);
+    if !problems.is_empty() {
+        let text = problems.join("; ");
+        if !a.force {
+            return Err(format!(
+                "the file's columns differ from the recipe's: {text}. Use --force to run it anyway."
+            ));
+        }
+        println!("Columns differ ({text}); running anyway (--force).");
+    }
+    if a.dry_run {
+        println!("Dry run: nothing was changed or written.");
+        return Ok(());
+    }
+    let Some(out) = a.out else {
+        return Err(USAGE.to_string());
+    };
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |t| t.as_nanos() as u64);
+    d.run_recipe(
+        &recipe,
+        natendo_engine::clean::now_utc(),
+        seed,
+        &Progress::new(),
+    )
+    .map_err(|e| e.to_string())?;
+    let msg = write_out(
+        &mut d,
+        input,
+        &Out {
+            path: out,
+            to: a.to,
+            header: a.header,
+            landscape: false,
+            overwrite: a.overwrite,
+        },
+    )?;
+    println!("{msg}");
+    Ok(())
+}
+
+/// Make a pivot table from a layout saved in the app (`.ndpivot`) and
+/// write it to `-o`. Columns are found by their titles, so the layout fits
+/// next month's file even if its columns moved.
+pub fn pivot(args: &[&str]) -> Result<(), String> {
+    use natendo_engine::pivot::{SavedPivot, MAX_SAVED_PIVOT_BYTES};
+    let a = parse(args, &["-o", "--out", "--to", "--no-header", "--overwrite"])?;
+    let ([layout, input], Some(out)) = (a.plain.as_slice(), a.out) else {
+        return Err(USAGE.to_string());
+    };
+    let bytes = {
+        use std::io::Read;
+        let f = std::fs::File::open(layout).map_err(|e| format!("{layout}: {e}"))?;
+        let mut b = Vec::new();
+        f.take(MAX_SAVED_PIVOT_BYTES as u64 + 1)
+            .read_to_end(&mut b)
+            .map_err(|e| format!("{layout}: {e}"))?;
+        if b.len() > MAX_SAVED_PIVOT_BYTES {
+            return Err(format!("{layout}: a pivot layout file can be at most 4 MB"));
+        }
+        b
+    };
+    let saved = SavedPivot::from_json(&bytes).map_err(|e| format!("{layout}: {e}"))?;
+    let d = Document::open_indexed(
+        Path::new(input),
+        natendo_engine::OpenOptions::default(),
+        None,
+    )
+    .map_err(|e| format!("{input}: {e}"))?;
+    let keep_first = a.header && saved.spec.keep_first;
+    let all: Vec<u32> = (0..d.col_count()).collect();
+    let titles = d.titles(&all, keep_first);
+    let mut spec = saved.fit(&titles).map_err(|e| format!("{layout}: {e}"))?;
+    spec.keep_first = keep_first;
+    let p = Progress::new();
+    let cube = d.pivot_cube(&spec, None, &p).map_err(|e| e.to_string())?;
+    let table = cube
+        .layout(&spec, &titles, None)
+        .and_then(|g| g.to_table(spec.layout.repeat_labels))
+        .map_err(|e| e.to_string())?;
+    let mut t = table.into_document().map_err(|e| e.to_string())?;
+    let msg = write_out(
+        &mut t,
+        input,
+        &Out {
+            path: out,
+            to: a.to,
+            header: true,
+            landscape: false,
+            overwrite: a.overwrite,
+        },
+    )?;
+    println!("{msg}");
+    Ok(())
+}
+
+pub fn convert(args: &[&str]) -> Result<(), String> {
+    let a = parse(
+        args,
+        &[
+            "-o",
+            "--out",
+            "--to",
+            "--sheet",
+            "--no-header",
+            "--landscape",
+            "--overwrite",
+        ],
+    )?;
+    let ([input], Some(out)) = (a.plain.as_slice(), a.out) else {
+        return Err(USAGE.to_string());
+    };
+    let mut d = load(input, a.sheet)?;
+    let msg = write_out(
+        &mut d,
+        input,
+        &Out {
+            path: out,
+            to: a.to,
+            header: a.header,
+            landscape: a.landscape,
+            overwrite: a.overwrite,
+        },
+    )?;
+    println!("{msg}");
+    Ok(())
+}
+
+pub fn compute(args: &[&str]) -> Result<(), String> {
+    let a = parse(
+        args,
+        &[
+            "-o",
+            "--out",
+            "--to",
+            "--sheet",
+            "--no-header",
+            "--overwrite",
+            "--expr",
+            "--title",
+        ],
+    )?;
+    let ([input], Some(out), Some(expr)) = (a.plain.as_slice(), a.out, a.expr) else {
+        return Err(USAGE.to_string());
+    };
+    let mut d = load(input, a.sheet)?;
+    let spec = ComputeSpec {
+        expr: expr.to_string(),
+        title: a.title.unwrap_or("Computed").to_string(),
+        keep_first: a.header,
+        now: natendo_engine::clean::now_utc(),
+        ..Default::default()
+    };
+    let (plan, rep) = d
+        .plan_compute(&spec, &Progress::new())
+        .map_err(|e| e.to_string())?;
+    d.apply_cols(plan).map_err(|e| e.to_string())?;
+    let msg = write_out(
+        &mut d,
+        input,
+        &Out {
+            path: out,
+            to: a.to,
+            header: a.header,
+            landscape: false,
+            overwrite: a.overwrite,
+        },
+    )?;
+    if rep.errors > 0 {
+        println!("{} cells came out as errors (like #VALUE!)", rep.errors);
+    }
+    println!("{msg}");
+    Ok(())
+}
+
+/// Read a checks file: `{"checks": [...]}` or a bare list. A check may name
+/// its column with `"column": "Title"` (or a number from 1) instead of
+/// `"col"` (from 0).
+fn read_checks(path: &str, d: &Document, header: bool) -> Result<CheckSpec, String> {
+    let size = std::fs::metadata(path)
+        .map_err(|e| format!("{path}: {e}"))?
+        .len();
+    if size > MAX_CHECKS_FILE {
+        return Err(format!("{path}: a checks file can be at most 4 MB"));
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut v: Value = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+    let list = match &mut v {
+        Value::Array(a) => a,
+        Value::Object(o) => match o.get_mut("checks") {
+            Some(Value::Array(a)) => a,
+            _ => return Err(format!("{path}: expected a \"checks\" list")),
+        },
+        _ => return Err(format!("{path}: expected a \"checks\" list")),
+    };
+    if list.len() > MAX_CHECKS {
+        return Err(format!("{path}: at most {MAX_CHECKS} checks"));
+    }
+    let names = d.expr_names(header);
+    for c in list.iter_mut() {
+        let Value::Object(o) = c else {
+            return Err(format!("{path}: each check is an object"));
+        };
+        if let Some(col) = o.remove("column") {
+            let n = match &col {
+                Value::Number(n) => n.as_u64().and_then(|n| n.checked_sub(1)),
+                Value::String(s) => names
+                    .iter()
+                    .position(|t| t == s)
+                    .or_else(|| names.iter().position(|t| t.eq_ignore_ascii_case(s)))
+                    .map(|i| i as u64),
+                _ => None,
+            }
+            .ok_or_else(|| format!("{path}: no column {col}"))?;
+            o.insert("col".into(), json!(n));
+        }
+    }
+    let checks = serde_json::from_value(Value::Array(std::mem::take(list)))
+        .map_err(|e| format!("{path}: {e}"))?;
+    Ok(CheckSpec {
+        checks,
+        keep_first: header,
+        now: natendo_engine::clean::now_utc(),
+        ..Default::default()
+    })
+}
+
+/// Run checks; `Ok(true)` when there are no problems.
+pub fn validate(args: &[&str], json_out: bool) -> Result<bool, String> {
+    let a = parse(args, &["--checks", "--no-header", "--sheet"])?;
+    let ([input], Some(checks)) = (a.plain.as_slice(), a.checks) else {
+        return Err(USAGE.to_string());
+    };
+    let d = load(input, a.sheet)?;
+    let spec = read_checks(checks, &d, a.header)?;
+    let r = d
+        .run_checks(&spec, &Progress::new())
+        .map_err(|e| e.to_string())?;
+    let names = d.expr_names(a.header);
+    if json_out {
+        let problems: Vec<Value> = r
+            .listed
+            .iter()
+            .map(|p| {
+                json!({
+                    "row": p.row + 1,
+                    "column": p.col.map(|c| names.get(c as usize).cloned().unwrap_or_default()),
+                    "check": p.check + 1,
+                    "value": p.value,
+                })
+            })
+            .collect();
+        print_json(&json!({
+            "rows_checked": r.checked,
+            "rows_with_problems": r.rows,
+            "problems": r.problems,
+            "per_check": r.per_check,
+            "listed": problems,
+        }));
+    } else {
+        println!(
+            "{} rows checked, {} with problems ({} problems)",
+            r.checked, r.rows, r.problems
+        );
+        for (i, n) in r.per_check.iter().enumerate() {
+            println!("  check {}: {n}", i + 1);
+        }
+        for p in r.listed.iter().take(20) {
+            let col = p
+                .col
+                .map(|c| names.get(c as usize).cloned().unwrap_or_default())
+                .unwrap_or_else(|| "(row)".into());
+            println!(
+                "  row {}, {col}: check {} ({})",
+                p.row + 1,
+                p.check + 1,
+                p.value.escape_debug()
+            );
+        }
+    }
+    Ok(r.problems == 0)
+}

@@ -1,0 +1,5 @@
+  id  name          qty    price
+   1  gear          12     4.50
+   2  sprocket       3    11.00
+  10  chain        140     0.85
+  11  hub            7    23.10

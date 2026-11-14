@@ -1,0 +1,9 @@
+ticket,summary,detail
+T-1,printer jam,"Tray 2 jams on every
+third page.
+Cleared twice."
+T-2,login,"Password reset loop,
+fixed by clearing cache"
+T-3,monitor,"Flickers at 60 Hz"
+T-4,keyboard,"Spilled coffee;
+replaced"

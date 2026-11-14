@@ -1,0 +1,8 @@
+Quarterly parts usage, all depots
+Printed 2025-04-02
+
+depot,part,used,returned
+North,belt,14,1
+North,filter,30,0
+South,belt,9,2
+South,filter,22,3

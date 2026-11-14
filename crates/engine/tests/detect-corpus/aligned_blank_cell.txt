@@ -1,0 +1,4 @@
+item     size  colour
+lamp     12    amber
+stool          oak
+shelf    80    white

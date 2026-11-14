@@ -1,0 +1,2 @@
+# Detection test files must keep their exact bytes (line breaks included).
+crates/engine/tests/detect-corpus/** -text

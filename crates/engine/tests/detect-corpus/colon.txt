@@ -1,0 +1,4 @@
+svc:x:1001:100:Service Account:/srv/svc:/bin/false
+kim:x:1002:100:Kim Novak:/home/kim:/bin/sh
+lee:x:1003:100:Lee Park:/home/lee:/bin/sh
+ops:x:1004:200:Ops Team:/home/ops:/bin/bash

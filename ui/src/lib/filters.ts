@@ -1,0 +1,215 @@
+// Helpers for filter rules, sort keys and searches as the UI builds them.
+// Pure functions, so they are easy to test.
+
+import type { CmpOp, Condition, FilterSpec, FindSpec, Pattern, PatternKind, Rule, Scope, TextOp } from "./backend";
+
+/** The spec with column `col`'s rule replaced (or removed with null). */
+export function withRule(spec: FilterSpec | null, col: number, rule: Rule | null, keepFirst: boolean): FilterSpec {
+  const columns = (spec?.columns ?? []).filter((c) => c.col !== col);
+  if (rule) columns.push({ col, rule });
+  columns.sort((a, b) => a.col - b.col);
+  return { columns, keep_first: keepFirst };
+}
+
+export function ruleFor(spec: FilterSpec | null, col: number): Rule | null {
+  return spec?.columns.find((c) => c.col === col)?.rule ?? null;
+}
+
+export type CondKind = "text" | "number" | "date" | "blank" | "pattern" | "top";
+
+/** What the condition editor holds. */
+export interface CondForm {
+  kind: CondKind;
+  /** Text op, comparison, "between", or for blanks "blank"/"not_blank". */
+  op: string;
+  a: string;
+  b: string;
+  matchCase: boolean;
+  patternKind: PatternKind;
+  negate: boolean;
+}
+
+export const emptyForm = (): CondForm => ({
+  kind: "text",
+  op: "contains",
+  a: "",
+  b: "",
+  matchCase: false,
+  patternKind: "wildcard",
+  negate: false,
+});
+
+export const OPS: Record<CondKind, [string, string][]> = {
+  text: [
+    ["contains", "contains"],
+    ["not_contains", "does not contain"],
+    ["equals", "equals"],
+    ["not_equals", "does not equal"],
+    ["begins_with", "begins with"],
+    ["ends_with", "ends with"],
+  ],
+  number: [
+    ["eq", "="],
+    ["ne", "≠"],
+    ["gt", ">"],
+    ["ge", "≥"],
+    ["lt", "<"],
+    ["le", "≤"],
+    ["between", "between"],
+  ],
+  date: [
+    ["eq", "on"],
+    ["lt", "before"],
+    ["gt", "after"],
+    ["le", "on or before"],
+    ["ge", "on or after"],
+    ["between", "between"],
+  ],
+  blank: [
+    ["blank", "is empty"],
+    ["not_blank", "is not empty"],
+  ],
+  pattern: [
+    ["match", "matches"],
+    ["not_match", "does not match"],
+  ],
+  top: [
+    ["top", "largest (rows)"],
+    ["top_percent", "largest (percent)"],
+    ["bottom", "smallest (rows)"],
+    ["bottom_percent", "smallest (percent)"],
+  ],
+};
+
+/** A condition from the form, or an error message. */
+export function conditionOf(f: CondForm): Condition | string {
+  const num = (s: string) => {
+    const v = Number(s.trim().replace(/,/g, ""));
+    return s.trim() !== "" && Number.isFinite(v) ? v : null;
+  };
+  switch (f.kind) {
+    case "text":
+      return { type: "text", op: f.op as TextOp, text: f.a, match_case: f.matchCase };
+    case "number": {
+      const a = num(f.a);
+      if (a === null) return "Enter a number.";
+      if (f.op === "between") {
+        const b = num(f.b);
+        if (b === null) return "Enter both numbers.";
+        return { type: "number_between", low: a, high: b };
+      }
+      return { type: "number", op: f.op as CmpOp, value: a };
+    }
+    case "date":
+      if (f.a.trim() === "") return "Enter a date.";
+      if (f.op === "between") {
+        if (f.b.trim() === "") return "Enter both dates.";
+        return { type: "date_between", low: f.a.trim(), high: f.b.trim() };
+      }
+      return { type: "date", op: f.op as CmpOp, value: f.a.trim() };
+    case "blank":
+      return f.op === "not_blank" ? { type: "not_blank" } : { type: "blank" };
+    case "pattern":
+      if (f.a === "") return "Enter a pattern.";
+      return {
+        type: "pattern",
+        pattern: { text: f.a, kind: f.patternKind, match_case: f.matchCase, whole_cell: false },
+        negate: f.op === "not_match",
+      };
+    case "top": {
+      const n = num(f.a);
+      const percent = f.op.endsWith("_percent");
+      if (n === null || n < 0) return "Enter how many.";
+      if (percent && n > 100) return "Enter a percent up to 100.";
+      if (!percent && !Number.isInteger(n)) return "Enter a whole number of rows.";
+      return { type: "top", count: n, percent, bottom: f.op.startsWith("bottom") };
+    }
+  }
+}
+
+/** The form for an existing condition (to edit a rule again). */
+export function formOf(c: Condition): CondForm {
+  const f = emptyForm();
+  switch (c.type) {
+    case "text":
+      return { ...f, kind: "text", op: c.op, a: c.text, matchCase: !!c.match_case };
+    case "number":
+      return { ...f, kind: "number", op: c.op, a: String(c.value) };
+    case "number_between":
+      return { ...f, kind: "number", op: "between", a: String(c.low), b: String(c.high) };
+    case "date":
+      return { ...f, kind: "date", op: c.op, a: c.value };
+    case "date_between":
+      return { ...f, kind: "date", op: "between", a: c.low, b: c.high };
+    case "blank":
+      return { ...f, kind: "blank", op: "blank" };
+    case "not_blank":
+      return { ...f, kind: "blank", op: "not_blank" };
+    case "pattern":
+      return {
+        ...f,
+        kind: "pattern",
+        op: c.negate ? "not_match" : "match",
+        a: c.pattern.text,
+        matchCase: c.pattern.match_case,
+        patternKind: c.pattern.kind,
+      };
+    case "top":
+      return { ...f, kind: "top", op: `${c.bottom ? "bottom" : "top"}${c.percent ? "_percent" : ""}`, a: String(c.count) };
+  }
+}
+
+/** A short description of a rule, for tooltips and the status bar. */
+export function describeRule(r: Rule): string {
+  if (r.type === "values") {
+    const n = r.values.length + (r.blanks ? 1 : 0);
+    if (n === 1) return r.values.length ? `is "${r.values[0]}"` : "is empty";
+    return `is one of ${n} values`;
+  }
+  const one = (c: Condition): string => {
+    switch (c.type) {
+      case "text":
+        return `${OPS.text.find((o) => o[0] === c.op)?.[1] ?? c.op} "${c.text}"`;
+      case "number":
+        return `${OPS.number.find((o) => o[0] === c.op)?.[1] ?? c.op} ${c.value}`;
+      case "number_between":
+        return `between ${c.low} and ${c.high}`;
+      case "date":
+        return `${OPS.date.find((o) => o[0] === c.op)?.[1] ?? c.op} ${c.value}`;
+      case "date_between":
+        return `between ${c.low} and ${c.high}`;
+      case "blank":
+        return "is empty";
+      case "not_blank":
+        return "is not empty";
+      case "pattern":
+        return `${c.negate ? "does not match" : "matches"} ${c.pattern.text}`;
+      case "top":
+        return `${c.bottom ? "smallest" : "largest"} ${c.count}${c.percent ? " %" : ""}`;
+    }
+  };
+  return r.second ? `${one(r.first)} ${r.or ? "or" : "and"} ${one(r.second)}` : one(r.first);
+}
+
+export type ScopeChoice = "all" | "selection" | "column";
+
+export interface FindOptions {
+  text: string;
+  kind: PatternKind;
+  matchCase: boolean;
+  wholeCell: boolean;
+  scope: ScopeChoice;
+}
+
+/** The search the find bar describes, for a selection and header setting. */
+export function findSpecOf(
+  o: FindOptions,
+  sel: { row: number; rows: number; col: number; cols: number },
+  header: boolean,
+): FindSpec {
+  const pattern: Pattern = { text: o.text, kind: o.kind, match_case: o.matchCase, whole_cell: o.wholeCell };
+  let scope: Scope = { kind: "all" };
+  if (o.scope === "selection") scope = { kind: "range", ...sel };
+  else if (o.scope === "column") scope = { kind: "columns", cols: Array.from({ length: sel.cols }, (_, i) => sel.col + i) };
+  return { pattern, scope, skip_first: header };
+}

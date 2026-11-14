@@ -1,0 +1,6 @@
+sku,item,bin,on_hand,reorder_at
+K-1001,hex bolt M6,A3,412,100
+K-1002,hex bolt M8,A3,96,100
+K-1017,wing nut,B1,1500,250
+K-1020,flat washer,B2,0,500
+K-1033,spring pin,C4,77,50

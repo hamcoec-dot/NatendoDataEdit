@@ -1,0 +1,17 @@
+[package]
+name = "natendo-cli"
+description = "Headless runner for Natendo Data Edit (convert, cleaners, batch)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "natendo-cli"
+path = "src/main.rs"
+
+[dependencies]
+natendo-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true

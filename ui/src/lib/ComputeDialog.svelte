@@ -1,0 +1,158 @@
+<script lang="ts">
+  // Computed column: an expression over each row's cells, with the first
+  // results shown as you type. The values are written as text (a delimited
+  // file cannot keep formulas), in a new column or over an existing one.
+  import { untrack } from "svelte";
+  import { backend, errorText, type ComputePreview, type ComputeSpec } from "./backend";
+  import FormShell from "./FormShell.svelte";
+  import { columnRef, FUNCTIONS, localDays } from "./m8";
+
+  interface Props {
+    doc: number;
+    titles: string[];
+    /** The column the cursor is in. */
+    col: number;
+    header: boolean;
+    onRun: (spec: ComputeSpec) => void;
+    onClose: () => void;
+  }
+  let { doc, titles, col, header, onRun, onClose }: Props = $props();
+
+  let expr = $state("");
+  let title = $state("");
+  let place = $state<"end" | "after" | "over">("end");
+  let target = $state(untrack(() => col));
+  let preview = $state<ComputePreview | null>(null);
+  let problem = $state("");
+  let box = $state<HTMLTextAreaElement | null>(null);
+  let fn = $state("");
+
+  function spec(): ComputeSpec {
+    return {
+      expr,
+      title: title.trim() || "Computed",
+      target: place === "over" ? target : null,
+      at: place === "after" ? col + 1 : null,
+      keep_first: header,
+      read: { decimal_comma: false, date_order: "mdy" },
+      now: localDays(),
+    };
+  }
+
+  // LOOKUP tables are kept while this screen is open, let go when it closes.
+  $effect(() => () => void backend().lookupClose().catch(() => {}));
+
+  let seq = 0;
+  $effect(() => {
+    const s = spec();
+    const mine = ++seq;
+    if (!s.expr.trim()) {
+      preview = null;
+      problem = "";
+      return;
+    }
+    const t = setTimeout(() => {
+      backend()
+        .computePreview(doc, s)
+        .then((p) => {
+          if (mine !== seq) return;
+          preview = p;
+          problem = "";
+        })
+        .catch((e: unknown) => {
+          if (mine !== seq) return;
+          preview = null;
+          problem = errorText(e);
+        });
+    }, 150);
+    return () => clearTimeout(t);
+  });
+
+  /** Put text at the cursor in the expression box. */
+  function insert(text: string): void {
+    const el = box;
+    if (!el) {
+      expr += text;
+      return;
+    }
+    const a = el.selectionStart ?? expr.length;
+    const b = el.selectionEnd ?? expr.length;
+    expr = expr.slice(0, a) + text + expr.slice(b);
+    queueMicrotask(() => {
+      el.focus();
+      el.selectionStart = el.selectionEnd = a + text.length;
+    });
+  }
+
+  function run(): void {
+    if (!expr.trim() || problem) return;
+    onRun(spec());
+  }
+  const hint = $derived(FUNCTIONS.find((f) => f.name === fn)?.hint ?? "");
+</script>
+
+<FormShell title="Computed column" wide {onClose} onEnter={run}>
+  <label class="block">Expression
+    <textarea bind:this={box} bind:value={expr} rows="3" spellcheck="false" class="mono"
+      placeholder={`for example  ${columnRef(titles[0] ?? "", 0)} & " " & UPPER(${columnRef(titles[1] ?? "", 1)})`}></textarea>
+  </label>
+  <div class="grid2">
+    <label class="row">Insert a column
+      <select value="" onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v !== "") insert(columnRef(titles[Number(v)] ?? "", Number(v))); (e.currentTarget as HTMLSelectElement).value = ""; }}>
+        <option value="">Choose…</option>
+        {#each titles as t, i (i)}<option value={i}>{columnRef(t, i)}</option>{/each}
+      </select>
+    </label>
+    <label class="row">Insert a function
+      <select bind:value={fn} onchange={() => { if (fn) insert(`${fn}(`); }}>
+        <option value="">Choose…</option>
+        {#each FUNCTIONS as f (f.name)}<option value={f.name}>{f.name}</option>{/each}
+      </select>
+    </label>
+  </div>
+  {#if hint}<p class="note mono">{hint}</p>{/if}
+  <p class="note">Columns are written in brackets, like <code>[Price]</code> or <code>[#3]</code> for the third column. Text goes in double quotes. Join text with <code>&amp;</code>; compare with <code>= &lt;&gt; &lt; &gt; &lt;= &gt;=</code>.</p>
+  <fieldset>
+    <legend>Put the results</legend>
+    <label class="row"><input type="radio" bind:group={place} value="end" /> in a new column at the end</label>
+    <label class="row"><input type="radio" bind:group={place} value="after" /> in a new column after {titles[col] || `column ${col + 1}`}</label>
+    <label class="row"><input type="radio" bind:group={place} value="over" /> over the values in
+      <select bind:value={target} disabled={place !== "over"}>
+        {#each titles as t, i (i)}<option value={i}>{t || `Column ${i + 1}`}</option>{/each}
+      </select>
+    </label>
+    {#if place !== "over" && header}
+      <label class="row">New column's title <input type="text" bind:value={title} placeholder="Computed" /></label>
+    {/if}
+  </fieldset>
+  {#if preview}
+    <div class="table-preview" aria-label="First results">
+      <table>
+        <tbody>
+          {#each preview.rows as [r, v] (r)}
+            <tr><td class="num">{r}</td><td class:err={v.startsWith("#")}>{v}</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+    <p class="note">The first {preview.rows.length} rows.{preview.errors ? ` ${preview.errors} came out as errors (like #VALUE!: text where a number is needed).` : ""} Values are saved as text; the expression is not kept in the file.</p>
+  {/if}
+  {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
+  {#snippet buttons()}
+    <button type="button" class="primary" onclick={run} disabled={!expr.trim() || !!problem}>Compute</button>
+    <button type="button" onclick={onClose}>Cancel</button>
+  {/snippet}
+</FormShell>
+
+<style>
+  .mono {
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  td.num {
+    color: var(--muted);
+    text-align: right;
+  }
+  td.err {
+    color: var(--danger, #c0392b);
+  }
+</style>

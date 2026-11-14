@@ -1,0 +1,4 @@
+2025-02-01 08:15:02 INFO cache warmed
+2025-02-01 08:15:09 WARN slow query on orders
+2025-02-01 08:16:40 INFO user signed in
+2025-02-01 08:17:03 ERROR mail relay refused, retrying

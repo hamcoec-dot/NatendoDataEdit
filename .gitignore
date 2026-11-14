@@ -1,0 +1,48 @@
+# Rust / Cargo
+/target/
+**/target/
+**/*.rs.bk
+
+# Tauri
+src-tauri/gen/
+src-tauri/target/
+
+# Node / Vite (ui)
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# Generated test fixtures and benchmark output (large)
+tests/data/generated/
+benches/data/
+*.bench.csv
+criterion/
+
+# Installers / build output
+*.msi
+*.exe
+bundle/
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+*.pem
+*.pfx
+*.key
+
+# Editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude local settings
+.claude/settings.local.json

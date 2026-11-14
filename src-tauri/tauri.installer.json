@@ -1,0 +1,10 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build -w ui && cargo build --release -p natendo-cli"
+  },
+  "bundle": {
+    "resources": {
+      "../target/release/natendo-cli.exe": "natendo-cli.exe"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+Produit;Prix
+pomme;1,20
+poire;2,35
+prune;0,90
+pêche;3,10
+figue;4,05

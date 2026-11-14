@@ -1,0 +1,72 @@
+import { describe, expect, it } from "vitest";
+import { conditionOf, describeRule, emptyForm, findSpecOf, formOf, ruleFor, withRule } from "./filters";
+import { decodeViewport, encodeViewport } from "./binary";
+import { MockBackend } from "./mock";
+import type { Condition } from "./backend";
+
+describe("filter rules", () => {
+  it("adds, replaces and removes a column's rule", () => {
+    let s = withRule(null, 2, { type: "values", values: ["a"], blanks: false }, true);
+    s = withRule(s, 0, { type: "conditions", first: { type: "blank" } }, true);
+    expect(s.columns.map((c) => c.col)).toEqual([0, 2]);
+    expect(ruleFor(s, 2)).toEqual({ type: "values", values: ["a"], blanks: false });
+    s = withRule(s, 2, null, false);
+    expect(s.columns.map((c) => c.col)).toEqual([0]);
+    expect(s.keep_first).toBe(false);
+  });
+
+  it("builds conditions from the form and back", () => {
+    const f = emptyForm();
+    expect(conditionOf({ ...f, kind: "number", op: "gt", a: "abc" })).toBe("Enter a number.");
+    expect(conditionOf({ ...f, kind: "number", op: "between", a: "1,000", b: "5" })).toEqual({ type: "number_between", low: 1000, high: 5 });
+    const conds: Condition[] = [
+      { type: "text", op: "begins_with", text: "ab", match_case: true },
+      { type: "number", op: "le", value: 3 },
+      { type: "date_between", low: "2026-01-01", high: "2026-12-31" },
+      { type: "not_blank" },
+      { type: "pattern", pattern: { text: "^a", kind: "regex", match_case: false, whole_cell: false }, negate: true },
+    ];
+    for (const c of conds) expect(conditionOf(formOf(c))).toEqual(c);
+    expect(describeRule({ type: "conditions", first: conds[1]!, second: conds[3]!, or: true })).toBe("≤ 3 or is not empty");
+  });
+
+  it("turns find options into a search", () => {
+    const sel = { row: 2, rows: 3, col: 1, cols: 2 };
+    const o = { text: "x", kind: "wildcard" as const, matchCase: true, wholeCell: false, scope: "column" as const };
+    expect(findSpecOf(o, sel, true)).toEqual({
+      pattern: { text: "x", kind: "wildcard", match_case: true, whole_cell: false },
+      scope: { kind: "columns", cols: [1, 2] },
+      skip_first: true,
+    });
+    expect(findSpecOf({ ...o, scope: "selection" }, sel, false).scope).toEqual({ kind: "range", ...sel });
+  });
+});
+
+describe("viewport row numbers", () => {
+  it("round-trip with and without a filter", () => {
+    const v = { firstRow: 0, firstCol: 0, rows: 2, cols: 1, cells: ["a", "b"], truncated: new Uint8Array(2) };
+    expect(decodeViewport(encodeViewport(v)).rowNumbers).toBeUndefined();
+    const f = decodeViewport(encodeViewport({ ...v, rowNumbers: [0, 7_000_000_000] }));
+    expect(f.rowNumbers).toEqual([0, 7_000_000_000]);
+  });
+});
+
+describe("browser stand-in", () => {
+  it("filters, sorts and replaces at the command level", async () => {
+    const b = new MockBackend();
+    const d = (await b.openFile())!.doc!;
+    const id = d!.id;
+    const spec = { columns: [{ col: 3, rule: { type: "values" as const, values: ["Osaka"], blanks: false } }], keep_first: true };
+    const info = await b.setFilter(id, spec);
+    expect(info.filtered).toBe(true);
+    expect(info.rows).toBeLessThan(info.total_rows);
+    const v = await b.viewport(id, 0, 3, 3, 1, 50);
+    expect(v.cells.slice(1)).toEqual(["Osaka", "Osaka"]);
+    expect(v.rowNumbers?.[0]).toBe(0);
+    await expect(b.change(id, { op: "delete_rows", at: 1, count: 1 })).rejects.toMatchObject({ kind: "filter_active" });
+    const cleared = await b.clearFilter(id);
+    expect(cleared.filtered).toBe(false);
+    const found = await b.findNext(id, { pattern: { text: "Quito", kind: "plain", match_case: false, whole_cell: true }, scope: { kind: "all" }, skip_first: true }, [0, 0], false);
+    expect(found).toMatchObject({ col: 3, wrapped: false });
+  });
+});

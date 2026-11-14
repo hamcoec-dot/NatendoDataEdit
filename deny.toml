@@ -1,0 +1,17 @@
+# cargo-deny: checks dependencies against the RustSec advisory database.
+# CI runs `cargo deny check advisories sources`.
+
+[graph]
+# The app ships for Windows; other targets' dependency trees are not built.
+targets = ["x86_64-pc-windows-msvc"]
+
+[advisories]
+# Fail on any known vulnerability. Flag "unmaintained" only for crates we
+# depend on directly (deep Tauri dependencies are Tauri's to replace).
+unmaintained = "workspace"
+yanked = "deny"
+
+[sources]
+# Only crates.io; no git or other registries.
+unknown-registry = "deny"
+unknown-git = "deny"

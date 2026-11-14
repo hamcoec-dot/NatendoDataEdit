@@ -1,0 +1,5 @@
+ID^CITY^ZIP
+7^Avonlea^04021
+8^Bree^04022
+9^Cair Ford^04023
+10^Dunmore^04024

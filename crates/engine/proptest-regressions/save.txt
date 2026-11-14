@@ -1,0 +1,16 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ca270b6d3771a50e61317a4817164a95a8bd5f5b7a2920569cc8a3dacac4eb15 # shrinks to bytes = [13, 13, 13, 13, 10, 120, 44, 120, 44, 34, 34, 34, 34, 13, 13, 13, 13, 13, 13, 13, 13, 10, 34, 34, 10, 13, 34, 34, 13, 13, 34, 34, 34, 34, 13, 120, 10, 34, 34, 34, 34, 34, 34, 34, 34], edits = [(17, 0, "")], inserts = [], delete = None
+cc 0948f2220ce58a25a97fc6a30e64c7b0343d77580c2124aeb284b9795a022eb5 # shrinks to bytes = [0, 132, 186, 65, 0], ext = None
+cc bf1d64e5872dc2d59b9ed3e6a92275bf91cc3a92e76b73f599061cf2c97e9664 # shrinks to text = "\"", which = 0, bom = false
+cc 0b5a7b6a0574ef1ba7c9f76bc17f89ac478e77d6650e7d2c1cd084c77ed983d0 # shrinks to bytes = [13, 13, 34]
+cc ef96c8cb86fb4a228f1eb5bfdb7e0d7cfeaedfecee5101450c6a129c255db02c # shrinks to bytes = [13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 34, 128, 34, 34], edits = [], inserts = [], delete = None
+cc 295a95bdef62c8d2d70cc0998f39d760421960882937e77b86266f76d92182b3 # shrinks to text = "a\n\"", which = 4, bom = false
+cc 8865e522eddb9ee3ca53c71eae7c5a6e1dfa037bd021edb70d397a3c4e3df6dd # shrinks to bytes = [44, 34, 13, 34, 13, 44, 44, 44, 34, 44, 13, 44, 120, 34, 44, 44, 34, 34, 34]
+cc 22a7bc0ba1f5f3d5931769282b07dd4a38732d3ed47ee0d610993f97dfc22807 # shrinks to bytes = [124, 10, 34, 34, 124, 10, 92], which = 0, ops = [(0, 1, 1, 0, "")]
+cc 13bfe8d71a3cd72dc3b6ff0c039271a548be9a0584061866d96158af616e44c7 # shrinks to bytes = [128, 58, 44, 44, 44, 120, 44, 34], ops = [(0, 5, 0, "")]
+cc 95838691edb0b551ebc8f520fc7c6c1098dd6f4bf0864e222d2d3643c875303e # shrinks to bytes = [], ops = [(6, 0, 0, "")]

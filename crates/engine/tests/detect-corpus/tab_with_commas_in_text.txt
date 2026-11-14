@@ -1,0 +1,4 @@
+id	address
+1	12 Oak St, Unit 4, Riverton
+2	9 Pine Rd, Apt 2, Lakeside
+3	40 Elm Ave, Floor 3, Hillcrest
