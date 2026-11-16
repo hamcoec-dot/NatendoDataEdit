@@ -93,9 +93,13 @@ export interface View {
   row_lines?: number;
 }
 export interface RecentItem {
-  index: number;
+  /** Stable while the app runs; opaque (the full path stays in the backend). */
+  id: string;
   name: string;
+  /** The folder's own name, not its path. */
   folder: string;
+  /** The open tab showing this file, matched by full path in the backend. */
+  open_doc: number | null;
 }
 export interface FolderItem {
   index: number;

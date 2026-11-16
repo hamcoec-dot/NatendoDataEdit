@@ -20,6 +20,7 @@ export const MOUSE_MOVES: { label: string; keys: string }[] = [
   { label: "Fill down to the end of the data", keys: "Double-click the fill handle" },
   { label: "Put a file tab elsewhere", keys: "Drag the tab" },
   { label: "Close a file tab", keys: "Middle-click the tab" },
+  { label: "Open recent files, each in a new tab", keys: "Middle-click them in the recent files list" },
   { label: "Scroll sideways", keys: "Shift+wheel" },
   { label: "Zoom", keys: "Ctrl+wheel" },
 ];

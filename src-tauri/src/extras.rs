@@ -4,6 +4,7 @@
 //! and asks to open "item 3 of the last listing", never a path. Anything
 //! read from disk (the recent list, view files) is untrusted and bounded.
 
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -38,6 +39,9 @@ pub struct Recent {
     list: Mutex<Vec<PathBuf>>,
     private_file: Mutex<Option<PathBuf>>,
     private: Mutex<Vec<PathBuf>>,
+    /// Random key for the recent files' ids (new each run, so an id says
+    /// nothing about the path and cannot be guessed from it).
+    ids: std::collections::hash_map::RandomState,
 }
 
 /// Most files and folders in private file mode.
@@ -88,16 +92,70 @@ fn write_list(file: &Path, list: &[PathBuf]) {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RecentItem {
-    pub index: u32,
+    /// Stable for the file while the app runs (the list's order changes as
+    /// files open, so the list is never used by position). Opaque: a keyed
+    /// hash of the full path, which stays in the backend.
+    pub id: String,
     pub name: String,
-    /// The folder's own name (not its full path).
+    /// The folder's own name (not its full path); when two listed files
+    /// would look the same, as many folders above as tell them apart
+    /// (`2024\Data`, `2025\Data`).
     pub folder: String,
+    /// The open tab showing this file, if any (matched by full path here).
+    pub open_doc: Option<u32>,
 }
 
 fn name_of(p: &Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// The last `n` folder names above a file, joined with `\`.
+fn folder_tail(p: &Path, n: usize) -> String {
+    let names: Vec<String> = p
+        .parent()
+        .map(|d| {
+            d.components()
+                .filter_map(|c| match c {
+                    std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    names[names.len().saturating_sub(n)..].join("\\")
+}
+
+/// Each file's folder as shown: its own name, or more of the path where
+/// that is needed to tell listed files of the same name apart.
+fn folder_labels(list: &[PathBuf]) -> Vec<String> {
+    let mut depth = vec![1usize; list.len()];
+    // Deepen clashing labels a level at a time (paths are short; the list
+    // holds at most MAX_RECENT files).
+    for _ in 0..32 {
+        let label = |i: usize| -> (String, String) {
+            (
+                name_of(&list[i]).to_lowercase(),
+                folder_tail(&list[i], depth[i]).to_lowercase(),
+            )
+        };
+        let labels: Vec<(String, String)> = (0..list.len()).map(label).collect();
+        let mut grew = false;
+        for i in 0..list.len() {
+            let clash = (0..list.len()).any(|j| j != i && labels[j] == labels[i]);
+            if clash && folder_tail(&list[i], depth[i] + 1) != folder_tail(&list[i], depth[i]) {
+                depth[i] += 1;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    (0..list.len())
+        .map(|i| folder_tail(&list[i], depth[i]))
+        .collect()
 }
 
 impl Recent {
@@ -258,31 +316,44 @@ impl Recent {
         out
     }
 
+    fn id_of(&self, p: &Path) -> String {
+        format!("{:016x}", self.ids.hash_one(p))
+    }
+
+    #[cfg(test)]
     pub fn items(&self) -> Vec<RecentItem> {
-        let list = self.list.lock().unwrap_or_else(|p| p.into_inner());
+        self.items_with(|_| None)
+    }
+
+    /// The list, each with the open tab showing it (`open` is asked with
+    /// the full path; it is not held under the list's lock).
+    pub fn items_with(&self, open: impl Fn(&Path) -> Option<u32>) -> Vec<RecentItem> {
+        let list = self.list.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let folders = folder_labels(&list);
         list.iter()
-            .enumerate()
-            .map(|(i, p)| RecentItem {
-                index: i as u32,
+            .zip(folders)
+            .map(|(p, folder)| RecentItem {
+                id: self.id_of(p),
                 name: name_of(p),
-                folder: p.parent().map(name_of).unwrap_or_default(),
+                folder,
+                open_doc: open(p),
             })
             .collect()
     }
 
-    pub fn path(&self, index: u32) -> CmdResult<PathBuf> {
+    /// The file with this id (from `items`).
+    pub fn path(&self, id: &str) -> CmdResult<PathBuf> {
         let list = self.list.lock().unwrap_or_else(|p| p.into_inner());
-        list.get(index as usize)
+        list.iter()
+            .find(|p| self.id_of(p) == id)
             .cloned()
             .ok_or_else(|| CmdError::new("bad_request", "that recent file is no longer listed"))
     }
 
     /// Forget a file (it could not be opened).
-    pub fn forget(&self, index: u32) {
+    pub fn forget(&self, path: &Path) {
         let mut list = self.list.lock().unwrap_or_else(|p| p.into_inner());
-        if (index as usize) < list.len() {
-            list.remove(index as usize);
-        }
+        list.retain(|p| p != path);
     }
 }
 
@@ -661,6 +732,48 @@ mod tests {
         let r2 = Recent::default();
         r2.load(&dir);
         assert_eq!(r2.items().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two files with the same name in folders of the same name (2024\Data
+    /// and 2025\Data) look alike in the list, but each id opens its own
+    /// file, before and after the list reorders.
+    #[test]
+    fn recent_ids_tell_same_named_files_apart() {
+        let dir = std::env::temp_dir().join(format!("natendo-recent-ids-{}", std::process::id()));
+        let (old, new) = (dir.join("2024").join("Data"), dir.join("2025").join("Data"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        let (a, b) = (old.join("voters.csv"), new.join("voters.csv"));
+        std::fs::write(&a, b"x\r\n").unwrap();
+        std::fs::write(&b, b"y\r\n").unwrap();
+        let r = Recent::default();
+        r.load(&dir);
+        r.add(&a);
+        r.add(&b);
+        let items = r.items();
+        assert_eq!(items.len(), 2);
+        // Shown with enough of the path to tell them apart.
+        assert_eq!(
+            (items[0].folder.as_str(), items[1].folder.as_str()),
+            ("2025\\Data", "2024\\Data")
+        );
+        assert_ne!(items[0].id, items[1].id);
+        let older = items[1].id.clone();
+        assert!(same_file::is_same_file(r.path(&older).unwrap(), &a).unwrap());
+        // Opening the newer one again reorders the list; the id still holds.
+        r.add(&b);
+        assert!(same_file::is_same_file(r.path(&older).unwrap(), &a).unwrap());
+        // Which tab shows a file is matched by its full path.
+        let ca = std::fs::canonicalize(&a).unwrap();
+        let open = r.items_with(|p| (p == ca).then_some(7));
+        let mark: Vec<Option<u32>> = open.iter().map(|i| i.open_doc).collect();
+        assert_eq!(mark, vec![None, Some(7)]);
+        r.forget(&ca);
+        assert!(r.path(&older).is_err());
+        // With only one left, its folder's own name is enough again.
+        assert_eq!(r.items()[0].folder, "Data");
+        assert!(r.path("not-an-id").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

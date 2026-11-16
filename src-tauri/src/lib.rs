@@ -245,19 +245,23 @@ fn take_opened(pending: State<'_, Pending>) -> Vec<OsOpen> {
     std::mem::take(&mut *pending.0.lock().unwrap_or_else(|p| p.into_inner()))
 }
 
-/// Recently opened files (names and folder names; paths stay here).
+/// Recently opened files (names and folder names; paths stay here), each
+/// with the open tab showing it, matched by full path. Off the main thread:
+/// matching looks at the files, which can be on a slow network drive.
 #[tauri::command]
-fn recent_files(recent: RecentState<'_>) -> Vec<RecentItem> {
-    recent.items()
+async fn recent_files(docs: DocsState<'_>, recent: RecentState<'_>) -> CmdResult<Vec<RecentItem>> {
+    let (docs, recent) = (docs.inner().clone(), recent.inner().clone());
+    blocking(move || Ok(recent.items_with(|p| docs.find_open(p)))).await
 }
 
-/// Open a recent file by its place in the list.
+/// Open a recent file by its id (from `recent_files`). A file already open
+/// in a tab is not opened again: that tab's document comes back.
 #[tauri::command]
 async fn open_recent(
     docs: DocsState<'_>,
     imports: ImportsState<'_>,
     recent: RecentState<'_>,
-    index: u32,
+    id: String,
 ) -> CmdResult<Opened> {
     let (docs, imports, recent) = (
         docs.inner().clone(),
@@ -265,10 +269,16 @@ async fn open_recent(
         recent.inner().clone(),
     );
     blocking(move || {
-        let path = recent.path(index)?;
+        let path = recent.path(&id)?;
+        if let Some(doc) = docs.find_open(&path) {
+            return Ok(Opened {
+                doc: Some(docs.info(doc)?),
+                import: None,
+            });
+        }
         let r = open_any(&docs, &imports, &recent, &path);
         if r.is_err() && !path.exists() {
-            recent.forget(index);
+            recent.forget(&path);
         }
         r
     })

@@ -1116,12 +1116,42 @@ export class MockBackend implements Backend {
 
   private savedView: View | null = null;
 
-  async recentFiles(): Promise<RecentItem[]> {
-    return [{ index: 0, name: "sample-1M.csv", folder: "samples" }];
+  /** Made-up recent files: two share a name and a folder name, as
+   *  2024\Data\voters.csv and 2025\Data\voters.csv would. */
+  private recent: [string, string][] = [
+    ["r1", "C:/samples/sample-1M.csv"],
+    ["r2", "C:/Elections/2025/Data/voters.csv"],
+    ["r3", "C:/Elections/2024/Data/voters.csv"],
+    ["r4", "C:/precincts.csv"],
+  ];
+  private openAt(path: string): number | null {
+    for (const d of this.docs.values()) if (d.info.path === path) return d.info.id;
+    return null;
   }
 
-  async openRecent(index: number): Promise<Opened> {
-    void index;
+  async recentFiles(): Promise<RecentItem[]> {
+    // As the backend does: a folder's own name, or two levels where two
+    // files of the same name need telling apart.
+    const name = (p: string) => p.split("/").at(-1)!;
+    return this.recent.map(([id, p]) => {
+      const parts = p.split("/").slice(1, -1);
+      const twin = this.recent.some(([j, q]) => j !== id && name(q) === name(p));
+      return { id, name: name(p), folder: parts.slice(twin ? -2 : -1).join("\\"), open_doc: this.openAt(p) };
+    });
+  }
+
+  async openRecent(id: string): Promise<Opened> {
+    const p = this.recent.find(([i]) => i === id)?.[1];
+    if (!p) throw err("bad_request", "that recent file is no longer listed");
+    const open = this.openAt(p);
+    if (open !== null) return { doc: { ...this.get(open).info }, import: null };
+    if (p.endsWith("sample-1M.csv")) return this.openSample();
+    const info = this.make(p.split("/").at(-1)!, 2_001, 6);
+    this.get(info.id).info.path = p;
+    return { doc: { ...this.get(info.id).info }, import: null };
+  }
+
+  private async openSample(): Promise<Opened> {
     const o = await this.openFile();
     if (!o) throw err("error", "nothing to open");
     return o;
@@ -1134,7 +1164,8 @@ export class MockBackend implements Backend {
 
   async folderOpen(doc: number, index: number): Promise<Opened> {
     void doc;
-    return this.openRecent(index);
+    void index;
+    return this.openSample();
   }
 
   async viewSave(view: View): Promise<string | null> {
@@ -2177,7 +2208,7 @@ export class MockBackend implements Backend {
   }
   async folderSearchCancel(): Promise<void> {}
   async openFolderHit(): Promise<Opened> {
-    return this.openRecent(0);
+    return this.openSample();
   }
   async saveChangeReport(doc: number): Promise<number | null> {
     const l = await this.changeList(doc);

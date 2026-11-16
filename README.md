@@ -202,7 +202,15 @@ everything is also in command search.
   every drag and click move), a file browser panel, an activity panel, and a
   start page with recent files. File > Open recent (Ctrl+Shift+O) shows the
   same list at any time: tick two or three files and each opens in its own
-  tab.
+  tab, or middle-click files one after another to open each in a new tab
+  while the list stays open (middle-clicking a file on the start page works
+  the same way). Up and Down move through the list and Enter opens. Files
+  that are already open are marked "open" and switched to, never opened
+  twice; two files with the same name show enough of their folders to tell
+  them apart (2024\Data, 2025\Data).
+
+![The Open recent list with three files open and two voters.csv files told apart by folder](docs/screenshots/open-recent.png)
+*File > Open recent after a few middle-clicks: each opened in its own tab and is marked "open".*
 
 ![Dragging the city column by its heading to a new place](docs/screenshots/drag-column.png)
 *Dragging "city" by its heading: a see-through band follows the pointer and the bar shows where it will land.*

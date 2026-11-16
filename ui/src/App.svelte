@@ -429,48 +429,86 @@
     }
   }
 
-  async function openRecent(index: number): Promise<void> {
+  /** Recent files being opened, by id: a second middle-click while one is
+   *  opening does not open it twice. */
+  const recentBusy = new Set<string>();
+
+  /** Open a recent file in a new tab, or switch to the tab already showing
+   *  it. Files are named by id and matched to tabs by full path in the
+   *  backend, so two files that look alike (2024\Data\voters.csv and
+   *  2025\Data\voters.csv) are never mixed up. */
+  async function openRecent(r: RecentItem): Promise<"opened" | "open" | "import" | "busy" | "failed"> {
+    const tabOf = (doc: number | null | undefined) => (doc == null ? -1 : tabs.findIndex((t) => t.id === doc));
+    const showing = tabOf(r.open_doc);
+    if (showing >= 0) {
+      active = showing;
+      return "open";
+    }
+    if (recentBusy.has(r.id)) return "busy";
+    recentBusy.add(r.id);
     try {
-      opened(await backend().openRecent(index));
+      const o = await backend().openRecent(r.id);
+      // Opened elsewhere since the list was read: the backend hands back
+      // that tab's document instead of opening the file again.
+      const i = tabOf(o.doc?.id);
+      if (i >= 0) {
+        active = i;
+        void loadRecent();
+        return "open";
+      }
+      opened(o);
+      return o.import ? "import" : o.doc ? "opened" : "failed";
     } catch (e) {
       say(errorText(e));
       void loadRecent();
+      return "failed";
+    } finally {
+      recentBusy.delete(r.id);
     }
   }
 
-  /** "folder\name" of a path, lower case: what the recent list shows of a
-   *  file (it keeps only the folder's own name, not the whole path). */
-  function shortKey(path: string): string {
-    return path.split(/[\\/]+/).filter(Boolean).slice(-2).join("\\").toLowerCase();
-  }
-  /** The files open in tabs, as shortKey (to mark and not reopen them). */
-  function openPaths(): Set<string> {
-    return new Set(tabs.flatMap((t) => (t.info.path ? [shortKey(t.info.path)] : [])));
+  /** The tabs' documents, to mark recent files that are open. */
+  function openDocs(): Set<number> {
+    return new Set(tabs.map((t) => t.id));
   }
 
-  /** File > Open recent: open each picked file in its own tab. The list's
-   *  order changes as files open, so each one is looked up again by name. */
-  async function openRecentMany(list: RecentItem[]): Promise<void> {
-    recentOpen = false;
-    const key = (r: RecentItem) => `${r.folder}\\${r.name}`.toLowerCase();
+  /** File > Open recent: open each picked file in its own tab, one after
+   *  another. A file that needs the import screen stops the run there, so
+   *  one import screen never replaces another. */
+  async function openRecentMany(list: RecentItem[], keepList = false): Promise<void> {
+    if (!keepList) recentOpen = false;
     let already = 0;
-    for (const want of list) {
-      const i = tabs.findIndex((t) => !!t.info.path && shortKey(t.info.path) === key(want));
-      if (i >= 0) {
-        already++;
-        if (list.length === 1) active = i;
-        continue;
+    let done = 0;
+    for (const [n, r] of list.entries()) {
+      const got = await openRecent(r);
+      if (got === "open") already++;
+      else if (got === "opened") done++;
+      else if (got === "import") {
+        recentOpen = false;
+        const left = list.length - n - 1;
+        if (left) say(`${done ? `Opened ${done}. ` : ""}${r.name} needs its import options, so ${left === 1 ? "the other file was" : `the other ${left} files were`} not opened.`);
+        return;
       }
-      await loadRecent();
-      const now = recent.find((r) => key(r) === key(want));
-      if (!now) {
-        say(`${want.name} is no longer in the recent files.`);
-        continue;
-      }
-      await openRecent(now.index);
     }
     if (already && list.length > 1) say(`${already === 1 ? "One file was" : `${already} files were`} already open, so ${already === 1 ? "it was" : "they were"} not opened again.`);
-    void tick().then(() => grid?.focus());
+    else if (already) say(`${list[0]!.name} is already open; switched to it.`);
+    if (!keepList) void tick().then(() => grid?.focus());
+    // Opening a tab focuses its grid; give the keys back to the list that
+    // stays open (Esc closes it, the tick boxes still work).
+    else void tick().then(() => document.querySelector<HTMLElement>(".recent-list input")?.focus());
+  }
+
+  /** Middle-click on the start page: open the file in a new tab and bring
+   *  up the same list as File > Open recent, so more middle-clicks open
+   *  more files (the start page itself goes once a file is open). */
+  async function startMiddle(e: MouseEvent, r: RecentItem): Promise<void> {
+    if (e.button !== 1) return;
+    e.preventDefault();
+    const got = await openRecent(r);
+    if (got !== "opened" && got !== "open") return;
+    await loadRecent();
+    recentOpen = true;
+    void tick().then(() => document.querySelector<HTMLElement>(".recent-list input")?.focus());
   }
 
   // ---- side panel, views, highlights -------------------------------------------
@@ -4126,8 +4164,9 @@
           {#if recent.length}
             <h2>Recent files</h2>
             <ul class="recent">
-              {#each recent as r (r.index)}
-                <li><button type="button" title={r.folder} onclick={() => void openRecent(r.index)}><span class="name">{r.name}</span> <span class="muted">{r.folder}</span></button></li>
+              {#each recent as r (r.id)}
+                <!-- Middle-click: mousedown is stopped so Windows does not start its scroll mode. -->
+                <li><button type="button" title={r.folder ? `${r.folder}\\${r.name}` : r.name} onclick={() => void openRecent(r)} onmousedown={(e) => { if (e.button === 1) e.preventDefault(); }} onauxclick={(e) => void startMiddle(e, r)}><span class="name">{r.name}</span> <span class="muted">{r.folder}</span></button></li>
               {/each}
             </ul>
           {/if}
@@ -4367,7 +4406,7 @@
 {/if}
 
 {#if recentOpen}
-  <RecentDialog items={recent} openPaths={openPaths()} onOpen={(list) => void openRecentMany(list)} onClose={() => { recentOpen = false; grid?.focus(); }} />
+  <RecentDialog items={recent} openDocs={openDocs()} onOpen={(list) => void openRecentMany(list)} onOpenKeep={(r) => void openRecentMany([r], true)} onClose={() => { recentOpen = false; grid?.focus(); }} />
 {/if}
 
 {#if keysOpen}

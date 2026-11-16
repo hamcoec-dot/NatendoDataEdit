@@ -884,7 +884,7 @@ export interface Backend {
   /** Shows the Open dialog; null when cancelled. */
   cleanerOpen(): Promise<Cleaner | null>;
   recentFiles(): Promise<RecentItem[]>;
-  openRecent(index: number): Promise<Opened>;
+  openRecent(id: string): Promise<Opened>;
   folderList(doc: number): Promise<Listing>;
   folderOpen(doc: number, index: number): Promise<Opened>;
   viewSave(view: View): Promise<string | null>;
@@ -1235,8 +1235,8 @@ class TauriBackend implements Backend {
   recentFiles() {
     return call<RecentItem[]>("recent_files");
   }
-  openRecent(index: number) {
-    return call<Opened>("open_recent", { index });
+  openRecent(id: string) {
+    return call<Opened>("open_recent", { id });
   }
   folderList(doc: number) {
     return call<Listing>("folder_list", { doc });
