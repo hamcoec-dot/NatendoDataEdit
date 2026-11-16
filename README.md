@@ -206,12 +206,17 @@ everything is also in command search.
 
 ### Editing
 
+![The first_name column cut (dashed outline) and the right-click menu offering Move what was cut here](docs/screenshots/cut-move.png)
+*first_name is cut (dashed outline); right-clicking city offers "Move what was cut here", which puts it before city in one step.*
+
 - **Cut and paste that moves**, as in Excel and Google Sheets: Ctrl+X marks
   whole columns, whole rows or a block of cells with a dashed outline and
   changes nothing yet; pick a column (or row, or cell) and Ctrl+V moves them
   there in one undo step. Cut columns go in before the column picked and cut
   rows above the row picked, and the gap they leave closes up, so there is no
-  empty column to insert or delete by hand. Esc cancels.
+  empty column to insert or delete by hand. Esc cancels. The right-click menus
+  of cells, row numbers and column headings have Cut, Copy, Paste, Move what
+  was cut here and Cancel cut.
 - Edit in the cell or in a larger, multi-line edit box; a cell bar with a
   "Go to" box.
 - Fill handle, fill series, Ctrl+Enter to fill a whole selection, Paste

@@ -160,6 +160,32 @@ const url = process.argv[3] || "http://localhost:5191";
   await p.waitForTimeout(400);
   ok((await row(1)).join() === second.join() && (await row(3)).join() === first.join(), "cut row went in above the row picked");
   await undo();
+  // The same from the right-click menu: Cut on B's heading, then "Move what
+  // was cut here" on D's heading.
+  const menuItem = (text) => p.click(`[role=menuitem]:has-text("${text}")`);
+  await p.mouse.click(cx(1), canvas.y + HEAD / 2);
+  await p.mouse.click(cx(1), canvas.y + HEAD / 2, { button: "right" });
+  ok(!(await p.isVisible('[role=menuitem]:has-text("Move what was cut here")')), "no move item before anything is cut");
+  await menuItem("Cut");
+  await p.waitForTimeout(300);
+  await p.mouse.click(cx(3), canvas.y + HEAD / 2);
+  await p.mouse.click(cx(3), canvas.y + HEAD / 2, { button: "right" });
+  await p.screenshot({ path: path.join(out, "cut-menu.png") });
+  await menuItem("Move what was cut here");
+  await p.waitForTimeout(400);
+  now = await row(1);
+  ok(now[1] === first[2] && now[2] === first[1], `right-click Cut, then Move what was cut here (${now.join(" | ")})`);
+  await undo();
+  // Cancel cut from the menu: a later paste moves nothing.
+  await p.mouse.click(rx, ry(1));
+  await p.mouse.click(rx, ry(1), { button: "right" });
+  await menuItem("Cut");
+  await p.waitForTimeout(300);
+  await p.mouse.click(rx, ry(1), { button: "right" });
+  await menuItem("Cancel cut");
+  ok(/Cut cancelled/.test(await status()), `Cancel cut says so (${await status()})`);
+  ok((await row(1)).join() === first.join(), "all as it was after the menu tests");
+
   // Cells: cut B1, pick E3, paste: moved, the old place empty.
   await p.mouse.click(cx(1), ry(1));
   await p.keyboard.press("Control+x");

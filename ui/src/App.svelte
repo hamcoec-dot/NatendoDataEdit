@@ -1111,6 +1111,15 @@
     say(`Cut ${what}${inside ? " (kept inside the app, not put on the clipboard)" : ""}. Click ${where} and press Ctrl+V to move ${one ? "it" : "them"}; Esc cancels.`);
   }
 
+  /** Drop what Cut marked (Esc, or the right-click menu). */
+  function cancelCut(): void {
+    cutEpoch++;
+    const t = tab;
+    if (!t?.cut) return;
+    t.cut = null;
+    t.bump();
+    say("Cut cancelled; nothing was moved.");
+  }
   /** Bumped by Esc, so a cut still being copied is not marked. */
   let cutEpoch = 0;
   /** Said once a paste finishes (a copy pasted from a cut in another file). */
@@ -2860,6 +2869,8 @@
     { id: "edit.cut", label: "Cu&t", keys: ["Ctrl+X"], run: () => copy(true), enabled: ready },
     { id: "edit.copy", label: "&Copy", keys: ["Ctrl+C"], run: () => copy(false), enabled: hasTab },
     { id: "edit.paste", label: "&Paste", run: pasteFromMenu, enabled: ready },
+    { id: "edit.moveCut", label: "&Move what was cut here", run: () => void pasteCut(null), enabled: () => ready() && !!tab?.cut },
+    { id: "edit.cancelCut", label: "Ca&ncel cut", run: cancelCut, enabled: () => !!tab?.cut },
     { id: "edit.pasteSpecial", label: "Paste &special…", keys: ["Ctrl+Alt+V"], run: () => openOp("paste_special"), enabled: ready },
     { id: "edit.clear", label: "Cle&ar contents", keys: ["Delete"], run: clearSelection, enabled: ready, repeatable: true },
     { id: "edit.fillDown", label: "Fill &down", keys: ["Ctrl+D"], run: () => fill("down"), enabled: ready, repeatable: true },
@@ -3082,7 +3093,7 @@
     {
       label: "&Edit",
       items: [
-        "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.pasteSpecial", "edit.clear", "-",
+        "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-",
         "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "-", "edit.note", "edit.changes", "-",
         "edit.deleteRows", "edit.deleteCols", "edit.moveRowsUp", "edit.moveRowsDown", "edit.moveColsLeft", "edit.moveColsRight",
       ],
@@ -3143,9 +3154,9 @@
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
-    cell: ["edit.cut", "edit.copy", "edit.paste", "edit.pasteSpecial", "edit.clear", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "edit.fillDown", "edit.fillRight"],
-    row: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.copy", "edit.clear"],
-    col: ["data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.hideCols", "format.showCols", "-", "edit.copy", "edit.clear"],
+    cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "edit.fillDown", "edit.fillRight"],
+    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
+    col: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.hideCols", "format.showCols", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showCols"],
   };
 
@@ -3363,11 +3374,8 @@
         void grid.startEdit("");
         return;
       case "Escape":
-        cutEpoch++;
-        if (t.cut) {
-          t.cut = null;
-          say("");
-        }
+        if (t.cut) cancelCut();
+        else cutEpoch++;
         grid.select(f);
         return;
     }
@@ -3804,7 +3812,10 @@
 
   function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner"): void {
     openMenu = null;
-    context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items: contextItems[area] ?? [], index: 0 };
+    // The cut items show only while something is cut.
+    const cutItems = new Set(["edit.moveCut", "edit.cancelCut"]);
+    const items = (contextItems[area] ?? []).filter((i) => tab?.cut || !cutItems.has(i));
+    context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items, index: 0 };
   }
 
   const notices = $derived.by(() => {
