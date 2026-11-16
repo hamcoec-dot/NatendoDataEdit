@@ -24,19 +24,26 @@ export interface Menu {
 // held can arrive with altKey off, typically for the second Alt+letter in a
 // row (seen with real key presses; test tools always set altKey). Alt's own
 // key events still arrive, so Alt is also tracked from them. While Alt is
-// held Windows repeats its keydown, so a stale state (a lost keyup) expires
-// after ALT_TRUST_MS.
-const ALT_TRUST_MS = 1500;
+// held Windows repeats its keydown every ~30 ms, so a stale state (a lost
+// keyup) expires after ALT_TRUST_MS. AltGr (typing @, the euro sign and so
+// on: it arrives as Ctrl+Alt) never counts. The guess is used only by
+// keyOfLoose: the search toggle and Alt+letter menus outside text boxes.
+const ALT_TRUST_MS = 600;
 let altDownAt = 0;
+
+function altGr(e: KeyboardEvent): boolean {
+  return e.key === "AltGraph" || e.ctrlKey || !!e.getModifierState?.("AltGraph");
+}
 
 /** Track Alt from its own key events (call once, from the app's root). */
 export function watchAlt(target: Pick<Window, "addEventListener" | "removeEventListener">): () => void {
   const down = (e: KeyboardEvent) => {
     // Alt itself, or a key that says Alt is down: Alt is held now.
-    if (e.key === "Alt" || e.altKey) altDownAt = e.timeStamp || performance.now();
+    if (altGr(e)) altDownAt = 0;
+    else if (e.key === "Alt" || e.altKey) altDownAt = e.timeStamp || performance.now();
   };
   const up = (e: KeyboardEvent) => {
-    if (e.key === "Alt") altDownAt = 0;
+    if (e.key === "Alt" || e.key === "AltGraph" || e.key === "Control") altDownAt = 0;
   };
   const reset = () => (altDownAt = 0);
   target.addEventListener("keydown", down, true);
@@ -49,19 +56,30 @@ export function watchAlt(target: Pick<Window, "addEventListener" | "removeEventL
   };
 }
 
-/** Whether Alt is held for this key event (see watchAlt). */
+/** Whether Alt is held for this key event, also when the event forgot to
+ *  say so (see watchAlt). */
 export function altOf(e: KeyboardEvent): boolean {
   if (e.altKey) return true;
-  if (altDownAt === 0 || e.key === "Alt") return false;
+  if (altDownAt === 0 || e.key === "Alt" || altGr(e)) return false;
   const now = e.timeStamp || performance.now();
   return now >= altDownAt && now - altDownAt < ALT_TRUST_MS;
 }
 
 /** Normalised shortcut text for a key event, e.g. "Ctrl+Shift+ArrowUp". */
 export function keyOf(e: KeyboardEvent): string {
+  return keyText(e, e.altKey);
+}
+
+/** keyOf, also counting an Alt the event forgot (only for the search toggle
+ *  and Alt+letter menus, never for typing or recording shortcuts). */
+export function keyOfLoose(e: KeyboardEvent): string {
+  return keyText(e, altOf(e));
+}
+
+function keyText(e: KeyboardEvent, alt: boolean): string {
   const parts: string[] = [];
   if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
-  if (altOf(e)) parts.push("Alt");
+  if (alt) parts.push("Alt");
   if (e.shiftKey) parts.push("Shift");
   let k = e.key;
   if (k === " ") k = "Space";

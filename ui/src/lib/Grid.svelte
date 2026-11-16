@@ -1137,24 +1137,31 @@
       for (let r = r0; r < r0 + n; r++) if (tab.cache.get(r, c) === undefined) return true;
       return false;
     });
-    let data: ViewportData | null = null;
+    // Read the missing columns in bands the engine accepts in one read
+    // (VIEWPORT_CELLS cells), a few calls at most.
+    const reads: ViewportData[] = [];
     if (missing.length && n > 0) {
-      const lo = missing[0]!;
-      const hi = missing[missing.length - 1]!;
-      try {
-        data = await backend().viewport(tab.id, r0, n, lo, hi - lo + 1, 200);
-      } catch {
-        data = null;
+      const band = Math.max(1, Math.floor(VIEWPORT_CELLS / n));
+      let i = 0;
+      while (i < missing.length) {
+        const lo = missing[i]!;
+        let j = i;
+        while (j + 1 < missing.length && missing[j + 1]! - lo < band) j++;
+        try {
+          reads.push(await backend().viewport(tab.id, r0, n, lo, missing[j]! - lo + 1, 200));
+        } catch {
+          // Fit to what is known.
+        }
+        i = j + 1;
       }
     }
-    const d = data;
     for (const c of cols) {
+      const d = reads.find((x) => c >= x.firstCol && c < x.firstCol + x.cols);
       fitOne(c, (r) => {
         const v = tab.cache.get(r, c);
         if (v !== undefined || !d) return v;
         const i = r - d.firstRow;
-        const j = c - d.firstCol;
-        return i >= 0 && i < d.rows && j >= 0 && j < d.cols ? d.cells[i * d.cols + j] : undefined;
+        return i >= 0 && i < d.rows ? d.cells[i * d.cols + (c - d.firstCol)] : undefined;
       });
     }
     tab.bump();
@@ -1423,6 +1430,8 @@
     return wholeColsSel(r) && r.cols > 1 && c >= r.col && c < r.col + r.cols ? r : null;
   }
   const MAX_FIT_COLS = 500;
+  /** Cells the engine reads at once for the grid (MAX_VIEWPORT_CELLS). */
+  const VIEWPORT_CELLS = 20_000;
 
   function onMouseUp(e: MouseEvent): void {
     if (freezing) {
@@ -1463,7 +1472,12 @@
         const fullCols = Math.max(0, tab.info.cols - 1);
         if (m.kind === "cols") select({ row: tab.firstRow, col: m.grab.col }, { row: lastRow(), col: m.grab.col }, false);
         else if (m.kind === "rows") select({ row: m.grab.row, col: 0 }, { row: m.grab.row, col: fullCols }, false);
-        else select(m.grab);
+        else {
+          select(m.grab);
+          // A Ctrl+click on a link in a cell on the selection's outline.
+          const link = e.ctrlKey && !e.shiftKey && onOpenLink ? linkAt(m.grab.row, m.grab.col) : null;
+          if (link) onOpenLink?.(link);
+        }
       }
       redraw();
       return;

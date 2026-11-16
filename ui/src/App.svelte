@@ -3,7 +3,7 @@
   import { backend, errorText, isCmdError, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
   import { Tab } from "./lib/tab.svelte";
   import { prefs, customFont, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
-  import { Registry, altOf, keyOf, watchAlt, type Command, type Menu } from "./lib/commands";
+  import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu } from "./lib/commands";
   import { parseTsv } from "./lib/tsv";
   import { cellCount, type Rect } from "./lib/selection";
   import { dropIndex, MOUSE_MOVES } from "./lib/dragmove";
@@ -1059,40 +1059,62 @@
     const t = tab;
     if (!t) return;
     const r = t.rect;
-    for (const x of tabs) x.cut = null;
     // Cut works as in Excel and Google Sheets: nothing changes until Paste,
     // which moves what was cut there (whole columns or rows go in before the
     // one picked, and the gap they leave closes up).
     const kind = !cut ? null : wholeCols(r, t) && !wholeRows(r, t) ? "cols" : wholeRows(r, t) ? "rows" : "cells";
-    let clip: string | null = null;
-    try {
-      if (cellCount(r) >= LARGE_COPY && !(await privacyGate("The copy goes to the clipboard, where other programs can read it.", [r.col, r.cols]))) return;
-      clip = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols);
-      await navigator.clipboard.writeText(clip);
-      copiedFrom = t.id;
-    } catch (e) {
-      // Whole rows or columns too big for the clipboard can still be moved
-      // inside the app.
-      if (!kind || kind === "cells") {
-        say(errorText(e));
-        if (!kind) return;
-      }
-      clip = null;
-    }
-    if (!kind) {
-      say(`Copied ${cellCount(r).toLocaleString()} cell${cellCount(r) === 1 ? "" : "s"}.`);
+    if (kind && (t.info.read_only || !t.info.indexed)) {
+      say(t.info.read_only ? "This file is read-only, so nothing can be cut from it. Copy (Ctrl+C) works." : "Please wait until the file has been read.");
       return;
     }
-    if (kind === "cells" && clip === null) return;
-    t.cut = { kind, rect: r, pos: t.info.history_pos, clip };
-    t.bump();
+    const epoch = ++cutEpoch;
+    const pos = t.info.history_pos;
+    for (const x of tabs) {
+      if (x.cut) {
+        x.cut = null;
+        x.bump();
+      }
+    }
     const what =
       kind === "cols" ? `${r.cols === 1 ? "1 column" : `${r.cols.toLocaleString()} columns`}` : kind === "rows" ? `${r.rows === 1 ? "1 row" : `${r.rows.toLocaleString()} rows`}` : `${cellCount(r).toLocaleString()} cell${cellCount(r) === 1 ? "" : "s"}`;
+    // Many whole rows or columns cut to move them: the move never needs the
+    // clipboard, so their data stays inside the app (no privacy question);
+    // a short note goes on the clipboard instead, so a later paste of
+    // something copied elsewhere is never taken for this cut.
+    const inside = kind === "cols" || kind === "rows" ? cellCount(r) >= LARGE_COPY : false;
+    let clip: string;
+    if (inside) {
+      clip = `Natendo Data Edit: ${what} marked to move. Paste them inside the app with Ctrl+V.`;
+      await navigator.clipboard.writeText(clip).catch(() => {});
+    } else {
+      try {
+        if (cellCount(r) >= LARGE_COPY && !(await privacyGate("The copy goes to the clipboard, where other programs can read it.", [r.col, r.cols]))) return;
+        clip = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols);
+        await navigator.clipboard.writeText(clip);
+        copiedFrom = t.id;
+      } catch (e) {
+        say(errorText(e));
+        return;
+      }
+    }
+    if (!kind) {
+      say(`Copied ${what}.`);
+      return;
+    }
+    // Esc (or another change) while the copy was being made: no cut.
+    if (epoch !== cutEpoch || t.info.history_pos !== pos) return;
+    t.cut = { kind, rect: r, pos, clip, inside };
+    t.bump();
     const one = kind === "cols" ? r.cols === 1 : kind === "rows" ? r.rows === 1 : cellCount(r) === 1;
     const it = one ? "it" : "they";
     const where = kind === "cols" ? `the column ${it} should go before` : kind === "rows" ? `the row ${it} should go above` : `where ${it} should go`;
-    say(`Cut ${what}. Click ${where} and press Ctrl+V to move ${one ? "it" : "them"}; Esc cancels.`);
+    say(`Cut ${what}${inside ? " (kept inside the app, not put on the clipboard)" : ""}. Click ${where} and press Ctrl+V to move ${one ? "it" : "them"}; Esc cancels.`);
   }
+
+  /** Bumped by Esc, so a cut still being copied is not marked. */
+  let cutEpoch = 0;
+  /** Said once a paste finishes (a copy pasted from a cut in another file). */
+  let afterPaste: string | null = null;
 
   /** Clipboard text compared loosely (line ends, a trailing line break). */
   const sameClip = (s: string): string => s.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
@@ -1103,7 +1125,7 @@
     const t = tab;
     const c = t?.cut;
     if (!t || !c) return false;
-    if (c.pos !== t.info.history_pos || (text !== null && c.clip !== null && sameClip(text) !== sameClip(c.clip))) {
+    if (c.pos !== t.info.history_pos || (text !== null && sameClip(text) !== sameClip(c.clip))) {
       t.cut = null;
       t.bump();
       return false;
@@ -1145,18 +1167,35 @@
     const t = tab;
     if (!t || !ready()) return;
     if (await pasteCut(text)) return;
+    // Cut in another file: paste a copy here and leave those cells where
+    // they are (a move between two files would be two undo steps).
+    const other = tabs.find((x) => x !== t && x.cut && sameClip(x.cut.clip) === sameClip(text));
+    if (other?.cut) {
+      const inside = other.cut.inside;
+      other.cut = null;
+      other.bump();
+      if (inside) {
+        say(`What was cut in ${other.info.name} can only be moved inside that file. To copy it here, copy fewer rows or columns.`);
+        return;
+      }
+      afterPaste = `Pasted a copy here. The cut cells in ${other.info.name} stay where they were.`;
+    }
     const rows = parseTsv(text);
     if (rows.length === 0) return;
     const r = t.rect;
     const width = Math.max(...rows.map((x) => x.length));
     if (rows.length === 1 && width === 1 && cellCount(r) > 1 && cellCount(r) <= MAX_CELLS_PER_CHANGE) {
       await commitCell(r.row, r.col, rows[0]![0] ?? "", true);
+      if (afterPaste) say(afterPaste);
+      afterPaste = null;
       return;
     }
     // The engine parses the text again and writes it as one undo step,
     // adding rows past the end if needed.
     const done = await runOp({ op: "paste", spec: { row: r.row, col: r.col, op: "none", skip_blanks: false, transpose: false }, text }, "Pasting");
     if (done) grid?.select({ row: r.row, col: r.col }, { row: r.row + rows.length - 1, col: r.col + width - 1 });
+    if (done && afterPaste) say(afterPaste);
+    afterPaste = null;
   }
 
   async function pasteFromMenu(): Promise<void> {
@@ -3229,10 +3268,15 @@
     if (cleanTool || splitNameOpen || insertAsk || search !== null || shortcutsOpen || highlightOpen || subtotalOpen || pivotDoc !== null || prompt) return;
     if ((openMenu !== null || context) && menuKey(e)) return;
     altAlone = e.key === "Alt";
-    const key = keyOf(e);
+    const field = inTextField(e.target);
+    // Outside text boxes, an Alt the event forgot still counts (see
+    // watchAlt); inside one only for the search shortcut, so typing is never
+    // taken for a shortcut.
+    const loose = keyOfLoose(e);
+    const key = !field || reg.forKey(loose)?.id === "help.search" ? loose : keyOf(e);
 
     // Alt+letter opens a menu (Excel-style access keys).
-    if (altOf(e) && !e.ctrlKey && !e.shiftKey && e.key.length === 1) {
+    if ((field ? e.altKey : altOf(e)) && !e.ctrlKey && !e.shiftKey && e.key.length === 1) {
       const m = menus.findIndex((x) => accessKey(x.label) === e.key.toLowerCase());
       if (m >= 0) {
         e.preventDefault();
@@ -3243,7 +3287,6 @@
       }
     }
 
-    const field = inTextField(e.target);
     const gridFocused = (e.target as HTMLElement | null)?.dataset?.gridFocus !== undefined;
 
     // Ctrl+V: let the browser deliver a paste event (handled below).
@@ -3320,6 +3363,7 @@
         void grid.startEdit("");
         return;
       case "Escape":
+        cutEpoch++;
         if (t.cut) {
           t.cut = null;
           say("");

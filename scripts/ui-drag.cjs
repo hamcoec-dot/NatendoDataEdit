@@ -169,9 +169,32 @@ const url = process.argv[3] || "http://localhost:5191";
   await p.waitForTimeout(400);
   ok((await cellAt(3, 4)) === first[1] && (await cellAt(1, 1)) === "", "cut cell moved on paste");
   await undo();
+  // A filter after a cut drops it: a paste then copies, nothing moves.
+  await p.mouse.click(cx(1), ry(1));
+  await p.keyboard.press("Control+x");
+  await p.waitForTimeout(300);
+  await p.mouse.click(cx(3), ry(2));
+  await p.keyboard.press("Alt+q");
+  await p.keyboard.type("filter by selected value");
+  await p.waitForTimeout(200);
+  await p.keyboard.press("Enter");
+  await p.waitForFunction(() => /rows shown|of 1,000,000|Filtered/i.test(document.body.textContent || ""), null, { timeout: 20000 }).catch(() => {});
+  await p.mouse.click(cx(4), ry(1));
+  await p.keyboard.press("Control+v");
+  await p.waitForTimeout(500);
+  await p.keyboard.press("Alt+q");
+  await p.keyboard.type("clear filter");
+  await p.waitForTimeout(200);
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(3000);
+  ok((await cellAt(1, 1)) === first[1], `after a filter the cut cell was not moved (${await cellAt(1, 1)})`);
+  await undo();
+  ok((await row(1)).join() === first.join() && (await row(2)).join() === second.join(), "back as it was after the filter test");
+
   // Esc drops the cut: a paste then pastes the copied text instead of moving.
   await p.mouse.click(cx(1), ry(1));
   await p.keyboard.press("Control+x");
+  await p.waitForTimeout(300);
   await p.keyboard.press("Escape");
   await p.mouse.click(cx(4), ry(6));
   await p.keyboard.press("Control+v");

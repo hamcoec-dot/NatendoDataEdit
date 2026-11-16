@@ -5,7 +5,7 @@
   // what they do. Arrows to pick, Enter or click to run, Esc or the opening shortcut
   // (Alt+Q) to close.
   import { onMount, tick, untrack } from "svelte";
-  import { keyOf, type Command } from "./commands";
+  import { keyOfLoose, type Command } from "./commands";
   import type { FeatureDoc } from "./featureIndex";
   import { prepare, rank } from "./launcher";
 
@@ -64,7 +64,7 @@
   // The shortcut that opens the search also closes it (a toggle), wherever
   // focus is inside the box.
   function toggleKey(e: KeyboardEvent): void {
-    if (!e.repeat && keyOf(e) === hotkey) {
+    if (!e.repeat && keyOfLoose(e) === hotkey) {
       e.preventDefault();
       e.stopPropagation();
       onClose();
