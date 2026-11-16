@@ -338,6 +338,10 @@ pub struct Entry {
     /// Read/write lock: long operations compute under a read lock, so the
     /// grid keeps drawing, and apply under the write lock.
     doc: RwLock<Document>,
+    /// The document's file, kept outside its lock (refreshed whenever the
+    /// document is read), so "is this file open?" has an answer while a
+    /// long operation holds the lock.
+    path: Mutex<Option<PathBuf>>,
     job: Mutex<Option<Job>>,
     /// The last replace computed for a preview, reused by "Replace all"
     /// when nothing changed since (request as JSON, plan).
@@ -431,6 +435,21 @@ impl Drop for ClearOnDrop<'_> {
 }
 
 impl Entry {
+    /// The document's file: read now when the lock is free, else the last
+    /// one seen.
+    fn current_path(&self) -> Option<PathBuf> {
+        match self.doc.try_read() {
+            Ok(d) => self.note_path(&d),
+            Err(_) => self.path.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+        }
+    }
+
+    fn note_path(&self, d: &Document) -> Option<PathBuf> {
+        let p = d.path().map(Path::to_path_buf);
+        *self.path.lock().unwrap_or_else(|p| p.into_inner()) = p.clone();
+        p
+    }
+
     // A panic while holding the lock leaves the engine's own state
     // consistent (every op is applied whole), so keep going.
     fn read(&self) -> RwLockReadGuard<'_, Document> {
@@ -1168,7 +1187,9 @@ impl Docs {
             ));
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+        let path = doc.path().map(Path::to_path_buf);
         let entry = Arc::new(Entry {
+            path: Mutex::new(path),
             doc: RwLock::new(doc),
             job: Mutex::new(None),
             replace: Mutex::new(None),
@@ -1643,14 +1664,55 @@ impl Docs {
         ids
     }
 
-    /// The open document showing this file, if any.
+    /// The open document showing this file, if any. A document busy with
+    /// a long operation still counts (its path is kept outside its lock).
     pub fn find_open(&self, path: &Path) -> Option<u32> {
-        let entries: Vec<(u32, Arc<Entry>)> =
+        self.find_open_many(std::slice::from_ref(&path.to_path_buf()))[0]
+    }
+
+    /// `find_open` for several files at once: each open document's path is
+    /// resolved once, and paths are compared as text first; a file is only
+    /// looked at on disk (same file under another name: a mapped drive and
+    /// its network share) when the file names match.
+    pub fn find_open_many(&self, paths: &[PathBuf]) -> Vec<Option<u32>> {
+        let mut entries: Vec<(u32, Arc<Entry>)> =
             self.map().iter().map(|(k, v)| (*k, v.clone())).collect();
-        entries.into_iter().find_map(|(id, e)| {
-            let d = e.doc.try_read().ok()?;
-            d.path().filter(|p| same_file(p, path)).map(|_| id)
-        })
+        entries.sort_unstable_by_key(|(id, _)| *id);
+        let open: Vec<(u32, PathBuf, String)> = entries
+            .iter()
+            .filter_map(|(id, e)| {
+                let p = e.current_path()?;
+                let k = path_key(&p);
+                Some((*id, p, k))
+            })
+            .collect();
+        if open.is_empty() {
+            return vec![None; paths.len()];
+        }
+        let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
+        paths
+            .iter()
+            .map(|want| {
+                let k = path_key(want);
+                open.iter()
+                    .find(|(_, _, ok)| *ok == k)
+                    .or_else(|| {
+                        open.iter().find(|(_, p, _)| {
+                            name(p) == name(want)
+                                && same_file::is_same_file(p, want).unwrap_or(false)
+                        })
+                    })
+                    .map(|(id, _, _)| *id)
+            })
+            .collect()
+    }
+
+    /// The file of each document (none for one without a file), read
+    /// without waiting for a busy document.
+    pub fn paths_of(&self, ids: &[u32]) -> Vec<Option<PathBuf>> {
+        ids.iter()
+            .map(|id| self.get(*id).ok().and_then(|e| e.current_path()))
+            .collect()
     }
 
     /// Shown rows as text, at most `max_cells` cells and 16M characters in
@@ -1711,6 +1773,7 @@ impl Docs {
             .unwrap_or_else(|p| p.into_inner())
             .clone();
         let d = entry.read();
+        entry.note_path(&d);
         let mut info = describe(id, &d, entry.line_by_line.load(Ordering::Relaxed), error);
         info.read_only = entry.locked.load(Ordering::Relaxed);
         if let (None, Some(t)) = (&info.path, title) {
@@ -4369,6 +4432,7 @@ impl Docs {
             .clone();
         let mut d = entry.write();
         f(&mut d)?;
+        entry.note_path(&d);
         let mut info = describe(id, &d, entry.line_by_line.load(Ordering::Relaxed), error);
         info.read_only = locked;
         Ok(info)
@@ -4459,9 +4523,12 @@ impl Docs {
 /// links and hard links all match), then, for files that do not exist yet,
 /// as resolved text with case ignored on Windows.
 pub fn same_file(a: &Path, b: &Path) -> bool {
-    if same_file::is_same_file(a, b).unwrap_or(false) {
-        return true;
-    }
+    same_file::is_same_file(a, b).unwrap_or(false) || path_key(a) == path_key(b)
+}
+
+/// A path as text for matching: resolved where it exists, without the
+/// `\\?\` form, and (on Windows) in lower case with `\`.
+fn path_key(p: &Path) -> String {
     let norm = |p: &Path| -> String {
         let p = std::fs::canonicalize(p)
             .or_else(|_| std::path::absolute(p))
@@ -4477,7 +4544,7 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
             s
         }
     };
-    norm(a) == norm(b)
+    norm(p)
 }
 
 fn read_only() -> CmdError {
@@ -4890,6 +4957,21 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rep.compare.unwrap().same, 4);
+    }
+
+    /// A tab busy with a long operation (its lock held) still counts as
+    /// showing its file, so the file is never opened a second time.
+    #[test]
+    fn busy_document_still_counts_as_open() {
+        let p = tmp("busy.csv", b"a,b\r\n1,2\r\n");
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        let entry = docs.get(id).unwrap();
+        let _held = entry.write();
+        assert_eq!(docs.find_open(&p), Some(id));
+        let other = tmp("busy-other.csv", b"a\r\n");
+        assert_eq!(docs.find_open_many(&[other, p.clone()]), vec![None, Some(id)]);
+        assert_eq!(docs.paths_of(&[id]), vec![Some(p.clone())]);
     }
 
     #[test]

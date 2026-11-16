@@ -1136,8 +1136,14 @@ export class MockBackend implements Backend {
     return this.recent.map(([id, p]) => {
       const parts = p.split("/").slice(1, -1);
       const twin = this.recent.some(([j, q]) => j !== id && name(q) === name(p));
-      return { id, name: name(p), folder: parts.slice(twin ? -2 : -1).join("\\"), open_doc: this.openAt(p) };
+      return { id, name: name(p), folder: (parts.length ? parts : ["C:"]).slice(twin ? -2 : -1).join("\\"), open_doc: this.openAt(p) };
     });
+  }
+
+  async tabFolders(ids: number[]): Promise<string[]> {
+    const paths = ids.map((id) => this.docs.get(id)?.info.path ?? null);
+    const name = (p: string) => p.split("/").at(-1)!.toLowerCase();
+    return paths.map((p) => (p && paths.filter((q) => q && name(q) === name(p)).length > 1 ? p.split("/").slice(-3, -1).join("\\") : ""));
   }
 
   async openRecent(id: string): Promise<Opened> {

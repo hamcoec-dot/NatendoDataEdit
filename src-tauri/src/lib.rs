@@ -251,7 +251,39 @@ fn take_opened(pending: State<'_, Pending>) -> Vec<OsOpen> {
 #[tauri::command]
 async fn recent_files(docs: DocsState<'_>, recent: RecentState<'_>) -> CmdResult<Vec<RecentItem>> {
     let (docs, recent) = (docs.inner().clone(), recent.inner().clone());
-    blocking(move || Ok(recent.items_with(|p| docs.find_open(p)))).await
+    blocking(move || Ok(recent.items_with(|l| docs.find_open_many(l)))).await
+}
+
+/// For tabs whose files share a name: the folder that tells each apart, as
+/// the recent list shows it (`2024\Data`, `C:\…\Data`); "" for the rest.
+#[tauri::command]
+async fn tab_folders(docs: DocsState<'_>, ids: Vec<u32>) -> CmdResult<Vec<String>> {
+    if ids.len() > 1_000 {
+        return Err(CmdError::new("bad_request", "too many tabs"));
+    }
+    let docs = docs.inner().clone();
+    blocking(move || {
+        let paths = docs.paths_of(&ids);
+        let files: Vec<PathBuf> = paths.iter().flatten().cloned().collect();
+        let name = |p: &std::path::Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
+        let mut labels = extras::folder_labels(&files).into_iter();
+        Ok(paths
+            .iter()
+            .map(|p| match p {
+                Some(p) => {
+                    let label = labels.next().unwrap_or_default();
+                    let twin = files.iter().filter(|q| name(q) == name(p)).count() > 1;
+                    if twin {
+                        label
+                    } else {
+                        String::new()
+                    }
+                }
+                None => String::new(),
+            })
+            .collect())
+    })
+    .await
 }
 
 /// Open a recent file by its id (from `recent_files`). A file already open
@@ -2836,6 +2868,7 @@ pub fn run() {
             export_preview,
             recent_files,
             open_recent,
+            tab_folders,
             folder_list,
             folder_open,
             view_save,

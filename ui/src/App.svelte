@@ -467,6 +467,27 @@
     }
   }
 
+  /** Tabs whose files share a name show the folder that tells them apart
+   *  (worked out in the backend, as the recent list does). */
+  let tabFolder = $state<Record<number, string>>({});
+  let tabFolderAsk = 0;
+  $effect(() => {
+    const names = tabs.map((t) => t.info.name.toLowerCase());
+    // Read each path too, so a Save As or rename asks again.
+    const ids = tabs.map((t) => (void t.info.path, t.id));
+    const ask = ++tabFolderAsk;
+    if (!names.some((n, i) => names.indexOf(n) !== i)) {
+      tabFolder = {};
+      return;
+    }
+    backend()
+      .tabFolders(ids)
+      .then((l) => {
+        if (ask === tabFolderAsk) tabFolder = Object.fromEntries(ids.map((id, i) => [id, l[i] ?? ""]));
+      })
+      .catch(() => {});
+  });
+
   /** The tabs' documents, to mark recent files that are open. */
   function openDocs(): Set<number> {
     return new Set(tabs.map((t) => t.id));
@@ -4114,6 +4135,7 @@
         onkeydown={() => {}}
       >
         <span>{t.info.modified ? "● " : ""}{t.info.name}</span>
+        {#if tabFolder[t.id]}<span class="tab-folder">{tabFolder[t.id]}</span>{/if}
         {#if !t.info.indexed}<span class="progress">{Math.round(t.info.progress * 100)}%</span>{/if}
         <button type="button" class="x" aria-label="Close {t.info.name}" onclick={(e) => { e.stopPropagation(); void closeTab(i); }}><Icon name="close" size={12} /></button>
       </div>
@@ -5036,6 +5058,10 @@
   .tab.dragging {
     opacity: 0.7;
     cursor: grabbing;
+  }
+  .tab-folder {
+    color: var(--muted);
+    font-size: 0.85em;
   }
   .tabs:empty {
     display: none;

@@ -885,6 +885,8 @@ export interface Backend {
   cleanerOpen(): Promise<Cleaner | null>;
   recentFiles(): Promise<RecentItem[]>;
   openRecent(id: string): Promise<Opened>;
+  /** Per tab: the folder telling same-named files apart ("" for the rest). */
+  tabFolders(ids: number[]): Promise<string[]>;
   folderList(doc: number): Promise<Listing>;
   folderOpen(doc: number, index: number): Promise<Opened>;
   viewSave(view: View): Promise<string | null>;
@@ -1237,6 +1239,9 @@ class TauriBackend implements Backend {
   }
   openRecent(id: string) {
     return call<Opened>("open_recent", { id });
+  }
+  tabFolders(ids: number[]) {
+    return call<string[]>("tab_folders", { ids });
   }
   folderList(doc: number) {
     return call<Listing>("folder_list", { doc });

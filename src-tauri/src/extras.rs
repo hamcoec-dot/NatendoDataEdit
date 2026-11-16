@@ -111,50 +111,73 @@ fn name_of(p: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// The last `n` folder names above a file, joined with `\`.
-fn folder_tail(p: &Path, n: usize) -> String {
-    let names: Vec<String> = p
-        .parent()
-        .map(|d| {
-            d.components()
-                .filter_map(|c| match c {
-                    std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
-                    _ => None,
-                })
-                .collect()
+/// The folders above a file, top first: the drive (`C:`) or network share
+/// (`\\server\share`), then each folder's name.
+fn folder_parts(p: &Path) -> Vec<String> {
+    use std::path::{Component, Prefix};
+    let Some(dir) = p.parent() else {
+        return Vec::new();
+    };
+    dir.components()
+        .filter_map(|c| match c {
+            Component::Prefix(pre) => Some(match pre.kind() {
+                Prefix::Disk(d) | Prefix::VerbatimDisk(d) => format!("{}:", d as char),
+                Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => format!(
+                    "\\\\{}\\{}",
+                    server.to_string_lossy(),
+                    share.to_string_lossy()
+                ),
+                Prefix::Verbatim(s) | Prefix::DeviceNS(s) => s.to_string_lossy().into_owned(),
+            }),
+            Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
         })
-        .unwrap_or_default();
-    names[names.len().saturating_sub(n)..].join("\\")
+        .collect()
 }
 
-/// Each file's folder as shown: its own name, or more of the path where
-/// that is needed to tell listed files of the same name apart.
-fn folder_labels(list: &[PathBuf]) -> Vec<String> {
-    let mut depth = vec![1usize; list.len()];
-    // Deepen clashing labels a level at a time (paths are short; the list
-    // holds at most MAX_RECENT files).
-    for _ in 0..32 {
-        let label = |i: usize| -> (String, String) {
-            (
-                name_of(&list[i]).to_lowercase(),
-                folder_tail(&list[i], depth[i]).to_lowercase(),
-            )
-        };
-        let labels: Vec<(String, String)> = (0..list.len()).map(label).collect();
-        let mut grew = false;
-        for i in 0..list.len() {
-            let clash = (0..list.len()).any(|j| j != i && labels[j] == labels[i]);
-            if clash && folder_tail(&list[i], depth[i] + 1) != folder_tail(&list[i], depth[i]) {
-                depth[i] += 1;
-                grew = true;
-            }
-        }
-        if !grew {
-            break;
-        }
-    }
+/// Each file's folder as shown: its own folder's name; where files of the
+/// same name in folders of the same name need telling apart, also the
+/// nearest folder (or drive) that differs, with "…" for any folders in
+/// between: `2024\Data` and `2025\Data`, or `C:\…\Data` and `D:\…\Data`.
+/// Only the differing folders are shown, never the rest of the path (it
+/// usually holds the Windows user name).
+pub(crate) fn folder_labels(list: &[PathBuf]) -> Vec<String> {
+    let parts: Vec<Vec<String>> = list.iter().map(|p| folder_parts(p)).collect();
+    let low = |s: &str| s.to_lowercase();
+    // The part `d` places up from the file (1: its own folder).
+    let at = |i: usize, d: usize| -> Option<&String> {
+        parts[i].len().checked_sub(d).map(|k| &parts[i][k])
+    };
+    let same_look = |i: usize, j: usize| {
+        low(&name_of(&list[i])) == low(&name_of(&list[j]))
+            && at(i, 1).map(|s| low(s)) == at(j, 1).map(|s| low(s))
+    };
     (0..list.len())
-        .map(|i| folder_tail(&list[i], depth[i]))
+        .map(|i| {
+            let mut need = std::collections::BTreeSet::from([1usize]);
+            for j in (0..list.len()).filter(|&j| j != i && same_look(i, j)) {
+                let far = parts[i].len().max(parts[j].len());
+                if let Some(d) =
+                    (2..=far).find(|&d| at(i, d).map(|s| low(s)) != at(j, d).map(|s| low(s)))
+                {
+                    if at(i, d).is_some() {
+                        need.insert(d);
+                    }
+                }
+            }
+            // Top first, "…" where folders are left out.
+            let mut out: Vec<&str> = Vec::new();
+            let mut last: Option<usize> = None;
+            for d in need.iter().rev() {
+                let Some(s) = at(i, *d) else { continue };
+                if last.is_some_and(|l| l - d > 1) {
+                    out.push("…");
+                }
+                out.push(s);
+                last = Some(*d);
+            }
+            out.join("\\")
+        })
         .collect()
 }
 
@@ -322,21 +345,23 @@ impl Recent {
 
     #[cfg(test)]
     pub fn items(&self) -> Vec<RecentItem> {
-        self.items_with(|_| None)
+        self.items_with(|l| vec![None; l.len()])
     }
 
-    /// The list, each with the open tab showing it (`open` is asked with
-    /// the full path; it is not held under the list's lock).
-    pub fn items_with(&self, open: impl Fn(&Path) -> Option<u32>) -> Vec<RecentItem> {
+    /// The list, each with the open tab showing it (`open` is asked once,
+    /// with all the full paths; it is not held under the list's lock).
+    pub fn items_with(&self, open: impl FnOnce(&[PathBuf]) -> Vec<Option<u32>>) -> Vec<RecentItem> {
         let list = self.list.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let folders = folder_labels(&list);
+        let docs = open(&list);
         list.iter()
             .zip(folders)
-            .map(|(p, folder)| RecentItem {
+            .enumerate()
+            .map(|(i, (p, folder))| RecentItem {
                 id: self.id_of(p),
                 name: name_of(p),
                 folder,
-                open_doc: open(p),
+                open_doc: docs.get(i).copied().flatten(),
             })
             .collect()
     }
@@ -766,7 +791,7 @@ mod tests {
         assert!(same_file::is_same_file(r.path(&older).unwrap(), &a).unwrap());
         // Which tab shows a file is matched by its full path.
         let ca = std::fs::canonicalize(&a).unwrap();
-        let open = r.items_with(|p| (p == ca).then_some(7));
+        let open = r.items_with(|l| l.iter().map(|p| (*p == ca).then_some(7)).collect());
         let mark: Vec<Option<u32>> = open.iter().map(|i| i.open_doc).collect();
         assert_eq!(mark, vec![None, Some(7)]);
         r.forget(&ca);
@@ -775,6 +800,38 @@ mod tests {
         assert_eq!(r.items()[0].folder, "Data");
         assert!(r.path("not-an-id").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Labels show only the folder that tells look-alike files apart, never
+    /// the rest of the path (the user name in it stays off the screen).
+    #[cfg(windows)]
+    #[test]
+    fn recent_labels_show_only_the_differing_folder() {
+        let p = |s: &str| PathBuf::from(s);
+        let list = [
+            p(r"C:\Users\Nate\Docs\2024\Data\voters.csv"),
+            p(r"C:\Users\Nate\Docs\2025\Data\voters.csv"),
+            p(r"C:\Users\Nate\Elections\Data\voters.csv"),
+            p(r"D:\Users\Nate\Elections\Data\voters.csv"),
+            p(r"\\?\E:\Users\Nate\Elections\Archive\voters.csv"),
+            p(r"\\server\share\Users\Nate\Data\other.csv"),
+            p(r"C:\top.csv"),
+        ];
+        let l = folder_labels(&list);
+        assert_eq!(l[0], r"2024\Data");
+        assert_eq!(l[1], r"2025\Data");
+        assert_eq!(l[2], r"C:\…\Elections\Data");
+        assert_eq!(l[3], r"D:\…\Elections\Data");
+        assert_eq!(l[4], "Archive");
+        assert_eq!(l[5], "Data");
+        assert_eq!(l[6], "C:");
+        assert!(l.iter().all(|s| !s.contains("Nate")));
+        // Identical but for the share: the share tells them apart.
+        let unc = [
+            p(r"\\a\s\Users\Nate\Data\v.csv"),
+            p(r"\\b\s\Users\Nate\Data\v.csv"),
+        ];
+        assert_eq!(folder_labels(&unc), vec![r"\\a\s\…\Data", r"\\b\s\…\Data"]);
     }
 
     /// Private file mode: a file or its folder; private files leave and

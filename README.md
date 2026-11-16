@@ -207,7 +207,7 @@ everything is also in command search.
   the same way). Up and Down move through the list and Enter opens. Files
   that are already open are marked "open" and switched to, never opened
   twice; two files with the same name show enough of their folders to tell
-  them apart (2024\Data, 2025\Data).
+  them apart (2024\Data, 2025\Data), in the list and on their tabs.
 
 ![The Open recent list with three files open and two voters.csv files told apart by folder](docs/screenshots/open-recent.png)
 *File > Open recent after a few middle-clicks: each opened in its own tab and is marked "open".*
