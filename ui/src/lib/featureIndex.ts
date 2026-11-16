@@ -114,7 +114,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "value types shown in colour": ["view.valueTypes", "view.scale3", "view.scale2", "view.bars"],
   "ctrl click opens web and e mail": [],
   "command search": ["help.search"],
-  "custom shortcuts ctrl for the": ["help.shortcuts", "help.keys", "view.panelFiles", "view.panelActivity"],
+  "custom shortcuts ctrl for the": ["help.shortcuts", "help.keys", "view.panelFiles", "view.panelActivity", "file.recent"],
   // Editing
   "edit in the cell or": ["edit.cell", "view.cellBar", "edit.goto"],
   "fill handle fill series ctrl enter": ["edit.fillSeries", "edit.fillDown", "edit.fillRight", "edit.pasteSpecial", "insert.symbol"],

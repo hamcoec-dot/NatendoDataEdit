@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.3.0_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.3.1_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -200,7 +200,9 @@ everything is also in command search.
   or a click open the tool; Esc or Alt+Q again closes.
 - Custom shortcuts, Ctrl+/ for the list of shortcuts (with a Mouse section:
   every drag and click move), a file browser panel, an activity panel, and a
-  start page with recent files.
+  start page with recent files. File > Open recent (Ctrl+Shift+O) shows the
+  same list at any time: tick two or three files and each opens in its own
+  tab.
 
 ![Dragging the city column by its heading to a new place](docs/screenshots/drag-column.png)
 *Dragging "city" by its heading: a see-through band follows the pointer and the bar shows where it will land.*

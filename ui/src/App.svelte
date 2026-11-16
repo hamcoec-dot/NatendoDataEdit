@@ -67,6 +67,7 @@
   import QuickTotals from "./lib/QuickTotals.svelte";
   import FormatDialog from "./lib/FormatDialog.svelte";
   import KeysDialog from "./lib/KeysDialog.svelte";
+  import RecentDialog from "./lib/RecentDialog.svelte";
   import SuggestDialog from "./lib/SuggestDialog.svelte";
   import RecoveryDialog from "./lib/RecoveryDialog.svelte";
   import ToolsDialog, { type ToolsRun } from "./lib/ToolsDialog.svelte";
@@ -169,6 +170,8 @@
   /** A one-line question (a view's name, a font name). */
   let prompt = $state<{ title: string; label: string; value: string; note?: string; check?: (v: string) => string; done: (v: string) => void } | null>(null);
   let recent = $state<RecentItem[]>([]);
+  /** File > Open recent is showing. */
+  let recentOpen = $state(false);
   let panelTab = $state<PanelTab>(prefs.data.panel ?? "summary");
   let computeOpen = $state(false);
   let checksOpen = $state(false);
@@ -433,6 +436,41 @@
       say(errorText(e));
       void loadRecent();
     }
+  }
+
+  /** "folder\name" of a path, lower case: what the recent list shows of a
+   *  file (it keeps only the folder's own name, not the whole path). */
+  function shortKey(path: string): string {
+    return path.split(/[\\/]+/).filter(Boolean).slice(-2).join("\\").toLowerCase();
+  }
+  /** The files open in tabs, as shortKey (to mark and not reopen them). */
+  function openPaths(): Set<string> {
+    return new Set(tabs.flatMap((t) => (t.info.path ? [shortKey(t.info.path)] : [])));
+  }
+
+  /** File > Open recent: open each picked file in its own tab. The list's
+   *  order changes as files open, so each one is looked up again by name. */
+  async function openRecentMany(list: RecentItem[]): Promise<void> {
+    recentOpen = false;
+    const key = (r: RecentItem) => `${r.folder}\\${r.name}`.toLowerCase();
+    let already = 0;
+    for (const want of list) {
+      const i = tabs.findIndex((t) => !!t.info.path && shortKey(t.info.path) === key(want));
+      if (i >= 0) {
+        already++;
+        if (list.length === 1) active = i;
+        continue;
+      }
+      await loadRecent();
+      const now = recent.find((r) => key(r) === key(want));
+      if (!now) {
+        say(`${want.name} is no longer in the recent files.`);
+        continue;
+      }
+      await openRecent(now.index);
+    }
+    if (already && list.length > 1) say(`${already === 1 ? "One file was" : `${already} files were`} already open, so ${already === 1 ? "it was" : "they were"} not opened again.`);
+    void tick().then(() => grid?.focus());
   }
 
   // ---- side panel, views, highlights -------------------------------------------
@@ -2812,6 +2850,7 @@
   const cmds: Command[] = [
     { id: "file.new", label: "&New", keys: ["Ctrl+N"], run: newFile },
     { id: "file.open", label: "&Open…", keys: ["Ctrl+O", "Ctrl+F12"], run: openFile },
+    { id: "file.recent", label: "Open &recent…", keys: ["Ctrl+Shift+O"], run: () => void loadRecent().then(() => (recentOpen = true)) },
     { id: "file.openEncrypted", label: "Open an &encrypted file…", run: () => { encryptMode = "open"; } },
     { id: "file.saveEncrypted", label: "Save an encr&ypted copy…", run: () => { encryptMode = "save"; }, enabled: ready },
     { id: "file.openSqlite", label: "Open a table from a &database…", run: () => { sqliteMode = "open"; } },
@@ -3089,7 +3128,7 @@
   reg.setOverrides(cleanShortcuts(prefs.data.shortcuts, (id) => !!reg.get(id)));
 
   const menus: Menu[] = [
-    { label: "&File", items: ["file.new", "file.open", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "-", "file.recover", "file.versions", "-", "file.options", "-", "file.close", "file.closeUnchanged", "file.quit"] },
+    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "-", "file.recover", "file.versions", "-", "file.options", "-", "file.close", "file.closeUnchanged", "file.quit"] },
     {
       label: "&Edit",
       items: [
@@ -4325,6 +4364,10 @@
     onFixAll={() => void fixSuggestions(suggest?.found?.items ?? [])}
     onClose={() => { suggest = null; grid?.focus(); }}
   />
+{/if}
+
+{#if recentOpen}
+  <RecentDialog items={recent} openPaths={openPaths()} onOpen={(list) => void openRecentMany(list)} onClose={() => { recentOpen = false; grid?.focus(); }} />
 {/if}
 
 {#if keysOpen}
