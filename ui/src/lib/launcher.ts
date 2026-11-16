@@ -59,6 +59,10 @@ export const SYNONYMS: Record<string, string[]> = {
 /** Everyday phrases → the app's words (checked before splitting into words). */
 export const PHRASES: [string, string][] = [
   ["mail merge", "letters"],
+  ["reorder rows", "move rows"],
+  ["reorder columns", "move columns"],
+  ["rearrange rows", "move rows"],
+  ["rearrange columns", "move columns"],
   ["conditional formatting", "highlight rules"],
   ["conditional format", "highlight rules"],
   ["data validation", "data checks"],

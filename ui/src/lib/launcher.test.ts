@@ -65,6 +65,10 @@ describe("command search ranking on the real commands", () => {
     expect(top(q, 5)).toContain(id);
   });
 
+  it.each(["reorder rows", "rearrange rows", "reorder columns", "rearrange columns"])("%s leads with moving, not flipping", (q) => {
+    expect(top(q, 1)[0]).toMatch(/^(edit\.move(Rows|Cols)|help\.mouse)/);
+  });
+
   it("keeps results while the last word is half typed", () => {
     for (const q of ["dark m", "dark mo", "dark mod", "dark mode"]) expect(top(q, 3)).toContain("view.themeDark");
     for (const q of ["vlo", "vlook", "vlookup"]) expect(top(q, 3)).toContain("data.join");
