@@ -194,9 +194,10 @@ export class Columns {
       return;
     }
     for (let c = at; c < at + count; c++) {
+      // Hidden columns stay hidden (as with every column selected).
+      if (this.widths.get(c) === 0) continue;
       if (width === this.defaultWidth) this.widths.delete(c);
       else this.widths.set(c, width);
-      this.hiddenWas.delete(c);
     }
     this.rebuild();
   }
@@ -212,6 +213,12 @@ export class Columns {
     if (was === undefined) this.widths.delete(c);
     else this.widths.set(c, was);
     this.hiddenWas.delete(c);
+  }
+
+  /** Whether any column in from..to (to not included) is hidden. */
+  hiddenIn(from: number, to: number): boolean {
+    for (const [c, w] of this.widths) if (w === 0 && c >= from && c < to) return true;
+    return false;
   }
 
   hiddenCount(): number {

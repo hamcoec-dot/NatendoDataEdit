@@ -12,6 +12,8 @@ import { single, type Selection, rectOf, type Rect } from "./selection";
 
 /** Characters per cell fetched for display (the backend caps this too). */
 export const DISPLAY_CHARS = 512;
+/** Undo steps the engine keeps (engine MAX_UNDO). */
+const MAX_UNDO = 10_000;
 
 export class Tab {
   info = $state<DocInfo>() as DocInfo;
@@ -105,32 +107,65 @@ export class Tab {
     return rectOf(this.sel);
   }
 
-  /** Take new engine info; refetch cells when the data may have changed. */
   /** Column moves by the undo position they made, so undo and redo carry
-   *  widths, formats and wrapping back with the columns. */
+   *  what the view keeps per column (widths, formats, wrapping, highlight
+   *  rules, colour scales, checks, the filter and sort as last run) back and
+   *  forth with the columns. As many as the engine keeps undo steps. */
   private colMoves: { pos: number; at: number; count: number; to: number }[] = [];
-  /** Set around an undo or redo, so `update` knows to replay a column move. */
-  replaying: "undo" | "redo" | null = null;
+  /** What Cut (Ctrl+X) marked, waiting for Paste to move it; dropped by
+   *  Esc, another cut or copy, or any change (`pos` is the undo position). */
+  cut = $state<{ kind: "cols" | "rows" | "cells"; rect: Rect; pos: number; clip: string | null } | null>(null);
+  /** Redo calls in flight: a rise of the undo position during one is a redo
+   *  (replay the moves), otherwise a new change (forget undone moves). */
+  redoing = 0;
 
   /** Columns were just moved (the change is already in `info`). */
   noteColMove(at: number, count: number, to: number): void {
-    this.columns.move(at, count, to);
+    this.followMove(at, count, to);
     this.colMoves.push({ pos: this.info.history_pos, at, count, to });
-    if (this.colMoves.length > 1000) this.colMoves.shift();
+    if (this.colMoves.length > MAX_UNDO) this.colMoves.shift();
   }
 
+  /** Carry per-column view state along with a column move. */
+  private followMove(at: number, count: number, to: number): void {
+    if (count <= 0 || at === to) return;
+    this.columns.move(at, count, to);
+    const place = (c: number): number => {
+      if (c >= at && c < at + count) return to + (c - at);
+      if (to > at && c >= at + count && c < to + count) return c - count;
+      if (to < at && c >= to && c < at) return c + count;
+      return c;
+    };
+    if (this.highlights.length) {
+      this.highlights = this.highlights.map((h) => ({ ...h, col: place(h.col) }));
+      this.highlightVersion++;
+    }
+    if (this.scales.length) {
+      this.scales = this.scales.map((s) => ({ ...s, col: place(s.col) }));
+      this.ranges.clear();
+    }
+    if (this.checks.length) {
+      this.checks = this.checks.map((k) => (k.col === null ? k : { ...k, col: place(k.col) }));
+      this.checkVersion++;
+    }
+    if (this.filter) this.filter = { ...this.filter, columns: this.filter.columns.map((f) => ({ ...f, col: place(f.col) })) };
+    if (this.sort) this.sort = { ...this.sort, keys: this.sort.keys.map((k) => ({ ...k, col: place(k.col) })) };
+    if (this.divider !== null) this.divider = place(this.divider);
+  }
+
+  /** Take new engine info; refetch cells when the data may have changed. */
   update(info: DocInfo, dataChanged: boolean): void {
     const structural =
       info.cols !== this.info.cols || info.rows !== this.info.rows || info.filtered !== this.info.filtered;
     if (!info.has_filter) this.filter = null;
     const before = this.info.history_pos;
     const after = info.history_pos;
-    if (this.replaying === "undo" && after === before - 1) {
-      const m = this.colMoves.find((x) => x.pos === before);
-      if (m) this.columns.move(m.to, m.count, m.at);
-    } else if (this.replaying === "redo" && after === before + 1) {
-      const m = this.colMoves.find((x) => x.pos === after);
-      if (m) this.columns.move(m.at, m.count, m.to);
+    if (after !== before) this.cut = null;
+    if (after < before) {
+      // Only undo lowers the position: take back every move undone, newest first.
+      for (const m of this.colMoves.filter((x) => x.pos > after && x.pos <= before).reverse()) this.followMove(m.to, m.count, m.at);
+    } else if (after > before && this.redoing > 0) {
+      for (const m of this.colMoves.filter((x) => x.pos > before && x.pos <= after)) this.followMove(m.at, m.count, m.to);
     } else if (after > before) {
       // A new change: moves that could have been redone are gone.
       this.colMoves = this.colMoves.filter((x) => x.pos <= before);

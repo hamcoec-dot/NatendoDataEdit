@@ -8,7 +8,7 @@ const out = process.argv[2];
   const p = await b.newPage({ viewport: { width: 1100, height: 720 } });
   const errors = [];
   p.on("pageerror", (e) => errors.push(String(e)));
-  await p.goto("http://localhost:5173");
+  await p.goto(process.argv[3] || "http://localhost:5173");
   await p.waitForTimeout(1500);
   const ok = (cond, msg) => console.log(`${cond ? "PASS" : "FAIL"} ${msg}`);
   const names = () => p.$$eval("#command-results button .name", (els) => els.map((e) => e.textContent));

@@ -399,6 +399,7 @@ export const BASIC_KEYS: { label: string; keys: string }[] = [
   { label: "Edit the cell", keys: "F2 or start typing" },
   { label: "Line break in a cell", keys: "Alt+Enter" },
   { label: "Put the value in every selected cell", keys: "Ctrl+Enter" },
+  { label: "Move columns, rows or cells somewhere else", keys: "Ctrl+X, pick the place, Ctrl+V" },
   { label: "Pick from the list of allowed values", keys: "Alt+Down" },
   { label: "Open a web or e-mail address", keys: "Ctrl+click" },
   { label: "Open a menu", keys: "Alt+letter" },

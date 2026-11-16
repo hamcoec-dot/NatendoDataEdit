@@ -177,13 +177,14 @@ everything is also in command search.
 - Tabs for each open file, frozen rows and columns, insert, delete, move,
   hide, resize and auto-fit columns, hide and show rows (Ctrl+9,
   Ctrl+Shift+9).
-- **Drag to move and arrange**, as in Google Sheets: drag selected columns by
-  their headings, or selected rows by their numbers, to put them somewhere
-  else; drag a selected block of cells by its outline to move it (Ctrl+drag
+- **Drag to move and arrange**, as in Google Sheets: reorder or rearrange
+  columns by dragging their selected headings, or rows by their selected
+  numbers; drag a selected block of cells by its outline to move it (Ctrl+drag
   copies it, Esc stops a drag). Resize or double-click-fit several selected
   columns at once, click the small arrow beside hidden columns to show them
   again, drag the edges of the top-left corner to freeze rows or columns, and
-  drag file tabs into another order. Each move is one undo step. Help > Mouse
+  drag file tabs into another order. Each move is one undo step, and colour
+  scales, highlight rules and checks move with their columns. Help > Mouse
   and drag moves lists them all.
 - Light, dark or system theme with an accent colour, font and font size, zoom.
 - Alternating row colours, wrapped text, row height in lines.
@@ -205,6 +206,12 @@ everything is also in command search.
 
 ### Editing
 
+- **Cut and paste that moves**, as in Excel and Google Sheets: Ctrl+X marks
+  whole columns, whole rows or a block of cells with a dashed outline and
+  changes nothing yet; pick a column (or row, or cell) and Ctrl+V moves them
+  there in one undo step. Cut columns go in before the column picked and cut
+  rows above the row picked, and the gap they leave closes up, so there is no
+  empty column to insert or delete by hand. Esc cancels.
 - Edit in the cell or in a larger, multi-line edit box; a cell bar with a
   "Go to" box.
 - Fill handle, fill series, Ctrl+Enter to fill a whole selection, Paste
@@ -544,7 +551,8 @@ request must carry the key. Requests are one JSON object per line:
   text table cannot hold them. Computed columns save their values as text;
   highlight rules and checks are kept in saved views.
 - PDF output does not include Chinese, Japanese or Korean characters yet.
-- Dragging a block of cells moves up to 50,000 cells at once (Cut and Paste
-  handle more), and rows cannot be dragged while a filter is on.
+- Dragging or cutting and pasting a block of cells moves up to 50,000 cells
+  at once (Ctrl+drag copies up to 100,000); whole rows and columns have no
+  such limit. Rows cannot be moved while a filter is on.
 - The watched folder stops when the app closes, and recipes with a scramble
   step cannot run there or from the command line (the phrase is never stored).

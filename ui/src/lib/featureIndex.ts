@@ -119,6 +119,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "edit in the cell or": ["edit.cell", "view.cellBar", "edit.goto"],
   "fill handle fill series ctrl enter": ["edit.fillSeries", "edit.fillDown", "edit.fillRight", "edit.pasteSpecial", "insert.symbol"],
   "type ahead suggestions": ["view.typeahead", "edit.pickDate", "view.spellcheck"],
+  "cut and paste that moves": ["edit.cut", "edit.paste"],
   "undo and redo for everything": ["edit.undo", "edit.redo"],
   "one row per page form view": ["data.form"],
   "list of my changes": ["edit.changes", "view.showEdits"],

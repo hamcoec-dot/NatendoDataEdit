@@ -3,10 +3,10 @@
   import { backend, errorText, isCmdError, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
   import { Tab } from "./lib/tab.svelte";
   import { prefs, customFont, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
-  import { Registry, keyOf, type Command, type Menu } from "./lib/commands";
+  import { Registry, altOf, keyOf, watchAlt, type Command, type Menu } from "./lib/commands";
   import { parseTsv } from "./lib/tsv";
   import { cellCount, type Rect } from "./lib/selection";
-  import { MOUSE_MOVES } from "./lib/dragmove";
+  import { dropIndex, MOUSE_MOVES } from "./lib/dragmove";
   import { looksLikeHeader } from "./lib/header";
   import { separatorName } from "./lib/layout";
   import Grid from "./lib/Grid.svelte";
@@ -1059,21 +1059,92 @@
     const t = tab;
     if (!t) return;
     const r = t.rect;
+    for (const x of tabs) x.cut = null;
+    // Cut works as in Excel and Google Sheets: nothing changes until Paste,
+    // which moves what was cut there (whole columns or rows go in before the
+    // one picked, and the gap they leave closes up).
+    const kind = !cut ? null : wholeCols(r, t) && !wholeRows(r, t) ? "cols" : wholeRows(r, t) ? "rows" : "cells";
+    let clip: string | null = null;
     try {
       if (cellCount(r) >= LARGE_COPY && !(await privacyGate("The copy goes to the clipboard, where other programs can read it.", [r.col, r.cols]))) return;
-      const text = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols);
-      await navigator.clipboard.writeText(text);
+      clip = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols);
+      await navigator.clipboard.writeText(clip);
       copiedFrom = t.id;
-      say(`${cut ? "Cut" : "Copied"} ${cellCount(r).toLocaleString()} cell${cellCount(r) === 1 ? "" : "s"}.`);
-      if (cut) await clearSelection();
     } catch (e) {
-      say(errorText(e));
+      // Whole rows or columns too big for the clipboard can still be moved
+      // inside the app.
+      if (!kind || kind === "cells") {
+        say(errorText(e));
+        if (!kind) return;
+      }
+      clip = null;
     }
+    if (!kind) {
+      say(`Copied ${cellCount(r).toLocaleString()} cell${cellCount(r) === 1 ? "" : "s"}.`);
+      return;
+    }
+    if (kind === "cells" && clip === null) return;
+    t.cut = { kind, rect: r, pos: t.info.history_pos, clip };
+    t.bump();
+    const what =
+      kind === "cols" ? `${r.cols === 1 ? "1 column" : `${r.cols.toLocaleString()} columns`}` : kind === "rows" ? `${r.rows === 1 ? "1 row" : `${r.rows.toLocaleString()} rows`}` : `${cellCount(r).toLocaleString()} cell${cellCount(r) === 1 ? "" : "s"}`;
+    const one = kind === "cols" ? r.cols === 1 : kind === "rows" ? r.rows === 1 : cellCount(r) === 1;
+    const it = one ? "it" : "they";
+    const where = kind === "cols" ? `the column ${it} should go before` : kind === "rows" ? `the row ${it} should go above` : `where ${it} should go`;
+    say(`Cut ${what}. Click ${where} and press Ctrl+V to move ${one ? "it" : "them"}; Esc cancels.`);
+  }
+
+  /** Clipboard text compared loosely (line ends, a trailing line break). */
+  const sameClip = (s: string): string => s.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+
+  /** Paste after a Cut in this tab: move what was cut. Returns false when
+   *  the paste is something else (another copy since, or nothing cut). */
+  async function pasteCut(text: string | null): Promise<boolean> {
+    const t = tab;
+    const c = t?.cut;
+    if (!t || !c) return false;
+    if (c.pos !== t.info.history_pos || (text !== null && c.clip !== null && sameClip(text) !== sameClip(c.clip))) {
+      t.cut = null;
+      t.bump();
+      return false;
+    }
+    t.cut = null;
+    t.bump();
+    const r = t.rect;
+    const from = c.rect;
+    if (c.kind === "cols") {
+      const to = dropIndex(from.col, from.cols, r.col, t.info.cols);
+      if (to === null) {
+        say("Pick a column outside the cut ones, then paste: the cut columns go in before it.");
+        return true;
+      }
+      await dragCols(from.col, from.cols, to);
+    } else if (c.kind === "rows") {
+      const to = dropIndex(from.row, from.rows, r.row, t.info.rows, t.firstRow);
+      if (to === null) {
+        say("Pick a row outside the cut ones, then paste: the cut rows go in above it.");
+        return true;
+      }
+      await dragRows(from.row, from.rows, to);
+    } else {
+      if (r.row + from.rows > t.info.rows || r.col + from.cols > t.info.cols) {
+        say("There is not room for the cut cells there: they would go past the end of the table.");
+        return true;
+      }
+      if (t.columns.hiddenIn(r.col, r.col + from.cols) || t.columns.hiddenIn(from.col, from.col + from.cols)) {
+        say("Cut cells can't be moved over or out of hidden columns. Show them first (Ctrl+Shift+0).");
+        return true;
+      }
+      if (r.row === from.row && r.col === from.col) return true;
+      await dragCells(from, r.row, r.col, false);
+    }
+    return true;
   }
 
   async function pasteText(text: string): Promise<void> {
     const t = tab;
     if (!t || !ready()) return;
+    if (await pasteCut(text)) return;
     const rows = parseTsv(text);
     if (rows.length === 0) return;
     const r = t.rect;
@@ -1089,11 +1160,16 @@
   }
 
   async function pasteFromMenu(): Promise<void> {
+    let text: string;
     try {
-      await pasteText(await navigator.clipboard.readText());
+      text = await navigator.clipboard.readText();
     } catch {
+      // Something cut here can still be moved without the clipboard.
+      if (tab?.cut && ready() && (await pasteCut(null))) return;
       say("Paste from the menu is not allowed here; press Ctrl+V instead.");
+      return;
     }
+    await pasteText(text);
   }
 
   /** Ctrl+D / Ctrl+R (and fill up / left): copy the first row (column)
@@ -1604,8 +1680,12 @@
   async function dragCells(from: Rect, row: number, col: number, copy: boolean): Promise<void> {
     const t = tab;
     if (!t || !ready()) return;
-    if (cellCount(from) * 2 > MAX_CELLS_PER_CHANGE) {
-      say(`Dragging moves up to ${(MAX_CELLS_PER_CHANGE / 2).toLocaleString()} cells at once. For more, use Cut (Ctrl+X) and Paste (Ctrl+V).`);
+    if (cellCount(from) * (copy ? 1 : 2) > MAX_CELLS_PER_CHANGE) {
+      say(
+        copy
+          ? `Ctrl+drag copies up to ${MAX_CELLS_PER_CHANGE.toLocaleString()} cells at once. For more, use Copy (Ctrl+C) and Paste (Ctrl+V).`
+          : `Moving cells works on up to ${(MAX_CELLS_PER_CHANGE / 2).toLocaleString()} at once. Whole rows and columns have no such limit.`,
+      );
       return;
     }
     if (await apply((x) => backend().moveCells(x.id, from.row, from.rows, from.col, from.cols, row, col, copy))) {
@@ -2379,13 +2459,19 @@
   async function undoRedo(op: "undo" | "redo"): Promise<void> {
     if (grid?.isEditing()) return;
     const t = tab;
-    if (t) t.replaying = op;
+    if (!t) return;
+    // One at a time per tab: a held Ctrl+Z repeats faster than a big undo.
+    if (undoBusy.has(t)) return;
+    undoBusy.add(t);
+    if (op === "redo") t.redoing++;
     try {
       await change({ op });
     } finally {
-      if (t) t.replaying = null;
+      if (op === "redo") t.redoing--;
+      undoBusy.delete(t);
     }
   }
+  const undoBusy = new Set<Tab>();
 
   // ---- long operations ------------------------------------------------------------
   /** Run a long engine call: the status bar shows progress and offers
@@ -2802,7 +2888,7 @@
     { id: "insert.colsMany", label: "Columns (choose how ma&ny)…", run: () => { insertAsk = "cols"; }, enabled: ready },
     { id: "insert.symbol", label: "&Symbol…", run: openSymbols, enabled: ready },
 
-    { id: "format.autofit", label: "&AutoFit column width", run: () => { const r = tab!.rect; for (let c = r.col; c < r.col + r.cols && c < r.col + 200; c++) grid?.autoFit(c); }, enabled: hasTab },
+    { id: "format.autofit", label: "&AutoFit column width", run: () => { const r = tab!.rect; void grid?.fitCols(r.col, r.cols); }, enabled: hasTab },
     { id: "format.hideCols", label: "&Hide columns", keys: ["Ctrl+0"], run: hideCols, enabled: hasTab },
     { id: "format.showCols", label: "&Unhide all columns", keys: ["Ctrl+Shift+0", "Ctrl+Shift+)"], run: () => { tab!.columns.showAll(); tab!.bump(); }, enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
     { id: "format.header", label: "First row is &header", run: toggleHeader, enabled: hasTab, checked: () => !!tab?.header },
@@ -3146,7 +3232,7 @@
     const key = keyOf(e);
 
     // Alt+letter opens a menu (Excel-style access keys).
-    if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key.length === 1) {
+    if (altOf(e) && !e.ctrlKey && !e.shiftKey && e.key.length === 1) {
       const m = menus.findIndex((x) => accessKey(x.label) === e.key.toLowerCase());
       if (m >= 0) {
         e.preventDefault();
@@ -3203,12 +3289,12 @@
         return;
       case "PageDown":
         e.preventDefault();
-        if (e.altKey) grid.move(0, 10, extend);
+        if (altOf(e)) grid.move(0, 10, extend);
         else grid.move(grid.pageRows(), 0, extend);
         return;
       case "PageUp":
         e.preventDefault();
-        if (e.altKey) grid.move(0, -10, extend);
+        if (altOf(e)) grid.move(0, -10, extend);
         else grid.move(-grid.pageRows(), 0, extend);
         return;
       case "Home":
@@ -3234,6 +3320,10 @@
         void grid.startEdit("");
         return;
       case "Escape":
+        if (t.cut) {
+          t.cut = null;
+          say("");
+        }
         grid.select(f);
         return;
     }
@@ -3613,6 +3703,7 @@
 
   // ---- loading progress -------------------------------------------------------------
   onMount(() => {
+    const unwatchAlt = watchAlt(window);
     backend().onOpened(() => void takeOpened());
     void takeOpened();
     backend().onAgentGoto((g) => {
@@ -3654,6 +3745,7 @@
       clearInterval(timer);
       clearInterval(autosaver);
       window.removeEventListener("mousedown", close);
+      unwatchAlt();
     };
   });
 

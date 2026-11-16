@@ -75,15 +75,19 @@ describe("drag to move", () => {
     c.setWidth(1, 0);
     c.setWidth(2, 0);
     c.setWidth(4, 0);
+    // Hidden columns in the run stay hidden.
     c.setRange(3, 2, 120);
-    expect([0, 1, 2, 3, 4, 5].map((i) => c.width(i))).toEqual([100, 0, 0, 120, 120, 100]);
+    expect([0, 1, 2, 3, 4, 5].map((i) => c.width(i))).toEqual([100, 0, 0, 120, 0, 100]);
+    expect(c.hiddenIn(0, 1)).toBe(false);
+    expect(c.hiddenIn(2, 4)).toBe(true);
     c.showRange(1, 3);
-    expect([0, 1, 2, 3, 4, 5].map((i) => c.width(i))).toEqual([100, 100, 100, 120, 120, 100]);
+    expect([0, 1, 2, 3, 4, 5].map((i) => c.width(i))).toEqual([100, 100, 100, 120, 0, 100]);
+    expect(c.hiddenIn(0, 4)).toBe(false);
     // Every column: a new default, hidden ones stay hidden.
     c.setWidth(5, 0);
     c.setRange(0, 6, 80);
-    expect([0, 1, 2, 3, 4, 5].map((i) => c.width(i))).toEqual([80, 80, 80, 80, 80, 0]);
-    expect(c.x(6)).toBe(400);
+    expect([0, 1, 2, 3, 4, 5].map((i) => c.width(i))).toEqual([80, 80, 80, 80, 0, 0]);
+    expect(c.x(6)).toBe(320);
   });
 
   it("gives hidden columns their width back when shown", () => {

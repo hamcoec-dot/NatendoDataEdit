@@ -10,7 +10,8 @@ const out = process.argv[2];
 const url = process.argv[3] || "http://localhost:5191";
 (async () => {
   const b = await chromium.launch({ channel: "msedge" });
-  const p = await b.newPage({ viewport: { width: 1360, height: 860 } });
+  const ctx = await b.newContext({ viewport: { width: 1360, height: 860 }, permissions: ["clipboard-read", "clipboard-write"] });
+  const p = await ctx.newPage();
   const errors = [];
   p.on("pageerror", (e) => errors.push(String(e)));
   await p.goto(url);
@@ -124,11 +125,91 @@ const url = process.argv[3] || "http://localhost:5191";
   await undo();
   ok((await row(1)).join() === first.join() && (await row(2)).join() === second.join(), "Ctrl+Z puts the block back");
 
-  // Ctrl+drag copies.
+  // Ctrl+drag copies (Ctrl pressed mid-drag, and Ctrl held before the press).
   await p.mouse.click(cx(1), ry(1));
   await drag(canvas.x + left + W + 1, ry(1), canvas.x + left + W + 1, ry(4), { ctrl: true });
   ok((await cellAt(1, 1)) === first[1] && (await cellAt(4, 1)) === first[1], "Ctrl+drag copies the cell");
   await undo();
+  await p.mouse.click(cx(1), ry(1));
+  await p.keyboard.down("Control");
+  await drag(canvas.x + left + W + 1, ry(1), canvas.x + left + W + 1, ry(5));
+  await p.keyboard.up("Control");
+  ok((await cellAt(1, 1)) === first[1] && (await cellAt(5, 1)) === first[1], "Ctrl held before pressing the outline copies too");
+  await undo();
+
+  // ---- cut and paste that moves --------------------------------------------------
+  // Columns: cut B, pick D, paste: B goes in before D (A C B D ...).
+  await p.mouse.click(cx(1), canvas.y + HEAD / 2);
+  await p.keyboard.press("Control+x");
+  await p.waitForTimeout(300);
+  ok(/Cut 1 column/.test(await status()), `cut says what to do next (${await status()})`);
+  ok((await row(1)).join() === first.join(), "cutting changes nothing yet");
+  await p.mouse.click(cx(3), canvas.y + HEAD / 2);
+  await p.keyboard.press("Control+v");
+  await p.waitForTimeout(400);
+  now = await row(1);
+  ok(now[1] === first[2] && now[2] === first[1] && now[3] === first[3] && now.length === first.length, `cut column went in before D, no gap (${now.join(" | ")})`);
+  await undo();
+  ok((await row(1)).join() === first.join(), "Ctrl+Z undoes the cut and paste in one step");
+  // Rows: cut screen row 1, pick screen row 4, paste: it goes above row 4.
+  await p.mouse.click(rx, ry(1));
+  await p.keyboard.press("Control+x");
+  await p.waitForTimeout(300);
+  await p.mouse.click(rx, ry(4));
+  await p.keyboard.press("Control+v");
+  await p.waitForTimeout(400);
+  ok((await row(1)).join() === second.join() && (await row(3)).join() === first.join(), "cut row went in above the row picked");
+  await undo();
+  // Cells: cut B1, pick E3, paste: moved, the old place empty.
+  await p.mouse.click(cx(1), ry(1));
+  await p.keyboard.press("Control+x");
+  await p.waitForTimeout(300);
+  await p.mouse.click(cx(4), ry(3));
+  await p.keyboard.press("Control+v");
+  await p.waitForTimeout(400);
+  ok((await cellAt(3, 4)) === first[1] && (await cellAt(1, 1)) === "", "cut cell moved on paste");
+  await undo();
+  // Esc drops the cut: a paste then pastes the copied text instead of moving.
+  await p.mouse.click(cx(1), ry(1));
+  await p.keyboard.press("Control+x");
+  await p.keyboard.press("Escape");
+  await p.mouse.click(cx(4), ry(6));
+  await p.keyboard.press("Control+v");
+  await p.waitForTimeout(400);
+  ok((await cellAt(1, 1)) === first[1], "after Esc the cut cell stays where it was");
+  await undo();
+  ok((await row(1)).join() === first.join() && (await row(2)).join() === second.join(), "all back as it was");
+
+  // ---- a block never moves over or out of hidden columns -------------------------
+  await p.mouse.click(cx(2), canvas.y + HEAD / 2);
+  await p.keyboard.press("Alt+q");
+  await p.keyboard.type("hide columns");
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(300);
+  // B and D now sit side by side; select B1:D1 (C hidden between) and drag.
+  await p.mouse.click(cx(1), ry(1));
+  await shiftClick(cx(2), ry(1));
+  await drag(canvas.x + left + W + 1, ry(1), canvas.x + left + W + 1, ry(4));
+  ok(/hidden columns/.test(await status()) && (await cellAt(1, 1)) === first[1], `refused with hidden columns inside (${await status()})`);
+  // A1:B1 dragged one column right would cover the hidden C: refused too.
+  await p.mouse.click(cx(0), ry(1));
+  await shiftClick(cx(1), ry(1));
+  await drag(canvas.x + left + 1, ry(1), canvas.x + left + W + 1, ry(1));
+  ok(/hidden columns/.test(await status()) && (await cellAt(1, 0)) === first[0], `the block did not go over the hidden column (${await status()})`);
+  await p.keyboard.press("Control+Shift+0");
+  await p.waitForTimeout(200);
+  ok((await row(1)).join() === first.join(), "nothing changed");
+
+  // Hidden columns at the far right get an arrow on the last shown heading.
+  await p.mouse.click(cx(6), canvas.y + HEAD / 2);
+  await p.keyboard.press("Alt+q");
+  await p.keyboard.type("hide columns");
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(300);
+  await p.screenshot({ path: path.join(out, "trailing-hidden.png") });
+  await p.mouse.click(canvas.x + left + 6 * W - 16 - 6 - 5, canvas.y + HEAD / 2);
+  await p.mouse.click(cx(6), ry(1));
+  ok(/C7$/.test(await at()), `the arrow on F shows it again (${await at()})`);
 
   // ---- several columns at once: select B:C, widen C's edge by 60 ------------------
   await p.mouse.click(cx(1), canvas.y + HEAD / 2);

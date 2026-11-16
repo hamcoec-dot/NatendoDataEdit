@@ -8,6 +8,7 @@
   import { prefs } from "./prefs.svelte";
   import { contains, type Cell, type Rect } from "./selection";
   import { blockTarget, dropIndex, gapAt, onOutline } from "./dragmove";
+  import type { ViewportData } from "./binary";
   import { backend, errorText, type Dir } from "./backend";
   import { PALETTE } from "./views";
   import { localDays } from "./m8";
@@ -281,6 +282,7 @@
     }
 
     // Column headers.
+    const lastHidden = lastBeforeHidden();
     ctx.font = headerFont;
     ctx.fillStyle = colors.header;
     ctx.fillRect(0, 0, w, headH);
@@ -303,14 +305,16 @@
         ctx.fillStyle = inSel ? colors.text : colors.muted;
         const btn = tab.filterButtons || filtered.has(c) ? FILTER_BTN : 0;
         const mark = c > 0 && tab.columns.isHidden(c - 1);
+        const trailing = c === lastHidden;
         ctx.save();
         ctx.beginPath();
-        ctx.rect(x + 4, 0, cw - 8 - btn, headH);
+        ctx.rect(x + 4, 0, cw - 8 - btn - (trailing ? MARK_W + 4 : 0), headH);
         ctx.clip();
         ctx.fillText(colTitle(c), x + 6 + (mark ? MARK_W : 0), headH / 2);
         ctx.restore();
         if (btn) drawFilterButton(ctx, x + cw - btn - 2, filtered.has(c));
-        if (mark) drawHiddenMark(ctx, x);
+        if (mark) drawHiddenMark(ctx, x + 5, true);
+        if (trailing) drawHiddenMark(ctx, trailingMarkX(c) + 2, false);
         ctx.fillStyle = colors.border;
         ctx.fillRect(x + cw - 1, 0, 1, headH);
       }
@@ -379,6 +383,7 @@
     }
     drawFillHandle(ctx, w, h);
     drawMove(ctx, w, h);
+    drawCut(ctx, w, h);
     drawFreezeDrag(ctx, w, h);
     scrollTick++;
     positionEditor();
@@ -542,6 +547,10 @@
     px: number;
     py: number;
     offset: number;
+    /** Why this press cannot become a move (said when the drag starts). */
+    refuse?: string;
+    /** The pointer is over a place the block cannot go (hidden columns). */
+    blocked?: boolean;
   };
   let moving: Moving | null = null;
   const MOVE_SLOP = 4;
@@ -582,6 +591,9 @@
     const h = hit(x, y);
     if (h.area !== "cell") return m.to;
     const t = blockTarget(m.from, m.grab, h, tab.info.rows, tab.info.cols, tab.firstRow);
+    // Never write over cells the user cannot see.
+    m.blocked = tab.columns.hiddenIn(t.col, t.col + m.from.cols);
+    if (m.blocked) return null;
     return t.row === m.from.row && t.col === m.from.col ? null : t;
   }
 
@@ -634,6 +646,25 @@
     ctx.restore();
   }
 
+  /** A dashed outline round what Cut marked, until it is pasted. */
+  function drawCut(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    const c = tab.cut;
+    if (!c) return;
+    const r = c.rect;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(c.kind === "rows" ? 0 : rowHeaderW, c.kind === "cols" ? 0 : headH, w, h);
+    ctx.clip();
+    const b = screenBox(r.row, r.col, r.row + r.rows - 1, r.col + r.cols - 1, w, h);
+    ctx.strokeStyle = colors.accent;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    if (c.kind === "cols") ctx.strokeRect(b.x + 1, 1, b.w - 2, Math.min(h, b.y + b.h) - 2);
+    else if (c.kind === "rows") ctx.strokeRect(1, b.y + 1, Math.min(w, b.x + b.w) - 2, b.h - 2);
+    else ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
+    ctx.restore();
+  }
+
   function cancelMove(): void {
     if (!moving && !freezing) return;
     moving = null;
@@ -645,30 +676,55 @@
   // ---- hidden columns: a mark on the header beside them; a click shows them
   const MARK_W = 10;
 
-  function drawHiddenMark(ctx: CanvasRenderingContext2D, edge: number): void {
-    // A small arrow pointing left, at the hidden columns.
-    const x = edge + 5;
+  /** A small arrow at x pointing at hidden columns (left, or right). */
+  function drawHiddenMark(ctx: CanvasRenderingContext2D, x: number, left: boolean): void {
     const y = headH / 2;
     const s = Math.max(3, Math.round(fontPx * 0.3));
+    const tip = left ? x : x + s;
+    const back = left ? x + s : x;
     ctx.save();
     ctx.fillStyle = colors.accent;
     ctx.beginPath();
-    ctx.moveTo(x + s, y - s);
-    ctx.lineTo(x, y);
-    ctx.lineTo(x + s, y + s);
+    ctx.moveTo(back, y - s);
+    ctx.lineTo(tip, y);
+    ctx.lineTo(back, y + s);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
   }
 
-  /** The hidden columns just left of the header mark at (px, py), or null. */
+  /** The last shown column when every column after it is hidden, else -1. */
+  function lastBeforeHidden(): number {
+    const n = tab.info.cols;
+    if (n === 0 || !tab.columns.isHidden(n - 1)) return -1;
+    let c = n - 1;
+    while (c >= 0 && tab.columns.isHidden(c)) c--;
+    return c;
+  }
+
+  /** Where the trailing-hidden mark sits on column `c`'s heading: left of
+   *  its filter button, so the two never overlap. */
+  function trailingMarkX(c: number): number {
+    const btn = tab.filterButtons || filtered.has(c) ? FILTER_BTN : 0;
+    return colX(c, visibleCols()) + tab.columns.width(c) - btn - 6 - MARK_W;
+  }
+
+  /** The hidden columns next to the header mark at (px, py), or null. */
   function hiddenAt(px: number, py: number, col: number): { from: number; to: number } | null {
-    if (py >= headH || col <= 0 || !tab.columns.isHidden(col - 1)) return null;
-    const left = colX(col, visibleCols());
-    if (px <= left + 4 || px > left + 4 + MARK_W) return null;
-    let from = col - 1;
-    while (from > 0 && tab.columns.isHidden(from - 1)) from--;
-    return { from, to: col };
+    if (py >= headH || col < 0) return null;
+    if (col > 0 && tab.columns.isHidden(col - 1)) {
+      const left = colX(col, visibleCols());
+      if (px > left + 4 && px <= left + 4 + MARK_W) {
+        let from = col - 1;
+        while (from > 0 && tab.columns.isHidden(from - 1)) from--;
+        return { from, to: col };
+      }
+    }
+    if (col === lastBeforeHidden()) {
+      const x = trailingMarkX(col);
+      if (px >= x && px <= x + MARK_W) return { from: col + 1, to: tab.info.cols };
+    }
+    return null;
   }
 
   // ---- dragging the corner's edges to freeze rows or columns ---------------
@@ -682,7 +738,7 @@
       return null;
     }
     // With rows frozen, their line in the row numbers can be dragged too.
-    if (frozenRows() > 0 && px < rowHeaderW && Math.abs(py - bodyTop()) <= 3) return "rows";
+    if (frozenRows() > 0 && px < rowHeaderW && py >= bodyTop() - 2 && py <= bodyTop()) return "rows";
     return null;
   }
 
@@ -1044,6 +1100,11 @@
 
   /** Fit a column to the widest value currently loaded on screen. */
   export function autoFit(col: number): void {
+    fitOne(col, (r) => tab.cache.get(r, col));
+    tab.bump();
+  }
+
+  function fitOne(col: number, value: (row: number) => string | undefined): void {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.font = headerFont;
@@ -1051,11 +1112,53 @@
     ctx.font = font;
     const rows = visibleRows();
     for (let r = rows.body.start; r < rows.body.end; r++) {
-      const t = tab.cache.get(r, col);
+      const t = value(r);
       if (t) best = Math.max(best, ctx.measureText(displayText(t).slice(0, 200)).width);
     }
     tab.columns.setWidth(col, Math.min(600, Math.max(40, Math.ceil(best) + 2 * Math.round(fontPx * 0.45) + 4)));
+  }
+
+  /** Fit the shown columns of from..from+count to the rows on screen, up to
+   *  MAX_FIT_COLS of them. Columns scrolled out of view are read for those
+   *  rows first (one read), so they fit their text, not just the heading. */
+  export async function fitCols(from: number, count: number): Promise<void> {
+    const cols: number[] = [];
+    let shown = 0;
+    for (let c = from; c < Math.min(from + count, tab.info.cols); c++) {
+      if (tab.columns.isHidden(c)) continue;
+      shown++;
+      if (cols.length < MAX_FIT_COLS) cols.push(c);
+    }
+    if (!cols.length) return;
+    const rows = visibleRows();
+    const r0 = rows.body.start;
+    const n = rows.body.end - r0;
+    const missing = cols.filter((c) => {
+      for (let r = r0; r < r0 + n; r++) if (tab.cache.get(r, c) === undefined) return true;
+      return false;
+    });
+    let data: ViewportData | null = null;
+    if (missing.length && n > 0) {
+      const lo = missing[0]!;
+      const hi = missing[missing.length - 1]!;
+      try {
+        data = await backend().viewport(tab.id, r0, n, lo, hi - lo + 1, 200);
+      } catch {
+        data = null;
+      }
+    }
+    const d = data;
+    for (const c of cols) {
+      fitOne(c, (r) => {
+        const v = tab.cache.get(r, c);
+        if (v !== undefined || !d) return v;
+        const i = r - d.firstRow;
+        const j = c - d.firstCol;
+        return i >= 0 && i < d.rows && j >= 0 && j < d.cols ? d.cells[i * d.cols + j] : undefined;
+      });
+    }
     tab.bump();
+    if (shown > cols.length) onMessage(`Fitted the first ${MAX_FIT_COLS} of ${shown.toLocaleString()} columns: fitting works on up to ${MAX_FIT_COLS} at once.`);
   }
 
   /** Make rows tall enough for the wrapped columns' text on screen (1 to
@@ -1125,11 +1228,19 @@
       else tab.scrollX = 0;
       clampScroll();
       freezing = { kind: fz, n: fz === "rows" ? frozenRows() : frozenCols() };
+      onMessage(`Drag to choose how many ${fz} stay in view; Esc cancels.`);
       redraw();
       return;
     }
     switch (h.area) {
       case "cell":
+        // The outline first, Ctrl or not: Ctrl+drag copies the block.
+        if (!e.shiftKey && e.detail === 1 && onMoveCells && !readOnly && onSelOutline(x, y)) {
+          const from = tab.rect;
+          moving = { kind: "cells", from, startX: x, startY: y, active: false, grab: { row: h.row, col: h.col }, to: null, px: x, py: y, offset: 0 };
+          if (tab.columns.hiddenIn(from.col, from.col + from.cols)) moving.refuse = "The selection has hidden columns, so it can't be dragged. Show them first (Ctrl+Shift+0).";
+          break;
+        }
         if (e.ctrlKey && !e.shiftKey && onOpenLink) {
           const link = linkAt(h.row, h.col);
           if (link) {
@@ -1140,10 +1251,6 @@
         }
         if (!e.shiftKey && !e.ctrlKey && onPickButton(x, y, h.row, h.col)) {
           void openPick();
-          break;
-        }
-        if (!e.shiftKey && !e.ctrlKey && e.detail === 1 && onMoveCells && !readOnly && onSelOutline(x, y)) {
-          moving = { kind: "cells", from: tab.rect, startX: x, startY: y, active: false, grab: { row: h.row, col: h.col }, to: null, px: x, py: y, offset: 0 };
           break;
         }
         if (!e.shiftKey && !e.ctrlKey && e.detail === 1 && onTickBox(x, y, h.row, h.col)) {
@@ -1160,6 +1267,7 @@
         const r = tab.rect;
         if (!e.shiftKey && !e.ctrlKey && onMoveRows && !readOnly && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) {
           moving = { kind: "rows", from: r, startX: x, startY: y, active: false, grab: { row: h.row, col: 0 }, to: null, px: x, py: y, offset: y - rowY(r.row, visibleRows()) };
+          if (tab.info.filtered) moving.refuse = "Rows can't be moved while a filter is on. Clear the filter first (Filtered ✕).";
           break;
         }
         if (e.shiftKey) select({ row: tab.sel.anchor.row, col: 0 }, { row: h.row, col: fullCols }, false);
@@ -1173,7 +1281,7 @@
           if (e.detail === 2) {
             // Every selected column, as in Sheets (a few hundred at most:
             // each one measures the rows on screen).
-            if (span && span.cols <= MAX_FIT_COLS) for (let c = span.col; c < span.col + span.cols; c++) autoFit(c);
+            if (span) void fitCols(span.col, span.cols);
             else autoFit(h.edge);
             break;
           }
@@ -1231,6 +1339,13 @@
       const m = moving;
       if (!m.active) {
         if (Math.abs(x - m.startX) < MOVE_SLOP && Math.abs(y - m.startY) < MOVE_SLOP) return;
+        if (m.refuse) {
+          // Say why once and drop the drag; nothing moves.
+          onMessage(m.refuse);
+          moving = null;
+          cursor = "default";
+          return;
+        }
         m.active = true;
       }
       cursor = m.kind === "cells" && e.ctrlKey ? "copy" : "grabbing";
@@ -1257,7 +1372,7 @@
       const grab =
         !readOnly &&
         ((h.area === "col" && h.edge === null && !!onMoveCols && wholeColsSel(r) && h.col >= r.col && h.col < r.col + r.cols) ||
-          (h.area === "row" && !!onMoveRows && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) ||
+          (h.area === "row" && !!onMoveRows && !tab.info.filtered && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) ||
           (h.area === "cell" && !!onMoveCells && !editing && onSelOutline(x, y)));
       const fz = onFreezeEdge(x, y);
       cursor = fz
@@ -1337,7 +1452,9 @@
       const m = moving;
       moving = null;
       cursor = "default";
-      if (m.active && m.to) {
+      if (m.active && !m.to && m.blocked) {
+        onMessage("Cells can't be dropped over hidden columns. Show them first (Ctrl+Shift+0).");
+      } else if (m.active && m.to) {
         if (m.kind === "cols") onMoveCols?.(m.from.col, m.from.cols, m.to.col);
         else if (m.kind === "rows") onMoveRows?.(m.from.row, m.from.rows, m.to.row);
         else onMoveCells?.(m.from, m.to.row, m.to.col, e.ctrlKey);

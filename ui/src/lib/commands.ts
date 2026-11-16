@@ -20,11 +20,48 @@ export interface Menu {
   items: MenuItem[];
 }
 
+// In the installed app (WebView2 on Windows), a letter pressed while Alt is
+// held can arrive with altKey off, typically for the second Alt+letter in a
+// row (seen with real key presses; test tools always set altKey). Alt's own
+// key events still arrive, so Alt is also tracked from them. While Alt is
+// held Windows repeats its keydown, so a stale state (a lost keyup) expires
+// after ALT_TRUST_MS.
+const ALT_TRUST_MS = 1500;
+let altDownAt = 0;
+
+/** Track Alt from its own key events (call once, from the app's root). */
+export function watchAlt(target: Pick<Window, "addEventListener" | "removeEventListener">): () => void {
+  const down = (e: KeyboardEvent) => {
+    // Alt itself, or a key that says Alt is down: Alt is held now.
+    if (e.key === "Alt" || e.altKey) altDownAt = e.timeStamp || performance.now();
+  };
+  const up = (e: KeyboardEvent) => {
+    if (e.key === "Alt") altDownAt = 0;
+  };
+  const reset = () => (altDownAt = 0);
+  target.addEventListener("keydown", down, true);
+  target.addEventListener("keyup", up, true);
+  target.addEventListener("blur", reset);
+  return () => {
+    target.removeEventListener("keydown", down, true);
+    target.removeEventListener("keyup", up, true);
+    target.removeEventListener("blur", reset);
+  };
+}
+
+/** Whether Alt is held for this key event (see watchAlt). */
+export function altOf(e: KeyboardEvent): boolean {
+  if (e.altKey) return true;
+  if (altDownAt === 0 || e.key === "Alt") return false;
+  const now = e.timeStamp || performance.now();
+  return now >= altDownAt && now - altDownAt < ALT_TRUST_MS;
+}
+
 /** Normalised shortcut text for a key event, e.g. "Ctrl+Shift+ArrowUp". */
 export function keyOf(e: KeyboardEvent): string {
   const parts: string[] = [];
   if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
-  if (e.altKey) parts.push("Alt");
+  if (altOf(e)) parts.push("Alt");
   if (e.shiftKey) parts.push("Shift");
   let k = e.key;
   if (k === " ") k = "Space";

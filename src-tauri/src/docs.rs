@@ -1900,8 +1900,11 @@ impl Docs {
         copy: bool,
     ) -> CmdResult<DocInfo> {
         let n = rows.saturating_mul(cols as u64);
-        // Every moved cell is written, plus up to as many cleared.
-        if n.saturating_mul(2) > MAX_WRITE_CELLS {
+        // Every moved cell is written, plus (moving) up to as many cleared.
+        if n.saturating_mul(if copy { 1 } else { 2 }) > MAX_WRITE_CELLS {
+            return Err(too_much());
+        }
+        if cols > natendo_engine::viewport::MAX_CELLS as u32 {
             return Err(too_much());
         }
         if n == 0 || (row == to_row && col == to_col) {
@@ -1917,18 +1920,34 @@ impl Docs {
             if !fits(row, col) || !fits(to_row, to_col) {
                 return Err(Error::OutOfRange);
             }
-            // Read the values in small bands under one byte budget, so a few
-            // huge cells cannot make this hold more than MAX_WRITE_CHARS.
+            // Read in small bands, each with a character budget shared by
+            // its cells (as copy does), so one band never holds more than
+            // about COPY_BAND_CHARS; a cell over its share is read on its
+            // own. All values together stay under MAX_WRITE_CHARS bytes.
             let band = (COPY_BAND_CELLS / cols.max(1) as u64).max(1);
+            let band_cells = (band * cols.max(1) as u64).min(n) as usize;
+            let per_cell = (COPY_BAND_CHARS / band_cells.max(1)).clamp(1, MAX_EDIT_CHARS);
             let mut values: Vec<String> = Vec::with_capacity(n as usize);
             let mut bytes = 0usize;
             let mut r = row;
             while r < row + rows {
                 let end = (r + band).min(row + rows);
-                let v = d.viewport(r..end, col..col + cols, MAX_EDIT_CHARS)?;
+                let v = d.viewport(r..end, col..col + cols, per_cell)?;
                 for (k, cell) in v.cells.into_iter().enumerate() {
+                    let cell = if v.truncated[k] {
+                        let w = v.cols.max(1) as u64;
+                        let (rr, cc) = (r + k as u64 / w, col + (k as u64 % w) as u32);
+                        let mut one = d.viewport(rr..rr + 1, cc..cc + 1, MAX_EDIT_CHARS)?;
+                        if one.truncated.first().copied().unwrap_or(true) {
+                            too_long = true;
+                            return Err(Error::OutOfRange);
+                        }
+                        one.cells.pop().unwrap_or_default()
+                    } else {
+                        cell
+                    };
                     bytes += cell.len();
-                    if v.truncated[k] || bytes > MAX_WRITE_CHARS {
+                    if bytes > MAX_WRITE_CHARS {
                         too_long = true;
                         return Err(Error::OutOfRange);
                     }
@@ -6646,5 +6665,41 @@ ca,California
         docs.set_read_only(id, true).unwrap();
         assert!(docs.move_cells(id, 1, 1, 0, 1, 2, 0, false).is_err());
         assert_eq!(all(&docs), before);
+    }
+
+    #[test]
+    fn move_cells_reads_long_cells_alone_and_copy_has_its_own_cap() {
+        // 1,100 rows: the first band shares its budget among 1,024 cells,
+        // so the 40,000-character cell is over its share and read alone.
+        let mut body = String::from("a,b\n");
+        for i in 0..1100 {
+            if i == 5 {
+                body.push_str(&"x".repeat(40_000));
+                body.push_str(",\n");
+            } else {
+                body.push_str(&format!("{i},\n"));
+            }
+        }
+        let p = tmp("long.csv", body.as_bytes());
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        docs.move_cells(id, 1, 1100, 0, 1, 1, 1, false).unwrap();
+        let moved = docs.copy(id, 6, 1, 0, 2).unwrap();
+        assert_eq!(moved, format!("\t{}\r\n", "x".repeat(40_000)));
+        assert_eq!(docs.copy(id, 1100, 1, 0, 2).unwrap(), "\t1099\r\n");
+        // Copying may write up to MAX_WRITE_CELLS; moving only half of that.
+        assert_eq!(
+            docs.move_cells(id, 0, 60_000, 0, 1, 0, 1, false)
+                .unwrap_err()
+                .kind,
+            "too_large"
+        );
+        assert_ne!(
+            docs.move_cells(id, 0, 60_000, 0, 1, 0, 1, true)
+                .unwrap_err()
+                .kind,
+            "too_large"
+        );
     }
 }
