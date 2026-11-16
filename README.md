@@ -198,8 +198,9 @@ everything is also in command search.
   page saying what it does. Everyday words work too ("dedupe", "vlookup",
   "trim", "mail merge"), and small typing slips are forgiven. Arrows and Enter
   or a click open the tool; Esc or Alt+Q again closes.
-- Custom shortcuts, Ctrl+/ for the list of shortcuts, a file browser panel,
-  an activity panel, and a start page with recent files.
+- Custom shortcuts, Ctrl+/ for the list of shortcuts (with a Mouse section:
+  every drag and click move), a file browser panel, an activity panel, and a
+  start page with recent files.
 
 ![Dragging the city column by its heading to a new place](docs/screenshots/drag-column.png)
 *Dragging "city" by its heading: a see-through band follows the pointer and the bar shows where it will land.*
