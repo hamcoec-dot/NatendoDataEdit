@@ -4970,7 +4970,10 @@ mod tests {
         let _held = entry.write();
         assert_eq!(docs.find_open(&p), Some(id));
         let other = tmp("busy-other.csv", b"a\r\n");
-        assert_eq!(docs.find_open_many(&[other, p.clone()]), vec![None, Some(id)]);
+        assert_eq!(
+            docs.find_open_many(&[other, p.clone()]),
+            vec![None, Some(id)]
+        );
         assert_eq!(docs.paths_of(&[id]), vec![Some(p.clone())]);
     }
 
