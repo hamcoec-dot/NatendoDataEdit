@@ -471,10 +471,14 @@
    *  (worked out in the backend, as the recent list does). */
   let tabFolder = $state<Record<number, string>>({});
   let tabFolderAsk = 0;
+  /** Which files the tabs show: changes only when a tab opens, closes or
+   *  is saved under another name, not on every edit (the lookup below
+   *  follows this string, which stays equal while cells change). */
+  const tabFiles = $derived(tabs.map((t) => `${t.id}\u0001${t.info.name}\u0001${t.info.path ?? ""}`).join("\u0002"));
   $effect(() => {
-    const names = tabs.map((t) => t.info.name.toLowerCase());
-    // Read each path too, so a Save As or rename asks again.
-    const ids = tabs.map((t) => (void t.info.path, t.id));
+    const files = tabFiles.split("\u0002").filter(Boolean).map((s) => s.split("\u0001"));
+    const ids = files.map((f) => Number(f[0]));
+    const names = files.map((f) => f[1]!.toLowerCase());
     const ask = ++tabFolderAsk;
     if (!names.some((n, i) => names.indexOf(n) !== i)) {
       tabFolder = {};
