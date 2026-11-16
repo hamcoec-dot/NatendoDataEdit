@@ -12,6 +12,9 @@ export class Columns {
   formats = new Map<number, DisplayFormat>();
   /** Columns whose text wraps onto more lines. */
   wraps = new Set<number>();
+  /** Widths of hidden columns before they were hidden, so showing them
+   *  again gives them back (only those not at the default width). */
+  private hiddenWas = new Map<number, number>();
   /** Sorted column indexes with a non-default width. */
   private keys: number[] = [];
   private widths = new Map<number, number>();
@@ -42,6 +45,9 @@ export class Columns {
 
   setWidth(c: number, w: number): void {
     const width = Math.max(0, Math.round(w));
+    const was = this.widths.get(c);
+    if (width === 0 && was !== undefined && was !== 0) this.hiddenWas.set(c, was);
+    else if (width !== 0) this.hiddenWas.delete(c);
     if (width === this.defaultWidth) {
       if (!this.widths.delete(c)) return;
     } else {
@@ -53,6 +59,7 @@ export class Columns {
   /** Forget all widths (used when columns are inserted, deleted or moved). */
   reset(): void {
     this.widths.clear();
+    this.hiddenWas.clear();
     this.formats.clear();
     this.wraps.clear();
     this.rebuild();
@@ -80,6 +87,29 @@ export class Columns {
       if (to !== null) wraps.add(to);
     }
     this.wraps = wraps;
+    const was = new Map<number, number>();
+    for (const [c, w] of this.hiddenWas) {
+      const to = move(c);
+      if (to !== null) was.set(to, w);
+    }
+    this.hiddenWas = was;
+    this.rebuild();
+  }
+
+  /** Carry widths, formats and wrapping along after `count` columns at `at`
+   *  were moved to start at `to`. */
+  move(at: number, count: number, to: number): void {
+    if (count <= 0 || at === to) return;
+    const place = (c: number): number => {
+      if (c >= at && c < at + count) return to + (c - at);
+      if (to > at && c >= at + count && c < to + count) return c - count;
+      if (to < at && c >= to && c < at) return c + count;
+      return c;
+    };
+    this.widths = new Map([...this.widths].map(([c, w]) => [place(c), w]));
+    this.formats = new Map([...this.formats].map(([c, f]) => [place(c), f]));
+    this.wraps = new Set([...this.wraps].map(place));
+    this.hiddenWas = new Map([...this.hiddenWas].map(([c, w]) => [place(c), w]));
     this.rebuild();
   }
 
@@ -152,6 +182,38 @@ export class Columns {
     return cur;
   }
 
+  /** Give columns at..at+count the same width, in one go. */
+  setRange(at: number, count: number, w: number): void {
+    const width = Math.max(0, Math.round(w));
+    if (at <= 0 && count >= this.count) {
+      // Every column: a new default, keeping hidden ones hidden (memory stays
+      // small however many columns there are).
+      for (const [c, v] of [...this.widths]) if (v !== 0) this.widths.delete(c);
+      this.hiddenWas.clear();
+      this.setDefault(width);
+      return;
+    }
+    for (let c = at; c < at + count; c++) {
+      if (width === this.defaultWidth) this.widths.delete(c);
+      else this.widths.set(c, width);
+      this.hiddenWas.delete(c);
+    }
+    this.rebuild();
+  }
+
+  /** Show the hidden columns in from..to (to not included). */
+  showRange(from: number, to: number): void {
+    for (const [c, w] of [...this.widths]) if (w === 0 && c >= from && c < to) this.unhide(c);
+    this.rebuild();
+  }
+
+  private unhide(c: number): void {
+    const was = this.hiddenWas.get(c);
+    if (was === undefined) this.widths.delete(c);
+    else this.widths.set(c, was);
+    this.hiddenWas.delete(c);
+  }
+
   hiddenCount(): number {
     let n = 0;
     for (const w of this.widths.values()) if (w === 0) n++;
@@ -159,7 +221,7 @@ export class Columns {
   }
 
   showAll(): void {
-    for (const [c, w] of [...this.widths]) if (w === 0) this.widths.delete(c);
+    for (const [c, w] of [...this.widths]) if (w === 0) this.unhide(c);
     this.rebuild();
   }
 }

@@ -34,6 +34,7 @@ export interface DocInfo {
   modified: boolean;
   can_undo: boolean;
   can_redo: boolean;
+  history_pos: number;
   encoding: string;
   bom: boolean;
   delimiter: string;
@@ -819,6 +820,8 @@ export interface Backend {
   setCells(doc: number, cells: [number, number, string][]): Promise<DocInfo>;
   fillCells(doc: number, row: number, rows: number, col: number, cols: number, value: string): Promise<DocInfo>;
   copyCells(doc: number, row: number, rows: number, col: number, cols: number): Promise<string>;
+  /** Move (or with `copy`, copy) a block of cells so its top-left lands on (toRow, toCol), one undo step. */
+  moveCells(doc: number, row: number, rows: number, col: number, cols: number, toRow: number, toCol: number, copy: boolean): Promise<DocInfo>;
   change(doc: number, change: Change): Promise<DocInfo>;
   /** null when the Save As dialog was cancelled. */
   save(doc: number, flags: SaveFlags): Promise<DocInfo | null>;
@@ -1111,6 +1114,9 @@ class TauriBackend implements Backend {
   }
   copyCells(doc: number, row: number, rows: number, col: number, cols: number) {
     return call<string>("copy_cells", { doc, row, rows, col, cols });
+  }
+  moveCells(doc: number, row: number, rows: number, col: number, cols: number, toRow: number, toCol: number, copy: boolean) {
+    return call<DocInfo>("move_cells", { doc, row, rows, col, cols, toRow, toCol, copy });
   }
   change(doc: number, change: Change) {
     return call<DocInfo>("change", { doc, change });

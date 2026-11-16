@@ -1020,6 +1020,9 @@ pub struct DocInfo {
     pub modified: bool,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// Changes done minus changes undone: tells an undo of a column move
+    /// from an undo of something else, so the view can follow.
+    pub history_pos: u64,
     pub encoding: &'static str,
     pub bom: bool,
     pub delimiter: String,
@@ -1877,6 +1880,88 @@ impl Docs {
             r = end;
         }
         Ok(out)
+    }
+
+    /// Move the cells of a rectangle so its top-left cell lands on
+    /// (`to_row`, `to_col`), as one undo step (dragging a selection by its
+    /// border). Cells under the new place are overwritten; cells left behind
+    /// are cleared, unless `copy` (Ctrl held: copy instead of move). The
+    /// whole new place must be inside the table.
+    #[allow(clippy::too_many_arguments)]
+    pub fn move_cells(
+        &self,
+        id: u32,
+        row: u64,
+        rows: u64,
+        col: u32,
+        cols: u32,
+        to_row: u64,
+        to_col: u32,
+        copy: bool,
+    ) -> CmdResult<DocInfo> {
+        let n = rows.saturating_mul(cols as u64);
+        // Every moved cell is written, plus up to as many cleared.
+        if n.saturating_mul(2) > MAX_WRITE_CELLS {
+            return Err(too_much());
+        }
+        if n == 0 || (row == to_row && col == to_col) {
+            return self.info(id);
+        }
+        let mut too_long = false;
+        let done = self.edit(id, |d| {
+            let (nr, nc) = (d.row_count(), d.col_count() as u64);
+            let fits = |r: u64, c: u32| {
+                r.checked_add(rows).is_some_and(|e| e <= nr)
+                    && (c as u64).checked_add(cols as u64).is_some_and(|e| e <= nc)
+            };
+            if !fits(row, col) || !fits(to_row, to_col) {
+                return Err(Error::OutOfRange);
+            }
+            // Read the values in small bands under one byte budget, so a few
+            // huge cells cannot make this hold more than MAX_WRITE_CHARS.
+            let band = (COPY_BAND_CELLS / cols.max(1) as u64).max(1);
+            let mut values: Vec<String> = Vec::with_capacity(n as usize);
+            let mut bytes = 0usize;
+            let mut r = row;
+            while r < row + rows {
+                let end = (r + band).min(row + rows);
+                let v = d.viewport(r..end, col..col + cols, MAX_EDIT_CHARS)?;
+                for (k, cell) in v.cells.into_iter().enumerate() {
+                    bytes += cell.len();
+                    if v.truncated[k] || bytes > MAX_WRITE_CHARS {
+                        too_long = true;
+                        return Err(Error::OutOfRange);
+                    }
+                    values.push(cell);
+                }
+                r = end;
+            }
+            let inside = |r: u64, c: u32| {
+                r >= to_row && r < to_row + rows && c >= to_col && c < to_col + cols
+            };
+            let mut cells = Vec::with_capacity((n as usize).saturating_mul(2));
+            for i in 0..rows {
+                for j in 0..cols {
+                    if !copy && !inside(row + i, col + j) {
+                        cells.push((row + i, col + j, String::new()));
+                    }
+                }
+            }
+            let mut it = values.into_iter();
+            for i in 0..rows {
+                for j in 0..cols {
+                    cells.push((to_row + i, to_col + j, it.next().unwrap_or_default()));
+                }
+            }
+            d.set_cells(cells)
+        });
+        if too_long {
+            return Err(CmdError::new(
+                "too_large",
+                "the cells hold too much text to move at once",
+            ));
+        }
+        done
     }
 
     pub fn insert_rows(&self, id: u32, at: u64, count: u64) -> CmdResult<DocInfo> {
@@ -4549,6 +4634,7 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         modified: d.is_modified(),
         can_undo: d.can_undo(),
         can_redo: d.can_redo(),
+        history_pos: d.history_pos(),
         encoding: f.encoding.name(),
         bom: f.bom,
         delimiter: f.dialect.delimiter_str().to_string(),
@@ -6517,5 +6603,48 @@ ca,California
             ..Default::default()
         };
         assert_eq!(docs.filter(id, huge).unwrap_err().kind, "too_large");
+    }
+
+    #[test]
+    fn move_cells_is_one_step_and_clears_what_it_leaves() {
+        let p = tmp("move.csv", b"a,b,c\n1,2,3\n4,5,6\n7,8,9\n");
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let all = |docs: &Docs| docs.copy(id, 0, 4, 0, 3).unwrap();
+        let before = all(&docs);
+        // 2x2 block at (1,0) moved one down and one right: overlaps itself.
+        docs.move_cells(id, 1, 2, 0, 2, 2, 1, false).unwrap();
+        assert_eq!(all(&docs), "a\tb\tc\r\n\t\t3\r\n\t1\t2\r\n7\t4\t5\r\n");
+        docs.undo(id).unwrap();
+        assert_eq!(all(&docs), before);
+        // Moving back up-left over itself.
+        docs.move_cells(id, 2, 2, 1, 2, 1, 0, false).unwrap();
+        assert_eq!(all(&docs), "a\tb\tc\r\n5\t6\t3\r\n8\t9\t\r\n7\t\t\r\n");
+        docs.undo(id).unwrap();
+        assert_eq!(all(&docs), before);
+        // Outside the table, or too many cells: refused, nothing changes.
+        assert!(docs.move_cells(id, 0, 2, 0, 2, 3, 0, false).is_err());
+        assert!(docs.move_cells(id, 0, 1, 0, 2, 0, 2, false).is_err());
+        assert!(docs.move_cells(id, 0, u64::MAX, 0, 2, 0, 0, false).is_err());
+        assert_eq!(
+            docs.move_cells(id, 0, 60_000, 0, 1, 0, 0, false)
+                .unwrap_err()
+                .kind,
+            "too_large"
+        );
+        assert_eq!(all(&docs), before);
+        // Nothing to do.
+        docs.move_cells(id, 1, 1, 1, 1, 1, 1, false).unwrap();
+        assert_eq!(all(&docs), before);
+        // Ctrl held: copy, the original stays.
+        docs.move_cells(id, 1, 1, 0, 2, 3, 1, true).unwrap();
+        assert_eq!(all(&docs), "a\tb\tc\r\n1\t2\t3\r\n4\t5\t6\r\n7\t1\t2\r\n");
+        docs.undo(id).unwrap();
+        assert_eq!(all(&docs), before);
+        // A read-only tab refuses.
+        docs.set_read_only(id, true).unwrap();
+        assert!(docs.move_cells(id, 1, 1, 0, 1, 2, 0, false).is_err());
+        assert_eq!(all(&docs), before);
     }
 }

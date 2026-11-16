@@ -6,6 +6,7 @@
   import { Registry, keyOf, type Command, type Menu } from "./lib/commands";
   import { parseTsv } from "./lib/tsv";
   import { cellCount, type Rect } from "./lib/selection";
+  import { MOUSE_MOVES } from "./lib/dragmove";
   import { looksLikeHeader } from "./lib/header";
   import { separatorName } from "./lib/layout";
   import Grid from "./lib/Grid.svelte";
@@ -145,6 +146,8 @@
   let search = $state<string | null>(null);
   let shortcutsOpen = $state(false);
   let keysOpen = $state(false);
+  /** The shortcuts list was opened at its mouse section (Help > Mouse and drag moves). */
+  let keysMouse = $state(false);
   /** Recovery copies from a run that stopped, or the current file's earlier saves. */
   let recovery = $state<{ mode: "recover" | "versions"; items: (RecoveryItem | VersionItem)[] | null; doc: number; name: string } | null>(null);
   /** When each tab last got a recovery copy, or first had unsaved changes (ms). */
@@ -1565,13 +1568,80 @@
     const to = r.col + dir;
     if (to < 0 || to + r.cols > t.info.cols) return;
     if (await change({ op: "move_cols", at: r.col, count: r.cols, to })) {
-      // Carry the moved columns' widths with them.
-      const moved = Array.from({ length: r.cols }, (_, i) => t.columns.width(r.col + i));
-      const passed = t.columns.width(dir < 0 ? r.col - 1 : r.col + r.cols);
-      moved.forEach((w, i) => t.columns.setWidth(to + i, w));
-      t.columns.setWidth(dir < 0 ? r.col + r.cols - 1 : r.col, passed);
+      // Carry the moved columns' widths, formats and wrapping with them.
+      t.noteColMove(r.col, r.cols, to);
       grid?.select({ row: t.sel.anchor.row, col: t.sel.anchor.col + dir }, { row: t.sel.focus.row, col: t.sel.focus.col + dir });
     }
+  }
+
+  /** Columns dragged by their headers to start at `to`. */
+  async function dragCols(at: number, count: number, to: number): Promise<void> {
+    const t = tab;
+    if (!t || !ready()) return;
+    if (await change({ op: "move_cols", at, count, to })) {
+      t.noteColMove(at, count, to);
+      grid?.select({ row: t.firstRow, col: to }, { row: Math.max(t.firstRow, t.info.rows - 1), col: to + count - 1 }, false);
+      say(`Moved ${count === 1 ? "1 column" : `${count.toLocaleString()} columns`}. Ctrl+Z puts ${count === 1 ? "it" : "them"} back.`);
+    }
+  }
+
+  /** Rows dragged by their numbers to start at `to`. */
+  async function dragRows(at: number, count: number, to: number): Promise<void> {
+    const t = tab;
+    if (!t || !ready()) return;
+    if (t.info.filtered) {
+      say("Rows can't be moved while a filter is on. Clear the filter first (Filtered ✕).");
+      return;
+    }
+    if (await change({ op: "move_rows", at, count, to })) {
+      grid?.select({ row: to, col: 0 }, { row: to + count - 1, col: Math.max(0, t.info.cols - 1) }, false);
+      say(`Moved ${count === 1 ? "1 row" : `${count.toLocaleString()} rows`}. Ctrl+Z puts ${count === 1 ? "it" : "them"} back.`);
+    }
+  }
+
+  /** The selected block dragged by its outline to start at (row, col);
+   *  `copy` (Ctrl held) copies it instead, as in Excel. */
+  async function dragCells(from: Rect, row: number, col: number, copy: boolean): Promise<void> {
+    const t = tab;
+    if (!t || !ready()) return;
+    if (cellCount(from) * 2 > MAX_CELLS_PER_CHANGE) {
+      say(`Dragging moves up to ${(MAX_CELLS_PER_CHANGE / 2).toLocaleString()} cells at once. For more, use Cut (Ctrl+X) and Paste (Ctrl+V).`);
+      return;
+    }
+    if (await apply((x) => backend().moveCells(x.id, from.row, from.rows, from.col, from.cols, row, col, copy))) {
+      grid?.select({ row, col }, { row: row + from.rows - 1, col: col + from.cols - 1 });
+      const n = cellCount(from);
+      say(`${copy ? "Copied" : "Moved"} ${n.toLocaleString()} cell${n === 1 ? "" : "s"}. Ctrl+Z undoes it.`);
+    }
+  }
+
+  // ---- file tabs: drag one along the bar to put it elsewhere -----------------
+  let tabDrag = $state<{ from: number; x: number; moved: boolean; pointer: number } | null>(null);
+
+  function tabPointerDown(e: PointerEvent, i: number): void {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+    tabDrag = { from: i, x: e.clientX, moved: false, pointer: e.pointerId };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function tabPointerMove(e: PointerEvent): void {
+    const d = tabDrag;
+    if (!d || e.pointerId !== d.pointer) return;
+    if (!d.moved && Math.abs(e.clientX - d.x) < 6) return;
+    d.moved = true;
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-tab-index]");
+    const to = over ? Number(over.dataset.tabIndex) : NaN;
+    if (!Number.isInteger(to) || to === d.from || to < 0 || to >= tabs.length) return;
+    const current = tabs[active];
+    const [moved] = tabs.splice(d.from, 1);
+    tabs.splice(to, 0, moved!);
+    if (current) active = tabs.indexOf(current);
+    d.from = to;
+  }
+
+  function tabPointerUp(e: PointerEvent): void {
+    if (!tabDrag || e.pointerId !== tabDrag.pointer) return;
+    tabDrag = null;
   }
 
   async function makeHeader(): Promise<void> {
@@ -2287,7 +2357,8 @@
     }
     for (let c = r.col; c < r.col + r.cols; c++) t.columns.setWidth(c, 0);
     const next = t.columns.firstVisible(r.col + r.cols);
-    grid?.select({ row: t.sel.focus.row, col: next >= 0 ? next : t.columns.firstVisible(0) });
+    // The top of the selection: a whole column's focus is the last row.
+    grid?.select({ row: r.row, col: next >= 0 ? next : t.columns.firstVisible(0) });
     t.bump();
   }
 
@@ -2307,7 +2378,13 @@
 
   async function undoRedo(op: "undo" | "redo"): Promise<void> {
     if (grid?.isEditing()) return;
-    await change({ op });
+    const t = tab;
+    if (t) t.replaying = op;
+    try {
+      await change({ op });
+    } finally {
+      if (t) t.replaying = null;
+    }
   }
 
   // ---- long operations ------------------------------------------------------------
@@ -2867,7 +2944,8 @@
     { id: "data.subtotals", label: "S&ubtotals…", run: () => { subtotalOpen = true; }, enabled: ready },
     { id: "help.search", label: "&Search commands…", keys: ["Alt+Q"], run: () => { search = ""; } },
     { id: "help.shortcuts", label: "&Customize shortcuts…", run: () => { shortcutsOpen = true; } },
-    { id: "help.keys", label: "&Keyboard shortcuts", keys: ["Ctrl+/", "F1"], run: () => { keysOpen = true; } },
+    { id: "help.keys", label: "&Keyboard shortcuts", keys: ["Ctrl+/", "F1"], run: () => { keysMouse = false; keysOpen = true; } },
+    { id: "help.mouse", label: "&Mouse and drag moves", run: () => { keysMouse = true; keysOpen = true; } },
     { id: "help.about", label: "&About Natendo Data Edit", run: showAbout },
   ];
   reg.add(cmds);
@@ -2931,7 +3009,7 @@
         "tools.findPrivate",
       ],
     },
-    { label: "&Help", items: ["help.search", "help.keys", "help.shortcuts", "-", "help.logs", "help.about"] },
+    { label: "&Help", items: ["help.search", "help.keys", "help.mouse", "help.shortcuts", "-", "help.logs", "help.about"] },
   ];
 
   // Command search shows each command's menu and its README description.
@@ -3801,8 +3879,13 @@
 
   <div class="tabs" role="tablist" aria-label="Open files">
     {#each tabs as t, i (t.id)}
-      <div class="tab" class:active={i === active} role="tab" aria-selected={i === active} tabindex="-1" title={t.info.path ?? t.info.name}
+      <div class="tab" class:active={i === active} class:dragging={tabDrag?.moved && tabs[tabDrag.from] === t} role="tab" aria-selected={i === active} tabindex="-1" title={t.info.path ?? t.info.name}
+        data-tab-index={i}
         onmousedown={(e) => { if (e.button === 1) { e.preventDefault(); void closeTab(i); } }}
+        onpointerdown={(e) => tabPointerDown(e, i)}
+        onpointermove={tabPointerMove}
+        onpointerup={tabPointerUp}
+        onpointercancel={tabPointerUp}
         onclick={() => { active = i; void tick().then(() => grid?.focus()); }}
         onkeydown={() => {}}
       >
@@ -3839,6 +3922,9 @@
           onFill={(dir, count, swap) => void fillHandle(dir, count, swap)}
           onFillAuto={() => void fillHandleAuto()}
           onOpenLink={(url) => void openLink(url)}
+          onMoveCols={(at, count, to) => void dragCols(at, count, to)}
+          onMoveRows={(at, count, to) => void dragRows(at, count, to)}
+          onMoveCells={(from, row, col, copy) => void dragCells(from, row, col, copy)}
         />
       {/key}
     {:else}
@@ -4098,8 +4184,10 @@
   <KeysDialog
     groups={keyGroups(menus, (id) => { const c = reg.get(id); return c ? { label: c.label, keys: c.keys ?? [] } : null; })}
     basics={BASIC_KEYS}
+    mouse={MOUSE_MOVES}
+    showMouse={keysMouse}
     onCustomize={() => { keysOpen = false; shortcutsOpen = true; }}
-    onClose={() => { keysOpen = false; grid?.focus(); }}
+    onClose={() => { keysOpen = false; keysMouse = false; grid?.focus(); }}
   />
 {/if}
 
@@ -4715,6 +4803,10 @@
     background: var(--surface);
     color: var(--text);
     box-shadow: inset 0 2px 0 var(--accent);
+  }
+  .tab.dragging {
+    opacity: 0.7;
+    cursor: grabbing;
   }
   .tabs:empty {
     display: none;

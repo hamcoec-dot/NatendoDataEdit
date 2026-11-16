@@ -8,10 +8,18 @@
     groups: KeyGroup[];
     /** Keys the grid itself handles (not commands). */
     basics: { label: string; keys: string }[];
+    /** What the mouse does (drag to move, resize, freeze...). */
+    mouse: { label: string; keys: string }[];
+    /** Open scrolled to the mouse section. */
+    showMouse?: boolean;
     onCustomize: () => void;
     onClose: () => void;
   }
-  let { groups, basics, onCustomize, onClose }: Props = $props();
+  let { groups, basics, mouse, showMouse = false, onCustomize, onClose }: Props = $props();
+  let mouseSection = $state<HTMLElement>();
+  $effect(() => {
+    if (showMouse) mouseSection?.scrollIntoView({ block: "start" });
+  });
   let q = $state("");
 
   const norm = (s: string) => s.toLowerCase().replace(/&/g, "");
@@ -22,10 +30,12 @@
       .map((g) => ({ name: g.name, items: g.items.filter((i) => hit(i.label) || i.keys.some(hit)) }))
       .filter((g) => g.items.length);
   });
-  const basicShown = $derived(basics.filter((b) => !q.trim() || norm(b.label).includes(norm(q.trim())) || norm(b.keys).includes(norm(q.trim()))));
+  const match = (b: { label: string; keys: string }) => !q.trim() || norm(b.label).includes(norm(q.trim())) || norm(b.keys).includes(norm(q.trim()));
+  const basicShown = $derived(basics.filter(match));
+  const mouseShown = $derived(mouse.filter(match));
 </script>
 
-<FormShell title="Keyboard shortcuts" wide {onClose}>
+<FormShell title="Keyboard shortcuts and mouse moves" wide {onClose}>
   <input class="search" type="search" placeholder="Search shortcuts (a command or a key, such as Ctrl+S)" aria-label="Search shortcuts" maxlength="100" bind:value={q} />
   <p class="note">Shortcuts follow Excel's where Excel has one.</p>
   <div class="cols">
@@ -34,6 +44,14 @@
         <h3>Moving and typing</h3>
         <dl>
           {#each basicShown as b (b.label)}<dt>{b.label}</dt><dd><kbd>{b.keys}</kbd></dd>{/each}
+        </dl>
+      </section>
+    {/if}
+    {#if mouseShown.length}
+      <section bind:this={mouseSection}>
+        <h3>Mouse</h3>
+        <dl>
+          {#each mouseShown as b (b.label)}<dt>{b.label}</dt><dd>{b.keys}</dd>{/each}
         </dl>
       </section>
     {/if}
@@ -48,7 +66,7 @@
         </dl>
       </section>
     {:else}
-      {#if !basicShown.length}<p class="note">No shortcut matches “{q}”.</p>{/if}
+      {#if !basicShown.length && !mouseShown.length}<p class="note">No shortcut matches “{q}”.</p>{/if}
     {/each}
   </div>
   {#snippet buttons()}

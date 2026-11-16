@@ -255,6 +255,7 @@ export class MockBackend implements Backend {
       modified: false,
       can_undo: false,
       can_redo: false,
+      history_pos: 0,
       encoding: "UTF-8",
       bom: false,
       delimiter: ",",
@@ -587,6 +588,7 @@ export class MockBackend implements Backend {
     d.info.cols = this.colCount(d);
     d.info.can_undo = d.undo.length > 0;
     d.info.can_redo = d.redo.length > 0;
+    d.info.history_pos = d.undo.length;
     d.info.modified = d.undo.length !== d.clean;
     d.info.column_changes = d.cols !== null;
     return { ...d.info };
@@ -669,6 +671,19 @@ export class MockBackend implements Backend {
     if (rows * cols > 100_000) throw err("too_large", "one change is limited to 100,000 cells");
     const cells: [number, number, string][] = [];
     for (let r = row; r < row + rows; r++) for (let c = col; c < col + cols; c++) cells.push([r, c, value]);
+    return this.setCells(doc, cells);
+  }
+
+  async moveCells(doc: number, row: number, rows: number, col: number, cols: number, toRow: number, toCol: number, copy: boolean) {
+    const d = this.get(doc);
+    if (rows * cols * 2 > 100_000) throw err("too_large", "one change is limited to 100,000 cells");
+    const fits = (r: number, c: number) => r >= 0 && c >= 0 && r + rows <= this.rowCount(d) && c + cols <= this.colCount(d);
+    if (!fits(row, col) || !fits(toRow, toCol)) throw err("out_of_range", "row or column out of range");
+    if (rows * cols === 0 || (row === toRow && col === toCol)) return this.refresh(d);
+    const inside = (r: number, c: number) => r >= toRow && r < toRow + rows && c >= toCol && c < toCol + cols;
+    const cells: [number, number, string][] = [];
+    for (let r = row; r < row + rows; r++) for (let c = col; c < col + cols; c++) if (!copy && !inside(r, c)) cells.push([r, c, ""]);
+    for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) cells.push([toRow + i, toCol + j, this.value(d, row + i, col + j)]);
     return this.setCells(doc, cells);
   }
 

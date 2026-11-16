@@ -177,6 +177,14 @@ everything is also in command search.
 - Tabs for each open file, frozen rows and columns, insert, delete, move,
   hide, resize and auto-fit columns, hide and show rows (Ctrl+9,
   Ctrl+Shift+9).
+- **Drag to move and arrange**, as in Google Sheets: drag selected columns by
+  their headings, or selected rows by their numbers, to put them somewhere
+  else; drag a selected block of cells by its outline to move it (Ctrl+drag
+  copies it, Esc stops a drag). Resize or double-click-fit several selected
+  columns at once, click the small arrow beside hidden columns to show them
+  again, drag the edges of the top-left corner to freeze rows or columns, and
+  drag file tabs into another order. Each move is one undo step. Help > Mouse
+  and drag moves lists them all.
 - Light, dark or system theme with an accent colour, font and font size, zoom.
 - Alternating row colours, wrapped text, row height in lines.
 - **Display formats** per column (numbers, percent, currency, dates, tick
@@ -191,6 +199,9 @@ everything is also in command search.
   or a click open the tool; Esc or Alt+Q again closes.
 - Custom shortcuts, Ctrl+/ for the list of shortcuts, a file browser panel,
   an activity panel, and a start page with recent files.
+
+![Dragging the city column by its heading to a new place](docs/screenshots/drag-column.png)
+*Dragging "city" by its heading: a see-through band follows the pointer and the bar shows where it will land.*
 
 ### Editing
 
@@ -533,5 +544,7 @@ request must carry the key. Requests are one JSON object per line:
   text table cannot hold them. Computed columns save their values as text;
   highlight rules and checks are kept in saved views.
 - PDF output does not include Chinese, Japanese or Korean characters yet.
+- Dragging a block of cells moves up to 50,000 cells at once (Cut and Paste
+  handle more), and rows cannot be dragged while a filter is on.
 - The watched folder stops when the app closes, and recipes with a scramble
   step cannot run there or from the command line (the phrase is never stored).

@@ -1970,6 +1970,23 @@ async fn fill_cells(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn move_cells(
+    docs: DocsState<'_>,
+    doc: u32,
+    row: u64,
+    rows: u64,
+    col: u32,
+    cols: u32,
+    to_row: u64,
+    to_col: u32,
+    copy: bool,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.move_cells(doc, row, rows, col, cols, to_row, to_col, copy)).await
+}
+
+#[tauri::command]
 async fn copy_cells(
     docs: DocsState<'_>,
     doc: u32,
@@ -2762,6 +2779,7 @@ pub fn run() {
             cell_text,
             set_cells,
             fill_cells,
+            move_cells,
             copy_cells,
             change,
             save,

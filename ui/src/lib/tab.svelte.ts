@@ -106,10 +106,35 @@ export class Tab {
   }
 
   /** Take new engine info; refetch cells when the data may have changed. */
+  /** Column moves by the undo position they made, so undo and redo carry
+   *  widths, formats and wrapping back with the columns. */
+  private colMoves: { pos: number; at: number; count: number; to: number }[] = [];
+  /** Set around an undo or redo, so `update` knows to replay a column move. */
+  replaying: "undo" | "redo" | null = null;
+
+  /** Columns were just moved (the change is already in `info`). */
+  noteColMove(at: number, count: number, to: number): void {
+    this.columns.move(at, count, to);
+    this.colMoves.push({ pos: this.info.history_pos, at, count, to });
+    if (this.colMoves.length > 1000) this.colMoves.shift();
+  }
+
   update(info: DocInfo, dataChanged: boolean): void {
     const structural =
       info.cols !== this.info.cols || info.rows !== this.info.rows || info.filtered !== this.info.filtered;
     if (!info.has_filter) this.filter = null;
+    const before = this.info.history_pos;
+    const after = info.history_pos;
+    if (this.replaying === "undo" && after === before - 1) {
+      const m = this.colMoves.find((x) => x.pos === before);
+      if (m) this.columns.move(m.to, m.count, m.at);
+    } else if (this.replaying === "redo" && after === before + 1) {
+      const m = this.colMoves.find((x) => x.pos === after);
+      if (m) this.columns.move(m.at, m.count, m.to);
+    } else if (after > before) {
+      // A new change: moves that could have been redone are gone.
+      this.colMoves = this.colMoves.filter((x) => x.pos <= before);
+    }
     this.info = info;
     this.columns.setCount(info.cols);
     if (dataChanged || structural) this.cache.invalidate();

@@ -6,7 +6,8 @@
   import { onMount, tick, untrack } from "svelte";
   import type { Tab } from "./tab.svelte";
   import { prefs } from "./prefs.svelte";
-  import { contains, type Cell } from "./selection";
+  import { contains, type Cell, type Rect } from "./selection";
+  import { blockTarget, dropIndex, gapAt, onOutline } from "./dragmove";
   import { backend, errorText, type Dir } from "./backend";
   import { PALETTE } from "./views";
   import { localDays } from "./m8";
@@ -37,9 +38,16 @@
     onFillAuto?: () => void;
     /** Ctrl+click on a cell holding a web or e-mail address (checked). */
     onOpenLink?: (url: string) => void;
+    /** Whole columns (rows) were dragged by their header: move `count` at
+     *  `at` so they start at `to`. */
+    onMoveCols?: (at: number, count: number, to: number) => void;
+    onMoveRows?: (at: number, count: number, to: number) => void;
+    /** The selected block was dragged by its outline to start at (row, col);
+     *  `copy`: Ctrl was held, so copy it instead. */
+    onMoveCells?: (from: Rect, row: number, col: number, copy: boolean) => void;
     readOnly: boolean;
   }
-  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, readOnly }: Props = $props();
+  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, readOnly }: Props = $props();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -294,13 +302,15 @@
         }
         ctx.fillStyle = inSel ? colors.text : colors.muted;
         const btn = tab.filterButtons || filtered.has(c) ? FILTER_BTN : 0;
+        const mark = c > 0 && tab.columns.isHidden(c - 1);
         ctx.save();
         ctx.beginPath();
         ctx.rect(x + 4, 0, cw - 8 - btn, headH);
         ctx.clip();
-        ctx.fillText(colTitle(c), x + 6, headH / 2);
+        ctx.fillText(colTitle(c), x + 6 + (mark ? MARK_W : 0), headH / 2);
         ctx.restore();
         if (btn) drawFilterButton(ctx, x + cw - btn - 2, filtered.has(c));
+        if (mark) drawHiddenMark(ctx, x);
         ctx.fillStyle = colors.border;
         ctx.fillRect(x + cw - 1, 0, 1, headH);
       }
@@ -368,6 +378,8 @@
       ctx.fillText("1", rowHeaderW - 10 - ctx.measureText("1").width, headH / 2);
     }
     drawFillHandle(ctx, w, h);
+    drawMove(ctx, w, h);
+    drawFreezeDrag(ctx, w, h);
     scrollTick++;
     positionEditor();
     wantMarks(rows, cols);
@@ -510,6 +522,194 @@
 
   function onHandle(px: number, py: number): boolean {
     return !!handle && px >= handle.x - 3 && px <= handle.x + HANDLE + 3 && py >= handle.y - 3 && py <= handle.y + HANDLE + 3;
+  }
+
+  // ---- dragging columns, rows and blocks of cells to move them -------------
+  /** A press on a selected header (or on the selection's outline) that may
+   *  become a move; it starts once the pointer has gone a few pixels. */
+  type Moving = {
+    kind: "cols" | "rows" | "cells";
+    from: Rect;
+    startX: number;
+    startY: number;
+    active: boolean;
+    /** Where the press was: the cell grabbed, or the header clicked. */
+    grab: Cell;
+    /** cols/rows: the index the block would start at; cells: top-left. */
+    to: Cell | null;
+    /** Pointer now, and its offset into the block when pressed (for the
+     *  see-through copy that follows the pointer). */
+    px: number;
+    py: number;
+    offset: number;
+  };
+  let moving: Moving | null = null;
+  const MOVE_SLOP = 4;
+
+  function wholeColsSel(r: Rect): boolean {
+    return tab.info.rows > 0 && r.row <= tab.firstRow && r.row + r.rows >= tab.info.rows;
+  }
+  function wholeRowsSel(r: Rect): boolean {
+    return tab.info.cols > 0 && r.col === 0 && r.cols >= tab.info.cols;
+  }
+
+  /** The selection's outline on screen, where a block can be picked up. */
+  function onSelOutline(px: number, py: number): boolean {
+    const r = tab.rect;
+    if (tab.info.rows === 0 || wholeColsSel(r) || wholeRowsSel(r)) return false;
+    const b = screenBox(r.row, r.col, r.row + r.rows - 1, r.col + r.cols - 1, viewW(), viewH());
+    return px >= rowHeaderW && py >= headH && onOutline(px, py, b);
+  }
+
+  /** Where the drag would put things with the pointer at (px, py). */
+  function moveTarget(m: Moving, px: number, py: number): Cell | null {
+    const x = Math.min(Math.max(px, rowHeaderW), viewW() - 1);
+    const y = Math.min(Math.max(py, headH), viewH() - 1);
+    if (m.kind === "cols") {
+      const h = hit(x, headH - 1);
+      if (h.area !== "col") return null;
+      const left = colX(h.col, visibleCols());
+      const to = dropIndex(m.from.col, m.from.cols, gapAt(h.col, x - left, tab.columns.width(h.col)), tab.info.cols);
+      return to === null ? null : { row: 0, col: to };
+    }
+    if (m.kind === "rows") {
+      const h = hit(1, y);
+      if (h.area !== "row") return null;
+      const top = rowY(h.row, visibleRows());
+      const to = dropIndex(m.from.row, m.from.rows, gapAt(h.row, y - top, rowH), tab.info.rows, tab.firstRow);
+      return to === null ? null : { row: to, col: 0 };
+    }
+    const h = hit(x, y);
+    if (h.area !== "cell") return m.to;
+    const t = blockTarget(m.from, m.grab, h, tab.info.rows, tab.info.cols, tab.firstRow);
+    return t.row === m.from.row && t.col === m.from.col ? null : t;
+  }
+
+  function drawMove(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    const m = moving;
+    if (!m?.active) return;
+    // A see-through band the size of what is dragged follows the pointer.
+    if (m.kind === "cols") {
+      const bw = Math.min(w, tab.columns.x(m.from.col + m.from.cols) - tab.columns.x(m.from.col));
+      ctx.save();
+      ctx.fillStyle = colors.accent;
+      ctx.globalAlpha = 0.15;
+      ctx.fillRect(m.px - m.offset, 0, bw, h);
+      ctx.restore();
+    } else if (m.kind === "rows") {
+      const bh = Math.min(h, m.from.rows * rowH);
+      ctx.save();
+      ctx.fillStyle = colors.accent;
+      ctx.globalAlpha = 0.15;
+      ctx.fillRect(0, m.py - m.offset, w, bh);
+      ctx.restore();
+    }
+    if (!m.to) return;
+    ctx.save();
+    ctx.fillStyle = colors.accent;
+    ctx.strokeStyle = colors.accent;
+    if (m.kind === "cols") {
+      // A bar at the gap the columns go into.
+      const gap = m.to.col < m.from.col ? m.to.col : m.to.col + m.from.cols;
+      const cols = visibleCols();
+      const x = gap >= tab.info.cols ? colX(gap - 1, cols) + tab.columns.width(gap - 1) : colX(gap, cols);
+      if (x >= rowHeaderW - 2 && x <= w + 2) ctx.fillRect(x - 2, 0, 4, h);
+    } else if (m.kind === "rows") {
+      const gap = m.to.row < m.from.row ? m.to.row : m.to.row + m.from.rows;
+      const rows = visibleRows();
+      const y = gap >= tab.info.rows ? rowY(gap - 1, rows) + rowH : rowY(gap, rows);
+      if (y >= headH - 2 && y <= h + 2) ctx.fillRect(0, y - 2, w, 4);
+    } else {
+      ctx.beginPath();
+      ctx.rect(rowHeaderW, headH, w - rowHeaderW, h - headH);
+      ctx.clip();
+      const b = screenBox(m.to.row, m.to.col, m.to.row + m.from.rows - 1, m.to.col + m.from.cols - 1, w, h);
+      ctx.globalAlpha = 0.12;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.globalAlpha = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 2;
+      ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
+    }
+    ctx.restore();
+  }
+
+  function cancelMove(): void {
+    if (!moving && !freezing) return;
+    moving = null;
+    freezing = null;
+    cursor = "default";
+    redraw();
+  }
+
+  // ---- hidden columns: a mark on the header beside them; a click shows them
+  const MARK_W = 10;
+
+  function drawHiddenMark(ctx: CanvasRenderingContext2D, edge: number): void {
+    // A small arrow pointing left, at the hidden columns.
+    const x = edge + 5;
+    const y = headH / 2;
+    const s = Math.max(3, Math.round(fontPx * 0.3));
+    ctx.save();
+    ctx.fillStyle = colors.accent;
+    ctx.beginPath();
+    ctx.moveTo(x + s, y - s);
+    ctx.lineTo(x, y);
+    ctx.lineTo(x + s, y + s);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** The hidden columns just left of the header mark at (px, py), or null. */
+  function hiddenAt(px: number, py: number, col: number): { from: number; to: number } | null {
+    if (py >= headH || col <= 0 || !tab.columns.isHidden(col - 1)) return null;
+    const left = colX(col, visibleCols());
+    if (px <= left + 4 || px > left + 4 + MARK_W) return null;
+    let from = col - 1;
+    while (from > 0 && tab.columns.isHidden(from - 1)) from--;
+    return { from, to: col };
+  }
+
+  // ---- dragging the corner's edges to freeze rows or columns ---------------
+  /** Frozen rows (or columns) the drag would leave, by pointer position. */
+  let freezing: { kind: "rows" | "cols"; n: number } | null = null;
+
+  function onFreezeEdge(px: number, py: number): "rows" | "cols" | null {
+    if (px < rowHeaderW && py < headH) {
+      if (py >= headH - 4) return "rows";
+      if (px >= rowHeaderW - 4) return "cols";
+      return null;
+    }
+    // With rows frozen, their line in the row numbers can be dragged too.
+    if (frozenRows() > 0 && px < rowHeaderW && Math.abs(py - bodyTop()) <= 3) return "rows";
+    return null;
+  }
+
+  function freezeCount(kind: "rows" | "cols", px: number, py: number): number {
+    if (kind === "rows") {
+      const most = Math.max(0, Math.min(dataRows(), Math.floor((viewH() - headH) / rowH) - 1));
+      return Math.min(most, Math.max(0, Math.round((py - headH) / rowH)));
+    }
+    const x = px - rowHeaderW;
+    if (x <= 0 || tab.info.cols === 0) return 0;
+    const c = tab.columns.at(x);
+    const n = x - tab.columns.x(c) < tab.columns.width(c) / 2 ? c : c + 1;
+    // Keep some room on the right to scroll the rest.
+    let most = n;
+    while (most > 0 && rowHeaderW + tab.columns.x(most) > viewW() - 40) most--;
+    return Math.min(n, most, tab.info.cols);
+  }
+
+  function drawFreezeDrag(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    const f = freezing;
+    if (!f) return;
+    ctx.save();
+    ctx.fillStyle = colors.accent;
+    ctx.globalAlpha = 0.7;
+    if (f.kind === "rows") ctx.fillRect(0, headH + f.n * rowH - 2, w, 4);
+    else ctx.fillRect(rowHeaderW + tab.columns.x(f.n) - 2, 0, 4, h);
+    ctx.restore();
   }
 
   /** The fill a pointer over cell (row, col) asks for: along the axis it
@@ -918,6 +1118,16 @@
       }
       return;
     }
+    const fz = onFreezeEdge(x, y);
+    if (fz) {
+      // Frozen rows and columns count from the top-left of the file.
+      if (fz === "rows") tab.scrollY = 0;
+      else tab.scrollX = 0;
+      clampScroll();
+      freezing = { kind: fz, n: fz === "rows" ? frozenRows() : frozenCols() };
+      redraw();
+      return;
+    }
     switch (h.area) {
       case "cell":
         if (e.ctrlKey && !e.shiftKey && onOpenLink) {
@@ -932,6 +1142,10 @@
           void openPick();
           break;
         }
+        if (!e.shiftKey && !e.ctrlKey && e.detail === 1 && onMoveCells && !readOnly && onSelOutline(x, y)) {
+          moving = { kind: "cells", from: tab.rect, startX: x, startY: y, active: false, grab: { row: h.row, col: h.col }, to: null, px: x, py: y, offset: 0 };
+          break;
+        }
         if (!e.shiftKey && !e.ctrlKey && e.detail === 1 && onTickBox(x, y, h.row, h.col)) {
           select({ row: h.row, col: h.col });
           void toggleTick(h.row, h.col);
@@ -942,19 +1156,37 @@
         drag = { kind: "select" };
         if (e.detail === 2) startEdit();
         break;
-      case "row":
+      case "row": {
+        const r = tab.rect;
+        if (!e.shiftKey && !e.ctrlKey && onMoveRows && !readOnly && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) {
+          moving = { kind: "rows", from: r, startX: x, startY: y, active: false, grab: { row: h.row, col: 0 }, to: null, px: x, py: y, offset: y - rowY(r.row, visibleRows()) };
+          break;
+        }
         if (e.shiftKey) select({ row: tab.sel.anchor.row, col: 0 }, { row: h.row, col: fullCols }, false);
         else select({ row: h.row, col: 0 }, { row: h.row, col: fullCols }, false);
         drag = { kind: "rows" };
         break;
+      }
       case "col":
         if (h.edge !== null) {
+          const span = selectedColsWith(h.edge);
           if (e.detail === 2) {
-            autoFit(h.edge);
+            // Every selected column, as in Sheets (a few hundred at most:
+            // each one measures the rows on screen).
+            if (span && span.cols <= MAX_FIT_COLS) for (let c = span.col; c < span.col + span.cols; c++) autoFit(c);
+            else autoFit(h.edge);
             break;
           }
           drag = { kind: "resize", col: h.edge, startX: x, startW: tab.columns.width(h.edge) };
           break;
+        }
+        {
+          const run = hiddenAt(x, y, h.col);
+          if (run) {
+            tab.columns.showRange(run.from, run.to);
+            tab.bump();
+            break;
+          }
         }
         if ((tab.filterButtons || filtered.has(h.col)) && onFilterButton) {
           const cols = visibleCols();
@@ -966,6 +1198,13 @@
             e.stopPropagation();
             const r = canvas.getBoundingClientRect();
             onFilterButton(h.col, r.left + right - FILTER_BTN - 2, r.top + headH);
+            break;
+          }
+        }
+        {
+          const r = tab.rect;
+          if (!e.shiftKey && !e.ctrlKey && onMoveCols && !readOnly && wholeColsSel(r) && h.col >= r.col && h.col < r.col + r.cols) {
+            moving = { kind: "cols", from: r, startX: x, startY: y, active: false, grab: { row: 0, col: h.col }, to: null, px: x, py: y, offset: x - colX(r.col, visibleCols()) };
             break;
           }
         }
@@ -982,10 +1221,60 @@
   let cursor = $state("default");
   function onMouseMove(e: MouseEvent): void {
     const [x, y] = local(e);
+    if (freezing) {
+      freezing.n = freezeCount(freezing.kind, x, y);
+      cursor = freezing.kind === "rows" ? "row-resize" : "col-resize";
+      redraw();
+      return;
+    }
+    if (moving) {
+      const m = moving;
+      if (!m.active) {
+        if (Math.abs(x - m.startX) < MOVE_SLOP && Math.abs(y - m.startY) < MOVE_SLOP) return;
+        m.active = true;
+      }
+      cursor = m.kind === "cells" && e.ctrlKey ? "copy" : "grabbing";
+      // Scroll when the pointer leaves the body, along the axis that moves.
+      if (m.kind !== "cols") {
+        if (y > viewH() - 4) tab.scrollY += rowH;
+        if (y < bodyTop() && tab.scrollY > 0) tab.scrollY -= rowH;
+      }
+      if (m.kind !== "rows") {
+        if (x > viewW() - 4) tab.scrollX += 40;
+        if (x < bodyLeft() && tab.scrollX > 0) tab.scrollX -= 40;
+      }
+      clampScroll();
+      m.px = x;
+      m.py = y;
+      m.to = moveTarget(m, x, y);
+      redraw();
+      return;
+    }
     if (!drag) {
       const h = hit(x, y);
       const pointer = h.area === "cell" && ((e.ctrlKey && !!linkAt(h.row, h.col)) || onTickBox(x, y, h.row, h.col) || onPickButton(x, y, h.row, h.col));
-      cursor = onHandle(x, y) ? "crosshair" : h.area === "col" && h.edge !== null ? "col-resize" : pointer ? "pointer" : "default";
+      const r = tab.rect;
+      const grab =
+        !readOnly &&
+        ((h.area === "col" && h.edge === null && !!onMoveCols && wholeColsSel(r) && h.col >= r.col && h.col < r.col + r.cols) ||
+          (h.area === "row" && !!onMoveRows && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) ||
+          (h.area === "cell" && !!onMoveCells && !editing && onSelOutline(x, y)));
+      const fz = onFreezeEdge(x, y);
+      cursor = fz
+        ? fz === "rows"
+          ? "row-resize"
+          : "col-resize"
+        : onHandle(x, y)
+          ? "crosshair"
+          : h.area === "col" && h.edge !== null
+            ? "col-resize"
+            : grab || (h.area === "col" && hiddenAt(x, y, h.col))
+              ? grab
+                ? "grab"
+                : "pointer"
+              : pointer
+                ? "pointer"
+                : "default";
       return;
     }
     if (drag.kind === "resize" && drag.col !== undefined) {
@@ -1013,7 +1302,55 @@
     redraw();
   }
 
+  /** The whole-column selection holding column `c`, when it has more than one. */
+  function selectedColsWith(c: number): Rect | null {
+    const r = tab.rect;
+    return wholeColsSel(r) && r.cols > 1 && c >= r.col && c < r.col + r.cols ? r : null;
+  }
+  const MAX_FIT_COLS = 500;
+
   function onMouseUp(e: MouseEvent): void {
+    if (freezing) {
+      const f = freezing;
+      freezing = null;
+      if (f.kind === "rows") {
+        tab.frozenRows = f.n;
+        tab.scrollY = 0;
+      } else {
+        tab.frozenCols = f.n;
+        tab.scrollX = 0;
+      }
+      cursor = "default";
+      clampScroll();
+      tab.bump();
+      return;
+    }
+    if (drag?.kind === "resize" && drag.col !== undefined) {
+      // Dragging one selected column's edge sizes all of them.
+      const span = selectedColsWith(drag.col);
+      if (span) {
+        tab.columns.setRange(span.col, span.cols, tab.columns.width(drag.col));
+        tab.bump();
+      }
+    }
+    if (moving) {
+      const m = moving;
+      moving = null;
+      cursor = "default";
+      if (m.active && m.to) {
+        if (m.kind === "cols") onMoveCols?.(m.from.col, m.from.cols, m.to.col);
+        else if (m.kind === "rows") onMoveRows?.(m.from.row, m.from.rows, m.to.row);
+        else onMoveCells?.(m.from, m.to.row, m.to.col, e.ctrlKey);
+      } else if (!m.active) {
+        // A click without a drag: select just what was clicked, as before.
+        const fullCols = Math.max(0, tab.info.cols - 1);
+        if (m.kind === "cols") select({ row: tab.firstRow, col: m.grab.col }, { row: lastRow(), col: m.grab.col }, false);
+        else if (m.kind === "rows") select({ row: m.grab.row, col: 0 }, { row: m.grab.row, col: fullCols }, false);
+        else select(m.grab);
+      }
+      redraw();
+      return;
+    }
     if (drag?.kind === "fill") {
       const f = fillTo;
       fillTo = null;
@@ -1438,7 +1775,17 @@
     };
     media.addEventListener("change", onScheme);
     window.addEventListener("mouseup", onMouseUp);
+    // Esc while dragging to move: drop nothing.
+    const onKey = (e: KeyboardEvent) => {
+      if ((moving || freezing) && e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        cancelMove();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
     return () => {
+      window.removeEventListener("keydown", onKey, true);
       ro.disconnect();
       host.removeEventListener("scroll", noNativeScroll);
       media.removeEventListener("change", onScheme);

@@ -104,6 +104,10 @@ export const FEATURE_LINKS: Record<string, string[]> = {
     "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "edit.moveColsLeft", "edit.moveColsRight",
     "format.hideCols", "format.showCols", "format.autofit", "format.hideRows", "format.showRows", "format.showAllRows",
   ],
+  "drag to move and arrange": [
+    "help.mouse", "edit.moveColsLeft", "edit.moveColsRight", "edit.moveRowsUp", "edit.moveRowsDown",
+    "format.autofit", "format.showCols", "view.freeze",
+  ],
   "light dark or system theme": ["view.themeSystem", "view.themeLight", "view.themeDark", "view.fontOther", "view.zoomIn", "view.zoomOut", "view.zoomReset"],
   "alternating row colours wrapped text": ["view.banded", "format.wrap", "format.rowHeight", "format.fitRows"],
   "display formats": ["format.display", "format.clearDisplay"],
