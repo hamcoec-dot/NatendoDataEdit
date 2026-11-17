@@ -64,9 +64,9 @@
   {/if}
   {#snippet buttons()}
     {#if opened}
-      <button type="button" class="primary" disabled={!canRun} onclick={() => onRun(force, phrase)}>Run on this tab</button>
+      <button type="button" class="primary" data-enter disabled={!canRun} onclick={() => onRun(force, phrase)}>Run on this tab</button>
     {:else}
-      <button type="button" class="primary" disabled={!current || current.recipe.steps.length === 0} onclick={() => onSave(name)}>Save recipe…</button>
+      <button type="button" class="primary" data-enter disabled={!current || current.recipe.steps.length === 0} onclick={() => onSave(name)}>Save recipe…</button>
       <button type="button" onclick={onOpen}>Open a recipe to run…</button>
     {/if}
     <button type="button" onclick={onClose}>Close</button>

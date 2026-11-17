@@ -163,10 +163,13 @@ const url = process.argv[3] || "http://localhost:5194";
   await p.waitForTimeout(300);
   s = await sel();
   ok(s.rect.cols > 1 && s.cell.col === 0, `clicking a row number: the first cell is active (col ${s.cell.col})`);
+  const was = s.cell;
+  await p.keyboard.press("Control+a");
+  await p.waitForTimeout(300);
   await p.keyboard.press("Control+a");
   await p.waitForTimeout(300);
   s = await sel();
-  ok(s.cell.row === s.first && s.cell.col === 0, "Ctrl+A: the top-left cell is active");
+  ok(s.rect.row <= s.first && s.rect.cols > 1 && s.cell.row === was.row && s.cell.col === was.col, "Ctrl+A selects everything and the active cell stays where it was (as in Excel)");
 
   // ---- 5. Ctrl+Minus / Ctrl+Plus on part of a row ask how ----
   const valueAt = async (r, c) => {

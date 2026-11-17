@@ -82,7 +82,7 @@
     </div>
     <textarea bind:value={text} rows="3" maxlength="4000" placeholder="Note (optional)"></textarea>
     <div class="tools">
-      <button type="button" class="primary" onclick={() => void save()}>Save note and flag</button>
+      <button type="button" class="primary" data-enter onclick={() => void save()}>Save note and flag</button>
       <button type="button" onclick={() => { flag = 0; text = ""; void save(); }}>Remove</button>
     </div>
   </fieldset>

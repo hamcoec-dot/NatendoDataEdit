@@ -143,7 +143,7 @@
   {/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#snippet buttons()}
-    <button type="button" class="primary" onclick={save} disabled={!!unknown.length || !text.trim() || rows === 0}>Save as PDF…</button>
+    <button type="button" class="primary" data-enter onclick={save} disabled={!!unknown.length || !text.trim() || rows === 0}>Save as PDF…</button>
     <button type="button" onclick={onClose}>Close</button>
   {/snippet}
 </FormShell>

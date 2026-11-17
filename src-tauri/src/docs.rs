@@ -5949,6 +5949,7 @@ ca,California
                 &TallySpec {
                     col: 2,
                     keep_first: true,
+                    limit: None,
                 },
             )
             .unwrap();

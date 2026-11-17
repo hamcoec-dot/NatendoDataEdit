@@ -71,7 +71,7 @@
   {#if mode === "save" && !password}<p class="note">At least {MIN_PASSWORD} characters; a few unrelated words is easiest to remember.</p>{/if}
   {#if problem}<p class="warn">{problem}</p>{/if}
   {#snippet buttons()}
-    <button type="button" class="primary" disabled={!!check || running || (mode === "open" && !path)} onclick={() => void go()}>{mode === "save" ? (running ? "Encrypting…" : "Save…") : running ? "Opening…" : "Open"}</button>
+    <button type="button" class="primary" data-enter disabled={!!check || running || (mode === "open" && !path)} onclick={() => void go()}>{mode === "save" ? (running ? "Encrypting…" : "Save…") : running ? "Opening…" : "Open"}</button>
     <button type="button" onclick={onClose}>Close</button>
   {/snippet}
 </FormShell>

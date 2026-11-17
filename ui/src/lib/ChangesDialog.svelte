@@ -57,7 +57,7 @@
   {/if}
   <label class="row"><input type="checkbox" checked={showEdits} onchange={(e) => onShowEdits((e.currentTarget as HTMLInputElement).checked)} /> Show my edits in the table (a corner mark on changed cells)</label>
   {#snippet buttons()}
-    <button type="button" class="primary" onclick={onSave} disabled={!list || empty}>Save as a report…</button>
+    <button type="button" class="primary" data-enter onclick={onSave} disabled={!list || empty}>Save as a report…</button>
     <button type="button" onclick={onClose}>Close</button>
   {/snippet}
 </FormShell>

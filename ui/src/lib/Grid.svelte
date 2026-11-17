@@ -55,8 +55,10 @@
     /** Double-click on a column heading: rename the column. */
     onRenameCol?: (col: number) => void;
     readOnly: boolean;
+    /** The file is locked (File > Read-only): nothing may change. */
+    locked?: boolean;
   }
-  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onJump, onFillClear, readOnly }: Props = $props();
+  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onJump, onFillClear, readOnly, locked = false }: Props = $props();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -326,14 +328,15 @@
         const btn = tab.filterButtons || filtered.has(c) ? FILTER_BTN : 0;
         // With the filter buttons off, pointing at a heading shows a small
         // arrow that opens the column's menu (as in Google Sheets).
-        if (!btn && hoverHead === c && cw > FILTER_BTN + 24) drawHeadArrow(ctx, x + cw - FILTER_BTN - 2);
+        const headArrow = !btn && hoverHead === c && cw > FILTER_BTN + 24;
+        const room = btn || (headArrow ? FILTER_BTN : 0);
         const mark = c > 0 && tab.columns.isHidden(c - 1);
         const trailing = c === lastHidden;
         // A small arrow on the columns the rows are sorted by.
         const arrow = tab.sortArrow(c);
         const arrowW = arrow ? 12 : 0;
         if (arrow) {
-          const ax = x + cw - btn - (trailing ? MARK_W + 4 : 0) - 12;
+          const ax = x + cw - room - (trailing ? MARK_W + 4 : 0) - 12;
           const s = Math.max(3, Math.round(fontPx * 0.28));
           const cy = headH / 2;
           ctx.save();
@@ -354,7 +357,7 @@
         }
         ctx.save();
         ctx.beginPath();
-        ctx.rect(x + 4, 0, cw - 8 - btn - arrowW - (trailing ? MARK_W + 4 : 0), headH);
+        ctx.rect(x + 4, 0, cw - 8 - room - arrowW - (trailing ? MARK_W + 4 : 0), headH);
         ctx.clip();
         let tx = x + 6 + (mark ? MARK_W : 0);
         if (prefs.data.colLetters) {
@@ -368,6 +371,7 @@
         ctx.fillText(colTitle(c), tx, headH / 2);
         ctx.restore();
         if (btn) drawFilterButton(ctx, x + cw - btn - 2, filtered.has(c));
+        if (headArrow) drawHeadArrow(ctx, x + cw - FILTER_BTN - 2);
         if (mark) drawHiddenMark(ctx, x + 5, true);
         if (trailing) drawHiddenMark(ctx, trailingMarkX(c) + 2, false);
         ctx.fillStyle = colors.border;
@@ -525,6 +529,11 @@
   /** Where the fill handle is on screen (null when off screen). */
   let handle: { x: number; y: number } | null = null;
   /** While dragging the handle: how far, and which way. */
+  /** Text widths and value types drawn before (see drawCells). */
+  const widthCache = new Map<string, number>();
+  let widthFont = "";
+  const typeCache = new Map<string, ReturnType<typeof valueType>>();
+
   /** The column heading under the pointer (for its menu arrow). */
   let hoverHead: number | null = null;
   /** The canvas's tooltip (a link's address). */
@@ -547,7 +556,7 @@
 
   function drawFillHandle(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     handle = null;
-    if (readOnly || editing || tab.info.rows === 0) return;
+    if (readOnly || locked || editing || tab.info.rows === 0) return;
     const sel = tab.rect;
     const corner = cellRect({ row: sel.row + sel.rows - 1, col: sel.col + sel.cols - 1 });
     ctx.save();
@@ -911,7 +920,29 @@
     active: Cell,
   ): void {
     const pad = Math.round(fontPx * 0.45);
-    const measure = (s: string) => ctx.measureText(s).width;
+    // Widths and value types are kept between frames (scrolling draws the
+    // same texts again); the width cache starts over when the font changes.
+    if (widthFont !== ctx.font || widthCache.size > 50_000) {
+      widthCache.clear();
+      widthFont = ctx.font;
+    }
+    if (typeCache.size > 50_000) typeCache.clear();
+    const measure = (s: string) => {
+      let w = widthCache.get(s);
+      if (w === undefined) {
+        w = ctx.measureText(s).width;
+        widthCache.set(s, w);
+      }
+      return w;
+    };
+    const typeOf = (s: string) => {
+      let k = typeCache.get(s);
+      if (k === undefined) {
+        k = valueType(s);
+        typeCache.set(s, k);
+      }
+      return k;
+    };
     const lines = Math.max(1, Math.min(MAX_ROW_LINES, tab.rowLines));
     // Rows on screen with a group line under them (the divider column's
     // value changes on the next row).
@@ -1002,13 +1033,15 @@
           const header = tab.header && r === 0;
           const shown = fmt && !header ? formatCell(t, fmt) : t;
           const link = !fmt && !header && /[.@:]/.test(t) ? linkOf(t) : null;
-          const kind = tab.valueTypes && !header && !link ? valueType(t) : "text";
+          const kind = tab.valueTypes && !header && !link ? typeOf(t) : "text";
           // Text on a colour-scale fill is always dark, so it reads on every shade.
           ctx.fillStyle = filled ? "#111" : link ? colors.accent : kind === "number" || kind === "date" ? typeColour[kind] : colors.text;
           const cut = tab.cache.isTruncated(r, c);
           // Where the text lines up: the column's choice, or numbers and
           // dates on the right (as in Excel) and the rest on the left.
-          const auto = !header && !link && prefs.data.alignNumbers && (fmt ? shown !== t && fmt.kind !== "date" : valueType(t) !== "text");
+          // A formatted value (number, percent, currency or date) counts as
+          // what it was formatted as.
+          const auto = !header && !link && prefs.data.alignNumbers && (fmt ? shown !== t && fmt.kind !== "checkbox" : typeOf(t) !== "text");
           const side = align ?? (auto || (fmt && shown !== t && fmt.kind !== "date" && !header) ? "right" : "left");
           const at = (w: number): number =>
             side === "right" ? Math.max(x + pad, x + cw - pad - w) : side === "center" ? Math.max(x + pad, x + (cw - w) / 2) : x + pad;
@@ -1330,7 +1363,7 @@
    *  active cell is not a tick box. */
   export async function toggleActiveTick(): Promise<boolean> {
     const { row, col } = tab.cell;
-    if (readOnly || tab.columns.formats.get(col)?.kind !== "checkbox" || (tab.header && row === 0)) return false;
+    if (readOnly || locked || tab.columns.formats.get(col)?.kind !== "checkbox" || (tab.header && row === 0)) return false;
     const t = tab.cache.get(row, col);
     if (t === undefined || tickOf(t) === null) return false;
     await toggleTick(row, col);
@@ -1388,6 +1421,8 @@
    *  MAX_FIT_COLS of them. Columns scrolled out of view are read for those
    *  rows first (one read), so they fit their text, not just the heading. */
   export async function fitCols(from: number, count: number): Promise<void> {
+    // The reads below wait: if another file's tab is shown meanwhile, stop.
+    const fitTab = tab;
     const cols: number[] = [];
     let shown = 0;
     for (let c = from; c < Math.min(from + count, tab.info.cols); c++) {
@@ -1446,6 +1481,7 @@
         }
       }
     }
+    if (fitTab !== tab) return;
     for (const c of cols) {
       const d = reads.find((x) => c >= x.firstCol && c < x.firstCol + x.cols);
       fitOne(
@@ -2088,13 +2124,18 @@
     if (tab.header && a.row === 0) return false;
     if (!listCols.has(a.col)) {
       if (readOnly) return false;
+      if (locked) {
+        onMessage("This file is locked, so cells can't change. Click Locked in the status bar to unlock it.");
+        return true;
+      }
       // No list of allowed values: offer the values already in the column.
       let values: string[];
       try {
-        const t = await backend().valueTally(tab.id, { col: a.col, keep_first: tab.header });
+        // Counting stops past the most a list can show.
+        const t = await backend().valueTally(tab.id, { col: a.col, keep_first: tab.header, limit: FREE_PICK_MAX });
         values = t.values.map((v) => v.value).filter((v) => v !== "");
-        if (values.length > FREE_PICK_MAX) {
-          onMessage(`This column has ${values.length.toLocaleString()} different values, too many for a pick list (up to ${FREE_PICK_MAX.toLocaleString()}). Type to get suggestions instead.`);
+        if (!t.complete || values.length > FREE_PICK_MAX) {
+          onMessage(`This column has more than ${FREE_PICK_MAX.toLocaleString()} different values, too many for a pick list. Type to get suggestions instead.`);
           return true;
         }
       } catch (e) {

@@ -108,6 +108,13 @@ export class Tab {
    *  until the sort is undone (or another one replaces it). */
   sortAt = $state<number | null>(null);
 
+  /** The cells the last change made, for Undo to select (callers that
+   *  select the result after the change put it here). */
+  noteStepSel(sel: Selection): void {
+    const w = this.stepWhat.get(this.info.history_pos);
+    if (w) w.sel = { ...sel };
+  }
+
   /** The sort arrow a column shows, if any. */
   sortArrow(c: number): "up" | "down" | null {
     if (!this.sort || this.sortAt === null || this.info.history_pos < this.sortAt) return null;
@@ -186,10 +193,10 @@ export class Tab {
   private colMoves: { pos: number; at: number; count: number; to: number }[] = [];
   /** What Cut (Ctrl+X) marked, waiting for Paste to move it; dropped by
    *  Esc, another cut or copy, or any change (`pos` is the undo position). */
+  cut = $state<{ kind: "cols" | "rows" | "cells"; rect: Rect; pos: number; clip: string; inside: boolean } | null>(null);
   /** What Copy last put on the clipboard (a dashed outline until Esc or
    *  the next change). */
   copied = $state<Rect | null>(null);
-  cut = $state<{ kind: "cols" | "rows" | "cells"; rect: Rect; pos: number; clip: string; inside: boolean } | null>(null);
   /** Changes to the look alone, oldest first (undone before the engine
    *  step that reached their position), and those undone, for redo. */
   lookSteps: LookStep[] = [];
@@ -489,6 +496,8 @@ export class Tab {
       if (this.groups.some((g) => g.end > before)) this.groups = this.groups.filter((g) => g.end <= before);
       for (const k of [...this.stepViews.keys()]) if (k > before) this.dropStepView(k);
       for (const k of [...this.stepWhat.keys()]) if (k > before) this.stepWhat.delete(k);
+      // A sort that was undone is gone for good once something else is done.
+      if (this.sortAt !== null && this.sortAt > before) this.sortAt = null;
       const cmd = Tab.activeCommand();
       const what = cmd ? `“${cmd}”` : this.whatNext;
       this.stepWhat.set(after, { what, sel: { ...this.sel } });
@@ -501,6 +510,8 @@ export class Tab {
     }
     if (after !== before) setTimeout(() => this.recordView(), 0);
     this.whatNext = null;
+    // Columns added or taken away: the sort's columns may be other ones now.
+    if (info.cols !== this.info.cols) this.sortAt = null;
     this.info = info;
     this.columns.setCount(info.cols);
     if (dataChanged || structural) this.cache.invalidate();

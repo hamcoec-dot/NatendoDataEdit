@@ -206,9 +206,9 @@
   {#if problem}<p class="warn">{problem}</p>{/if}
   {#snippet buttons()}
     {#if !report}
-      <button type="button" class="primary" disabled={!fields.length || running} onclick={() => void find()}>{running ? "Matching…" : "Find matches"}</button>
+      <button type="button" class="primary" data-enter disabled={!fields.length || running} onclick={() => void find()}>{running ? "Matching…" : "Find matches"}</button>
     {:else}
-      <button type="button" class="primary" disabled={!accepted.size || running} onclick={() => void apply()}>Add columns for {plural(accepted.size, "accepted pair")}</button>
+      <button type="button" class="primary" data-enter disabled={!accepted.size || running} onclick={() => void apply()}>Add columns for {plural(accepted.size, "accepted pair")}</button>
       <button type="button" onclick={() => (report = null)}>Change the setup</button>
     {/if}
     <button type="button" onclick={onClose}>Close</button>

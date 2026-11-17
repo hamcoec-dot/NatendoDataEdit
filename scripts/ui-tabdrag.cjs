@@ -100,13 +100,13 @@ const url = process.argv[3] || "http://localhost:5193";
   await (await p.$$(".tabs .tab"))[1].click();
   await p.waitForTimeout(200);
 
-  // Keyboard: Ctrl+Shift+PageDown / PageUp move the shown tab.
-  await p.keyboard.press("Control+Shift+PageDown");
+  // Keyboard: Ctrl+Alt+Shift+PageDown / PageUp move the shown tab.
+  await p.keyboard.press("Control+Alt+Shift+PageDown");
   await p.waitForTimeout(200);
-  ok((await names()).join() === [before[0], before[2], before[1], before[3]].join(), "Ctrl+Shift+PageDown moves the tab right");
-  await p.keyboard.press("Control+Shift+PageUp");
+  ok((await names()).join() === [before[0], before[2], before[1], before[3]].join(), "Ctrl+Alt+Shift+PageDown moves the tab right");
+  await p.keyboard.press("Control+Alt+Shift+PageUp");
   await p.waitForTimeout(200);
-  ok((await names()).join() === before.join(), "Ctrl+Shift+PageUp moves it back");
+  ok((await names()).join() === before.join(), "Ctrl+Alt+Shift+PageUp moves it back");
 
   // A file opening during a drag ends the drag; nothing moves wrongly.
   const e0 = await box(0);

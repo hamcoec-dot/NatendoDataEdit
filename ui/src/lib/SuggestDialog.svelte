@@ -42,7 +42,7 @@
     </ul>
   {/if}
   {#snippet buttons()}
-    {#if found && found.items.length > 1}<button type="button" class="primary" disabled={busy} onclick={onFixAll}>Fix all</button>{/if}
+    {#if found && found.items.length > 1}<button type="button" class="primary" data-enter disabled={busy} onclick={onFixAll}>Fix all</button>{/if}
     <button type="button" onclick={onClose}>Close</button>
   {/snippet}
 </FormShell>

@@ -428,6 +428,8 @@ export interface SplitColumn {
 export interface TallySpec {
   col: number;
   keep_first: boolean;
+  /** Stop past this many distinct values (the result is then incomplete). */
+  limit?: number | null;
 }
 export interface ValueTally {
   values: { value: string; count: number }[];

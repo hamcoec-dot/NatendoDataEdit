@@ -115,7 +115,7 @@
     <button type="button" disabled={!usable} onclick={() => onResultColumn(spec())}>Add a "Check result" column</button>
   </div>
   {#snippet buttons()}
-    <button type="button" class="primary" disabled={!filled || running} onclick={() => void check()}>{running ? "Checking…" : "Check now"}</button>
+    <button type="button" class="primary" data-enter disabled={!filled || running} onclick={() => void check()}>{running ? "Checking…" : "Check now"}</button>
     <button type="button" onclick={onClose}>Close</button>
   {/snippet}
 </FormShell>

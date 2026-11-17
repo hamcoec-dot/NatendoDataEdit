@@ -331,7 +331,7 @@ const url = process.argv[3] || "http://localhost:5194";
   ok((await tabCount()) === n0, "Close other tabs closes the new one");
 
   // Ctrl+A: the block first, then everything.
-  await start(3, 3, 1000000, 3);
+  await start(1, 3, 1000000, 3);
   await key("Delete");
   await p.waitForTimeout(3000);
   await start(5, 1);

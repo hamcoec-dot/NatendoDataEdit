@@ -93,7 +93,7 @@
     </fieldset>
   {/if}
   {#snippet buttons()}
-    <button type="button" class="primary" disabled={!ready || (split && spec.number === null) || (cols.area !== null && spec.area === null)} onclick={() => onRun(other, $state.snapshot(cols) as IndexCols, $state.snapshot(spec) as StreetSpec)}>Look up</button>
+    <button type="button" class="primary" data-enter disabled={!ready || (split && spec.number === null) || (cols.area !== null && spec.area === null)} onclick={() => onRun(other, $state.snapshot(cols) as IndexCols, $state.snapshot(spec) as StreetSpec)}>Look up</button>
     <button type="button" onclick={onClose}>Close</button>
   {/snippet}
 </FormShell>

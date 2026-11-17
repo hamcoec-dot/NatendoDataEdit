@@ -18,7 +18,7 @@ describe("parseGoto", () => {
   it("reads the name box's own form", () => {
     expect(parseGoto("R12 C3", titles)).toEqual({ row: 12, col: 2 });
     expect(parseGoto("r12c3", titles)).toEqual({ row: 12, col: 2 });
-    expect(parseGoto("R12", titles)).toEqual({ row: 12, col: null });
+    expect(parseGoto("R12", titles)).toEqual({ row: 12, col: 17 });
     expect(parseGoto("C4", titles)).toEqual({ row: 4, col: 2 });
   });
   it("prefers a column title", () => {

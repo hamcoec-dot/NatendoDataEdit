@@ -78,7 +78,7 @@
   {/if}
   {#if problem}<p class="warn">{problem}</p>{/if}
   {#snippet buttons()}
-    <button type="button" class="primary" disabled={!ok || running} onclick={() => void go()}>{mode === "save" ? (running ? "Saving…" : "Save…") : running ? "Opening…" : "Open"}</button>
+    <button type="button" class="primary" data-enter disabled={!ok || running} onclick={() => void go()}>{mode === "save" ? (running ? "Saving…" : "Save…") : running ? "Opening…" : "Open"}</button>
     <button type="button" onclick={onClose}>Close</button>
   {/snippet}
 </FormShell>

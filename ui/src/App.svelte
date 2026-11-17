@@ -239,6 +239,9 @@
     } catch (e) {
       say(errorText(e));
       return false;
+    } finally {
+      // A failed change must not lend its name to the next one.
+      t.whatNext = null;
     }
   }
 
@@ -1214,18 +1217,19 @@
   }
 
   // ---- editing ----------------------------------------------------------------------
-  async function commitCell(row: number, col: number, value: string, fill: boolean): Promise<boolean> {
+  async function commitCell(row: number, col: number, value: string, fill: boolean, what = "filling cells"): Promise<boolean> {
     const t = tab;
     if (!t) return false;
     if (fill) {
       const r = t.rect;
       // A big block is one engine job (with progress and Cancel).
       if (cellCount(r) > MAX_CELLS_PER_CHANGE) return fillRect(r, value);
-      t.whatNext = "filling cells";
+      t.whatNext = what;
       return apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, value));
     }
     if (value === t.cache.get(row, col) && !t.cache.isTruncated(row, col)) return true;
-    t.whatNext = `typing in R${row + 1} C${col + 1}`;
+    const no = shownRowNo(t, row);
+    t.whatNext = no === null ? "typing in a cell" : `typing in R${no} C${col + 1}`;
     return apply((x) => backend().setCells(x.id, [[row, col, value]]));
   }
 
@@ -1238,7 +1242,10 @@
       return;
     }
     t.whatNext = "clearing cells";
-    if (await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, ""))) say(`Cleared ${plural(cellCount(r), "cell")}. Ctrl+Z undoes it.`);
+    if (await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, ""))) {
+      t.noteStepSel({ anchor: { row: r.row, col: r.col }, focus: { row: r.row + r.rows - 1, col: r.col + r.cols - 1 } });
+      say(`Cleared ${plural(cellCount(r), "cell")}. Ctrl+Z undoes it.`);
+    }
   }
 
   async function clearSelection(): Promise<void> {
@@ -1417,7 +1424,7 @@
       text = toTsv(rows);
     }
     if (rows.length === 1 && width === 1 && cellCount(r) > 1) {
-      await commitCell(r.row, r.col, rows[0]![0] ?? "", true);
+      await commitCell(r.row, r.col, rows[0]![0] ?? "", true, "pasting");
       if (afterPaste) say(afterPaste);
       afterPaste = null;
       return;
@@ -1484,6 +1491,8 @@
     else if (dir === "up") grid?.select({ row: last.row, col: last.col }, { row: Math.max(t.firstRow, r.row - count), col: r.col }, false);
     else if (dir === "right") grid?.select({ row: r.row, col: r.col }, { row: last.row, col: last.col + count }, false);
     else grid?.select({ row: last.row, col: last.col }, { row: r.row, col: Math.max(0, r.col - count) }, false);
+    // Undo selects what the fill made.
+    t.noteStepSel(t.sel);
   }
 
   /** Double-click on the fill handle: fill down as far as the column next
@@ -1525,6 +1534,8 @@
     } catch (e) {
       say(errorText(e));
       return null;
+    } finally {
+      t.whatNext = null;
     }
   }
 
@@ -1840,6 +1851,11 @@
 
   /** F8: arrow keys extend the selection until F8 or Esc. */
   let extendMode = $state(false);
+  // Another tab, or a click anywhere, ends it (Excel ends it on a click too).
+  $effect(() => {
+    void active;
+    extendMode = false;
+  });
   function toggleExtend(): void {
     extendMode = !extendMode;
     say(extendMode ? "Extend mode: the arrow keys grow the selection. F8 or Esc ends it." : "Extend mode off.");
@@ -1850,17 +1866,71 @@
    *  uses. */
   async function regionOf(t: Tab): Promise<Rect | null> {
     const c = t.cell;
-    const blank = (r: number, col: number): boolean => r < t.firstRow || col < 0 || r >= t.info.rows || col >= t.info.cols || (t.cache.get(r, col) ?? "") === "";
-    if (blank(c.row, c.col)) return null;
-    const edge = async (dir: Dir): Promise<[number, number]> => {
+    const inside = (r: number, col: number) => r >= t.firstRow && col >= 0 && r < t.info.rows && col < t.info.cols;
+    // Blank or not, from the grid's copy when it has the cell, else asked.
+    const blank = async (r: number, col: number): Promise<boolean> => {
+      if (!inside(r, col)) return true;
+      const v = t.cache.get(r, col);
+      if (v !== undefined) return v === "";
+      return (await backend().cellText(t.id, r, col)).text === "";
+    };
+    const edge = (r: number, col: number, dir: Dir) => backend().dataEdge(t.id, r, col, dir);
+    /** Last cell of the run of filled cells from (r, col) going `dir`. */
+    const runEnd = async (r: number, col: number, dir: Dir): Promise<[number, number]> => {
       const [dr, dc] = dir === "up" ? [-1, 0] : dir === "down" ? [1, 0] : dir === "left" ? [0, -1] : [0, 1];
-      if (blank(c.row + dr, c.col + dc)) return [c.row, c.col];
-      return backend().dataEdge(t.id, c.row, c.col, dir);
+      if (await blank(r + dr, col + dc)) return [r, col];
+      return edge(r, col, dir);
+    };
+    /** Any filled cell in row `r`, columns a..b (or column `col`, rows a..b). */
+    const rowHas = async (r: number, a: number, b: number): Promise<boolean> => {
+      if (!inside(r, a)) return false;
+      if (!(await blank(r, a))) return true;
+      const e = await edge(r, a, "right");
+      return e[1] <= b && !(await blank(r, e[1]));
+    };
+    const colHas = async (col: number, a: number, b: number): Promise<boolean> => {
+      if (!inside(a, col)) return false;
+      if (!(await blank(a, col))) return true;
+      const e = await edge(a, col, "down");
+      return e[0] <= b && !(await blank(e[0], col));
     };
     try {
-      const [up, down, left, right] = await Promise.all([edge("up"), edge("down"), edge("left"), edge("right")]);
-      const row = Math.max(t.firstRow, up[0]);
-      return { row, rows: down[0] - row + 1, col: left[1], cols: right[1] - left[1] + 1 };
+      if (await blank(c.row, c.col)) return null;
+      let [r0, r1, c0, c1] = [c.row, c.row, c.col, c.col];
+      // Grow the box while a row or column beside it has data (Excel's
+      // current region: bounded by blank rows and columns). Each step uses
+      // the same edges as Ctrl+arrow, so long columns cost a few calls.
+      for (let pass = 0; pass < 8; pass++) {
+        let grew = false;
+        const cols = Array.from({ length: Math.min(64, c1 - c0 + 1) }, (_, i) => c0 + i);
+        if (await rowHas(r1 + 1, c0, c1)) {
+          let to = r1 + 1;
+          for (const col of cols) if (!(await blank(r1 + 1, col))) to = Math.max(to, (await runEnd(r1 + 1, col, "down"))[0]);
+          r1 = to;
+          grew = true;
+        }
+        if (await rowHas(r0 - 1, c0, c1)) {
+          let to = r0 - 1;
+          for (const col of cols) if (!(await blank(r0 - 1, col))) to = Math.min(to, (await runEnd(r0 - 1, col, "up"))[0]);
+          r0 = Math.max(t.firstRow, to);
+          grew = true;
+        }
+        const rows = [...new Set([r0, r1, c.row])];
+        if (await colHas(c1 + 1, r0, r1)) {
+          let to = c1 + 1;
+          for (const r of rows) if (!(await blank(r, c1 + 1))) to = Math.max(to, (await runEnd(r, c1 + 1, "right"))[1]);
+          c1 = to;
+          grew = true;
+        }
+        if (await colHas(c0 - 1, r0, r1)) {
+          let to = c0 - 1;
+          for (const r of rows) if (!(await blank(r, c0 - 1))) to = Math.min(to, (await runEnd(r, c0 - 1, "left"))[1]);
+          c0 = Math.max(0, to);
+          grew = true;
+        }
+        if (!grew) break;
+      }
+      return { row: r0, rows: r1 - r0 + 1, col: c0, cols: c1 - c0 + 1 };
     } catch {
       return null;
     }
@@ -1890,9 +1960,12 @@
   }
 
   /** Shift+F10 or the Menu key: the right-click menu at the active cell. */
+  /** Until when a context menu event comes from Shift+F10 or the Menu key. */
+  let ctxKeysUntil = 0;
   function contextFromKeys(): void {
     const t = tab;
     if (!t || !grid) return;
+    ctxKeysUntil = performance.now() + 400;
     const r = t.rect;
     const area = wholeRows(r, t) && !wholeCols(r, t) ? "row" : wholeCols(r, t) && !wholeRows(r, t) ? "col" : "cell";
     grid.scrollIntoView(t.cell);
@@ -1900,13 +1973,43 @@
     openContext(p.x, p.y, area, t.cell.col);
   }
 
-  /** Ctrl+': edit the cell, starting with the value of the cell above. */
-  function copyAbove(): void {
+  /** Ctrl+': edit the cell, starting with the value of the cell above
+   *  (read in full: the grid may hold only the start of a long value). */
+  async function copyAbove(): Promise<void> {
     const t = tab;
-    if (!t || !grid) return;
+    if (!t || !grid || lockedSay(t)) return;
     const { row, col } = t.cell;
     if (row <= t.firstRow) return;
-    void grid.startEdit(t.cache.get(row - 1, col) ?? "");
+    let v = t.cache.get(row - 1, col);
+    if (v === undefined || t.cache.isTruncated(row - 1, col)) {
+      try {
+        const full = await backend().cellText(t.id, row - 1, col);
+        if (full.truncated) {
+          say("The cell above is too long to copy into an edit (over 1,048,576 characters).");
+          return;
+        }
+        v = full.text;
+      } catch (e) {
+        say(errorText(e));
+        return;
+      }
+    }
+    if (t !== tab) return;
+    void grid?.startEdit(v);
+  }
+
+  /** A locked file: say so (true) instead of starting a change. */
+  function lockedSay(t: Tab): boolean {
+    if (!t.info.read_only) return false;
+    say("This file is locked, so cells can't change. Click Locked in the status bar to unlock it.");
+    return true;
+  }
+
+  /** A row's number as shown on screen (the whole file's while filtered),
+   *  or null when not known yet. */
+  function shownRowNo(t: Tab, row: number): number | null {
+    const n = t.info.filtered ? t.cache.rowNumber(row) : row;
+    return n === undefined ? null : n + 1;
   }
 
   /** Ctrl+.: the active cell goes round the selection's corners clockwise. */
@@ -1922,9 +2025,12 @@
       { row: r1, col: c1 },
       { row: r1, col: r.col },
     ];
-    const at = corners.findIndex((k) => k.row === t.cell.row && k.col === t.cell.col);
-    const next = corners[(at + 1) % 4]!;
-    grid.select(t.sel.anchor, t.sel.focus, true, next);
+    // A one-row or one-column selection has two corners, not four.
+    const ring = corners.filter((k, i) => corners.findIndex((x) => x.row === k.row && x.col === k.col) === i);
+    const at = ring.findIndex((k) => k.row === t.cell.row && k.col === t.cell.col);
+    const next = ring[(at + 1) % ring.length]!;
+    grid.select(t.sel.anchor, t.sel.focus, false, next);
+    grid.scrollIntoView(next);
   }
 
   /** Ctrl+Shift+1, 3, 4, 5: a display format for the selected columns in one key (as in Google Sheets). */
@@ -2122,6 +2228,7 @@
     t.whatNext = copy ? "copying cells" : "moving cells";
     if (await apply((x) => backend().moveCells(x.id, from.row, from.rows, from.col, from.cols, row, col, copy))) {
       grid?.select({ row, col }, { row: row + from.rows - 1, col: col + from.cols - 1 });
+      t.noteStepSel(t.sel);
       const n = cellCount(from);
       say(`${copy ? "Copied" : "Moved"} ${n.toLocaleString()} cell${n === 1 ? "" : "s"}. Ctrl+Z undoes it.`);
     }
@@ -3180,7 +3287,11 @@
     if (!t) return;
     const titles = Array.from({ length: t.info.cols }, (_, c) => grid?.title(c) ?? String(c + 1));
     const g = parseGoto(text, titles);
-    if (!g || (g.col !== null && (g.col < 0 || g.col >= t.info.cols))) {
+    if (g && g.col !== null && (g.col < 0 || g.col >= t.info.cols)) {
+      say(`There is no column ${g.col + 1}: the file has ${plural(t.info.cols, "column")}.`);
+      return;
+    }
+    if (!g) {
       say('Type a row number ("250"), a row and column ("R250 C3" or "250, 3"), Excel\'s "F250", or a column title ("Last name 250").');
       return;
     }
@@ -3253,7 +3364,11 @@
         const w = t.stepWhat.get(op === "undo" ? pos : now);
         if (w && t.info.rows > 0 && t.info.cols > 0) {
           const fit = (c: { row: number; col: number }) => ({ row: Math.min(c.row, t.info.rows - 1), col: Math.min(c.col, t.info.cols - 1) });
-          grid?.select(fit(w.sel.anchor), fit(w.sel.focus), true, w.sel.active ? fit(w.sel.active) : undefined);
+          // Scrolled to the active cell (the top of a whole column, not
+          // its last row).
+          const act = fit(w.sel.active ?? w.sel.anchor);
+          grid?.select(fit(w.sel.anchor), fit(w.sel.focus), false, act);
+          grid?.scrollIntoView(act);
         }
         const n = Math.abs(now - pos);
         const what = w?.what ?? "the last change";
@@ -3369,6 +3484,8 @@
     } catch (e) {
       say(errorText(e));
       return false;
+    } finally {
+      t.whatNext = null;
     }
   }
 
@@ -3481,7 +3598,7 @@
     if (t && !findOpen) {
       const r = t.rect;
       if (cellCount(r) > 1) findOptions.scope = wholeCols(r, t) && !wholeRows(r, t) ? "column" : wholeRows(r, t) && wholeCols(r, t) ? "all" : "selection";
-      else if (findOptions.scope !== "all") findOptions.scope = "all";
+      else if (findOptions.scope === "selection") findOptions.scope = "all";
     }
     findOpen = true;
     findReplace = replace;
@@ -3705,7 +3822,7 @@
       keys: ["Ctrl+;"],
       // As in Excel: the date goes into the cell being edited, so a time can
       // be added, Enter keeps it and Esc drops it.
-      run: () => grid?.startEdit(grid.today()),
+      run: () => { if (tab && !lockedSay(tab)) void grid?.startEdit(grid.today()); },
       enabled: ready,
     },
     {
@@ -3723,7 +3840,7 @@
       id: "edit.now",
       label: "Insert current time",
       keys: ["Ctrl+Shift+:", "Ctrl+Shift+;"],
-      run: () => grid?.startEdit(grid.nowTime()),
+      run: () => { if (tab && !lockedSay(tab)) void grid?.startEdit(grid.nowTime()); },
       enabled: ready,
     },
     {
@@ -3735,7 +3852,7 @@
     },
     { id: "edit.selectRegion", label: "Select the current block of data", keys: ["Ctrl+Shift+*", "Ctrl+Shift+8"], run: () => selectRegion(), enabled: hasTab },
     { id: "edit.contextMenu", label: "Open the right-click menu", keys: ["Shift+F10", "ContextMenu"], run: () => contextFromKeys(), enabled: hasTab },
-    { id: "edit.copyAbove", label: "Copy the value from the cell above", keys: ["Ctrl+'", 'Ctrl+Shift+"'], run: () => copyAbove(), enabled: ready },
+    { id: "edit.copyAbove", label: "Copy the value from the cell above", keys: ["Ctrl+'", 'Ctrl+Shift+"'], run: () => void copyAbove(), enabled: ready },
     { id: "view.toActive", label: "Scroll back to the active cell", keys: ["Ctrl+Backspace"], run: () => { if (tab) grid?.scrollIntoView(tab.cell); }, enabled: hasTab },
     { id: "edit.shrinkSel", label: "Select just the active cell", keys: ["Shift+Backspace"], run: () => { if (tab) grid?.select(tab.cell); }, enabled: hasTab },
     { id: "edit.nextCorner", label: "Move the active cell to the next corner of the selection", keys: ["Ctrl+."], run: () => nextCorner(), enabled: hasTab },
@@ -4033,9 +4150,12 @@
     const t = tab;
     if (!t) return null;
     const r = t.rect;
-    const rowNo = (row: number) => ((t.info.filtered ? t.cache.rowNumber(row) : row) ?? row) + 1;
-    const rows = r.rows === 1 ? `row ${rowNo(r.row).toLocaleString()}` : `rows ${rowNo(r.row).toLocaleString()}–${rowNo(r.row + r.rows - 1).toLocaleString()}`;
     const nRows = r.rows === 1 ? "1 row" : `${r.rows.toLocaleString()} rows`;
+    // Row numbers as the headings show them; just how many when one is not
+    // known yet (or a filter makes them non-consecutive).
+    const a = shownRowNo(t, r.row);
+    const z = shownRowNo(t, r.row + r.rows - 1);
+    const rows = a === null || z === null || z - a !== r.rows - 1 ? nRows : r.rows === 1 ? `row ${a.toLocaleString()}` : `rows ${a.toLocaleString()}–${z.toLocaleString()}`;
     const colName = (c: number) => (prefs.data.colLetters ? colLetters(c) : `“${columnTitle(t, c)}”`);
     const cols = r.cols === 1 ? `column ${colName(r.col)}` : `columns ${colName(r.col)}–${colName(r.col + r.cols - 1)}`;
     const nCols = r.cols === 1 ? "1 column" : `${r.cols.toLocaleString()} columns`;
@@ -4797,7 +4917,23 @@
   });
 </script>
 
-<svelte:window onkeydown={onKeyDown} onkeyup={onKeyUp} onpaste={onPaste} onpointerupcapture={lookBoundary} />
+<svelte:window
+  onkeydown={onKeyDown}
+  onkeyup={onKeyUp}
+  onpaste={onPaste}
+  onpointerupcapture={lookBoundary}
+  onpointerdowncapture={(e) => {
+    if (extendMode && !(e.target as HTMLElement | null)?.closest?.("footer")) extendMode = false;
+  }}
+  oncontextmenucapture={(e) => {
+    // Shift+F10 or the Menu key already opened the app's menu: the
+    // browser's own context menu event that follows is dropped.
+    if (performance.now() < ctxKeysUntil) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }}
+/>
 
 <div class="shell">
   <nav class="menubar" aria-label="Menu">
@@ -4911,7 +5047,7 @@
         }}
       ></textarea>
       {#if cellBarDirty}
-        <button type="button" class="small primary" onclick={() => void applyCellBar(true)} title="Apply (Enter{cellBarExpanded ? ', or Ctrl+Enter' : ''})"
+        <button type="button" class="small primary" onclick={() => void applyCellBar(true)} title={cellCount(tab.rect) > 1 ? "Put the value in every selected cell (Ctrl+Enter)" : `Apply (${cellBarExpanded ? "Ctrl+Enter" : "Enter"})`}
           >{cellCount(tab.rect) > 1 ? `Apply to ${cellCount(tab.rect).toLocaleString()} cells` : "Apply"}</button
         >
         <button type="button" class="small" onclick={() => { cellBarDirty = false; cellBarFor = ""; }}>Cancel</button>
@@ -4996,6 +5132,7 @@
           bind:this={grid}
           {tab}
           readOnly={!tab.info.indexed}
+          locked={tab.info.read_only}
           onCommit={commitCell}
           onContext={openContext}
           onRenameCol={(c) => void askRename(c)}
@@ -5062,6 +5199,7 @@
       <span>Ready</span>
     {/if}
     <span class="spacer"></span>
+    {#if extendMode}<button type="button" class="small" title="Arrow keys grow the selection. Click to end (or F8, or Esc)." onclick={() => toggleExtend()}>Extend selection</button>{/if}
     {#if status}
       {#if tab}<QuickTotals {tab} />{/if}
       {#if status.sel}<span>{status.sel}</span>{/if}

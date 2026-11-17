@@ -2194,6 +2194,7 @@ export class MockBackend implements Backend {
       const v = this.value(d, r, spec.col);
       if (!v) blanks++;
       else counts.set(v, (counts.get(v) ?? 0) + 1);
+      if (spec.limit != null && counts.size > spec.limit) break;
     }
     const values = [...counts].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
     const key = (v: string) => v.toLowerCase().normalize("NFD").replace(/[^\p{L}\p{N}]/gu, "");
@@ -2206,7 +2207,7 @@ export class MockBackend implements Backend {
       g.push(i);
     });
     const look_alikes = [...by.values()].filter((m) => m.length > 1).map((members) => ({ members })).sort((a, b) => a.members[0]! - b.members[0]!);
-    return { values: values.slice(0, 100_000), blanks, rows: rows - (spec.keep_first ? 1 : 0), complete: values.length <= 100_000, look_alikes };
+    return { values: values.slice(0, 100_000), blanks, rows: rows - (spec.keep_first ? 1 : 0), complete: values.length <= 100_000 && (spec.limit == null || values.length <= spec.limit), look_alikes };
   }
 
   private joinLists = new Map<number, string>();

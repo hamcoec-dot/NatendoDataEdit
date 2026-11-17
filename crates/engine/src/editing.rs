@@ -50,6 +50,9 @@ fn charge(spent: &std::sync::atomic::AtomicUsize, len: usize, budget: usize) -> 
 pub struct TallySpec {
     pub col: u32,
     pub keep_first: bool,
+    /// Stop once more distinct values than this are found (the result is
+    /// then incomplete): a pick list only needs to know "too many".
+    pub limit: Option<u32>,
 }
 
 /// One distinct value and how many shown rows hold it.
@@ -476,6 +479,7 @@ impl Document {
         progress.start(r1 - r0);
         let chunks = ((r1 - r0) as usize).div_ceil(CHUNK);
         let over = AtomicBool::new(false);
+        let stop = AtomicBool::new(false);
         let blanks = AtomicU64::new(0);
         let merged: Mutex<HashMap<String, u64>> = Mutex::new(HashMap::new());
         let bytes = AtomicU64::new(0);
@@ -486,6 +490,9 @@ impl Document {
                 let e = (s + CHUNK as u64).min(r1);
                 let mut local: HashMap<String, u64> = HashMap::new();
                 let mut buf = Vec::new();
+                if stop.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
                 for r in s..e {
                     let id = self.id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
@@ -514,6 +521,10 @@ impl Document {
                     } else {
                         over.store(true, Ordering::Relaxed);
                     }
+                }
+                if spec.limit.is_some_and(|l| m.len() > l as usize) {
+                    over.store(true, Ordering::Relaxed);
+                    stop.store(true, Ordering::Relaxed);
                 }
                 Ok(())
             })?;
@@ -955,6 +966,7 @@ mod tests {
                 &TallySpec {
                     col: 0,
                     keep_first: true,
+                    limit: None,
                 },
                 &Progress::new(),
             )
@@ -970,6 +982,18 @@ mod tests {
         assert_eq!(t.rows, 7);
         assert!(t.complete);
         assert_eq!(t.look_alikes.len(), 2);
+        // With a limit, it stops past that many values and says so.
+        let capped = d
+            .value_tally(
+                &TallySpec {
+                    col: 0,
+                    keep_first: true,
+                    limit: Some(2),
+                },
+                &Progress::new(),
+            )
+            .unwrap();
+        assert!(!capped.complete);
         let names: Vec<Vec<&str>> = t
             .look_alikes
             .iter()

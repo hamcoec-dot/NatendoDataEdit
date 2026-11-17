@@ -71,7 +71,7 @@
     {#if st?.running}
       <button type="button" class="primary" onclick={() => void stop()}>Stop</button>
     {:else}
-      <button type="button" class="primary" disabled={!ready} onclick={() => void start()}>Start watching</button>
+      <button type="button" class="primary" data-enter disabled={!ready} onclick={() => void start()}>Start watching</button>
     {/if}
     <button type="button" onclick={onClose}>Close</button>
   {/snippet}

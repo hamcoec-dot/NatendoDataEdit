@@ -30,7 +30,7 @@ export interface GotoTarget {
 /**
  * Read what was typed into the name box:
  * - "250" or "250, 3": row (and column number);
- * - "R250 C3", "R250C3", "r250": row and column as the name box shows them;
+ * - "R250 C3", "R250C3": row and column as the name box shows them;
  * - "F200" or "C12" (column letters then row, as in Excel and Sheets), or
  *   just "F" (titles are tried first, so a column called "C2" wins);
  * - a column title, alone or followed by a row: "Last name 200".
@@ -39,8 +39,9 @@ export interface GotoTarget {
 export function parseGoto(text: string, titles: string[]): GotoTarget | null {
   const s = text.trim();
   if (!s) return null;
-  let m = /^r\s*(\d+)\s*[, ]?\s*(?:c\s*(\d+))?$/i.exec(s);
-  if (m) return { row: Number(m[1]), col: m[2] ? Number(m[2]) - 1 : null };
+  // "R250 C3" (the name box's own form); a bare "R5" is Excel's column R.
+  let m = /^r\s*(\d+)\s*[, ]?\s*c\s*(\d+)$/i.exec(s);
+  if (m) return { row: Number(m[1]), col: Number(m[2]) - 1 };
   m = /^(\d+)(?:\s*[,; ]\s*(\d+))?$/.exec(s);
   if (m) return { row: Number(m[1]), col: m[2] ? Number(m[2]) - 1 : null };
   // A column title, then perhaps a row number.

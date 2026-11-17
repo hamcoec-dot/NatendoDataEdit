@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.3.5_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.3.6_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -194,6 +194,48 @@ everything is also in command search.
 ![A block of cells selected with Shift+arrows; the active cell is still the one it started from](docs/screenshots/active-cell-stays.png)
 *Shift+Down three times and Shift+Right twice: Jo, where it started, is still the active cell (R11 C2).*
 
+- **Looks like a spreadsheet:** numbers and dates sit on the right (View >
+  Numbers on the right), and Format > Align left, center, right or
+  automatically sets any column. Long text spills into the empty cells beside
+  it instead of being cut off; Format > Cut off long text keeps a column's text
+  inside it, and Wrap text wraps it. View > Column letters adds A, B, C to the
+  headings. A small arrow marks the column the rows are sorted by (until the
+  sort is undone); with the filter buttons off, pointing at a heading shows an
+  arrow that opens the column's menu; pointing at a link shows its address.
+
+![Numbers lined up on the right, and a long note spilling across the empty cells beside it](docs/screenshots/text-spill.png)
+*Amounts and dates on the right; a long note in row 4 runs on over the empty cells next to it.*
+
+- **Status bar totals:** select cells and the status bar shows Sum and Count
+  side by side (just Count when there are no numbers). Click it to tick
+  Average, Min, Max, Numbers, Distinct or Characters as well, or to copy any
+  one of them.
+
+![The status bar showing Sum, Average and Count of a selection](docs/screenshots/status-totals.png)
+*Some amounts selected (one cell is empty), with Average ticked as well as Sum and Count.*
+
+- **Go To and the name box** take a row ("250"), a row and column ("R250 C3"
+  or "250, 3"), Excel's letters ("F250") or a column title with or without a
+  row ("city 250"). While a filter is on, rows are found by the numbers shown
+  on screen (the whole file's), and the name box shows them too.
+- **More Excel and Google Sheets keys:** Shift+F10 or the Menu key opens the
+  right-click menu; Ctrl+1 opens Display format; Ctrl+Shift+1, 3, 4 and 5 show
+  columns as number, date, currency or percent, and Ctrl+\ removes the
+  format; Ctrl+' starts an edit with the value of the cell above; Ctrl+; and
+  Ctrl+Shift+; start an edit with today's date or the time (add to it, or Esc);
+  Ctrl+A selects the block of data around the cell first and everything on
+  the second press (Ctrl+Shift+* selects the block); Ctrl+Backspace scrolls
+  back to the active cell, Shift+Backspace selects just it, and Ctrl+. moves it
+  round the corners of the selection; F8 turns on extend mode (arrows grow the
+  selection); Alt+PageDown and Alt+PageUp move a screen sideways; Space ticks
+  or unticks a tick box; Esc keeps the selection; Alt+/ opens command search
+  as well as Alt+Q. Home, End and Ctrl+arrows skip hidden columns, and
+  double-clicking the edge of the selection jumps that way like Ctrl+arrow.
+- **Right-click menus say how many** ("Insert 3 rows above", "Delete rows
+  5–7"). The cell menu also has Edit cell, Pick from a list, Note and flag,
+  Hide rows and columns, Show my edits and List of my changes; the column
+  menu has Set column width… and Column summary.
+
 - Tabs for each open file, frozen rows and columns, insert, delete, move,
   hide, resize and auto-fit columns, hide and show rows (Ctrl+9,
   Ctrl+Shift+9).
@@ -205,9 +247,19 @@ everything is also in command search.
   again, drag the edges of the top-left corner to freeze rows or columns, and
   drag file tabs into another order (the tab follows the pointer and the
   others slide aside to show where it will land; Esc puts it back;
-  Ctrl+Shift+PageUp/PageDown moves the shown tab from the keyboard). Each move is one undo step, and colour
+  Ctrl+Alt+Shift+PageUp/PageDown moves the shown tab from the keyboard). Each move is one undo step, and colour
   scales, highlight rules and checks move with their columns. Help > Mouse
   and drag moves lists them all.
+- **File tabs** have a right-click menu (Save, Rename, Copy path, Show in
+  File Explorer, move left or right, Close, Close other tabs, Close tabs to
+  the right, Close unchanged tabs). Double-click the empty part of the tab
+  bar for a new file, and Ctrl+Shift+T opens the last closed file again.
+  Ctrl+PageDown and Ctrl+PageUp switch tabs (Ctrl+Shift+PageDown and
+  Ctrl+Shift+PageUp too, as in Google Sheets).
+- Set column width… types an exact width; AutoFit (or a double-click on a
+  column's edge) also measures the first and last 2,000 rows of the file, so
+  a long value off screen fits too. Ctrl+Shift+0 shows the hidden columns
+  inside the selection (Unhide all columns shows every one).
 - Light, dark or system theme with an accent colour, font and font size, zoom.
 - Alternating row colours, wrapped text, row height in lines.
 - **Display formats** per column (numbers, percent, currency, dates, tick
@@ -251,7 +303,10 @@ everything is also in command search.
   of cells, row numbers and column headings have Cut, Copy, Paste, Move what
   was cut here and Cancel cut.
 - Edit in the cell or in a larger, multi-line edit box; a cell bar with a
-  "Go to" box.
+  "Go to" box. Enter in the cell bar puts the value in and moves down, as in
+  Excel's formula bar (Ctrl+Enter puts it into every selected cell).
+- **Where Enter goes:** File > Options > Editing chooses down, right, up,
+  left or stay put after Enter (Shift+Enter goes the other way).
 - **Typing moves like Excel:** after typing in a cell, an arrow key keeps
   what you typed and moves on (F2, or a double-click, edits inside the text
   instead, and F2 switches between the two). Enter and Tab move through a
@@ -275,11 +330,21 @@ everything is also in command search.
   undo step with a progress bar; whole columns down to the last row (with no
   filter on) clear at once however many rows there are, and List of my
   changes shows them as cleared.
+- **Copy and paste like Excel:** Copy marks the copied cells with a dashed
+  outline until Esc or the next change, and a copied block pasted into a
+  bigger selection that it fits a whole number of times repeats to fill it
+  (two cells into ten, a 2×2 block into 4×4).
 - Fill handle, fill series, Ctrl+Enter to fill a whole selection, Paste
-  Special (values only, swap rows and columns), special characters.
-- **Type-ahead suggestions** from the column's own values, **pick-from-list
-  cells** (Alt+Down) for columns with a list check, a calendar pop-up for
-  dates, spell check.
+  Special (values only, swap rows and columns), special characters. Dragging
+  the fill handle back inside the selection clears the cells it passes over.
+- **Type-ahead suggestions** from the column's own values, **pick lists**
+  (Alt+Down) of the values already in a column, as Excel's "Pick from
+  drop-down list" (columns with a list check offer their list instead; View >
+  List arrows on every cell shows its arrow on each cell), a calendar pop-up
+  for dates, spell check.
+
+![Alt+Down on a city: a list of the cities already in the column](docs/screenshots/pick-values.png)
+*Alt+Down in the city column lists the cities already in it; arrows and Enter pick one.*
 - Undo and redo for everything, including big jobs on millions of rows,
   in the order you did things: edits and every tool, sorts, **filters**
   (Filter, Show duplicates, show rows with problems or notes, Clear filter),
@@ -287,7 +352,9 @@ everything is also in command search.
   wrapping, row height, highlight rules, colour scales, banding, the group
   line and data checks. Applying a saved view is one step. A deleted column
   comes back with its width. Filters
-  and the look of the table do not count as unsaved changes.
+  and the look of the table do not count as unsaved changes. Undo and Redo
+  select the cells that changed and say what was undone or redone ("Undid
+  typing in R9 C3", "Undid “Paste”").
 - One-row-per-page form view.
 - **List of my changes** (Edit menu): every cell that differs from the saved
   file (was / now), rows and columns added, deleted or moved; click to jump
@@ -296,7 +363,9 @@ everything is also in command search.
 - **Notes and coloured flags on rows** (Shift+F2). They are kept in a small
   file beside the table, so the table itself never changes, and they follow
   their rows through sorts, filters and newer copies of the file. Filter to
-  rows with a note or one flag colour.
+  rows with a note or one flag colour. Notes belong to a row, not to one cell
+  (a CSV file has no place for cell notes).
+- Every dialog answers Enter with its main button and Esc with Cancel.
 - Read-only lock for a file you only want to look at.
 
 ### Find, sort and filter

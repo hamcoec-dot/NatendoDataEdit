@@ -1316,6 +1316,7 @@ fn main() {
                 &TallySpec {
                     col: 4,
                     keep_first: true,
+                    limit: None,
                 },
                 &p,
             )

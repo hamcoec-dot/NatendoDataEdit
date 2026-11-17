@@ -34,9 +34,12 @@
         onEnter();
         return;
       }
-      // No handler of its own: Enter presses the dialog's main button when
-      // there is exactly one and it can be pressed (as in Excel).
-      const main = [...box.querySelectorAll<HTMLButtonElement>("button.primary")].filter((b) => b.offsetParent !== null);
+      // No handler of its own: Enter presses the dialog's main button (one
+      // marked data-enter, never a destructive one) when there is exactly
+      // one and it can be pressed (as in Excel), unless something inside (a
+      // list, a box of its own) already took the key.
+      if (e.defaultPrevented) return;
+      const main = [...box.querySelectorAll<HTMLButtonElement>("button[data-enter]")].filter((b) => b.offsetParent !== null);
       if (main.length === 1 && !main[0]!.disabled) {
         e.preventDefault();
         main[0]!.click();
