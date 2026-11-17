@@ -177,11 +177,32 @@ enum Op {
     SetMap(Option<Vec<u32>>),
     /// Replace the set of hidden rows (`None` = none hidden).
     SetHidden(Option<Arc<Vec<u64>>>),
+    /// Replace the filter (`None` = no filter; hidden rows stay as they
+    /// are). Turning a filter on, changing it or clearing it is an undo step
+    /// that changes no data.
+    SetFilter(Option<Box<FilterPart>>),
     /// Several ops applied in order as one undo step.
     Batch(Vec<Op>),
 }
 
+/// A filter's rules and result, as an undo step keeps them (see [`View`]).
+struct FilterPart {
+    spec: FilterSpec,
+    bits: Vec<u64>,
+    base: u32,
+}
+
 impl Op {
+    /// Changes only what shows (a filter, hidden rows), not the data: such
+    /// steps do not make the document unsaved.
+    fn view_only(&self) -> bool {
+        match self {
+            Op::SetHidden(_) | Op::SetFilter(_) => true,
+            Op::Batch(ops) => ops.iter().all(Op::view_only),
+            _ => false,
+        }
+    }
+
     /// Approximate bytes this op holds (for the undo memory budget).
     fn cost(&self) -> usize {
         fn row(r: &Option<Edit>) -> usize {
@@ -194,6 +215,11 @@ impl Op {
             Op::ColInsert { ids, .. } => 32 + ids.len() * 4,
             Op::SetMap(m) | Op::SetOrder(m) => 32 + m.as_ref().map_or(0, |m| m.len() * 4),
             Op::SetHidden(h) => 32 + h.as_ref().map_or(0, |h| h.len() * 8),
+            Op::SetFilter(f) => {
+                32 + f
+                    .as_ref()
+                    .map_or(0, |f| 64 + f.bits.len() * 8 + f.spec.columns.len() * 128)
+            }
             Op::Batch(ops) => 32 + ops.iter().map(Op::cost).sum::<usize>(),
             Op::Remove { .. }
             | Op::MoveRows { .. }
@@ -777,26 +803,22 @@ impl Document {
         self.view.as_ref()
     }
 
-    /// Turn a filter on (or replace or remove it). Not an undo step: it
-    /// changes no data.
+    /// Turn a filter on (or replace or remove it): one undo step, as in a
+    /// spreadsheet, though it changes no data (it leaves the document saved).
     /// Hidden rows stay hidden whatever the new filter is.
     pub(crate) fn set_view(&mut self, view: Option<View>) {
-        let hidden = self.view.take().and_then(|v| v.hidden);
-        self.view = match (view, hidden) {
-            (Some(mut v), h) => {
-                v.hidden = h;
-                v.visible = OnceLock::new();
-                v.hidden_rows = OnceLock::new();
-                Some(v)
-            }
-            (None, Some(h)) => {
-                let mut v = View::all();
-                v.hidden = Some(h);
-                Some(v)
-            }
-            (None, None) => None,
-        };
-        self.revision += 1;
+        let part = view.filter(View::filters).map(|v| {
+            Box::new(FilterPart {
+                spec: v.spec,
+                bits: v.bits,
+                base: v.base,
+            })
+        });
+        if part.is_none() && !self.has_filter() {
+            // Clearing a filter that is not on changes nothing.
+            return;
+        }
+        self.push(Op::SetFilter(part));
     }
 
     /// Columns: the widest row in the file or in the edits, or the column
@@ -846,7 +868,17 @@ impl Document {
     }
 
     pub fn is_modified(&self) -> bool {
-        self.clean_depth != Some(self.undo.len())
+        // Unsaved unless every step between the saved state and now only
+        // changed what shows (a filter or hidden rows).
+        let Some(d) = self.clean_depth else {
+            return true;
+        };
+        let n = self.undo.len();
+        if d <= n {
+            return !self.undo[d..].iter().all(Op::view_only);
+        }
+        let k = d - n;
+        k > self.redo.len() || !self.redo[self.redo.len() - k..].iter().all(Op::view_only)
     }
 
     /// Changes done minus changes undone (see `history_pos`).
@@ -1911,6 +1943,30 @@ impl Document {
                     }
                 };
                 Op::SetHidden(old)
+            }
+            Op::SetFilter(f) => {
+                let (old, hidden) = match self.view.take() {
+                    Some(v) => {
+                        let old = v.filters().then(|| {
+                            Box::new(FilterPart {
+                                spec: v.spec,
+                                bits: v.bits,
+                                base: v.base,
+                            })
+                        });
+                        (old, v.hidden)
+                    }
+                    None => (None, None),
+                };
+                let mut v = match f {
+                    Some(f) => View::new(f.spec, f.bits, f.base),
+                    None => View::all(),
+                };
+                v.hidden = hidden;
+                if v.filters() || v.hidden.is_some() {
+                    self.view = Some(v);
+                }
+                Op::SetFilter(old)
             }
             Op::Batch(ops) => {
                 let mut inv: Vec<Op> = ops.into_iter().map(|o| self.apply(o)).collect();

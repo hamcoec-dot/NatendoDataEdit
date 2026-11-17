@@ -32,7 +32,7 @@ const url = process.argv[3] || "http://localhost:5193";
   let left = 0;
   for (let x = 30; x < 120; x += 2) {
     await p.mouse.click(canvas.x + x, canvas.y + HEAD + ROW + 12);
-    if (/C1$/.test(await at())) {
+    if (/C1$/.test(await at()) && (await p.evaluate(() => window.__nde.tab.rect.cols)) === 1) {
       left = x;
       break;
     }
@@ -81,14 +81,22 @@ const url = process.argv[3] || "http://localhost:5193";
   await p.waitForTimeout(600);
   ok((await rule()) === '[given name] <> [id]', "Ctrl+Y renames it in the rule again");
 
-  // A rule changed by hand after the rename is not touched by undo.
+  // Changing a rule by hand after the rename is an undo step of its own,
+  // undone first; the next undo then takes back the rename.
   await command("data checks");
   await p.fill(`${checks} input[aria-label=Rule]`, "[id] > 5");
   await p.click(`${checks} button:has-text('Keep and close')`);
   await p.waitForTimeout(300);
   await p.keyboard.press("Control+z");
   await p.waitForTimeout(600);
-  ok((await rule()) === "[id] > 5", "a rule edited by hand since is left alone by undo");
+  ok((await rule()) === "[given name] <> [id]", "Ctrl+Z first takes back the rule edited by hand");
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(600);
+  ok((await rule()) === "[first_name] <> [id]", "then the rename, with the rule's old name");
+  await p.keyboard.press("Control+y");
+  await p.keyboard.press("Control+y");
+  await p.waitForTimeout(600);
+  ok((await rule()) === "[id] > 5", "Ctrl+Y twice: the rename, then the hand edit again");
   await p.keyboard.press("Control+y");
   await p.waitForTimeout(600);
 

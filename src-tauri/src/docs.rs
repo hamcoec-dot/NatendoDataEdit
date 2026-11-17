@@ -6760,8 +6760,10 @@ ca,California
         let info = docs.clear_filter(id).unwrap();
         assert!(!info.filtered);
         assert_eq!(col0(&docs), ["name", "c", "b", "z"]);
-        docs.undo(id).unwrap();
-        docs.undo(id).unwrap();
+        // Clearing the filter, the replace, the filter and the sort: four steps.
+        for _ in 0..4 {
+            docs.undo(id).unwrap();
+        }
         assert_eq!(col0(&docs), ["name", "b", "a", "c"]);
         assert!(docs.job(id).unwrap().is_none());
         let bad = FindSpec {

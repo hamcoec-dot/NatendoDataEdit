@@ -185,6 +185,15 @@ everything is also in command search.
 - A spreadsheet-style grid that stays smooth at millions of rows, with
   **Excel's usual keyboard shortcuts** (F2, F4 to repeat, Ctrl+arrows,
   Ctrl+Shift+L for filters, Alt menu keys and the rest).
+- **The active cell stays put**, as in Excel and Google Sheets: after
+  Shift+arrows, Ctrl+Shift+arrows, Shift+click, Shift+Space or Ctrl+Space
+  the cell you started from stays active (typing goes there), and a plain
+  arrow key then moves on from it. Ctrl+Shift+Down then Down lands one row
+  below where you started, not at the bottom.
+
+![A block of cells selected with Shift+arrows; the active cell is still the one it started from](docs/screenshots/active-cell-stays.png)
+*Shift+Down three times and Shift+Right twice: Jo, where it started, is still the active cell (R11 C2).*
+
 - Tabs for each open file, frozen rows and columns, insert, delete, move,
   hide, resize and auto-fit columns, hide and show rows (Ctrl+9,
   Ctrl+Shift+9).
@@ -248,7 +257,13 @@ everything is also in command search.
 - **Type-ahead suggestions** from the column's own values, **pick-from-list
   cells** (Alt+Down) for columns with a list check, a calendar pop-up for
   dates, spell check.
-- Undo and redo for everything, including big jobs on millions of rows.
+- Undo and redo for everything, including big jobs on millions of rows,
+  in the order you did things: edits and every tool, sorts, **filters**
+  (Filter, Show duplicates, show rows with problems or notes, Clear filter),
+  hiding rows and columns, column widths and AutoFit, display formats and
+  wrapping, row height, highlight rules, colour scales, banding, the group
+  line and data checks. A deleted column comes back with its width. Filters
+  and the look of the table do not count as unsaved changes.
 - One-row-per-page form view.
 - **List of my changes** (Edit menu): every cell that differs from the saved
   file (was / now), rows and columns added, deleted or moved; click to jump
@@ -596,5 +611,13 @@ request must carry the key. Requests are one JSON object per line:
 - Dragging or cutting and pasting a block of cells moves up to 50,000 cells
   at once (Ctrl+drag copies up to 100,000); whole rows and columns have no
   such limit. Rows cannot be moved while a filter is on.
+- Undo does not cover: saving (it is not a step, and changes to the data
+  made before a save cannot be undone after it, as the file is rewritten;
+  changes to the look still can), opening, closing and moving tabs, scrolling, zoom and the
+  theme, frozen rows and columns, the "First row is header" switch (it
+  changes how the file is read, not the data; Rename column's added header
+  row is the exception and undoes as before), Show value types and Show my
+  edits (they only show things), and Options. These match Excel and Google
+  Sheets, where views, settings and saving are not undo steps either.
 - The watched folder stops when the app closes, and recipes with a scramble
   step cannot run there or from the command line (the phrase is never stored).

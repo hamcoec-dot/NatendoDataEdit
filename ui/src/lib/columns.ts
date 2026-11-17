@@ -7,6 +7,15 @@
 
 import type { DisplayFormat } from "./m9";
 
+/** Everything here that Undo can put back. */
+export interface ColSnap {
+  defaultWidth: number;
+  widths: [number, number][];
+  hiddenWas: [number, number][];
+  formats: [number, DisplayFormat][];
+  wraps: number[];
+}
+
 export class Columns {
   /** Display formats by column. */
   formats = new Map<number, DisplayFormat>();
@@ -53,6 +62,27 @@ export class Columns {
     } else {
       this.widths.set(c, width);
     }
+    this.rebuild();
+  }
+
+  /** A copy of the widths, hidden columns, formats and wrapping (for undo). */
+  snapshot(): ColSnap {
+    return {
+      defaultWidth: this.defaultWidth,
+      widths: [...this.widths].sort((a, b) => a[0] - b[0]),
+      hiddenWas: [...this.hiddenWas].sort((a, b) => a[0] - b[0]),
+      formats: [...this.formats].sort((a, b) => a[0] - b[0]).map(([c, f]) => [c, structuredClone(f)]),
+      wraps: [...this.wraps].sort((a, b) => a - b),
+    };
+  }
+
+  /** Put back what `snapshot` copied. */
+  restore(s: ColSnap): void {
+    this.defaultWidth = s.defaultWidth;
+    this.widths = new Map(s.widths);
+    this.hiddenWas = new Map(s.hiddenWas);
+    this.formats = new Map(s.formats.map(([c, f]) => [c, structuredClone(f)]));
+    this.wraps = new Set(s.wraps);
     this.rebuild();
   }
 

@@ -751,6 +751,67 @@ mod tests {
     const PEOPLE: &str = "name,age,city,born\r\nann,31,Paris,2001-05-04\r\nbob,,Rome,1999-12-31\r\ncat,7,paris,2019-01-01\r\ndan,45,Oslo,\r\n";
 
     #[test]
+    fn filters_undo_and_redo_without_unsaving() {
+        let names =
+            |d: &Document| -> Vec<String> { all(d).into_iter().map(|r| r[0].clone()).collect() };
+        let paris = rule(
+            2,
+            Rule::Values {
+                values: vec!["Paris".into()],
+                blanks: false,
+            },
+        );
+        let mut d = doc(PEOPLE);
+        let everyone = names(&d);
+        d.set_filter(&paris).unwrap();
+        assert_eq!(names(&d), ["name", "ann"]);
+        assert!(!d.is_modified(), "a filter changes no data");
+        assert!(d.can_undo());
+        // Undo takes the filter off; redo puts it back.
+        assert!(d.undo());
+        assert_eq!(names(&d), everyone);
+        assert!(!d.has_filter());
+        assert!(d.redo());
+        assert_eq!(names(&d), ["name", "ann"]);
+        // Changing the filter, then clearing it: each is a step.
+        d.set_filter(&rule(
+            1,
+            cond(Condition::Number {
+                op: CmpOp::Gt,
+                value: 10.0,
+            }),
+        ))
+        .unwrap();
+        assert_eq!(names(&d), ["name", "ann", "dan"]);
+        d.clear_filter();
+        assert_eq!(names(&d), everyone);
+        assert!(d.undo());
+        assert_eq!(names(&d), ["name", "ann", "dan"]);
+        assert!(d.undo());
+        assert_eq!(names(&d), ["name", "ann"]);
+        // Clearing with no filter on is no step.
+        assert!(d.undo());
+        let pos = d.history_pos();
+        d.clear_filter();
+        assert_eq!(d.history_pos(), pos);
+        // Hidden rows stay hidden through filter undo and redo.
+        d.hide_rows(4, 1).unwrap();
+        d.set_filter(&paris).unwrap();
+        assert!(d.undo());
+        assert_eq!(names(&d), ["name", "ann", "bob", "cat"]);
+        assert!(!d.is_modified());
+        // A real edit after a filter: undone first, then the filter.
+        d.set_filter(&paris).unwrap();
+        d.set_cell(1, 1, "32".into()).unwrap();
+        assert!(d.is_modified());
+        assert!(d.undo());
+        assert!(!d.is_modified());
+        assert_eq!(names(&d), ["name", "ann"]);
+        assert!(d.undo());
+        assert_eq!(names(&d), ["name", "ann", "bob", "cat"]);
+    }
+
+    #[test]
     fn largest_and_smallest() {
         let names =
             |d: &Document| -> Vec<String> { all(d).into_iter().map(|r| r[0].clone()).collect() };

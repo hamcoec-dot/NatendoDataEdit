@@ -7,13 +7,43 @@ import type { ColumnScale } from "./m10";
 import type { SortSpec } from "./backend";
 import { backend, type DocInfo, type FilterSpec } from "./backend";
 import { CellCache } from "./cache";
-import { Columns } from "./columns";
-import { single, type Selection, rectOf, type Rect } from "./selection";
+import { Columns, type ColSnap } from "./columns";
+import { single, type Selection, rectOf, type Rect, type Cell, activeOf } from "./selection";
 
 /** Characters per cell fetched for display (the backend caps this too). */
 export const DISPLAY_CHARS = 512;
 /** Undo steps the engine keeps (engine MAX_UNDO). */
 const MAX_UNDO = 10_000;
+/** Undo steps kept for changes to how the table looks (widths and so on). */
+const MAX_VIEW_STEPS = 1_000;
+
+/** How the table looks, beyond the file: what Undo puts back for a change
+ *  that only touches the look (widths, hiding columns, display formats,
+ *  wrapping, highlight rules, colour scales, banding, the group line, row
+ *  height, data checks and the filter arrows). */
+export interface ViewLook {
+  cols: ColSnap;
+  highlights: Highlight[];
+  scales: ColumnScale[];
+  banded: boolean;
+  divider: number | null;
+  rowLines: number;
+  checks: Check[];
+  filterButtons: boolean;
+}
+/** The look, plus the filter rules and last sort (those change with an
+ *  engine undo step, so only engine steps put them back). */
+export interface ViewSnap {
+  look: ViewLook;
+  filter: FilterSpec | null;
+  sort: SortSpec | null;
+}
+/** A change to the look alone, made at undo position `pos`. */
+export interface LookStep {
+  pos: number;
+  before: ViewLook;
+  after: ViewLook;
+}
 
 export class Tab {
   info = $state<DocInfo>() as DocInfo;
@@ -109,6 +139,11 @@ export class Tab {
     return this.info.id;
   }
 
+  /** The active cell (where typing goes; see `selection.ts`). */
+  get cell(): Cell {
+    return activeOf(this.sel);
+  }
+
   /** Document row of the first data row (1 when the first row is a header). */
   get firstRow(): number {
     return this.header && this.info.rows > 0 ? 1 : 0;
@@ -126,6 +161,26 @@ export class Tab {
   /** What Cut (Ctrl+X) marked, waiting for Paste to move it; dropped by
    *  Esc, another cut or copy, or any change (`pos` is the undo position). */
   cut = $state<{ kind: "cols" | "rows" | "cells"; rect: Rect; pos: number; clip: string; inside: boolean } | null>(null);
+  /** Changes to the look alone, oldest first (undone before the engine
+   *  step that reached their position), and those undone, for redo. */
+  lookSteps: LookStep[] = [];
+  lookRedo: LookStep[] = [];
+  /** Each engine step's look just before and after it, by the undo
+   *  position it made: undo and redo put the widths, formats and so on
+   *  back as they were (a deleted column comes back with its width). */
+  stepViews = new Map<number, { before: ViewSnap; after: ViewSnap | null }>();
+  /** A look change made after undoing: the engine's redo is over at this
+   *  position (as a new change would end it). */
+  redoCut: number | null = null;
+  /** Bumped when the look steps change (Undo and Redo enable). */
+  undoVersion = $state(0);
+  /** The look as last recorded, and the undo position then. */
+  private lastView: ViewSnap | null = null;
+  private lastKey = "";
+  private lastPos = -1;
+  /** Undo position of a new engine step waiting for its "after" look. */
+  private pendingStep: number | null = null;
+
   /** Redo calls in flight: a rise of the undo position during one is a redo
    *  (replay the moves), otherwise a new change (forget undone moves). */
   redoing = 0;
@@ -164,8 +219,98 @@ export class Tab {
     if (this.divider !== null) this.divider = place(this.divider);
   }
 
+  /** The look now (copies). */
+  snapView(): ViewSnap {
+    return {
+      look: {
+        cols: this.columns.snapshot(),
+        highlights: $state.snapshot(this.highlights) as Highlight[],
+        scales: $state.snapshot(this.scales) as ColumnScale[],
+        banded: this.banded,
+        divider: this.divider,
+        rowLines: this.rowLines,
+        checks: $state.snapshot(this.checks) as Check[],
+        filterButtons: this.filterButtons,
+      },
+      filter: this.filter ? ($state.snapshot(this.filter) as FilterSpec) : null,
+      sort: this.sort ? ($state.snapshot(this.sort) as SortSpec) : null,
+    };
+  }
+
+  /** Note a change to the look since last time as one undo step (called
+   *  after each click or key, and before undo, redo and engine changes).
+   *  After an engine step it only takes the look as it is now. */
+  recordView(): void {
+    const now = this.snapView();
+    const key = JSON.stringify(now.look);
+    const pos = this.info.history_pos;
+    if (this.lastView === null || pos !== this.lastPos) {
+      const s = this.pendingStep === pos ? this.stepViews.get(pos) : undefined;
+      if (s) s.after = now;
+      this.pendingStep = null;
+    } else if (key !== this.lastKey) {
+      this.lookSteps.push({ pos, before: this.lastView.look, after: now.look });
+      if (this.lookSteps.length > MAX_VIEW_STEPS) this.lookSteps.shift();
+      if (this.lookRedo.length || this.info.can_redo) this.redoCut = pos;
+      this.lookRedo = [];
+      this.undoVersion++;
+    }
+    this.lastView = now;
+    this.lastKey = key;
+    this.lastPos = pos;
+  }
+
+  /** Take the look as it is now without recording a step (after an undo
+   *  or redo has put back what follows it, such as renamed rules). */
+  baseline(): void {
+    this.lastView = this.snapView();
+    this.lastKey = JSON.stringify(this.lastView.look);
+    this.lastPos = this.info.history_pos;
+    this.pendingStep = null;
+  }
+
+  /** Put a look back. `engine`: for an engine undo or redo (the filter
+   *  and sort come back too; data checks follow the rename rules instead). */
+  restoreView(s: ViewSnap, engine: boolean): void {
+    const l = s.look;
+    this.columns.restore(l.cols);
+    this.highlights = structuredClone(l.highlights);
+    this.highlightVersion++;
+    this.scales = structuredClone(l.scales);
+    this.ranges.clear();
+    this.banded = l.banded;
+    this.divider = l.divider;
+    this.rowLines = l.rowLines;
+    this.filterButtons = l.filterButtons;
+    if (engine) {
+      this.filter = this.info.has_filter && s.filter ? structuredClone(s.filter) : null;
+      this.sort = s.sort ? structuredClone(s.sort) : null;
+    } else {
+      this.checks = structuredClone(l.checks);
+      this.checkVersion++;
+    }
+    this.lastView = this.snapView();
+    this.lastKey = JSON.stringify(this.lastView.look);
+    this.lastPos = this.info.history_pos;
+    this.undoVersion++;
+    this.bump();
+  }
+
+  /** Undo can take back a look change here, or an engine step. */
+  get canUndo(): boolean {
+    void this.undoVersion;
+    return this.lookSteps.at(-1)?.pos === this.info.history_pos || this.info.can_undo;
+  }
+
+  get canRedo(): boolean {
+    void this.undoVersion;
+    return this.lookRedo.at(-1)?.pos === this.info.history_pos || (this.info.can_redo && this.redoCut !== this.info.history_pos);
+  }
+
   /** Take new engine info; refetch cells when the data may have changed. */
   update(info: DocInfo, dataChanged: boolean): void {
+    // A look change made just before this engine change is a step of its own.
+    this.recordView();
     const structural =
       info.cols !== this.info.cols || info.rows !== this.info.rows || info.filtered !== this.info.filtered;
     if (!info.has_filter) this.filter = null;
@@ -183,6 +328,19 @@ export class Tab {
       // A new change: moves that could have been redone are gone.
       this.colMoves = this.colMoves.filter((x) => x.pos <= before);
     }
+    if (after > before && this.redoing === 0) {
+      // A new change ends the redo of look changes too, and takes the look
+      // before it (the look after it is taken once it has settled).
+      this.lookRedo = [];
+      this.redoCut = null;
+      for (const k of [...this.stepViews.keys()]) if (k > before) this.stepViews.delete(k);
+      if (after === before + 1 && this.lastView) {
+        this.stepViews.set(after, { before: this.lastView, after: null });
+        this.pendingStep = after;
+      }
+      if (this.stepViews.size > MAX_UNDO) this.stepViews.delete(this.stepViews.keys().next().value!);
+    }
+    if (after !== before) setTimeout(() => this.recordView(), 0);
     this.info = info;
     this.columns.setCount(info.cols);
     if (dataChanged || structural) this.cache.invalidate();

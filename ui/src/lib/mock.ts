@@ -228,6 +228,9 @@ function mockImport(text: string, format: ImportFormat, part: number): string[][
     .map((l) => l.split(sep));
 }
 
+/** Undo steps that only change which rows show. */
+const VIEW_STEPS = new WeakSet<() => () => void>();
+
 export class MockBackend implements Backend {
   private docs = new Map<number, MockDoc>();
   private next = 1;
@@ -589,9 +592,33 @@ export class MockBackend implements Backend {
     d.info.can_undo = d.undo.length > 0;
     d.info.can_redo = d.redo.length > 0;
     d.info.history_pos = d.undo.length;
-    d.info.modified = d.undo.length !== d.clean;
+    // Like the engine: steps that only change which rows show (a filter)
+    // leave the document saved.
+    const n = d.undo.length;
+    d.info.modified =
+      d.clean < 0 ||
+      (d.clean <= n
+        ? d.undo.slice(d.clean).some((s) => !VIEW_STEPS.has(s.apply))
+        : d.clean - n > d.redo.length || d.redo.slice(d.redo.length - (d.clean - n)).some((a) => !VIEW_STEPS.has(a)));
     d.info.column_changes = d.cols !== null;
     return { ...d.info };
+  }
+
+  /** Turn a filter on, change it or clear it: one undo step (as the engine). */
+  private setView(d: MockDoc, shown: Set<number> | null, filter: FilterSpec | null): DocInfo {
+    if (shown === null && d.shown === null) return this.refresh(d);
+    const apply = (): (() => void) => {
+      const was = d.shown;
+      const wasFilter = d.filter;
+      d.shown = shown;
+      d.filter = filter;
+      return () => {
+        d.shown = was;
+        d.filter = wasFilter;
+      };
+    };
+    VIEW_STEPS.add(apply);
+    return this.push(d, apply);
   }
 
   private push(d: MockDoc, apply: () => () => void): DocInfo {
@@ -878,16 +905,11 @@ export class MockBackend implements Backend {
       const id = d.order ? d.order[p]! : p;
       if ((p === 0 && spec.keep_first) || spec.columns.every((c) => testRule(c.rule, this.valueAt(d, p, c.col)))) shown.add(id);
     }
-    d.shown = shown;
-    d.filter = spec;
-    return this.refresh(d);
+    return this.setView(d, shown, spec);
   }
 
   async clearFilter(doc: number): Promise<DocInfo> {
-    const d = this.get(doc);
-    d.shown = null;
-    d.filter = null;
-    return this.refresh(d);
+    return this.setView(this.get(doc), null, null);
   }
 
   async filterSpec(doc: number): Promise<FilterSpec | null> {
@@ -1737,9 +1759,7 @@ export class MockBackend implements Backend {
         }
         const keep = new Set([...dupRows, ...leaders].map((r) => this.rowId(d, r)));
         if (s.keep_first && rows > 0) keep.add(this.rowId(d, 0));
-        d.shown = keep;
-        d.filter = { columns: [], keep_first: s.keep_first };
-        return this.report(this.refresh(d), { rows: dupRows.length + leaders.size, groups: leaders.size });
+        return this.report(this.setView(d, keep, { columns: [], keep_first: s.keep_first }), { rows: dupRows.length + leaders.size, groups: leaders.size });
       }
       case "remove_blank_rows": {
         const gone: number[] = [];

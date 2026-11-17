@@ -3812,7 +3812,9 @@ mod tests {
             ["hidden one", "c3"],
             "hidden rows are not cleaned"
         );
+        assert!(d.undo(), "the filter is an undo step of its own");
         assert!(d.undo());
+        assert!(d.undo(), "and so is the first one");
         assert_eq!(rows(&d), before);
         // Numbering counts the cleaned rows; empty cells get it too.
         let mut d = doc("a,b\r\nx,\r\ny,\r\n");

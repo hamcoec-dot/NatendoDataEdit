@@ -1,6 +1,10 @@
 // Selection: an anchor cell and a focus cell; the selected block is the
 // rectangle between them. Whole rows or columns are selected by spanning
-// the full width or height.
+// the full width or height. As in a spreadsheet, the active cell (where
+// typing goes, and where a plain arrow key moves from) is where the
+// selection started: the anchor, or `active` when that is elsewhere in the
+// block (whole rows or columns picked with Shift+Space or Ctrl+Space).
+// Shift+arrows and Shift+click move the focus, the far corner.
 
 export interface Cell {
   row: number;
@@ -17,6 +21,13 @@ export interface Rect {
 export interface Selection {
   anchor: Cell;
   focus: Cell;
+  /** The active cell when it is not the anchor (inside the block). */
+  active?: Cell;
+}
+
+/** The active cell of a selection. */
+export function activeOf(s: Selection): Cell {
+  return s.active ?? s.anchor;
 }
 
 export function rectOf(s: Selection): Rect {

@@ -33,7 +33,7 @@ const url = process.argv[3] || "http://localhost:5191";
   let left = 0;
   for (let x = 30; x < 120; x += 2) {
     await p.mouse.click(canvas.x + x, canvas.y + HEAD + ROW + 12);
-    if (/C1$/.test(await at())) {
+    if (/C1$/.test(await at()) && (await p.evaluate(() => window.__nde.tab.rect.cols)) === 1) {
       left = x;
       break;
     }
@@ -215,6 +215,9 @@ const url = process.argv[3] || "http://localhost:5191";
   await p.waitForTimeout(3000);
   ok((await cellAt(1, 1)) === first[1], `after a filter the cut cell was not moved (${await cellAt(1, 1)})`);
   await undo();
+  // Clearing the filter, the paste and the filter are each an undo step.
+  await undo();
+  await undo();
   ok((await row(1)).join() === first.join() && (await row(2)).join() === second.join(), "back as it was after the filter test");
 
   // Esc drops the cut: a paste then pastes the copied text instead of moving.
@@ -270,7 +273,7 @@ const url = process.argv[3] || "http://localhost:5191";
   ok(/C2$/.test(await at()), `B widened with C (${await at()})`);
   await p.mouse.click(canvas.x + left + W + 195, ry(1));
   ok(/C3$/.test(await at()), `C starts after the wider B (${await at()})`);
-  await undo(); // widths are view only: undo does nothing to them
+  // (Ctrl+Z would put the widths back: they are an undo step of their own.)
   await p.keyboard.press("Control+Shift+0");
 
   // ---- hidden columns: hide C, click its mark on D's header -------------------

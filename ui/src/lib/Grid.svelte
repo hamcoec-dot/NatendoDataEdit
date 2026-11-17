@@ -6,7 +6,7 @@
   import { onMount, tick, untrack } from "svelte";
   import type { Tab } from "./tab.svelte";
   import { prefs } from "./prefs.svelte";
-  import { contains, type Cell, type Rect } from "./selection";
+  import { contains, rectOf, type Cell, type Rect, type Selection } from "./selection";
   import { blockTarget, dropIndex, gapAt, onOutline } from "./dragmove";
   import type { ViewportData } from "./binary";
   import { backend, errorText, type Dir } from "./backend";
@@ -258,7 +258,7 @@
     ctx.textBaseline = "middle";
 
     const sel = tab.rect;
-    const active = tab.sel.focus;
+    const active = tab.cell;
     const rowSpans = [rows.frozen, rows.body];
     const colSpans = [cols.frozen, cols.body];
 
@@ -1058,22 +1058,31 @@
   }
 
   /** Select from `anchor` to `focus`; `scroll` brings the focus into view
-   *  (off for whole rows/columns, which keep the view where it is). */
-  export function select(anchor: Cell, focus: Cell = anchor, scroll = true): void {
+   *  (off for whole rows/columns, which keep the view where it is).
+   *  `active`: the active cell when it is not the anchor (kept only while
+   *  inside the block). */
+  export function select(anchor: Cell, focus: Cell = anchor, scroll = true, active?: Cell): void {
     const clamp = (c: Cell): Cell => ({
       row: Math.min(Math.max(tab.firstRow, c.row), lastRow()),
       col: Math.min(Math.max(0, c.col), Math.max(0, tab.info.cols - 1)),
     });
-    tab.sel = { anchor: clamp(anchor), focus: clamp(focus) };
+    const sel: Selection = { anchor: clamp(anchor), focus: clamp(focus) };
+    if (active) {
+      const a = clamp(active);
+      if ((a.row !== sel.anchor.row || a.col !== sel.anchor.col) && contains(rectOf(sel), a.row, a.col)) sel.active = a;
+    }
+    tab.sel = sel;
     if (scroll) scrollIntoView(tab.sel.focus);
     else redraw();
   }
 
+  /** Arrow keys: a plain move starts from the active cell (and leaves the
+   *  block); with Shift the far corner moves, the active cell stays. */
   export function move(dr: number, dc: number, extend: boolean): void {
-    const f = tab.sel.focus;
+    const f = extend ? tab.sel.focus : tab.cell;
     const col = dc === 0 ? f.col : tab.columns.step(f.col, dc > 0 ? 1 : -1, Math.abs(dc));
     const next = { row: f.row + dr, col };
-    if (extend) select(tab.sel.anchor, next);
+    if (extend) select(tab.sel.anchor, next, true, tab.sel.active);
     else select(next);
   }
 
@@ -1268,7 +1277,8 @@
           void toggleTick(h.row, h.col);
           break;
         }
-        if (e.shiftKey) select(tab.sel.anchor, { row: h.row, col: h.col });
+        // Shift+click: from the active cell to here.
+        if (e.shiftKey) select(tab.cell, { row: h.row, col: h.col });
         else select({ row: h.row, col: h.col });
         drag = { kind: "select" };
         if (e.detail === 2) startEdit();
@@ -1280,7 +1290,7 @@
           if (tab.info.filtered) moving.refuse = "Rows can't be moved while a filter is on. Clear the filter first (Filtered ✕).";
           break;
         }
-        if (e.shiftKey) select({ row: tab.sel.anchor.row, col: 0 }, { row: h.row, col: fullCols }, false);
+        if (e.shiftKey) select({ row: tab.sel.anchor.row, col: 0 }, { row: h.row, col: fullCols }, false, tab.cell);
         else select({ row: h.row, col: 0 }, { row: h.row, col: fullCols }, false);
         drag = { kind: "rows" };
         break;
@@ -1333,7 +1343,7 @@
             break;
           }
         }
-        if (e.shiftKey) select({ row: tab.firstRow, col: tab.sel.anchor.col }, { row: lastRow(), col: h.col }, false);
+        if (e.shiftKey) select({ row: tab.firstRow, col: tab.sel.anchor.col }, { row: lastRow(), col: h.col }, false, tab.cell);
         else select({ row: tab.firstRow, col: h.col }, { row: lastRow(), col: h.col }, false);
         drag = { kind: "cols" };
         break;
@@ -1632,7 +1642,7 @@
       }
       return;
     }
-    const c = { ...tab.sel.focus };
+    const c = { ...tab.cell };
     scrollIntoView(c);
     let value = initial ?? "";
     if (initial === undefined) {
@@ -1727,7 +1737,7 @@
 
   /** The pointer is on the pick-list arrow of the active cell. */
   function onPickButton(px: number, py: number, row: number, col: number): boolean {
-    const a = tab.sel.focus;
+    const a = tab.cell;
     if (readOnly || row !== a.row || col !== a.col || !listCols.has(col) || (tab.header && row === 0)) return false;
     const r = cellRect(a);
     return !!r && r.w > PICK_BTN + 8 && px >= r.x + r.w - PICK_BTN - 4 && py < r.y + headH;
@@ -1747,7 +1757,7 @@
   /** Edit the active cell with its column's list of allowed values open
    *  (Alt+Down or the arrow). False when the column has no list. */
   export async function openPick(): Promise<boolean> {
-    const a = tab.sel.focus;
+    const a = tab.cell;
     if (!listCols.has(a.col) || (tab.header && a.row === 0)) return false;
     pickHidden = false;
     pickTyped = false;

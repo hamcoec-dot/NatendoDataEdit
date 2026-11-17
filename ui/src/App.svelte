@@ -411,7 +411,7 @@
       const sample = rows.map((r) => r.slice(0, width));
       if (!t.headerTouched && looksLikeHeader(sample)) {
         t.header = true;
-        if (t.sel.focus.row === 0) t.sel = { anchor: { row: 1, col: 0 }, focus: { row: 1, col: 0 } };
+        if (t.cell.row === 0) t.sel = { anchor: { row: 1, col: 0 }, focus: { row: 1, col: 0 } };
         t.bump();
       }
     } catch {
@@ -1503,7 +1503,7 @@
   async function fillByExample(): Promise<void> {
     const t = tab;
     if (!t) return;
-    const col = t.sel.focus.col;
+    const col = t.cell.col;
     const rep = await runOp({ op: "fill_example", spec: { col, skip_first: t.header } }, "Filling by example");
     if (!rep) return;
     const from = `from ${plural(rep.examples ?? 0, "example")}`;
@@ -1755,7 +1755,8 @@
   async function jump(dir: Dir, extend: boolean): Promise<void> {
     const t = tab;
     if (!t || !grid) return;
-    const f = t.sel.focus;
+    // Ctrl+arrow from the active cell; Ctrl+Shift+arrow moves the far corner.
+    const f = extend ? t.sel.focus : t.cell;
     let target: [number, number];
     try {
       target = await backend().dataEdge(t.id, f.row, f.col, dir);
@@ -1765,7 +1766,7 @@
     }
     if (t !== tab || !grid) return;
     const cell = { row: Math.max(t.firstRow, target[0]), col: target[1] };
-    if (extend) grid.select(t.sel.anchor, cell);
+    if (extend) grid.select(t.sel.anchor, cell, true, t.sel.active);
     else grid.select(cell);
   }
 
@@ -2053,7 +2054,7 @@
       say("This file is locked (read-only); unlock it to rename a column.");
       return;
     }
-    const c = col ?? t.sel.focus.col;
+    const c = col ?? t.cell.col;
     if (c < 0 || c >= t.info.cols) return;
     let name = "";
     const others = new Set<string>();
@@ -2121,12 +2122,12 @@
   async function makeHeader(): Promise<void> {
     const t = tab;
     if (!t) return;
-    const row = t.sel.focus.row;
+    const row = t.cell.row;
     if (row !== 0 && !(await change({ op: "move_rows", at: row, count: 1, to: 0 }))) return;
     t.header = true;
     t.headerTouched = true;
     t.cache.invalidate();
-    grid?.select({ row: 1, col: t.sel.focus.col });
+    grid?.select({ row: 1, col: t.cell.col });
   }
 
   // ---- Milestone 9: rows, links, formats -------------------------------------------
@@ -2147,7 +2148,7 @@
       return;
     }
     if (await change({ op: "hide_rows", at, count }, false)) {
-      grid?.select({ row: Math.min(at, Math.max(t.firstRow, t.info.rows - 1)), col: t.sel.focus.col });
+      grid?.select({ row: Math.min(at, Math.max(t.firstRow, t.info.rows - 1)), col: t.cell.col });
       say(`${plural(count, "row")} hidden. Hidden rows are still saved; Ctrl+Shift+9 shows them again.`);
     }
   }
@@ -2333,7 +2334,7 @@
   async function jumpChange(up: boolean): Promise<void> {
     const t = tab;
     if (!t) return;
-    const f = t.sel.focus;
+    const f = t.cell;
     try {
       const r = await backend().findChange(t.id, f.row, f.col, up);
       if (r === null || t !== tab) {
@@ -2349,7 +2350,7 @@
   async function jumpExtreme(largest: boolean): Promise<void> {
     const t = tab;
     if (!t) return;
-    const col = t.sel.focus.col;
+    const col = t.cell.col;
     try {
       const r = await runJob("Looking", () => backend().findExtreme(t.id, col, largest, t.header, { decimal_comma: false, date_order: "mdy" }));
       if (r === null || r === undefined || t !== tab) {
@@ -2485,7 +2486,7 @@
   function toggleDivider(): void {
     const t = tab;
     if (!t) return;
-    const c = t.sel.focus.col;
+    const c = t.cell.col;
     t.divider = t.divider === c ? null : c;
     t.bump();
     say(t.divider === null ? "Group lines are off." : `A line now marks each change in ${columnTitle(t, c)}.`);
@@ -2495,7 +2496,7 @@
   function toggleScale(kind: ScaleKind): void {
     const t = tab;
     if (!t) return;
-    const c = t.sel.focus.col;
+    const c = t.cell.col;
     const had = t.scales.find((s) => s.col === c);
     t.scales = t.scales.filter((s) => s.col !== c);
     if (!had || had.kind !== kind) t.scales = [...t.scales, { col: c, kind }];
@@ -2808,14 +2809,14 @@
     t.headerOffByUndo = false;
     t.header = !t.header;
     t.headerTouched = true;
-    grid?.select(t.sel.anchor, t.sel.focus);
+    grid?.select(t.sel.anchor, t.sel.focus, true, t.sel.active);
   }
 
   function freezeAtCursor(): void {
     const t = tab;
     if (!t) return;
-    t.frozenRows = Math.max(0, t.sel.focus.row - t.firstRow);
-    t.frozenCols = t.sel.focus.col;
+    t.frozenRows = Math.max(0, t.cell.row - t.firstRow);
+    t.frozenCols = t.cell.col;
     t.scrollX = 0;
     t.scrollY = 0;
     if (t.frozenRows === 0 && t.frozenCols === 0) say("Select the cell below and right of what should stay in view, then freeze.");
@@ -2847,7 +2848,7 @@
       return;
     }
     const row = Math.min(t.info.rows, Math.max(1, nums[0]!)) - 1;
-    const col = nums.length > 1 ? Math.min(t.info.cols, Math.max(1, nums[1]!)) - 1 : t.sel.focus.col;
+    const col = nums.length > 1 ? Math.min(t.info.cols, Math.max(1, nums[1]!)) - 1 : t.cell.col;
     grid?.select({ row, col });
     grid?.focus();
   }
@@ -2858,10 +2859,29 @@
     if (!t) return;
     // One at a time per tab: a held Ctrl+Z repeats faster than a big undo.
     if (undoBusy.has(t)) return;
+    // A change to the look (widths, hiding, formats, highlights...) made at
+    // this undo position is undone before the engine step that reached it,
+    // and redone before the next one.
+    t.recordView();
+    const pos = t.info.history_pos;
+    const look = op === "undo" ? t.lookSteps.at(-1) : t.lookRedo.at(-1);
+    if (look && look.pos === pos) {
+      if (op === "undo") t.lookRedo.push(t.lookSteps.pop()!);
+      else t.lookSteps.push(t.lookRedo.pop()!);
+      t.restoreView({ look: op === "undo" ? look.before : look.after, filter: null, sort: null }, false);
+      return;
+    }
+    if (op === "redo" && t.redoCut === pos) return;
     undoBusy.add(t);
     if (op === "redo") t.redoing++;
     try {
       await change({ op });
+      // The widths, formats, filter rules and so on as they were before the
+      // step undone, or after the step redone.
+      const now = t.info.history_pos;
+      const step = op === "undo" && now === pos - 1 ? t.stepViews.get(pos)?.before : op === "redo" && now === pos + 1 ? t.stepViews.get(now)?.after : undefined;
+      if (step) t.restoreView(step, true);
+      else if (now !== pos && t.info.has_filter) t.filter = await backend().filterSpec(t.id).catch(() => t.filter);
       // Undoing the header row Rename column added: the setting it switched
       // on goes off again, so the first record is not taken for titles.
       followRefEdits(t, op);
@@ -2869,17 +2889,19 @@
         if (t.header) {
           t.header = false;
           t.headerOffByUndo = true;
-          grid?.select(t.sel.anchor, t.sel.focus);
+          grid?.select(t.sel.anchor, t.sel.focus, true, t.sel.active);
           say('The added header row is undone, so "First row is header" is off again.');
         } else t.headerAddedAt = null;
       } else if (op === "redo" && t.headerOffByUndo && t.headerAddedAt !== null && t.info.history_pos >= t.headerAddedAt) {
         // Redo brought the header row back: switch the setting back on.
         t.headerOffByUndo = false;
         t.header = true;
-        grid?.select(t.sel.anchor, t.sel.focus);
+        grid?.select(t.sel.anchor, t.sel.focus, true, t.sel.active);
         say('The header row is back, so "First row is header" is on again.');
       }
     } finally {
+      // What the undo or redo put back is not a change of its own.
+      t.baseline();
       if (op === "redo") t.redoing--;
       undoBusy.delete(t);
     }
@@ -2985,7 +3007,7 @@
     }
   }
 
-  function sortByColumn(descending: boolean, col = tab?.sel.focus.col ?? 0): void {
+  function sortByColumn(descending: boolean, col = tab?.cell.col ?? 0): void {
     const t = tab;
     if (!t) return;
     void sortRows({ keys: [{ col, descending, kind: "auto", match_case: false }], keep_first: t.header });
@@ -2994,7 +3016,7 @@
   function openSortDialog(): void {
     const t = tab;
     if (!t) return;
-    sortDialog = [{ col: t.sel.focus.col, descending: false, kind: "auto", match_case: false }];
+    sortDialog = [{ col: t.cell.col, descending: false, kind: "auto", match_case: false }];
   }
 
   async function setRule(col: number, rule: Rule | null): Promise<void> {
@@ -3007,7 +3029,7 @@
     if (!ok) return;
     t.filter = spec.columns.length ? spec : null;
     if (spec.columns.length) t.filterButtons = true;
-    grid?.select({ row: t.firstRow, col: t.sel.focus.col });
+    grid?.select({ row: t.firstRow, col: t.cell.col });
     if (t.info.filtered && t.info.rows <= t.firstRow) say("No rows match; the filter hides them all.");
   }
 
@@ -3038,7 +3060,7 @@
   async function filterBySelection(): Promise<void> {
     const t = tab;
     if (!t) return;
-    const f = t.sel.focus;
+    const f = t.cell;
     try {
       const v = await backend().cellText(t.id, f.row, f.col);
       if (v.truncated) {
@@ -3051,7 +3073,7 @@
     }
   }
 
-  function openFilterMenu(col = tab?.sel.focus.col ?? 0): void {
+  function openFilterMenu(col = tab?.cell.col ?? 0): void {
     const t = tab;
     if (!t || !grid) return;
     t.filterButtons = true;
@@ -3126,7 +3148,7 @@
       cellBarText = "";
       return;
     }
-    const f = t.sel.focus;
+    const f = t.cell;
     void t.version;
     const key = `${t.id}:${f.row}:${f.col}:${t.version}`;
     if (key === cellBarFor || cellBarDirty) return;
@@ -3155,7 +3177,7 @@
       say("This cell is too long to edit here.");
       return;
     }
-    const f = t.sel.focus;
+    const f = t.cell;
     const multi = cellCount(t.rect) > 1;
     const ok = await commitCell(f.row, f.col, cellBarText, multi);
     if (ok) {
@@ -3223,7 +3245,7 @@
     { id: "file.print", label: "&Print…", keys: ["Ctrl+P"], run: () => void openPrint(false), enabled: ready },
     { id: "file.pdf", label: "Save as P&DF…", run: () => void openPrint(true), enabled: ready },
     { id: "file.mail", label: "&Mailing labels and letters…", run: () => void openMail(), enabled: ready },
-    { id: "edit.note", label: "&Note and flag on this row…", keys: ["Shift+F2"], run: () => { const t = tab; if (t) notesRow = t.sel.focus.row; }, enabled: ready },
+    { id: "edit.note", label: "&Note and flag on this row…", keys: ["Shift+F2"], run: () => { const t = tab; if (t) notesRow = t.cell.row; }, enabled: ready },
     { id: "edit.changes", label: "List of &my changes…", run: () => void openChanges(), enabled: ready },
     { id: "tools.recipe", label: "&Recipe (save or run steps)…", run: () => void openRecipes(), enabled: ready },
     { id: "tools.searchFolder", label: "Search a &folder of files…", keys: ["Ctrl+Shift+F"], run: () => { folderSearchOpen = true; } },
@@ -3250,8 +3272,8 @@
     { id: "file.close", label: "&Close", keys: ["Ctrl+W", "Ctrl+F4"], run: () => void closeTab(), enabled: hasTab },
     { id: "file.quit", label: "E&xit", run: quit },
 
-    { id: "edit.undo", label: "&Undo", keys: ["Ctrl+Z"], run: () => undoRedo("undo"), enabled: () => ready() && !!tab?.info.can_undo },
-    { id: "edit.redo", label: "&Redo", keys: ["Ctrl+Y", "Ctrl+Shift+Z"], run: () => undoRedo("redo"), enabled: () => ready() && !!tab?.info.can_redo },
+    { id: "edit.undo", label: "&Undo", keys: ["Ctrl+Z"], run: () => undoRedo("undo"), enabled: () => ready() && !!tab?.canUndo },
+    { id: "edit.redo", label: "&Redo", keys: ["Ctrl+Y", "Ctrl+Shift+Z"], run: () => undoRedo("redo"), enabled: () => ready() && !!tab?.canRedo },
     {
       id: "edit.repeat",
       label: "Repeat last action",
@@ -3278,7 +3300,7 @@
       id: "edit.today",
       label: "Insert today's date",
       keys: ["Ctrl+;"],
-      run: () => commitCell(tab!.sel.focus.row, tab!.sel.focus.col, grid?.today() ?? "", false),
+      run: () => commitCell(tab!.cell.row, tab!.cell.col, grid?.today() ?? "", false),
       enabled: ready,
     },
     {
@@ -3287,7 +3309,7 @@
       keys: ["Ctrl+Shift+D"],
       run: () => {
         const t = tab!;
-        const { row, col } = t.sel.focus;
+        const { row, col } = t.cell;
         datePick = { row, col, text: t.cache.get(row, col) ?? "" };
       },
       enabled: ready,
@@ -3296,7 +3318,7 @@
       id: "edit.now",
       label: "Insert current time",
       keys: ["Ctrl+Shift+:", "Ctrl+Shift+;"],
-      run: () => commitCell(tab!.sel.focus.row, tab!.sel.focus.col, grid?.nowTime() ?? "", false),
+      run: () => commitCell(tab!.cell.row, tab!.cell.col, grid?.nowTime() ?? "", false),
       enabled: ready,
     },
     {
@@ -3419,10 +3441,10 @@
     { id: "file.saveAll", label: "Save a&ll", keys: ["Ctrl+Alt+S"], run: () => void saveAll(), enabled: () => tabs.some((t) => t.info.modified) },
     { id: "file.closeUnchanged", label: "Close &unchanged tabs", run: () => void closeUnchanged(), enabled: () => tabs.length > 0 },
     { id: "view.valueTypes", label: "Show value t&ypes (numbers, dates)", keys: ["Ctrl+F8"], run: toggleValueTypes, enabled: hasTab, checked: () => !!tab?.valueTypes },
-    { id: "view.divider", label: "&Line at each change in this column", run: toggleDivider, enabled: hasTab, checked: () => tab?.divider !== null && tab?.divider === tab?.sel.focus.col },
-    { id: "view.scale3", label: "Colour scale (red, yellow, green)", run: () => toggleScale("scale3"), enabled: ready, checked: () => !!tab?.scales.some((s) => s.col === tab?.sel.focus.col && s.kind === "scale3") },
-    { id: "view.scale2", label: "Colour scale (white to green)", run: () => toggleScale("scale2"), enabled: ready, checked: () => !!tab?.scales.some((s) => s.col === tab?.sel.focus.col && s.kind === "scale2") },
-    { id: "view.bars", label: "Data &bars", run: () => toggleScale("bar"), enabled: ready, checked: () => !!tab?.scales.some((s) => s.col === tab?.sel.focus.col && s.kind === "bar") },
+    { id: "view.divider", label: "&Line at each change in this column", run: toggleDivider, enabled: hasTab, checked: () => tab?.divider !== null && tab?.divider === tab?.cell.col },
+    { id: "view.scale3", label: "Colour scale (red, yellow, green)", run: () => toggleScale("scale3"), enabled: ready, checked: () => !!tab?.scales.some((s) => s.col === tab?.cell.col && s.kind === "scale3") },
+    { id: "view.scale2", label: "Colour scale (white to green)", run: () => toggleScale("scale2"), enabled: ready, checked: () => !!tab?.scales.some((s) => s.col === tab?.cell.col && s.kind === "scale2") },
+    { id: "view.bars", label: "Data &bars", run: () => toggleScale("bar"), enabled: ready, checked: () => !!tab?.scales.some((s) => s.col === tab?.cell.col && s.kind === "bar") },
     { id: "view.clearHighlights", label: "Clear all highlight rules", run: clearHighlights, enabled: hasTab },
     { id: "data.clearChecks", label: "Clear all data checks", run: clearChecks, enabled: () => !!tab?.checks.length },
     { id: "view.typeahead", label: "Suggest values while typing", run: () => { prefs.data.typeahead = !prefs.data.typeahead; prefs.save(); say(prefs.data.typeahead ? "Values already in the column are suggested while you type." : "No suggestions while typing."); }, checked: () => prefs.data.typeahead },
@@ -3453,7 +3475,7 @@
     { id: "data.extract", label: "E&xtract into a column…", run: () => { editKind = "extract"; }, enabled: ready },
     { id: "data.build", label: "&Build a column (template or rules)…", run: () => { editKind = "build"; }, enabled: ready },
     { id: "data.append", label: "Appen&d another table…", run: () => { joinKind = "append"; }, enabled: ready },
-    { id: "data.form", label: "Form v&iew (one row per page)…", run: () => { if (tab) formRow = tab.sel.focus.row; }, enabled: ready },
+    { id: "data.form", label: "Form v&iew (one row per page)…", run: () => { if (tab) formRow = tab.cell.row; }, enabled: ready },
     { id: "data.fillExample", label: "Fill by e&xample", keys: ["Ctrl+E"], run: () => void fillByExample(), enabled: ready, repeatable: true },
     { id: "data.splitName", label: "Split names into columns…", run: () => { splitNameOpen = true; }, enabled: ready },
     { id: "clean.tools", label: "&Cleaning tools…", keys: ["Ctrl+Shift+K"], run: () => { cleanTool = "spaces"; }, enabled: ready },
@@ -3717,9 +3739,9 @@
     const extend = e.shiftKey;
     const last = Math.max(t.firstRow, t.info.rows - 1);
     const lastCol = Math.max(0, t.info.cols - 1);
-    const f = t.sel.focus;
+    const f = extend ? t.sel.focus : t.cell;
     const to = (row: number, col: number) => {
-      if (extend) grid!.select(t.sel.anchor, { row, col });
+      if (extend) grid!.select(t.sel.anchor, { row, col }, true, t.sel.active);
       else grid!.select({ row, col });
     };
     switch (e.key) {
@@ -3778,23 +3800,31 @@
       case "Escape":
         if (t.cut) cancelCut();
         else cutEpoch++;
-        grid.select(f);
+        grid.select(t.cell);
         return;
     }
     if (key === "Shift+Space") {
       e.preventDefault();
-      grid.select({ row: t.sel.anchor.row, col: 0 }, { row: f.row, col: lastCol }, false);
+      // Whole rows; the active cell stays where it is (as in a spreadsheet).
+      grid.select({ row: t.sel.anchor.row, col: 0 }, { row: t.sel.focus.row, col: lastCol }, false, t.cell);
       return;
     }
     if (key === "Ctrl+Space") {
       e.preventDefault();
-      grid.select({ row: t.firstRow, col: t.sel.anchor.col }, { row: last, col: f.col }, false);
+      grid.select({ row: t.firstRow, col: t.sel.anchor.col }, { row: last, col: t.sel.focus.col }, false, t.cell);
       return;
     }
     // Typed characters reach the grid's hidden text box and start editing.
   }
 
+  /** After each click or key: a change to the look is one undo step. */
+  function lookBoundary(): void {
+    const t = tab;
+    if (t) setTimeout(() => t.recordView(), 0);
+  }
+
   function onKeyUp(e: KeyboardEvent): void {
+    lookBoundary();
     // Pressing and releasing Alt alone focuses the menu bar, as in Excel.
     if (e.key === "Alt" && altAlone && !dialog && openMenu === null) {
       e.preventDefault();
@@ -4279,7 +4309,7 @@
   });
 </script>
 
-<svelte:window onkeydown={onKeyDown} onkeyup={onKeyUp} onpaste={onPaste} />
+<svelte:window onkeydown={onKeyDown} onkeyup={onKeyUp} onpaste={onPaste} onpointerupcapture={lookBoundary} />
 
 <div class="shell">
   <nav class="menubar" aria-label="Menu">
@@ -4636,7 +4666,7 @@
     rows={tab.info.rows}
     start={formRow}
     onChanged={(d) => tab?.update(d, true)}
-    onClose={(row) => { formRow = null; grid?.select({ row, col: tab?.sel.focus.col ?? 0 }); grid?.focus(); }}
+    onClose={(row) => { formRow = null; grid?.select({ row, col: tab?.cell.col ?? 0 }); grid?.focus(); }}
   />
 {/if}
 
@@ -4833,7 +4863,7 @@
 {#if highlightOpen && tab}
   <HighlightDialog
     titles={shownTitles(tab)}
-    col={tab.sel.focus.col}
+    col={tab.cell.col}
     rules={tab.highlights}
     onSave={(rules) => { highlightOpen = false; setHighlights(rules); grid?.focus(); }}
     onClose={() => { highlightOpen = false; grid?.focus(); }}
@@ -4844,7 +4874,7 @@
   <ValueEditor
     doc={tab.id}
     titles={shownTitles(tab)}
-    col={tab.sel.focus.col}
+    col={tab.cell.col}
     header={tab.header}
     others={otherTables()}
     {titlesOf}
@@ -4860,7 +4890,7 @@
     doc={tab.id}
     titles={shownTitles(tab)}
     cols={tab.info.cols}
-    col={tab.sel.focus.col}
+    col={tab.cell.col}
     header={tab.header}
     onRun={(op, header) => { editKind = null; void runDialog({ data: op }, header); grid?.focus(); }}
     onClose={() => { editKind = null; grid?.focus(); }}
@@ -4871,7 +4901,7 @@
   <ComputeDialog
     doc={tab.id}
     titles={shownTitles(tab)}
-    col={tab.sel.focus.col}
+    col={tab.cell.col}
     header={tab.header}
     onRun={(s) => void runCompute(s)}
     onClose={() => { computeOpen = false; grid?.focus(); }}
@@ -4890,7 +4920,7 @@
     header={tab.header}
     current={tab.rowNotes.get(notesRow) ?? null}
     onChanged={() => { const t = tab; if (t) { t.notesVersion++; t.bump(); } }}
-    onGo={(row) => { notesRow = null; grid?.select({ row, col: tab?.sel.focus.col ?? 0 }); grid?.focus(); }}
+    onGo={(row) => { notesRow = null; grid?.select({ row, col: tab?.cell.col ?? 0 }); grid?.focus(); }}
     onShow={(flag) => {
       const t = tab;
       notesRow = null;
@@ -4939,7 +4969,7 @@
     doc={tab.id}
     titles={Array.from({ length: Math.min(tab.info.cols, 2000) }, (_, c) => columnTitle(tab!, c))}
     header={tab.header}
-    col={tab.sel.focus.col}
+    col={tab.cell.col}
     others={otherTables()}
     onOpen={openOther}
     onDone={(info, summary) => {
@@ -4958,7 +4988,7 @@
     doc={tab.id}
     titles={Array.from({ length: Math.min(tab.info.cols, 2000) }, (_, c) => columnTitle(tab!, c))}
     header={tab.header}
-    col={tab.sel.focus.col}
+    col={tab.cell.col}
     others={otherTables()}
     {titlesOf}
     onOpen={openOther}
@@ -5019,12 +5049,12 @@
   <ChecksDialog
     doc={tab.id}
     titles={shownTitles(tab)}
-    col={tab.sel.focus.col}
+    col={tab.cell.col}
     header={tab.header}
     checks={tab.checks}
     marked={tab.checksMarked}
     onApply={keepChecks}
-    onGoto={(row, col) => { const t = tab; if (t) grid?.select({ row, col: col ?? t.sel.focus.col }); }}
+    onGoto={(row, col) => { const t = tab; if (t) grid?.select({ row, col: col ?? t.cell.col }); }}
     onShowProblems={(s) => void showProblems(s)}
     onClose={() => { checksOpen = false; grid?.focus(); }}
   />
@@ -5059,7 +5089,7 @@
     kind={toolsKind}
     titles={shownTitles(t)}
     cols={selectedCols(t)}
-    col={t.sel.focus.col}
+    col={t.cell.col}
     header={t.header}
     others={tabs.filter((x) => x !== t).map((x) => ({ id: x.id, name: x.info.name }))}
     onRun={(r, header) => { toolsKind = null; void runTools(r, header); }}
@@ -5088,7 +5118,7 @@
 {#if subtotalOpen && tab}
   <SubtotalDialog
     titles={shownTitles(tab)}
-    col={tab.sel.focus.col}
+    col={tab.cell.col}
     header={tab.header}
     onRun={(op, header) => { subtotalOpen = false; void runDialog({ table: op }, header); }}
     onClose={() => { subtotalOpen = false; grid?.focus(); }}
@@ -5110,7 +5140,7 @@
 
 {#if splitNameOpen && tab}
   <SplitNameDialog
-    col={tab.sel.focus.col}
+    col={tab.cell.col}
     titles={Array.from({ length: Math.min(tab.info.cols, 2000) }, (_, c) => columnTitle(tab!, c))}
     header={tab.header}
     onRun={(op, header) => { splitNameOpen = false; void runSplitName(op, header); grid?.focus(); }}

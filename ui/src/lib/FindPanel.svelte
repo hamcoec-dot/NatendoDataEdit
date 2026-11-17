@@ -53,7 +53,7 @@
 
   export async function next(backward = false): Promise<void> {
     if (!ready()) return;
-    const f = tab.sel.focus;
+    const f = tab.cell;
     try {
       const hit = await run("Searching", () => backend().findNext(tab.id, spec(), [f.row, f.col], backward));
       if (hit === null) return;
@@ -83,7 +83,7 @@
   /** Replace in the active cell if it matches, then go to the next match. */
   async function replaceOne(): Promise<void> {
     if (!ready()) return;
-    const f = tab.sel.focus;
+    const f = tab.cell;
     const one: FindSpec = { ...spec(), scope: { kind: "range", row: f.row, rows: 1, col: f.col, cols: 1 }, skip_first: false };
     try {
       const r = await backend().replaceAll(tab.id, one, replacement);

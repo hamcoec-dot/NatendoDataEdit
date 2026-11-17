@@ -26,7 +26,7 @@
   // ---- summary ----
   let summary = $state<Summary | null>(null);
   let problem = $state("");
-  const col = $derived(tab ? tab.sel.focus.col : 0);
+  const col = $derived(tab ? tab.cell.col : 0);
   $effect(() => {
     if (which !== "summary" || !tab || !tab.info.indexed) return;
     const t = tab;
