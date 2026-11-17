@@ -13,6 +13,9 @@ export interface PrefsData {
   zoom: number;
   editPanel: boolean;
   gridLines: boolean;
+  /** Numbers and dates line up on the right (as in Excel), unless a column
+   *  has its own alignment. */
+  alignNumbers: boolean;
   /** Underline misspelt words while editing cells. */
   spellcheck: boolean;
   /** The agent link was switched on (it starts again with the app). */
@@ -89,6 +92,7 @@ const DEFAULTS: PrefsData = {
   zoom: 1,
   editPanel: false,
   gridLines: true,
+  alignNumbers: true,
   spellcheck: true,
   agentLink: false,
   shortcuts: {},
@@ -125,6 +129,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       zoom: typeof p.zoom === "number" ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, p.zoom)) : 1,
       editPanel: p.editPanel === true,
       gridLines: p.gridLines !== false,
+      alignNumbers: p.alignNumbers !== false,
       spellcheck: p.spellcheck !== false,
       agentLink: p.agentLink === true,
       shortcuts: p.shortcuts && typeof p.shortcuts === "object" ? p.shortcuts : {},

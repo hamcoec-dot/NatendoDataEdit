@@ -1,0 +1,159 @@
+// UI test: how cells line up (browser stub backend).
+// - Numbers sit on the right (View › Numbers on the right), text on the left.
+// - Format › Align left / center / right / automatically, per column, undoable.
+// - Long text spills into the empty cells beside it; Format › Cut off long
+//   text keeps it inside its column.
+// Run: (cd ui && npx vite --port 5194) then
+// NODE_PATH=<folder with playwright> node scripts/ui-look.cjs <screenshot dir> [url]
+const { chromium } = require("playwright");
+const path = require("path");
+const out = process.argv[2];
+const url = process.argv[3] || "http://localhost:5194";
+(async () => {
+  const b = await chromium.launch({ channel: "msedge" });
+  const p = await b.newPage({ viewport: { width: 1360, height: 860 } });
+  const errors = [];
+  p.on("pageerror", (e) => errors.push(String(e)));
+  // Record what the grid draws: each text with its x, and each clip box.
+  await p.addInitScript(() => {
+    const C = CanvasRenderingContext2D.prototype;
+    const fill = C.fillText;
+    const rect = C.rect;
+    window.__drawn = [];
+    window.__rects = [];
+    C.fillText = function (t, x, y, ...rest) {
+      window.__drawn.push({ t: String(t), x, y });
+      return fill.call(this, t, x, y, ...rest);
+    };
+    C.rect = function (x, y, w, h) {
+      window.__rects.push({ x, y, w, h });
+      return rect.call(this, x, y, w, h);
+    };
+  });
+  await p.goto(url);
+  await p.keyboard.press("Control+o");
+  await p.waitForFunction(() => !/Loading|Indexing|Reading/i.test(document.querySelector("footer.status")?.textContent || ""), null, { timeout: 30000 }).catch(() => {});
+  await p.waitForTimeout(1500);
+  let failed = 0;
+  const ok = (cond, msg) => {
+    if (!cond) failed++;
+    console.log(`${cond ? "PASS" : "FAIL"} ${msg}`);
+  };
+  const start = async (row, col, row2 = row, col2 = col) => {
+    await p.evaluate(([r, c, r2, c2]) => {
+      window.__nde.grid.select({ row: r, col: c }, { row: r2, col: c2 });
+      window.__nde.grid.focus();
+    }, [row, col, row2, col2]);
+    await p.waitForTimeout(150);
+  };
+  const put = async (row, col, text) => {
+    await start(row, col);
+    if (text === "") await p.keyboard.press("Delete");
+    else {
+      await p.keyboard.type(text);
+      await p.keyboard.press("Enter");
+    }
+    await p.waitForTimeout(250);
+  };
+  /** Redraw and return where `text` was drawn last. */
+  const drawn = async (text) =>
+    p.evaluate(async (t) => {
+      window.__drawn = [];
+      window.__rects = [];
+      window.__nde.tab.bump();
+      window.__nde.grid.redraw();
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const hits = window.__drawn.filter((d) => d.t === t);
+      return { hit: hits[hits.length - 1] ?? null, rects: window.__rects.slice() };
+    }, text);
+  const command = async (label) => {
+    await p.keyboard.press("Alt+q");
+    await p.waitForTimeout(250);
+    await p.keyboard.type(label);
+    await p.waitForTimeout(250);
+    await p.keyboard.press("Enter");
+    await p.waitForTimeout(300);
+  };
+  // Column 1 left and right edges in canvas pixels.
+  const edges = async (c) =>
+    p.evaluate((col) => {
+      const g = window.__nde.grid;
+      const r = document.querySelector("canvas").getBoundingClientRect();
+      const a = g.headerPoint(col).x - r.left;
+      const z = g.headerPoint(col + 1).x - r.left;
+      return { right: a, next: z, width: window.__nde.tab.columns.width(col) };
+    }, c);
+
+  // ---- 1. Numbers on the right ----
+  await put(3, 1, "12345");
+  await put(4, 1, "plain words");
+  let n = (await drawn("12345")).hit;
+  let w = (await drawn("plain words")).hit;
+  ok(n && w && n.x > w.x + 20, `a number sits further right than text in the same column (${n?.x} vs ${w?.x})`);
+  await command("Numbers on the right");
+  let n2 = (await drawn("12345")).hit;
+  ok(n2 && w && Math.abs(n2.x - w.x) < 1, `with Numbers on the right off, the number lines up on the left (${n2?.x})`);
+  await command("Numbers on the right");
+
+  // ---- 2. Per-column alignment, undoable ----
+  await start(4, 1);
+  await command("Align right");
+  let w2 = (await drawn("plain words")).hit;
+  ok(w2 && w2.x > w.x + 10, `Align right moves text to the right (${w2?.x})`);
+  await command("Align center");
+  let w3 = (await drawn("plain words")).hit;
+  ok(w3 && w3.x > w.x && w3.x < w2.x, `Align center puts it between (${w3?.x})`);
+  await command("Align left");
+  n2 = (await drawn("12345")).hit;
+  ok(n2 && Math.abs(n2.x - w.x) < 1, "Align left puts numbers on the left too");
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(300);
+  w3 = (await drawn("plain words")).hit;
+  ok(w3 && w3.x > w.x && w3.x < w2.x, "Undo puts back the center alignment");
+  await command("Align automatically");
+  n = (await drawn("12345")).hit;
+  w3 = (await drawn("plain words")).hit;
+  ok(n && w3 && n.x > w3.x + 20 && Math.abs(w3.x - w.x) < 1, "Align automatically: numbers right, text left again");
+
+  // ---- 3. Long text spills into empty cells ----
+  const long = "This text is far too long to fit inside one column";
+  await put(6, 2, "");
+  await put(6, 3, "");
+  await put(6, 1, long);
+  const e = await edges(1);
+  let d = await drawn(long);
+  const spill = d.rects.find((r) => Math.abs(r.x - (d.hit?.x ?? -1)) < 1 && r.w > e.width + 10);
+  ok(d.hit && spill, `long text spills past its column into the empty cells (clip ${spill ? Math.round(spill.w) : "none"} wide, column ${e.width})`);
+  if (out) await p.screenshot({ path: path.join(out, "text-spill.png"), clip: { x: 0, y: 0, width: 1000, height: 330 } });
+  // A filled neighbour stops it.
+  await put(6, 2, "x");
+  d = await drawn(long);
+  ok(!d.rects.some((r) => Math.abs(r.x - (d.hit?.x ?? -1)) < 1 && r.w > e.width + 10), "a value in the next cell stops the spill");
+  await put(6, 2, "");
+  // Cut off long text.
+  await start(6, 1);
+  await command("Cut off long text");
+  d = await drawn(long);
+  ok(!d.rects.some((r) => Math.abs(r.x - (d.hit?.x ?? -1)) < 1 && r.w > e.width + 10), "Cut off long text keeps it inside the column");
+  ok(await p.evaluate(() => window.__nde.tab.columns.clips.has(1)), "the column is marked as cutting off");
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(300);
+  ok(await p.evaluate(() => !window.__nde.tab.columns.clips.has(1)), "Undo turns it back off");
+
+  // ---- 4. Saved views keep alignment and cut-off ----
+  const keep = await p.evaluate(() => {
+    const t = window.__nde.tab;
+    t.columns.aligns.set(2, "center");
+    t.columns.clips.add(3);
+    const s = t.columns.snapshot();
+    t.columns.reset();
+    t.columns.restore(s);
+    return t.columns.aligns.get(2) === "center" && t.columns.clips.has(3);
+  });
+  ok(keep, "alignment and cut-off survive a snapshot and restore");
+
+  ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
+  await b.close();
+  console.log(failed ? `${failed} FAILED` : "ALL PASS");
+  process.exit(failed ? 1 : 0);
+})();

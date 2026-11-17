@@ -606,6 +606,8 @@
         width: t.columns.isHidden(c) ? null : Math.round(t.columns.width(c)),
         hidden: t.columns.isHidden(c),
         wrap: t.columns.wraps.has(c),
+        align: t.columns.aligns.get(c),
+        clip: t.columns.clips.has(c) || undefined,
         format: t.columns.formats.get(c) ?? null,
       })),
       banded: t.banded,
@@ -741,6 +743,10 @@
       t.columns.setWidth(c, vc.hidden ? 0 : (vc.width ?? DEFAULT_COL_WIDTH));
       if (vc.wrap) t.columns.wraps.add(c);
       else t.columns.wraps.delete(c);
+      if (vc.align === "left" || vc.align === "center" || vc.align === "right") t.columns.aligns.set(c, vc.align);
+      else t.columns.aligns.delete(c);
+      if (vc.clip) t.columns.clips.add(c);
+      else t.columns.clips.delete(c);
       const f = cleanFormat(vc.format);
       if (f) t.columns.formats.set(c, f);
       else t.columns.formats.delete(c);
@@ -2605,6 +2611,42 @@
     return out;
   }
 
+  function alignIs(a: "left" | "center" | "right" | null): boolean {
+    const t = tab;
+    if (!t) return false;
+    const cols = selectedCols(t);
+    return cols.length > 0 && cols.every((c) => (t.columns.aligns.get(c) ?? null) === a);
+  }
+
+  /** Line up the selected columns' text (null: automatic). */
+  function setAlign(a: "left" | "center" | "right" | null): void {
+    const t = tab;
+    if (!t) return;
+    const cols = selectedCols(t);
+    for (const c of cols) {
+      if (a) t.columns.aligns.set(c, a);
+      else t.columns.aligns.delete(c);
+    }
+    t.bump();
+    const how = a === null ? "automatic (numbers and dates on the right, text on the left)" : a;
+    say(`${plural(cols.length, "column")}: alignment ${how}.`);
+  }
+
+  /** Long text in the selected columns stops at the column's edge, or spills
+   *  into the empty cells beside it again. */
+  function toggleClip(): void {
+    const t = tab;
+    if (!t) return;
+    const cols = selectedCols(t);
+    const on = !cols.every((c) => t.columns.clips.has(c));
+    for (const c of cols) {
+      if (on) t.columns.clips.add(c);
+      else t.columns.clips.delete(c);
+    }
+    t.bump();
+    say(on ? `Long text in ${plural(cols.length, "column")} now stops at the column's edge.` : `Long text in ${plural(cols.length, "column")} spills into empty cells beside it again.`);
+  }
+
   function toggleWrap(): void {
     const t = tab;
     if (!t) return;
@@ -3478,6 +3520,12 @@
     { id: "format.hideRows", label: "Hide &rows", keys: ["Ctrl+9"], run: () => void hideRows(), enabled: ready, repeatable: true },
     { id: "format.showRows", label: "Unhide rows in the selection", keys: ["Ctrl+Shift+9", "Ctrl+Shift+("], run: () => void showRows(false), enabled: () => ready() && !!tab?.info.hidden_rows },
     { id: "format.showAllRows", label: "Unhide all ro&ws", run: () => void showRows(true), enabled: () => ready() && !!tab?.info.hidden_rows },
+    { id: "format.alignLeft", label: "Align &left", run: () => setAlign("left"), enabled: hasTab, checked: () => alignIs("left") },
+    { id: "format.alignCenter", label: "Align &center", run: () => setAlign("center"), enabled: hasTab, checked: () => alignIs("center") },
+    { id: "format.alignRight", label: "Align &right", run: () => setAlign("right"), enabled: hasTab, checked: () => alignIs("right") },
+    { id: "format.alignAuto", label: "Align a&utomatically", run: () => setAlign(null), enabled: hasTab, checked: () => alignIs(null) },
+    { id: "format.clip", label: "Cut off long te&xt", run: toggleClip, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.clips.has(c)) },
+    { id: "view.alignNumbers", label: "&Numbers on the right", run: () => { prefs.data.alignNumbers = !prefs.data.alignNumbers; prefs.save(); }, checked: () => prefs.data.alignNumbers },
     { id: "format.wrap", label: "&Wrap text", run: toggleWrap, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.wraps.has(c)) },
     { id: "format.rowHeight", label: "Row &height (lines)…", run: askRowLines, enabled: hasTab },
     { id: "format.fitRows", label: "Fit row height to wrapped text", run: () => grid?.fitRowLines(), enabled: () => !!tab && tab.columns.wraps.size > 0 },
@@ -3597,12 +3645,12 @@
         "view.panel", "view.panelSummary", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.alignNumbers", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
     { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.symbol"] },
-    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "format.wrap", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.hideCols", "format.showCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
+    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.hideCols", "format.showCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
     {
       label: "&Data",
       items: [

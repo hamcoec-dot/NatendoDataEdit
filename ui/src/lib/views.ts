@@ -72,6 +72,10 @@ export interface ViewColumn {
   hidden: boolean;
   /** Text wraps (older views have none). */
   wrap?: boolean;
+  /** Alignment (automatic when missing). */
+  align?: "left" | "center" | "right";
+  /** Long text is cut at the edge instead of spilling over. */
+  clip?: boolean;
   /** Display format (view only). */
   format?: DisplayFormat | null;
 }

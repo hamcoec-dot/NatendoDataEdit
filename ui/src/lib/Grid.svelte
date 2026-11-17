@@ -165,6 +165,7 @@
     void listCols;
     void font;
     void prefs.data.gridLines;
+    void prefs.data.alignNumbers;
     void width;
     void height;
     untrack(redraw);
@@ -847,6 +848,9 @@
       }
     }
     const typeColour = { number: "#2f6fd0", date: "#2e8b57" } as const;
+    // Long text that spills into the empty cells to its right, drawn after
+    // every column (so the next cells' backgrounds don't cover it).
+    const spills: { text: string; x: number; y: number; to: number; colour: string }[] = [];
     let x = cs.pos;
     for (let c = cs.start; c < cs.end; c++) {
       const cw = tab.columns.width(c);
@@ -855,6 +859,8 @@
       const scale = tab.scales.length ? tab.scales.find((s) => s.col === c) : undefined;
       const range = scale ? tab.ranges.get(c) : undefined;
       const wrap = lines > 1 && tab.columns.wraps.has(c);
+      const align = tab.columns.aligns.get(c);
+      const clipText = tab.columns.clips.has(c);
       let y = rs.pos;
       ctx.save();
       ctx.beginPath();
@@ -923,20 +929,38 @@
           // Text on a colour-scale fill is always dark, so it reads on every shade.
           ctx.fillStyle = filled ? "#111" : link ? colors.accent : kind === "number" || kind === "date" ? typeColour[kind] : colors.text;
           const cut = tab.cache.isTruncated(r, c);
+          // Where the text lines up: the column's choice, or numbers and
+          // dates on the right (as in Excel) and the rest on the left.
+          const auto = !header && !link && prefs.data.alignNumbers && (fmt ? shown !== t && fmt.kind !== "date" : valueType(t) !== "text");
+          const side = align ?? (auto || (fmt && shown !== t && fmt.kind !== "date" && !header) ? "right" : "left");
+          const at = (w: number): number =>
+            side === "right" ? Math.max(x + pad, x + cw - pad - w) : side === "center" ? Math.max(x + pad, x + (cw - w) / 2) : x + pad;
           if (wrap) {
             const out = wrapLines(shown, Math.max(8, cw - 2 * pad), measure, lines);
             if (cut && out.length) out[out.length - 1] += "…";
             // The block of lines sits in the middle of the row, as one-line text does.
             const top = y + rowH / 2 + 0.5 - ((out.length - 1) * textLineH) / 2;
-            out.forEach((line, i) => ctx.fillText(line, x + pad, top + i * textLineH));
+            out.forEach((line, i) => ctx.fillText(line, at(measure(line)), top + i * textLineH));
           } else {
             let text = displayText(shown);
             if (cut) text += "…";
-            const right = fmt && shown !== t && fmt.kind !== "date";
-            const tx = right ? Math.max(x + pad, x + cw - pad - measure(text)) : x + pad;
+            const w = measure(text);
+            const tx = at(w);
             const ty = y + rowH / 2 + 0.5;
-            ctx.fillText(text, tx, ty);
-            if (link) ctx.fillRect(tx, ty + Math.round(fontPx * 0.55), Math.min(measure(text), cw - 2 * pad), 1);
+            // Too long for its cell: left-aligned text spills into the empty
+            // cells to its right, as in Excel (unless the column clips).
+            let to = x + cw;
+            if (side === "left" && !clipText && !filled && w > cw - 2 * pad) {
+              for (let k = c + 1; k < cs.end && to < tx + w + pad; k++) {
+                const kw = tab.columns.width(k);
+                if (kw === 0) continue;
+                if (tab.cache.get(r, k) !== "") break;
+                to += kw;
+              }
+            }
+            if (to > x + cw) spills.push({ text, x: tx, y: ty, to, colour: ctx.fillStyle as string });
+            else ctx.fillText(text, tx, ty);
+            if (link) ctx.fillRect(tx, ty + Math.round(fontPx * 0.55), Math.min(w, cw - 2 * pad), 1);
           }
         }
         if (prefs.data.gridLines) {
@@ -954,6 +978,15 @@
         ctx.fillRect(x + cw - 1, rs.pos, 1, (rs.end - rs.start) * rowH);
       }
       x += cw;
+    }
+    for (const sp of spills) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(sp.x, sp.y - rowH / 2, sp.to - sp.x - 1, rowH);
+      ctx.clip();
+      ctx.fillStyle = sp.colour;
+      ctx.fillText(sp.text, sp.x, sp.y);
+      ctx.restore();
     }
     // Active cell outline.
     if (active.row >= rs.start && active.row < rs.end && active.col >= cs.start && active.col < cs.end) {

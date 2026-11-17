@@ -7,6 +7,9 @@
 
 import type { DisplayFormat } from "./m9";
 
+/** How a column lines up its text (automatic: numbers right, text left). */
+export type Align = "left" | "center" | "right";
+
 /** Everything here that Undo can put back. */
 export interface ColSnap {
   defaultWidth: number;
@@ -14,6 +17,8 @@ export interface ColSnap {
   hiddenWas: [number, number][];
   formats: [number, DisplayFormat][];
   wraps: number[];
+  aligns?: [number, Align][];
+  clips?: number[];
 }
 
 export class Columns {
@@ -21,6 +26,11 @@ export class Columns {
   formats = new Map<number, DisplayFormat>();
   /** Columns whose text wraps onto more lines. */
   wraps = new Set<number>();
+  /** Alignment chosen per column (others: automatic). */
+  aligns = new Map<number, Align>();
+  /** Columns whose long text is cut at the column's edge instead of
+   *  spilling into the empty cells beside it. */
+  clips = new Set<number>();
   /** Widths of hidden columns before they were hidden, so showing them
    *  again gives them back (only those not at the default width). */
   private hiddenWas = new Map<number, number>();
@@ -69,7 +79,7 @@ export class Columns {
    *  only the overrides, which are few unless many columns were resized). */
   key(): string {
     const f: [number, DisplayFormat][] = [...this.formats];
-    return JSON.stringify([this.defaultWidth, [...this.widths], [...this.hiddenWas], f, [...this.wraps]]);
+    return JSON.stringify([this.defaultWidth, [...this.widths], [...this.hiddenWas], f, [...this.wraps], [...this.aligns], [...this.clips]]);
   }
 
   /** A copy of the widths, hidden columns, formats and wrapping (for undo). */
@@ -80,6 +90,8 @@ export class Columns {
       hiddenWas: [...this.hiddenWas].sort((a, b) => a[0] - b[0]),
       formats: [...this.formats].sort((a, b) => a[0] - b[0]).map(([c, f]) => [c, structuredClone(f)]),
       wraps: [...this.wraps].sort((a, b) => a - b),
+      aligns: [...this.aligns].sort((a, b) => a[0] - b[0]),
+      clips: [...this.clips].sort((a, b) => a - b),
     };
   }
 
@@ -90,6 +102,8 @@ export class Columns {
     this.hiddenWas = new Map(s.hiddenWas);
     this.formats = new Map(s.formats.map(([c, f]) => [c, structuredClone(f)]));
     this.wraps = new Set(s.wraps);
+    this.aligns = new Map(s.aligns ?? []);
+    this.clips = new Set(s.clips ?? []);
     this.rebuild();
   }
 
@@ -99,6 +113,8 @@ export class Columns {
     this.hiddenWas.clear();
     this.formats.clear();
     this.wraps.clear();
+    this.aligns.clear();
+    this.clips.clear();
     this.rebuild();
   }
 
@@ -124,6 +140,18 @@ export class Columns {
       if (to !== null) wraps.add(to);
     }
     this.wraps = wraps;
+    const aligns = new Map<number, Align>();
+    for (const [c, a] of this.aligns) {
+      const to = move(c);
+      if (to !== null) aligns.set(to, a);
+    }
+    this.aligns = aligns;
+    const clips = new Set<number>();
+    for (const c of this.clips) {
+      const to = move(c);
+      if (to !== null) clips.add(to);
+    }
+    this.clips = clips;
     const was = new Map<number, number>();
     for (const [c, w] of this.hiddenWas) {
       const to = move(c);
@@ -146,6 +174,8 @@ export class Columns {
     this.widths = new Map([...this.widths].map(([c, w]) => [place(c), w]));
     this.formats = new Map([...this.formats].map(([c, f]) => [place(c), f]));
     this.wraps = new Set([...this.wraps].map(place));
+    this.aligns = new Map([...this.aligns].map(([c, a]) => [place(c), a]));
+    this.clips = new Set([...this.clips].map(place));
     this.hiddenWas = new Map([...this.hiddenWas].map(([c, w]) => [place(c), w]));
     this.rebuild();
   }
