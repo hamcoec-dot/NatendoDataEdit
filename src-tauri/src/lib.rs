@@ -2449,6 +2449,19 @@ async fn shown_row_of(
     blocking(move || docs.shown_row_of(doc, number)).await
 }
 
+/// The block of data around a cell.
+#[tauri::command]
+async fn current_region(
+    docs: DocsState<'_>,
+    doc: u32,
+    row: u64,
+    col: u32,
+    first: u64,
+) -> CmdResult<Option<(u64, u64, u32, u32)>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.current_region(doc, row, col, first)).await
+}
+
 /// Where Ctrl+arrow lands.
 #[tauri::command]
 async fn data_edge(
@@ -2902,6 +2915,7 @@ pub fn run() {
             combine_files,
             show_in_folder,
             data_edge,
+            current_region,
             shown_row_of,
             import_file,
             import_text,

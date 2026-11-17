@@ -221,6 +221,34 @@ const url = process.argv[3] || "http://localhost:5194";
   ok((await p.inputValue("select[aria-label='Search in']")) === "all", "Find with one cell searches the whole file");
   await key("Escape");
 
+  // Find and Replace keep to the block selected when Find opened, even
+  // after Find next selects one cell (Replace all leaves the rest alone).
+  for (const [r, c] of [[3, 1], [4, 2], [41, 1]]) {
+    await start(r, c);
+    await p.keyboard.type("zzq");
+    await key("Enter");
+  }
+  await start(2, 0, 6, 2);
+  await key("Control+h");
+  await p.keyboard.type("zzq");
+  let rowsSeen = [];
+  for (let i = 0; i < 4; i++) {
+    await p.click("button[aria-label='Find next']");
+    await p.waitForTimeout(400);
+    s = await sel();
+    rowsSeen.push(s.cell.row);
+  }
+  ok(rowsSeen.every((r) => r === 3 || r === 4), `Find next stays inside the block (${rowsSeen.join(",")})`);
+  ok(s.rect.rows === 5 && s.rect.cols === 3, "the block stays selected while Find next moves the active cell");
+  await p.fill("input[aria-label='Replace with']", "done");
+  await p.click("button:has-text('Replace all…')");
+  await p.waitForTimeout(500);
+  await p.click(".find button.primary:has-text('Replace all')");
+  await p.waitForTimeout(800);
+  const after = await p.evaluate(() => [window.__nde.tab.cache.get(3, 1), window.__nde.tab.cache.get(4, 2), window.__nde.tab.cache.get(41, 1)]);
+  ok(after[0] === "done" && after[1] === "done" && after[2] === "zzq", `Replace all changes only the block (${after.join(",")})`);
+  await key("Escape");
+
   // After pressing Enter, move: right (Options).
   await p.evaluate(() => {
     window.__nde.tab; // the prefs live in the app; set through the Options box below

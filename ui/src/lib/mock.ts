@@ -2153,6 +2153,36 @@ export class MockBackend implements Backend {
     return lo < vis.length && vis[lo] === number ? [lo, true] : [Math.min(lo, vis.length - 1), false];
   }
 
+  async currentRegion(doc: number, row: number, col: number, first: number): Promise<[number, number, number, number] | null> {
+    const d = this.get(doc);
+    const n = this.rowCount(d);
+    const w = this.colCount(d);
+    const empty = (r: number, c: number) => r < first || c < 0 || r >= n || c >= w || this.value(d, r, c) === "";
+    if (row >= n || col >= w) throw { kind: "error", message: "out of range", row: null };
+    if (empty(row, col)) return null;
+    let [r0, r1, c0, c1] = [row, row, col, col];
+    const runEnd = (r: number, c: number, step: 1 | -1) => {
+      while (!empty(r + step, c)) r += step;
+      return r;
+    };
+    const colHas = (c: number) => {
+      for (let r = r0; r <= r1; r++) if (!empty(r, c)) return true;
+      return false;
+    };
+    for (;;) {
+      let grew = false;
+      let to = r1;
+      for (let c = c0; c <= c1; c++) if (!empty(r1 + 1, c)) to = Math.max(to, runEnd(r1 + 1, c, 1));
+      if (to > r1) [r1, grew] = [to, true];
+      to = r0;
+      for (let c = c0; c <= c1; c++) if (!empty(r0 - 1, c)) to = Math.min(to, runEnd(r0 - 1, c, -1));
+      if (to < r0) [r0, grew] = [to, true];
+      if (c1 + 1 < w && colHas(c1 + 1)) [c1, grew] = [c1 + 1, true];
+      if (c0 > 0 && colHas(c0 - 1)) [c0, grew] = [c0 - 1, true];
+      if (!grew) return [r0, r1, c0, c1];
+    }
+  }
+
   async dataEdge(doc: number, row: number, col: number, dir: Dir): Promise<[number, number]> {
     const d = this.get(doc);
     const rows = this.rowCount(d);

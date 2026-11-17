@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.3.5_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.3.6_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -375,7 +375,9 @@ everything is also in command search.
 *Filter by value: every city with how many rows it has, plus sorting and conditions.*
 
 - Find and replace with plain text, wildcards or patterns (regular
-  expressions); next change, largest and smallest jumps.
+  expressions); next change, largest and smallest jumps. With several cells
+  selected, Find and Replace keep to that block (Find next moves inside it and
+  Replace all changes only it), as in Excel.
 - **Search a whole folder** of table files (Ctrl+Shift+F), including Excel and
   JSON files and subfolders; click a hit to open that file at that cell.
 - Sort by several columns, numbers and dates in the right order, natural text

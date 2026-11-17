@@ -112,7 +112,10 @@ export class Tab {
    *  select the result after the change put it here). */
   noteStepSel(sel: Selection): void {
     const w = this.stepWhat.get(this.info.history_pos);
-    if (w) w.sel = { ...sel };
+    if (w) {
+      w.sel = { ...sel };
+      w.wide = false;
+    }
   }
 
   /** The sort arrow a column shows, if any. */
@@ -207,7 +210,10 @@ export class Tab {
   stepViews = new Map<number, { before: ViewSnap; after: ViewSnap | null }>();
   /** What each engine step was and where (by the undo position it made):
    *  undo and redo select those cells again and say what was undone. */
-  stepWhat = new Map<number, { what: string | null; sel: Selection }>();
+  stepWhat = new Map<number, { what: string | null; sel: Selection; wide?: boolean }>();
+  /** The next engine change is a tool over whole columns or the table
+   *  (sort, filter, cleaning...): undoing it leaves the selection alone. */
+  wideNext = false;
   /** What the next engine change is (set just before it is made). */
   whatNext: string | null = null;
   /** The label of the command running now, if any (set by the app). */
@@ -500,7 +506,7 @@ export class Tab {
       if (this.sortAt !== null && this.sortAt > before) this.sortAt = null;
       const cmd = Tab.activeCommand();
       const what = cmd ? `“${cmd}”` : this.whatNext;
-      this.stepWhat.set(after, { what, sel: { ...this.sel } });
+      this.stepWhat.set(after, { what, sel: { ...this.sel }, wide: this.wideNext });
       if (this.stepWhat.size > MAX_UNDO) this.stepWhat.delete(this.stepWhat.keys().next().value!);
       if (after === before + 1 && this.lastView) {
         this.stepViews.set(after, { before: this.lastView, after: null });
@@ -510,6 +516,7 @@ export class Tab {
     }
     if (after !== before) setTimeout(() => this.recordView(), 0);
     this.whatNext = null;
+    this.wideNext = false;
     // Columns added or taken away: the sort's columns may be other ones now.
     if (info.cols !== this.info.cols) this.sortAt = null;
     this.info = info;

@@ -806,6 +806,76 @@ impl Document {
         buf[0].is_empty()
     }
 
+    /// The block of data around a cell, bounded by empty rows and columns
+    /// (Excel's current region, what Ctrl+A selects first), as
+    /// `(first row, last row, first column, last column)`. `None` when the
+    /// cell is empty. Rows before `first` (a header row) are left out.
+    pub fn current_region(
+        &self,
+        row: u64,
+        col: u32,
+        first: u64,
+    ) -> Result<Option<(u64, u64, u32, u32)>, Error> {
+        let n = self.row_count();
+        let w = self.col_count();
+        if row >= n || col >= w {
+            return Err(Error::OutOfRange);
+        }
+        if row < first || self.cell_empty(row, col) {
+            return Ok(None);
+        }
+        let (mut r0, mut r1, mut c0, mut c1) = (row, row, col, col);
+        // Last row of the filled run starting at `r` in `c`, going down (or up).
+        let run_end = |r: u64, c: u32, down: bool| -> u64 {
+            if down {
+                self.seek(r..n, false, c, true).map_or(n - 1, |e| e - 1)
+            } else {
+                self.seek(first..r + 1, true, c, true)
+                    .map_or(first, |e| e + 1)
+            }
+        };
+        loop {
+            let mut grew = false;
+            if r1 + 1 < n {
+                let below = r1 + 1;
+                let mut to = r1;
+                for c in c0..=c1 {
+                    if !self.cell_empty(below, c) {
+                        to = to.max(run_end(below, c, true));
+                    }
+                }
+                if to > r1 {
+                    r1 = to;
+                    grew = true;
+                }
+            }
+            if r0 > first {
+                let above = r0 - 1;
+                let mut to = r0;
+                for c in c0..=c1 {
+                    if !self.cell_empty(above, c) {
+                        to = to.min(run_end(above, c, false));
+                    }
+                }
+                if to < r0 {
+                    r0 = to;
+                    grew = true;
+                }
+            }
+            if c1 + 1 < w && self.seek(r0..r1 + 1, false, c1 + 1, false).is_some() {
+                c1 += 1;
+                grew = true;
+            }
+            if c0 > 0 && self.seek(r0..r1 + 1, false, c0 - 1, false).is_some() {
+                c0 -= 1;
+                grew = true;
+            }
+            if !grew {
+                return Ok(Some((r0, r1, c0, c1)));
+            }
+        }
+    }
+
     /// First shown row in `rows` (searched from the end when `backward`)
     /// whose cell in `col` is empty (`want_empty`) or not.
     fn seek(
@@ -1465,6 +1535,28 @@ X
             all(&d).iter().map(|r| r[1].clone()).collect::<Vec<_>>(),
             ["v", "1", "", "2", "3"]
         );
+    }
+
+    #[test]
+    fn current_region_is_bounded_by_empty_rows_and_columns() {
+        // A ragged block (B5 only reachable through column C), an empty
+        // column D, and a second block on the right.
+        let d = doc("a,b,c,,x
+1,2,3,,y
+,,4,,
+,9,5,,
+
+7,,,,
+");
+        assert_eq!(d.current_region(0, 0, 0).unwrap(), Some((0, 3, 0, 2)));
+        assert_eq!(d.current_region(3, 1, 0).unwrap(), Some((0, 3, 0, 2)));
+        assert_eq!(d.current_region(0, 4, 0).unwrap(), Some((0, 1, 4, 4)));
+        assert_eq!(d.current_region(5, 0, 0).unwrap(), Some((5, 5, 0, 0)));
+        assert_eq!(d.current_region(2, 0, 0).unwrap(), None);
+        assert!(d.current_region(99, 0, 0).is_err());
+        // With the first row as a header, it is not part of any block.
+        assert_eq!(d.current_region(1, 4, 1).unwrap(), Some((1, 1, 4, 4)));
+        assert_eq!(d.current_region(0, 0, 1).unwrap(), None);
     }
 
     #[test]

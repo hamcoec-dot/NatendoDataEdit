@@ -93,12 +93,15 @@ const url = process.argv[3] || "http://localhost:5194";
   await p.waitForTimeout(1500);
   ok(await p.evaluate(() => window.__nde.tab.sortArrow(2) === "up" && window.__nde.tab.sortArrow(1) === null), "the sorted column shows an up arrow");
   if (out) await p.screenshot({ path: path.join(out, "sort-arrow.png"), clip: { x: 0, y: 160, width: 1000, height: 120 } });
-  await p.evaluate(() => window.__nde.grid.focus());
+  await start(30, 4);
   await key("Control+z");
   await p.waitForTimeout(800);
   ok(await p.evaluate(() => window.__nde.tab.sortArrow(2) === null), "undoing the sort takes the arrow away");
+  s = await sel();
+  ok(s.cell.row === 30 && s.cell.col === 4, `undoing a sort leaves the selection where it is (R${s.cell.row + 1} C${s.cell.col + 1})`);
 
   // ---- Right-click menus say how many ----
+  await p.evaluate(() => { window.__nde.tab.scrollY = 0; window.__nde.tab.bump(); });
   await start(4, 1, 6, 2);
   bx = await box(5, 1);
   await p.mouse.click(bx.x + 10, bx.y + 5, { button: "right" });

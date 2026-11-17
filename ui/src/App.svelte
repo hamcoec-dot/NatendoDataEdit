@@ -145,6 +145,8 @@
   let findOpen = $state(false);
   let findReplace = $state(false);
   let findPanel = $state<ReturnType<typeof FindPanel>>();
+  /** The block Find and Replace keep to (see FindPanel's `block`). */
+  let findBlock = $state<Rect | null>(null);
   let findOptions = $state<FindOptions>({ text: "", kind: "plain", matchCase: false, wholeCell: false, scope: "all" });
   /** Search inside the expanded cell bar (the multi-line editor). */
   let cellFind = $state<{ text: string; hits: [number, number][]; at: number } | null>(null);
@@ -242,6 +244,7 @@
     } finally {
       // A failed change must not lend its name to the next one.
       t.whatNext = null;
+      t.wideNext = false;
     }
   }
 
@@ -1265,7 +1268,11 @@
   async function fillRect(r: Rect, value: string): Promise<boolean> {
     const n = cellCount(r);
     const rep = await runOp({ op: "fill_rect", spec: { row: r.row, rows: r.rows, col: r.col, cols: r.cols, value } }, value ? "Filling" : "Clearing");
-    if (rep) say(`${value ? "Filled" : "Cleared"} ${plural(n, "cell")}. Undo (Ctrl+Z) takes it back.`);
+    if (rep) {
+      // Undo selects the block (not a tool over the whole table).
+      if (tab) tab.noteStepSel({ anchor: { row: r.row, col: r.col }, focus: { row: r.row + r.rows - 1, col: r.col + r.cols - 1 } });
+      say(`${value ? "Filled" : "Cleared"} ${plural(n, "cell")}. Undo (Ctrl+Z) takes it back.`);
+    }
     return !!rep;
   }
 
@@ -1432,7 +1439,10 @@
     // The engine parses the text again and writes it as one undo step,
     // adding rows past the end if needed.
     const done = await runOp({ op: "paste", spec: { row: r.row, col: r.col, op: "none", skip_blanks: false, transpose: false }, text }, "Pasting");
-    if (done) grid?.select({ row: r.row, col: r.col }, { row: r.row + rows.length - 1, col: r.col + width - 1 });
+    if (done) {
+      grid?.select({ row: r.row, col: r.col }, { row: r.row + rows.length - 1, col: r.col + width - 1 });
+      t.noteStepSel(t.sel);
+    }
     if (done && afterPaste) say(afterPaste);
     afterPaste = null;
   }
@@ -1527,6 +1537,7 @@
     if (!t) return null;
     try {
       t.whatNext = label.toLowerCase();
+      t.wideNext = true;
       const rep = await runJob(label, () => backend().dataOp(t.id, op));
       if (!rep) return null;
       if (rep.info) t.update(rep.info, true);
@@ -1536,6 +1547,7 @@
       return null;
     } finally {
       t.whatNext = null;
+      t.wideNext = false;
     }
   }
 
@@ -1862,75 +1874,15 @@
   }
 
   /** The block of data around the active cell, bounded by blank rows and
-   *  columns (Excel's current region), found with the same edges Ctrl+arrow
-   *  uses. */
+   *  columns (Excel's current region). */
   async function regionOf(t: Tab): Promise<Rect | null> {
     const c = t.cell;
-    const inside = (r: number, col: number) => r >= t.firstRow && col >= 0 && r < t.info.rows && col < t.info.cols;
-    // Blank or not, from the grid's copy when it has the cell, else asked.
-    const blank = async (r: number, col: number): Promise<boolean> => {
-      if (!inside(r, col)) return true;
-      const v = t.cache.get(r, col);
-      if (v !== undefined) return v === "";
-      return (await backend().cellText(t.id, r, col)).text === "";
-    };
-    const edge = (r: number, col: number, dir: Dir) => backend().dataEdge(t.id, r, col, dir);
-    /** Last cell of the run of filled cells from (r, col) going `dir`. */
-    const runEnd = async (r: number, col: number, dir: Dir): Promise<[number, number]> => {
-      const [dr, dc] = dir === "up" ? [-1, 0] : dir === "down" ? [1, 0] : dir === "left" ? [0, -1] : [0, 1];
-      if (await blank(r + dr, col + dc)) return [r, col];
-      return edge(r, col, dir);
-    };
-    /** Any filled cell in row `r`, columns a..b (or column `col`, rows a..b). */
-    const rowHas = async (r: number, a: number, b: number): Promise<boolean> => {
-      if (!inside(r, a)) return false;
-      if (!(await blank(r, a))) return true;
-      const e = await edge(r, a, "right");
-      return e[1] <= b && !(await blank(r, e[1]));
-    };
-    const colHas = async (col: number, a: number, b: number): Promise<boolean> => {
-      if (!inside(a, col)) return false;
-      if (!(await blank(a, col))) return true;
-      const e = await edge(a, col, "down");
-      return e[0] <= b && !(await blank(e[0], col));
-    };
     try {
-      if (await blank(c.row, c.col)) return null;
-      let [r0, r1, c0, c1] = [c.row, c.row, c.col, c.col];
-      // Grow the box while a row or column beside it has data (Excel's
-      // current region: bounded by blank rows and columns). Each step uses
-      // the same edges as Ctrl+arrow, so long columns cost a few calls.
-      for (let pass = 0; pass < 8; pass++) {
-        let grew = false;
-        const cols = Array.from({ length: Math.min(64, c1 - c0 + 1) }, (_, i) => c0 + i);
-        if (await rowHas(r1 + 1, c0, c1)) {
-          let to = r1 + 1;
-          for (const col of cols) if (!(await blank(r1 + 1, col))) to = Math.max(to, (await runEnd(r1 + 1, col, "down"))[0]);
-          r1 = to;
-          grew = true;
-        }
-        if (await rowHas(r0 - 1, c0, c1)) {
-          let to = r0 - 1;
-          for (const col of cols) if (!(await blank(r0 - 1, col))) to = Math.min(to, (await runEnd(r0 - 1, col, "up"))[0]);
-          r0 = Math.max(t.firstRow, to);
-          grew = true;
-        }
-        const rows = [...new Set([r0, r1, c.row])];
-        if (await colHas(c1 + 1, r0, r1)) {
-          let to = c1 + 1;
-          for (const r of rows) if (!(await blank(r, c1 + 1))) to = Math.max(to, (await runEnd(r, c1 + 1, "right"))[1]);
-          c1 = to;
-          grew = true;
-        }
-        if (await colHas(c0 - 1, r0, r1)) {
-          let to = c0 - 1;
-          for (const r of rows) if (!(await blank(r, c0 - 1))) to = Math.min(to, (await runEnd(r, c0 - 1, "left"))[1]);
-          c0 = Math.max(0, to);
-          grew = true;
-        }
-        if (!grew) break;
-      }
-      return { row: r0, rows: r1 - r0 + 1, col: c0, cols: c1 - c0 + 1 };
+      // One engine call: it looks at the file itself, all columns.
+      const g = await backend().currentRegion(t.id, c.row, c.col, t.firstRow);
+      if (!g) return null;
+      const row = Math.max(t.firstRow, g[0]);
+      return { row, rows: g[1] - row + 1, col: g[2], cols: g[3] - g[2] + 1 };
     } catch {
       return null;
     }
@@ -3364,7 +3316,9 @@
       // Select what the step changed and say what it was (as Excel does).
       if (now !== pos) {
         const w = t.stepWhat.get(op === "undo" ? pos : now);
-        if (w && t.info.rows > 0 && t.info.cols > 0) {
+        // A sort, filter or tool over the whole table: the selection stays
+        // where it is (as in Excel), only the message says what was undone.
+        if (w && !w.wide && t.info.rows > 0 && t.info.cols > 0) {
           const fit = (c: { row: number; col: number }) => ({ row: Math.min(c.row, t.info.rows - 1), col: Math.min(c.col, t.info.cols - 1) });
           // Scrolled to the active cell (the top of a whole column, not
           // its last row).
@@ -3479,6 +3433,7 @@
     if (!t) return false;
     try {
       t.whatNext = label.toLowerCase();
+      t.wideNext = true;
       const d = await runJob(label, () => f(t));
       if (!d) return false;
       t.update(d, true);
@@ -3488,6 +3443,7 @@
       return false;
     } finally {
       t.whatNext = null;
+      t.wideNext = false;
     }
   }
 
@@ -3601,6 +3557,8 @@
       const r = t.rect;
       if (cellCount(r) > 1) findOptions.scope = wholeCols(r, t) && !wholeRows(r, t) ? "column" : wholeRows(r, t) && wholeCols(r, t) ? "all" : "selection";
       else if (findOptions.scope === "selection") findOptions.scope = "all";
+      // The block searched stays the one selected now, whatever a hit selects.
+      findBlock = cellCount(r) > 1 && findOptions.scope !== "all" ? { ...r } : null;
     }
     findOpen = true;
     findReplace = replace;
@@ -5086,9 +5044,18 @@
         bind:replace={findReplace}
         bind:options={findOptions}
         run={runJob}
-        onSelect={(row, col) => { grid?.select({ row, col }); }}
+        bind:block={findBlock}
+        onSelect={(row, col) => {
+          // Inside the block searched, only the active cell moves and the
+          // block stays selected (as in Excel).
+          const b = findBlock;
+          if (b && findOptions.scope !== "all" && row >= b.row && row < b.row + b.rows && col >= b.col && col < b.col + b.cols) {
+            grid?.select({ row: b.row, col: b.col }, { row: b.row + b.rows - 1, col: b.col + b.cols - 1 }, false, { row, col });
+            grid?.scrollIntoView({ row, col });
+          } else grid?.select({ row, col });
+        }}
         onChanged={(d) => tab?.update(d, true)}
-        onClose={() => { findOpen = false; grid?.focus(); }}
+        onClose={() => { findOpen = false; findBlock = null; grid?.focus(); }}
       />
     {/if}
   {/if}

@@ -938,6 +938,9 @@ export interface Backend {
   highlights(doc: number, row: number, rows: number, col: number, cols: number, rules: Highlight[], skipFirst: boolean, read: ReadOptions): Promise<Mark[]>;
   /** Where Ctrl+arrow lands from a cell. */
   dataEdge(doc: number, row: number, col: number, dir: Dir): Promise<[number, number]>;
+  /** The block of data around a cell, bounded by empty rows and columns
+   *  (first row, last row, first column, last column); null when empty. */
+  currentRegion(doc: number, row: number, col: number, first: number): Promise<[number, number, number, number] | null>;
   /** The shown row for a row number of the whole file (0-based) and whether
    *  that row itself is shown (otherwise the next shown one); null when
    *  no row is shown. */
@@ -1338,6 +1341,9 @@ class TauriBackend implements Backend {
   }
   dataEdge(doc: number, row: number, col: number, dir: Dir) {
     return call<[number, number]>("data_edge", { doc, row, col, dir });
+  }
+  currentRegion(doc: number, row: number, col: number, first: number) {
+    return call<[number, number, number, number] | null>("current_region", { doc, row, col, first });
   }
   shownRowOf(doc: number, number: number) {
     return call<[number, boolean] | null>("shown_row_of", { doc, number });

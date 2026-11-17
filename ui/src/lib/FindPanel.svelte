@@ -4,7 +4,7 @@
   import { backend, errorText, type DocInfo, type FindAll, type FindSpec, type ReplaceReport } from "./backend";
   import type { Tab } from "./tab.svelte";
   import { findSpecOf, type FindOptions } from "./filters";
-  import { rectOf } from "./selection";
+  import { rectOf, type Rect } from "./selection";
 
   interface Props {
     tab: Tab;
@@ -13,10 +13,28 @@
     /** Runs a long engine call with progress shown and Cancel offered. */
     run: <T>(label: string, f: () => Promise<T>) => Promise<T | null>;
     onSelect: (row: number, col: number) => void;
+    /** The block "Selection" and "Selected columns" search in, kept from
+     *  when Find opened (or the scope was picked): a hit selects one cell,
+     *  so the live selection can't be used after the first Find next. */
+    block: Rect | null;
     onChanged: (info: DocInfo) => void;
     onClose: () => void;
   }
-  let { tab, replace = $bindable(), options = $bindable(), run, onSelect, onChanged, onClose }: Props = $props();
+  let { tab, replace = $bindable(), options = $bindable(), block = $bindable(), run, onSelect, onChanged, onClose }: Props = $props();
+
+  // Picking "Selection" or "Selected columns" while the box is open takes
+  // the block selected then; "Whole file" lets it go.
+  let lastScope = options.scope;
+  $effect(() => {
+    const s = options.scope;
+    if (s === lastScope) return;
+    lastScope = s;
+    if (s === "all") block = null;
+    else {
+      const r = rectOf(tab.sel);
+      block = r.rows * r.cols > 1 ? { ...r } : null;
+    }
+  });
 
   let findInput = $state<HTMLInputElement>();
   let replacement = $state("");
@@ -36,7 +54,7 @@
 
   /** The search as set up now. A one-cell "selection" scope searches all. */
   function spec(): FindSpec {
-    const r = rectOf(tab.sel);
+    const r = options.scope !== "all" && block ? block : rectOf(tab.sel);
     const o = { ...options };
     if (o.scope === "selection" && r.rows * r.cols <= 1) o.scope = "all";
     return findSpecOf(o, { row: r.row, rows: r.rows, col: r.col, cols: r.cols }, tab.header);

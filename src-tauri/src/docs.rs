@@ -4474,6 +4474,19 @@ impl Docs {
         Ok(d.shown_row_of(number))
     }
 
+    /// The block of data around a cell (Ctrl+A's first press).
+    pub fn current_region(
+        &self,
+        id: u32,
+        row: u64,
+        col: u32,
+        first: u64,
+    ) -> CmdResult<Option<(u64, u64, u32, u32)>> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.current_region(row, col, first)?)
+    }
+
     /// Where Ctrl+arrow lands from a cell.
     pub fn data_edge(&self, id: u32, row: u64, col: u32, dir: Dir) -> CmdResult<(u64, u32)> {
         let entry = self.get(id)?;
