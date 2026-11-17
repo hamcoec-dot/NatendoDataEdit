@@ -89,6 +89,14 @@ pub struct Pattern {
     pub match_case: bool,
     /// The whole cell must match, not just part of it.
     pub whole_cell: bool,
+    /// Only whole words match: "Ann" finds "Ann Lee", not "Annette".
+    pub whole_word: bool,
+    /// Letters match their accented forms: "Jose" finds "José".
+    pub ignore_accents: bool,
+    /// In plain and wildcard patterns, `\t` `\n` `\r` `\\` and `\u{..}`
+    /// stand for a tab, a line break, a carriage return, a backslash and
+    /// any character (also in the replacement).
+    pub escapes: bool,
 }
 
 /// A compiled pattern.
@@ -97,23 +105,222 @@ pub struct Matcher {
     re: Regex,
     /// Replacement text is taken literally (plain and wildcard patterns).
     literal: bool,
+    /// `\n`, `\t` ... in the replacement stand for those characters.
+    rep_escapes: bool,
 }
 
-fn wildcard_to_regex(p: &str) -> String {
+/// One literal character of a pattern as regex source: escaped, or with
+/// "ignore accents" a class of the letter and its accented forms.
+fn lit(c: char, accents: bool) -> String {
+    if accents {
+        if let Some(class) = accent_class(c) {
+            return class;
+        }
+    }
+    regex::escape(c.encode_utf8(&mut [0; 4]))
+}
+
+fn wildcard_to_regex(p: &str, accents: bool) -> String {
     let mut out = String::with_capacity(p.len() * 2);
     let mut chars = p.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             '~' if matches!(chars.peek(), Some('*' | '?' | '~')) => {
                 let n = chars.next().expect("peeked");
-                out.push_str(&regex::escape(&n.to_string()));
+                out.push_str(&lit(n, accents));
             }
             '*' => out.push_str(".*"),
             '?' => out.push('.'),
-            _ => out.push_str(&regex::escape(c.encode_utf8(&mut [0; 4]))),
+            _ => out.push_str(&lit(c, accents)),
         }
     }
     out
+}
+
+/// The single plain letter an accented letter stands for (é → e, Ø → O),
+/// keeping its case; `None` for anything else.
+fn base_letter(c: char) -> Option<char> {
+    if c.is_ascii_alphabetic() {
+        return Some(c);
+    }
+    if !c.is_alphabetic() || c.is_ascii() {
+        return None;
+    }
+    let mut lower = c.to_lowercase();
+    let l = match (lower.next(), lower.next()) {
+        (Some(l), None) => l,
+        _ => return None,
+    };
+    let mut tmp = String::new();
+    crate::value::fold_char(l, &mut tmp);
+    let mut it = tmp.chars();
+    match (it.next(), it.next()) {
+        (Some(b), None) if b.is_ascii_alphabetic() => Some(if c.is_uppercase() {
+            b.to_ascii_uppercase()
+        } else {
+            b
+        }),
+        _ => None,
+    }
+}
+
+/// Accented forms of each plain letter a-z (lower case), built once from
+/// the Latin letter blocks.
+fn accent_table() -> &'static [Vec<char>; 26] {
+    static TABLE: std::sync::OnceLock<[Vec<char>; 26]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut t: [Vec<char>; 26] = Default::default();
+        let ranges = [0x00C0u32..=0x024F, 0x1E00..=0x1EFF];
+        for r in ranges {
+            for u in r {
+                let Some(c) = char::from_u32(u) else { continue };
+                if !c.is_lowercase() {
+                    continue;
+                }
+                if let Some(b) = base_letter(c) {
+                    if b.is_ascii_lowercase() && b != c {
+                        t[(b as u8 - b'a') as usize].push(c);
+                    }
+                }
+            }
+        }
+        t
+    })
+}
+
+/// `[eéèêë…]\p{M}*` for a letter (any of its forms in the pattern), in the
+/// pattern letter's case; combining marks after it are allowed too, so
+/// "e" + a separate accent mark matches as well.
+fn accent_class(c: char) -> Option<String> {
+    let b = base_letter(c)?;
+    let lower = b.to_ascii_lowercase();
+    let forms = &accent_table()[(lower as u8 - b'a') as usize];
+    let mut class = String::from("(?:[");
+    if b.is_ascii_uppercase() {
+        class.push(b);
+        for f in forms {
+            class.extend(f.to_uppercase());
+        }
+    } else {
+        class.push(b);
+        class.extend(forms.iter());
+    }
+    class.push_str("]\\p{M}*)");
+    Some(class)
+}
+
+/// Literal letters of a regular expression made accent-blind; escapes,
+/// classes `[...]`, repeat counts `{...}` and group headers stay as they are.
+fn regex_ignore_accents(src: &str) -> String {
+    let mut out = String::with_capacity(src.len() * 4);
+    let mut chars = src.chars().peekable();
+    let mut class_depth = 0usize;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                out.push(c);
+                if let Some(n) = chars.next() {
+                    out.push(n);
+                    // \p{..}, \x{..}, \u{..}, \b{..}: copy the braces too.
+                    if matches!(n, 'p' | 'P' | 'x' | 'u' | 'U' | 'b' | 'B')
+                        && chars.peek() == Some(&'{')
+                    {
+                        for m in chars.by_ref() {
+                            out.push(m);
+                            if m == '}' {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            '[' => {
+                class_depth += 1;
+                out.push(c);
+            }
+            ']' if class_depth > 0 => {
+                class_depth -= 1;
+                out.push(c);
+            }
+            _ if class_depth > 0 => out.push(c),
+            '{' => {
+                out.push(c);
+                for m in chars.by_ref() {
+                    out.push(m);
+                    if m == '}' {
+                        break;
+                    }
+                }
+            }
+            '(' if chars.peek() == Some(&'?') => {
+                // (?i) (?:  (?P<name>  (?<name>: copy up to the end of the header.
+                out.push(c);
+                for m in chars.by_ref() {
+                    out.push(m);
+                    if m == ':' || m == ')' || m == '>' {
+                        break;
+                    }
+                }
+            }
+            _ if base_letter(c).is_some() => out.push_str(&accent_class(c).expect("a letter")),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// `\t` `\n` `\r` `\\` `\u{XXXX}` in text as the characters they name;
+/// any other backslash stays as it is.
+pub(crate) fn unescape(t: &str) -> Cow<'_, str> {
+    if !t.contains('\\') {
+        return Cow::Borrowed(t);
+    }
+    let mut out = String::with_capacity(t.len());
+    let mut chars = t.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('t') => {
+                chars.next();
+                out.push('\t');
+            }
+            Some('n') => {
+                chars.next();
+                out.push('\n');
+            }
+            Some('r') => {
+                chars.next();
+                out.push('\r');
+            }
+            Some('\\') => {
+                chars.next();
+                out.push('\\');
+            }
+            Some('u') => {
+                let rest: String = chars.clone().take(12).collect();
+                let code = rest
+                    .strip_prefix("u{")
+                    .and_then(|r| r.split_once('}'))
+                    .and_then(|(hex, _)| u32::from_str_radix(hex, 16).ok())
+                    .and_then(char::from_u32);
+                match code {
+                    Some(ch) => {
+                        let used = rest.find('}').expect("closed") + 1;
+                        for _ in 0..used {
+                            chars.next();
+                        }
+                        out.push(ch);
+                    }
+                    None => out.push('\\'),
+                }
+            }
+            _ => out.push('\\'),
+        }
+    }
+    Cow::Owned(out)
 }
 
 pub(crate) fn build(source: &str, match_case: bool) -> Result<Regex, Error> {
@@ -150,19 +357,32 @@ impl Matcher {
                 "a pattern can be at most {MAX_PATTERN_CHARS} characters"
             )));
         }
+        let text = if p.escapes && p.kind != PatternKind::Regex {
+            unescape(&p.text)
+        } else {
+            Cow::Borrowed(p.text.as_str())
+        };
+        let accents = p.ignore_accents;
         let body = match p.kind {
-            PatternKind::Plain => regex::escape(&p.text),
-            PatternKind::Wildcard => wildcard_to_regex(&p.text),
-            PatternKind::Regex => p.text.clone(),
+            PatternKind::Plain if accents => text.chars().map(|c| lit(c, true)).collect(),
+            PatternKind::Plain => regex::escape(&text),
+            PatternKind::Wildcard => wildcard_to_regex(&text, accents),
+            PatternKind::Regex if accents => regex_ignore_accents(&text),
+            PatternKind::Regex => text.into_owned(),
         };
         let source = if p.whole_cell {
             format!(r"\A(?:{body})\z")
+        } else if p.whole_word {
+            // "Half" boundaries: no letter or digit just before or after,
+            // whatever the pattern's own first and last characters are.
+            format!(r"\b{{start-half}}(?:{body})\b{{end-half}}")
         } else {
             body
         };
         Ok(Matcher {
             re: build(&source, p.match_case)?,
             literal: p.kind != PatternKind::Regex,
+            rep_escapes: p.escapes || p.kind == PatternKind::Regex,
         })
     }
 
@@ -182,6 +402,7 @@ impl Matcher {
         Ok(Matcher {
             re: build(&source, match_case)?,
             literal: true,
+            rep_escapes: false,
         })
     }
 
@@ -199,6 +420,12 @@ impl Matcher {
     /// cell is empty (so `^$` fills blank cells, but `x*` never inserts text
     /// between every character).
     pub fn replace(&self, s: &str, rep: &str) -> Result<Option<(String, u64)>, Error> {
+        let rep: Cow<'_, str> = if self.rep_escapes {
+            unescape(rep)
+        } else {
+            Cow::Borrowed(rep)
+        };
+        let rep = rep.as_ref();
         let mut out = String::new();
         let mut last = 0;
         let mut hits = 0u64;
@@ -241,6 +468,75 @@ impl Matcher {
         }
         push(&mut out, &s[last..])?;
         Ok(Some((out, hits)))
+    }
+
+    /// A replacement naming a group the pattern does not have (`$2` with one
+    /// group, or `$1a`, read as a group called "1a"), which would quietly
+    /// put nothing there.
+    pub fn check_replacement(&self, rep: &str) -> Result<(), Error> {
+        if self.literal {
+            return Ok(());
+        }
+        let names: Vec<&str> = self.re.capture_names().flatten().collect();
+        let groups = self.re.captures_len();
+        let mut chars = rep.char_indices().peekable();
+        while let Some((_, c)) = chars.next() {
+            if c != '$' {
+                continue;
+            }
+            let name: String = match chars.peek() {
+                Some((_, '$')) => {
+                    chars.next();
+                    continue;
+                }
+                Some((_, '{')) => {
+                    chars.next();
+                    let mut n = String::new();
+                    for (_, m) in chars.by_ref() {
+                        if m == '}' {
+                            break;
+                        }
+                        n.push(m);
+                    }
+                    n
+                }
+                _ => {
+                    let mut n = String::new();
+                    while let Some(&(_, m)) = chars.peek() {
+                        if m.is_alphanumeric() || m == '_' {
+                            n.push(m);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    n
+                }
+            };
+            if name.is_empty() {
+                continue;
+            }
+            let ok = match name.parse::<usize>() {
+                Ok(i) => i < groups,
+                Err(_) => names.contains(&name.as_str()),
+            };
+            if !ok {
+                let digits: String = name.chars().take_while(|c| c.is_ascii_digit()).collect();
+                let hint = if !digits.is_empty() && digits.len() < name.len() {
+                    format!(
+                        " (for group {digits} followed by \"{}\", write ${{{digits}}}{})",
+                        &name[digits.len()..],
+                        &name[digits.len()..]
+                    )
+                } else {
+                    String::new()
+                };
+                return Err(Error::BadPattern(format!(
+                    "the replacement uses ${name}, which is not a group in the pattern{hint}"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Matches in a piece of text (the edit panel), as UTF-16 offsets
@@ -647,6 +943,7 @@ impl Document {
             )));
         }
         let m = Matcher::new(&spec.pattern)?;
+        m.check_replacement(replacement)?;
         let area = self.area(spec)?;
         let (r0, r1) = (area.rows.start, area.rows.end);
         progress.start(r1.saturating_sub(r0));
