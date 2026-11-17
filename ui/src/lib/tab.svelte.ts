@@ -29,6 +29,10 @@ export class Tab {
   /** Undo switched that setting off: redo switches it back on (until
    *  another change is made, which ends the redo). */
   headerOffByUndo = false;
+  /** Data-check rules a rename rewrote, by the undo position just after the
+   *  rename: undoing the rename puts the rules back as they were, redo
+   *  rewrites them again (only while nobody changed the rules since). */
+  refEdits: { at: number; before: Check[]; after: Check[]; applied: boolean }[] = [];
   /** Data rows (after the header) and columns kept in view while scrolling. */
   frozenRows = $state(0);
   frozenCols = $state(0);

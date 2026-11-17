@@ -3492,7 +3492,22 @@ impl SavedPivot {
     /// is not there keeps its number only if that number has the same
     /// title or no titles were saved.
     pub fn fit(&self, titles: &[String]) -> Result<PivotSpec, Error> {
+        let (spec, swaps) = self.fit_by_place(titles)?;
+        match swaps.first() {
+            Some(s) => Err(Error::Invalid(format!(
+                "this file has no column \"{}\" that the pivot layout uses",
+                s.was
+            ))),
+            None => Ok(spec),
+        }
+    }
+
+    /// `fit`, but a column whose title is not found (renamed, say) takes
+    /// the column in the same place, and is listed so the person can be
+    /// asked first. Fails when that place is past the file's last column.
+    pub fn fit_by_place(&self, titles: &[String]) -> Result<(PivotSpec, Vec<PlaceSwap>), Error> {
         let mut map: HashMap<u32, u32> = HashMap::new();
+        let mut swaps: Vec<PlaceSwap> = Vec::new();
         for (c, t) in &self.columns {
             let exact: Vec<usize> = (0..titles.len()).filter(|&i| titles[i] == *t).collect();
             let loose: Vec<usize> = (0..titles.len())
@@ -3505,6 +3520,13 @@ impl SavedPivot {
             } else if loose.len() == 1 {
                 loose[0] as u32
             } else if t.is_empty() && (*c as usize) < titles.len() {
+                *c
+            } else if (*c as usize) < titles.len() {
+                swaps.push(PlaceSwap {
+                    was: t.clone(),
+                    col: *c,
+                    now: titles[*c as usize].clone(),
+                });
                 *c
             } else {
                 return Err(Error::Invalid(format!(
@@ -3521,8 +3543,29 @@ impl SavedPivot {
                 "the pivot layout uses a column this file does not have".into(),
             ));
         }
-        Ok(spec)
+        // A column taken by place must not also be another layout
+        // column's match by title.
+        for s in &swaps {
+            if map.values().filter(|&&v| v == s.col).count() > 1 {
+                return Err(Error::Invalid(format!(
+                    "this file has no column \"{}\" that the pivot layout uses",
+                    s.was
+                )));
+            }
+        }
+        Ok((spec, swaps))
     }
+}
+
+/// A pivot layout column found by its place, not its title.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PlaceSwap {
+    /// The title the layout was saved with.
+    pub was: String,
+    /// The column it now uses (same place).
+    pub col: u32,
+    /// That column's title in this file.
+    pub now: String,
 }
 
 #[cfg(test)]
@@ -4094,6 +4137,26 @@ mod tests {
         let fitted = back.fit(&t(&["sales", "x", "City", "id"])).unwrap();
         assert_eq!((fitted.rows[0].col, fitted.values[0].col), (2, 0));
         assert!(back.fit(&t(&["id", "town", "sales"])).is_err());
+        // After a rename (city -> town), the column in the same place is
+        // offered, and listed so the person is asked first.
+        let (spec2, swaps) = back.fit_by_place(&t(&["id", "town", "sales"])).unwrap();
+        assert_eq!((spec2.rows[0].col, spec2.values[0].col), (1, 2));
+        assert_eq!(
+            swaps,
+            vec![PlaceSwap {
+                was: "city".into(),
+                col: 1,
+                now: "town".into()
+            }]
+        );
+        // Nothing in that place, or that place already taken by another
+        // of the layout's columns found by name: no offer.
+        assert!(back.fit_by_place(&t(&["id"])).is_err());
+        assert!(back.fit_by_place(&t(&["id", "sales", "x"])).is_err());
+        assert_eq!(
+            back.fit_by_place(&t(&["id", "city", "sales"])).unwrap().1,
+            vec![]
+        );
         assert!(SavedPivot::from_json(b"{}").is_err());
         let mut newer = saved.clone();
         newer.version = 99;

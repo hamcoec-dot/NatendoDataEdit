@@ -39,6 +39,7 @@
   import SplitNameDialog from "./lib/SplitNameDialog.svelte";
   import InsertDialog from "./lib/InsertDialog.svelte";
   import RenameColumn from "./lib/RenameColumn.svelte";
+  import { renameInChecks } from "./lib/rename";
   import { TOOLS, localNow, type Cleaner, type CleanSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
   import type { ExportOptions, ImportOptions, ImportStart, Opened, SaveAsOptions } from "./lib/backend";
@@ -136,7 +137,7 @@
   let insertAsk = $state<"rows" | "cols" | null>(null);
   /** Set while a command picked from a heading's menu runs. */
   let menuCol: number | null = null;
-  let renameAsk = $state<{ id: number; col: number; name: string; header: boolean; others: Set<string> } | null>(null);
+  let renameAsk = $state<{ id: number; col: number; name: string; header: boolean; others: Set<string>; titles: string[] } | null>(null);
   /** Insert > Symbol is open; `caret` is where the cell editor's cursor was. */
   let symbols = $state<{ caret: number | null } | null>(null);
   let findOpen = $state(false);
@@ -230,6 +231,8 @@
         t.headerOffByUndo = false;
         t.headerAddedAt = null;
       }
+      // A change after undoing a rename ends its redo.
+      if (!undoBusy.has(t) && t.refEdits.some((e) => !e.applied)) t.refEdits = t.refEdits.filter((e) => e.applied);
       return true;
     } catch (e) {
       say(errorText(e));
@@ -662,12 +665,55 @@
   async function applyView(v: View): Promise<void> {
     const t = tab;
     if (!t) return;
+    const headerWas = t.header;
     if (v.header !== t.header) {
       t.header = v.header;
       t.headerTouched = true;
       t.bump();
     }
-    const map = matchColumns(v.columns, shownTitles(t));
+    // The real titles (the grid only knows those on screen), as views
+    // keep them: 60 characters, one line.
+    let titles = shownTitles(t);
+    if (t.header && t.info.rows > 0) {
+      try {
+        const first = await backend().firstRowNames(t.id);
+        titles = titles.map((x, c) => {
+          const v1 = (first[c] ?? "").replace(/[\r\n\t]+/g, " ").slice(0, 60);
+          return v1 || x;
+        });
+      } catch {
+        // Keep what the grid knows.
+      }
+    }
+    const map = matchColumns(v.columns, titles);
+    // Columns not found by title take the one in the same place (renamed,
+    // say): ask first, as a filter or sort on the wrong column misleads.
+    const norm = (s: string) => s.trim().toLowerCase();
+    const byPlace = v.columns.flatMap((vc, k) => {
+      const c = map[k];
+      return c !== null && c !== undefined && vc.title.trim() && norm(titles[c] ?? "") !== norm(vc.title) ? [{ k, c, was: vc.title }] : [];
+    });
+    if (byPlace.length) {
+      const list = byPlace.slice(0, 8).map((x) => `“${x.was}” → column ${x.c + 1}, “${titles[x.c]}”`).join("; ");
+      const a = await ask(
+        "Use columns in the same place?",
+        `The view “${v.name}” names ${byPlace.length === 1 ? "a column" : `${byPlace.length} columns`} this file has under another name (renamed, perhaps): ${list}${byPlace.length > 8 ? `, and ${byPlace.length - 8} more` : ""}.`,
+        [
+          { id: "use", label: byPlace.length === 1 ? "Use that column" : "Use those columns", primary: true },
+          { id: "skip", label: "Leave them out" },
+          { id: "cancel", label: "Don't apply the view" },
+        ],
+        "cancel",
+      );
+      if (a === "cancel" || t !== tab) {
+        if (t.header !== headerWas) {
+          t.header = headerWas;
+          t.bump();
+        }
+        return;
+      }
+      if (a === "skip") for (const x of byPlace) map[x.k] = null;
+    }
     const to = (c: number): number | null => map[c] ?? null;
     let missing = 0;
     v.columns.forEach((vc, k) => {
@@ -2004,12 +2050,15 @@
     if (c < 0 || c >= t.info.cols) return;
     let name = "";
     const others = new Set<string>();
+    let titles: string[] = [];
     if (t.header && t.info.rows > 0) {
       try {
         // The table's first row, even if a filter or hidden rows leave
         // another row at the top.
         name = await backend().firstRowCell(t.id, c);
-        (await backend().firstRowNames(t.id)).forEach((s, i) => {
+        titles = await backend().firstRowNames(t.id);
+        if (c < titles.length) titles[c] = name;
+        titles.forEach((s, i) => {
           if (i !== c && s.trim()) others.add(s.trim().toLowerCase());
         });
       } catch (e) {
@@ -2017,12 +2066,12 @@
         return;
       }
     }
-    renameAsk = { id: t.id, col: c, name, header: t.header && t.info.rows > 0, others };
+    renameAsk = { id: t.id, col: c, name, header: t.header && t.info.rows > 0, others, titles };
   }
 
   /** Give column `col` a new title: the header row's cell (one undo step).
    *  Without a header row, one is added first and switched on. */
-  async function renameColumn(id: number, col: number, name: string, header: boolean): Promise<void> {
+  async function renameColumn(id: number, col: number, name: string, header: boolean, titles: string[] = []): Promise<void> {
     const t = tab;
     // The tab may have changed while the box was open.
     if (!t || t.id !== id || col >= t.info.cols) return;
@@ -2037,7 +2086,20 @@
       t.headerAddedAt = t.info.history_pos;
     }
     if (await apply((x) => backend().setFirstRowCell(x.id, col, name))) {
-      say(name.trim() ? `Column ${col + 1} is now "${name}". Ctrl+Z undoes it.` : `Column ${col + 1} has no name now. Ctrl+Z undoes it.`);
+      // Row rules in data checks that named the column follow the new name
+      // (undone and redone with the rename).
+      let followed = "";
+      if (header && titles.length && t.checks.some((k) => k.kind.type === "expression")) {
+        const before = $state.snapshot(t.checks) as Check[];
+        const r = renameInChecks(before, titles, col, name);
+        if (r.changed) {
+          t.checks = r.checks;
+          t.checkVersion++;
+          t.refEdits = [...t.refEdits.filter((e) => e.applied), { at: t.info.history_pos, before, after: r.checks, applied: true }].slice(-50);
+          followed = ` ${r.changed === 1 ? "1 data check rule now uses" : `${r.changed} data check rules now use`} the new name.`;
+        }
+      }
+      say(name.trim() ? `Column ${col + 1} is now "${name}".${followed} Ctrl+Z undoes it.` : `Column ${col + 1} has no name now.${followed} Ctrl+Z undoes it.`);
     }
   }
 
@@ -2787,6 +2849,7 @@
       await change({ op });
       // Undoing the header row Rename column added: the setting it switched
       // on goes off again, so the first record is not taken for titles.
+      followRefEdits(t, op);
       if (t.headerAddedAt !== null && t.info.history_pos < t.headerAddedAt && !t.headerOffByUndo) {
         if (t.header) {
           t.header = false;
@@ -2807,6 +2870,35 @@
     }
   }
   const undoBusy = new Set<Tab>();
+
+  /** Undo/redo of a rename: the data-check rules it rewrote go back, or
+   *  are rewritten again. Rules changed by hand since are left as they are. */
+  function followRefEdits(t: Tab, op: "undo" | "redo"): void {
+    const pos = t.info.history_pos;
+    // The tab's rules are a live copy: compare by content.
+    const is = (list: Check[]) => JSON.stringify(t.checks) === JSON.stringify(list);
+    let moved = false;
+    if (op === "undo") {
+      for (const e of [...t.refEdits].reverse()) {
+        if (!e.applied || pos >= e.at) continue;
+        e.applied = false;
+        if (is(e.after)) {
+          t.checks = e.before;
+          moved = true;
+        }
+      }
+    } else {
+      for (const e of t.refEdits) {
+        if (e.applied || pos < e.at) continue;
+        e.applied = true;
+        if (is(e.before)) {
+          t.checks = e.after;
+          moved = true;
+        }
+      }
+    }
+    if (moved) t.checkVersion++;
+  }
 
   // ---- long operations ------------------------------------------------------------
   /** Run a long engine call: the status bar shows progress and offers
@@ -5028,7 +5120,7 @@
     name={r.name}
     header={r.header}
     others={r.others}
-    onRun={(name) => { const { id, col, header } = r; renameAsk = null; void renameColumn(id, col, name, header).then(() => grid?.focus()); }}
+    onRun={(name) => { const { id, col, header, titles } = r; renameAsk = null; void renameColumn(id, col, name, header, titles).then(() => grid?.focus()); }}
     onClose={() => { renameAsk = null; void tick().then(() => grid?.focus()); }}
   />
 {/if}

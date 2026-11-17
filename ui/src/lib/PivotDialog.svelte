@@ -3,7 +3,7 @@
   // and the result shows at once. Big files get a quick look from their
   // first rows, then the full result. Nothing in the file changes.
   import { untrack } from "svelte";
-  import { backend, errorText, isCmdError } from "./backend";
+  import { backend, errorText, isCmdError, type PlaceSwap } from "./backend";
   import {
     AGGS,
     allOpen,
@@ -58,6 +58,8 @@
   let busy = $state(false);
   let progress = $state<number | null>(null);
   let problem = $state("");
+  /** A layout whose columns were found by place, not title: asked first. */
+  let byPlace = $state<{ name: string; spec: PivotSpec; swaps: PlaceSwap[] } | null>(null);
   let search = $state("");
   let layoutName = $state("");
   /** The chip whose settings show. */
@@ -355,6 +357,12 @@
     try {
       const r = await backend().pivotOpen(doc, spec.keep_first);
       if (!r) return;
+      // Some of its columns were not found by name (renamed, say): ask
+      // before using the columns in the same places.
+      if (r[2].length) {
+        byPlace = { name: r[0], spec: r[1], swaps: r[2] };
+        return;
+      }
       layoutName = r[0];
       spec = r[1];
       sel = null;
@@ -652,6 +660,30 @@
           {#if problem}<span class="problem" role="alert">{problem}</span>{/if}
           <button type="button" class="right" onclick={again} title="Read the file again">Refresh</button>
         </div>
+        {#if byPlace}
+          {@const b = byPlace}
+          <div class="by-place" role="alertdialog" aria-label="Use columns in the same place?">
+            <p>
+              The layout “{b.name}” uses {b.swaps.length === 1 ? "a column" : "columns"} this file has under another name (renamed, perhaps). Use the {b.swaps.length === 1 ? "column" : "columns"} in the same place?
+            </p>
+            <ul>
+              {#each b.swaps as w (w.col)}
+                <li>“{w.was}” → column {w.col + 1}{w.now ? `, “${w.now}”` : ""}</li>
+              {/each}
+            </ul>
+            <button
+              type="button"
+              class="primary"
+              onclick={() => {
+                layoutName = b.name;
+                spec = b.spec;
+                sel = null;
+                byPlace = null;
+              }}>Use {b.swaps.length === 1 ? "that column" : "those columns"}</button
+            >
+            <button type="button" onclick={() => (byPlace = null)}>Don't open the layout</button>
+          </div>
+        {/if}
 
         <div class="preview">
           {#if !ready}
@@ -957,6 +989,20 @@
   }
   .problem {
     color: var(--danger, #c00);
+  }
+  .by-place {
+    margin: 6px 0;
+    padding: 8px 12px;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    background: var(--surface);
+  }
+  .by-place p {
+    margin: 0 0 4px;
+  }
+  .by-place ul {
+    margin: 0 0 8px;
+    padding-left: 20px;
   }
   .right {
     margin-left: auto;

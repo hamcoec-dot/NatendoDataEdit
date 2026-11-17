@@ -2056,8 +2056,16 @@ export class MockBackend implements Backend {
     throw err("invalid", "the browser preview cannot save files; the desktop app does");
   }
 
-  async pivotOpen(): Promise<[string, PivotSpec] | null> {
-    throw err("invalid", "the browser preview cannot open files; the desktop app does");
+  /** The stub has no files: it hands back a made-up layout "by city" that
+   *  counts rows by column 4, saved when that column was called "city". A
+   *  file whose column 4 has another name gets it offered by place. */
+  async pivotOpen(doc: number, keepFirst: boolean): Promise<[string, PivotSpec, import("./backend").PlaceSwap[]] | null> {
+    const { newSpec, newField, newValue } = await import("./pivot");
+    const spec = newSpec(keepFirst);
+    spec.rows = [newField(3)];
+    spec.values = [newValue(0, "count")];
+    const now = keepFirst ? (await this.cellText(doc, 0, 3)).text : "";
+    return ["by city", spec, now === "city" ? [] : [{ was: "city", col: 3, now }]];
   }
 
   async dataEdge(doc: number, row: number, col: number, dir: Dir): Promise<[number, number]> {

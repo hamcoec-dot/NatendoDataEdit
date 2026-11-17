@@ -552,6 +552,12 @@ export type CheckKind =
   | { type: "pattern"; pattern: Pattern }
   | { type: "unique"; match_case: boolean }
   | { type: "expression"; expr: string };
+/** A pivot layout column found by place, not title. */
+export interface PlaceSwap {
+  was: string;
+  col: number;
+  now: string;
+}
 export interface Check {
   /** Column (ignored for expressions). */
   col: number | null;
@@ -860,7 +866,9 @@ export interface Backend {
   /** Save a layout (Save dialog); its file name, or null when cancelled. */
   pivotSave(doc: number, name: string, spec: PivotSpec): Promise<string | null>;
   /** Open a saved layout fitted to the tab's columns; null when cancelled. */
-  pivotOpen(doc: number, keepFirst: boolean): Promise<[string, PivotSpec] | null>;
+  /** A saved layout fitted to the tab: its name, the layout, and the
+   *  columns found by place because their titles were not (ask first). */
+  pivotOpen(doc: number, keepFirst: boolean): Promise<[string, PivotSpec, PlaceSwap[]] | null>;
   /** The next shown row whose cell in `col` differs (up or down). */
   findChange(doc: number, row: number, col: number, up: boolean): Promise<number | null>;
   /** The row with the column's largest (or smallest) number. */
@@ -1205,7 +1213,7 @@ class TauriBackend implements Backend {
     return call<string | null>("pivot_save", { doc, name, spec });
   }
   pivotOpen(doc: number, keepFirst: boolean) {
-    return call<[string, PivotSpec] | null>("pivot_open", { doc, keepFirst });
+    return call<[string, PivotSpec, PlaceSwap[]] | null>("pivot_open", { doc, keepFirst });
   }
   findChange(doc: number, row: number, col: number, up: boolean) {
     return call<number | null>("find_change", { doc, row, col, up });

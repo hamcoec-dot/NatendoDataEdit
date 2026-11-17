@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.3.2_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.3.3_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -158,7 +158,10 @@ everything is also in command search.
 - **Title row or not:** the app guesses whether the first row holds titles;
   one switch changes it, and files without titles get column numbers.
   Rename a column by double-clicking its heading, right-clicking it, or
-  Format > Rename column (a file without titles gets a title row).
+  Format > Rename column (a file without titles gets a title row). Data
+  check rules that name the column ([first_name]) follow the new name, and
+  undo puts both back. A saved pivot layout or view that names a column
+  this file no longer has asks before using the column in the same place.
 
 ![Renaming the first_name column after double-clicking its heading](docs/screenshots/rename-column.png)
 *Double-click a heading to rename the column.*
@@ -270,7 +273,8 @@ everything is also in command search.
 - Quick filter, a filter builder for more complex rules, and largest or
   smallest N (rows or percent).
 - **Saved views:** filters, column layout, highlight rules and checks saved
-  under a name and applied to other files.
+  under a name and applied to other files (columns are matched by title; one
+  not found is offered from the same place, and the view asks first).
 - Find duplicate rows, and remove them keeping the first, last, newest,
   oldest or most complete copy, filling blanks from the other copies.
 
@@ -408,9 +412,13 @@ preview:
   double-click a number to get the rows behind it in a new tab.
 - **Use the result:** open it as a new tab (save or export it like any file)
   or copy it; save the layout and reuse it on next month's file (columns are
-  found by their titles), or run it with `natendo-cli pivot`. Data > Pivot
-  table on a pivot tab reopens its layout. Sums are exact (no rounding drift)
-  and a pivot never changes the file.
+  found by their titles; a title not found, after a rename say, is offered
+  from the column in the same place, and you choose), or run it with
+  `natendo-cli pivot`. Data > Pivot table on a pivot tab reopens its layout.
+  Sums are exact (no rounding drift) and a pivot never changes the file.
+
+![Opening a pivot layout after a column was renamed: it asks to use the column in the same place](docs/screenshots/pivot-by-place.png)
+*A layout saved when column 4 was "city" asks before using it now that it is "town".*
 
 ### Cleaning tools
 

@@ -2404,14 +2404,16 @@ async fn pivot_save(
 }
 
 /// Open a saved pivot layout (an untrusted file) and fit it to a tab's
-/// columns. `None` if cancelled.
+/// columns. `None` if cancelled. Columns whose titles are not found (after
+/// a rename, say) take the column in the same place and are listed, so the
+/// person is asked before the layout is used.
 #[tauri::command]
 async fn pivot_open(
     window: WebviewWindow,
     docs: DocsState<'_>,
     doc: u32,
     keep_first: bool,
-) -> CmdResult<Option<(String, PivotSpec)>> {
+) -> CmdResult<Option<(String, PivotSpec, Vec<natendo_engine::pivot::PlaceSwap>)>> {
     let docs = docs.inner().clone();
     blocking(move || {
         let Some(path) = rfd::FileDialog::new()
@@ -2426,7 +2428,8 @@ async fn pivot_open(
         let bytes = extras::read_capped(&path, MAX_SAVED_PIVOT_BYTES as u64, "a pivot layout")?;
         let saved = SavedPivot::from_json(&bytes)?;
         let titles = docs.titles_of(doc, keep_first)?;
-        Ok(Some((saved.name.clone(), saved.fit(&titles)?)))
+        let (spec, swaps) = saved.fit_by_place(&titles)?;
+        Ok(Some((saved.name.clone(), spec, swaps)))
     })
     .await
 }
