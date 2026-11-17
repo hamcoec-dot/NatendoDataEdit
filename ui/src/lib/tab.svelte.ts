@@ -176,6 +176,9 @@ export class Tab {
   private colMoves: { pos: number; at: number; count: number; to: number }[] = [];
   /** What Cut (Ctrl+X) marked, waiting for Paste to move it; dropped by
    *  Esc, another cut or copy, or any change (`pos` is the undo position). */
+  /** What Copy last put on the clipboard (a dashed outline until Esc or
+   *  the next change). */
+  copied = $state<Rect | null>(null);
   cut = $state<{ kind: "cols" | "rows" | "cells"; rect: Rect; pos: number; clip: string; inside: boolean } | null>(null);
   /** Changes to the look alone, oldest first (undone before the engine
    *  step that reached their position), and those undone, for redo. */
@@ -455,7 +458,10 @@ export class Tab {
     const after = info.history_pos;
     // Any change, and any change of which rows are shown (a filter), drops a
     // pending cut: its rows would now be other rows.
-    if (dataChanged || after !== before || structural || info.has_filter !== this.info.has_filter || info.hidden_rows !== this.info.hidden_rows) this.cut = null;
+    if (dataChanged || after !== before || structural || info.has_filter !== this.info.has_filter || info.hidden_rows !== this.info.hidden_rows) {
+      this.cut = null;
+      this.copied = null;
+    }
     if (after < before) {
       // Only undo lowers the position: take back every move undone, newest first.
       for (const m of this.colMoves.filter((x) => x.pos > after && x.pos <= before).reverse()) this.followMove(m.to, m.count, m.at);

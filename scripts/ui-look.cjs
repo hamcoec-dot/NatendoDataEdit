@@ -177,6 +177,45 @@ const url = process.argv[3] || "http://localhost:5194";
   ok(s.rect.row === 10 && s.rect.rows === 3 && s.rect.col === 1 && s.rect.cols === 2, "Undo of a cleared block selects the block");
   ok(/Undid “?Clear/i.test(await status()) || /Undid clearing cells/.test(await status()), `Undo names the command (${await status()})`);
 
+  // ---- 6. Copy outline; a copied block repeats to fill a bigger selection ----
+  await p.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: url });
+  await put(20, 1, "a1");
+  await put(20, 2, "b1");
+  await put(21, 1, "a2");
+  await put(21, 2, "b2");
+  await start(20, 1, 21, 2);
+  await p.keyboard.press("Control+c");
+  await p.waitForTimeout(400);
+  const copied = await p.evaluate(() => window.__nde.tab.copied);
+  ok(copied && copied.row === 20 && copied.rows === 2 && copied.cols === 2, "Copy puts a dashed outline round the copied cells");
+  if (out) await p.screenshot({ path: path.join(out, "copy-outline.png"), clip: { x: 0, y: 0, width: 1000, height: 400 } });
+  await start(30, 1, 33, 4);
+  await p.keyboard.press("Control+v");
+  await p.waitForTimeout(1200);
+  const tiled = await p.evaluate(() => {
+    const t = window.__nde.tab;
+    const out = [];
+    for (let r = 30; r < 34; r++) {
+      const line = [];
+      for (let c = 1; c < 5; c++) line.push(t.cache.get(r, c));
+      out.push(line.join(","));
+    }
+    return out;
+  });
+  ok(tiled.join("|") === "a1,b1,a1,b1|a2,b2,a2,b2|a1,b1,a1,b1|a2,b2,a2,b2", `a 2×2 block pasted into 4×4 fills it (${tiled.join(" | ")})`);
+  ok(!(await p.evaluate(() => window.__nde.tab.copied)), "the outline goes once something changes");
+  await start(20, 1, 21, 2);
+  await p.keyboard.press("Control+c");
+  await p.waitForTimeout(400);
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(200);
+  ok(!(await p.evaluate(() => window.__nde.tab.copied)), "Esc takes the outline away");
+  // A selection the block does not fit evenly: pasted once.
+  await start(40, 1, 42, 2);
+  await p.keyboard.press("Control+v");
+  await p.waitForTimeout(1200);
+  ok(await p.evaluate(() => window.__nde.tab.cache.get(42, 1) !== "a1"), "a selection the block does not fit evenly gets it once");
+
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   await b.close();
   console.log(failed ? `${failed} FAILED` : "ALL PASS");

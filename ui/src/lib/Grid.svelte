@@ -661,9 +661,10 @@
     ctx.restore();
   }
 
-  /** A dashed outline round what Cut marked, until it is pasted. */
+  /** A dashed outline round what Cut marked, until it is pasted, or round
+   *  what Copy copied, until Esc or the next change (as in Excel). */
   function drawCut(ctx: CanvasRenderingContext2D, w: number, h: number): void {
-    const c = tab.cut;
+    const c = tab.cut ?? (tab.copied ? { kind: "cells" as const, rect: tab.copied } : null);
     if (!c) return;
     const r = c.rect;
     ctx.save();

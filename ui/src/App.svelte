@@ -4,7 +4,7 @@
   import { Tab } from "./lib/tab.svelte";
   import { prefs, customFont, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu } from "./lib/commands";
-  import { parseTsv } from "./lib/tsv";
+  import { parseTsv, toTsv } from "./lib/tsv";
   import { cellCount, type Rect } from "./lib/selection";
   import { dropIndex, MOUSE_MOVES } from "./lib/dragmove";
   import { looksLikeHeader } from "./lib/header";
@@ -1264,8 +1264,9 @@
     const epoch = ++cutEpoch;
     const pos = t.info.history_pos;
     for (const x of tabs) {
-      if (x.cut) {
+      if (x.cut || x.copied) {
         x.cut = null;
+        x.copied = null;
         x.bump();
       }
     }
@@ -1292,7 +1293,11 @@
       }
     }
     if (!kind) {
-      say(`Copied ${what}.`);
+      if (epoch === cutEpoch && t.info.history_pos === pos) {
+        t.copied = { ...r };
+        t.bump();
+      }
+      say(`Copied ${what}. Esc takes the outline away.`);
       return;
     }
     // Esc (or another change) while the copy was being made: no cut.
@@ -1383,10 +1388,21 @@
       }
       afterPaste = `Pasted a copy here. The cut cells in ${other.info.name} stay where they were.`;
     }
-    const rows = parseTsv(text);
+    let rows = parseTsv(text);
     if (rows.length === 0) return;
     const r = t.rect;
-    const width = Math.max(...rows.map((x) => x.length));
+    let width = Math.max(...rows.map((x) => x.length));
+    // A block pasted into a bigger selection that it fits a whole number of
+    // times repeats to fill it (as in Excel and Google Sheets).
+    const across = r.cols % width === 0 ? r.cols / width : 1;
+    const down = r.rows % rows.length === 0 ? r.rows / rows.length : 1;
+    if ((across > 1 || down > 1) && (rows.length > 1 || width > 1) && cellCount(r) <= MAX_CELLS_PER_CHANGE) {
+      const line = (x: string[]): string[] => Array.from({ length: width }, (_, i) => x[i] ?? "");
+      const block = rows.map((x) => Array.from({ length: across }, () => line(x)).flat());
+      rows = Array.from({ length: down }, () => block).flat();
+      width *= across;
+      text = toTsv(rows);
+    }
     if (rows.length === 1 && width === 1 && cellCount(r) > 1) {
       await commitCell(r.row, r.col, rows[0]![0] ?? "", true);
       if (afterPaste) say(afterPaste);
@@ -3956,6 +3972,10 @@
       case "Escape":
         if (t.cut) cancelCut();
         else cutEpoch++;
+        if (t.copied) {
+          t.copied = null;
+          t.bump();
+        }
         grid.select(t.cell);
         return;
     }
