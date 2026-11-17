@@ -2615,6 +2615,44 @@
     }
   }
 
+  /** Close every tab but the active one (or those to its right). */
+  async function closeOthers(rightOnly: boolean): Promise<void> {
+    const keep = tab;
+    if (!keep) return;
+    const at = tabs.indexOf(keep);
+    const gone = tabs.filter((t, i) => t !== keep && (!rightOnly || i > at));
+    let closed = 0;
+    for (const t of gone) {
+      const i = tabs.indexOf(t);
+      if (i < 0) continue;
+      // Cancel on a "Save changes?" question stops here.
+      if (!(await closeTab(i))) break;
+      closed++;
+    }
+    const i = tabs.indexOf(keep);
+    if (i >= 0) active = i;
+    if (closed) say(`Closed ${plural(closed, "tab")}.`);
+  }
+
+  /** Ctrl+Shift+T: open again the most recent file that is not open (as
+   *  browsers reopen a closed tab). */
+  async function reopenClosed(): Promise<void> {
+    await loadRecent();
+    const r = recent.find((x) => x.open_doc === null);
+    if (!r) {
+      say("No recently closed file to open again.");
+      return;
+    }
+    await openRecent(r);
+  }
+
+  /** Right-click on a file tab: its menu (the tab becomes the active one). */
+  function tabMenu(e: MouseEvent, i: number): void {
+    e.preventDefault();
+    active = i;
+    openContext(e.clientX, e.clientY, "tab", -1);
+  }
+
   async function closeUnchanged(): Promise<void> {
     const keep = tab;
     const gone = unchangedTabs(tabs);
@@ -3804,6 +3842,9 @@
     { id: "file.showFolder", label: "Show in File E&xplorer", run: () => void showInFolder(), enabled: () => !!tab?.info.path },
     { id: "file.copyPath", label: "Cop&y file path", run: () => void copyPath(), enabled: () => !!tab?.info.path },
     { id: "file.saveAll", label: "Save a&ll", keys: ["Ctrl+Alt+S"], run: () => void saveAll(), enabled: () => tabs.some((t) => t.info.modified) },
+    { id: "file.closeOthers", label: "Close other tabs", run: () => void closeOthers(false), enabled: () => tabs.length > 1 },
+    { id: "file.closeRight", label: "Close tabs to the right", run: () => void closeOthers(true), enabled: () => active < tabs.length - 1 },
+    { id: "file.reopenClosed", label: "Reopen closed file", keys: ["Ctrl+Shift+T"], run: () => void reopenClosed() },
     { id: "file.closeUnchanged", label: "Close &unchanged tabs", run: () => void closeUnchanged(), enabled: () => tabs.length > 0 },
     { id: "view.valueTypes", label: "Show value t&ypes (numbers, dates)", keys: ["Ctrl+F8"], run: toggleValueTypes, enabled: hasTab, checked: () => !!tab?.valueTypes },
     { id: "view.divider", label: "&Line at each change in this column", run: toggleDivider, enabled: hasTab, checked: () => tab?.divider !== null && tab?.divider === tab?.cell.col },
@@ -3874,7 +3915,7 @@
   reg.setOverrides(cleanShortcuts(prefs.data.shortcuts, (id) => !!reg.get(id)));
 
   const menus: Menu[] = [
-    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "-", "file.recover", "file.versions", "-", "file.options", "-", "file.close", "file.closeUnchanged", "file.quit"] },
+    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "-", "file.recover", "file.versions", "-", "file.options", "-", "file.close", "file.closeOthers", "file.closeUnchanged", "file.reopenClosed", "file.quit"] },
     {
       label: "&Edit",
       items: [
@@ -3939,6 +3980,7 @@
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
+    tab: ["file.save", "file.saveAs", "-", "file.rename", "file.copyPath", "file.showFolder", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "edit.fillDown", "edit.fillRight"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "edit.clear"],
@@ -4631,7 +4673,7 @@
   /** The column a heading's right-click menu was opened on (Rename acts
    *  on it, not on the selection's focus column). */
   let contextCol: number | null = null;
-  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner", col: number): void {
+  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner" | "tab", col: number): void {
     contextCol = area === "col" ? col : null;
     openMenu = null;
     // The cut items show only while something is cut.
@@ -4851,11 +4893,13 @@
     {/if}
   {/if}
 
-  <div class="tabs" class:tab-dragging={tabDrag?.moved} role="tablist" aria-label="Open files" bind:this={tabBar}>
+  <!-- Double-clicking the empty part of the bar starts a new file. -->
+  <div class="tabs" class:tab-dragging={tabDrag?.moved} role="tablist" aria-label="Open files" tabindex="-1" bind:this={tabBar} ondblclick={(e) => { if (e.target === e.currentTarget) void newFile(); }}>
     {#each tabs as t, i (t.id)}
       <div class="tab" class:active={i === active} class:dragging={tabDrag?.moved && tabs[tabDrag.from] === t} style:transform={tabShift(i)} role="tab" aria-selected={i === active} tabindex="-1" title={t.info.path ?? t.info.name}
         data-tab-index={i}
         onmousedown={(e) => { if (e.button === 1) { e.preventDefault(); void closeTab(i); } }}
+        oncontextmenu={(e) => tabMenu(e, i)}
         onpointerdown={(e) => tabPointerDown(e, i)}
         onpointermove={tabPointerMove}
         onpointerup={tabPointerUp}

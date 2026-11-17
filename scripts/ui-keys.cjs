@@ -295,6 +295,41 @@ const url = process.argv[3] || "http://localhost:5194";
   const fit = await p.evaluate(() => window.__nde.tab.columns.width(2));
   ok(fit > 300, `auto-fit counts a long value at the bottom of the file (width ${fit})`);
 
+  // Enter presses the main button of a dialog with no Enter handling of its own.
+  await start(3, 1);
+  await p.keyboard.press("Alt+q");
+  await p.waitForTimeout(250);
+  await p.keyboard.type("Notes and flags");
+  await p.waitForTimeout(300);
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(600);
+  await p.keyboard.press("ArrowRight");
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(600);
+  ok(/All notes \(1\)/.test((await p.textContent("fieldset:nth-of-type(2) legend").catch(() => "")) || ""), "Enter in the Notes box saves the note (its main button)");
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(300);
+
+  // File tabs: right-click menu, double-click for a new file, Ctrl+Shift+T.
+  const tabCount = () => p.locator(".tabs .tab").count();
+  await p.click(".tabs .tab", { button: "right" });
+  await p.waitForTimeout(300);
+  ok(await p.isVisible(".menu.context :text('Close other tabs')"), "right-clicking a file tab opens its menu");
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(200);
+  const n0 = await tabCount();
+  const bar = await p.locator(".tabs").boundingBox();
+  await p.mouse.dblclick(bar.x + bar.width - 40, bar.y + bar.height / 2);
+  await p.waitForTimeout(800);
+  ok((await tabCount()) === n0 + 1, "double-clicking the empty tab bar opens a new file");
+  await p.click(".tabs .tab >> nth=0");
+  await p.waitForTimeout(300);
+  await p.click(".tabs .tab >> nth=0", { button: "right" });
+  await p.waitForTimeout(300);
+  await p.click(".menu.context :text('Close other tabs')");
+  await p.waitForTimeout(600);
+  ok((await tabCount()) === n0, "Close other tabs closes the new one");
+
   // Ctrl+A: the block first, then everything.
   await start(3, 3, 1000000, 3);
   await key("Delete");

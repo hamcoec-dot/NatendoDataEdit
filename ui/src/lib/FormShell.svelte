@@ -24,13 +24,23 @@
       onClose();
     } else if (
       e.key === "Enter" &&
-      onEnter &&
+      !e.isComposing &&
       !(e.target instanceof HTMLButtonElement) &&
       !(e.target instanceof HTMLTextAreaElement) &&
       !(e.target instanceof HTMLSelectElement)
     ) {
-      e.preventDefault();
-      onEnter();
+      if (onEnter) {
+        e.preventDefault();
+        onEnter();
+        return;
+      }
+      // No handler of its own: Enter presses the dialog's main button when
+      // there is exactly one and it can be pressed (as in Excel).
+      const main = [...box.querySelectorAll<HTMLButtonElement>("button.primary")].filter((b) => b.offsetParent !== null);
+      if (main.length === 1 && !main[0]!.disabled) {
+        e.preventDefault();
+        main[0]!.click();
+      }
     }
   }
 
