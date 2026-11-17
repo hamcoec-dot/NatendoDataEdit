@@ -129,6 +129,7 @@ pub fn search_folder(
         pattern: spec.pattern.clone(),
         scope: Scope::All,
         skip_first: false,
+        skip_cols: Vec::new(),
     };
     for path in files {
         progress.step(0)?;

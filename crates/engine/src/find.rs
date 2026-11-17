@@ -294,6 +294,10 @@ pub struct FindSpec {
     /// Leave the first row (column titles) out of whole-column scopes.
     #[serde(default)]
     pub skip_first: bool,
+    /// Columns left out of every scope (hidden columns, unless the user
+    /// asks to include them).
+    #[serde(default)]
+    pub skip_cols: Vec<u32>,
 }
 
 /// A cell found by find-next: `((row, col), wrapped)`.
@@ -412,6 +416,10 @@ impl Document {
                 (r0..r1, (*col..c1).collect())
             }
         };
+        let mut cols = cols;
+        if !spec.skip_cols.is_empty() {
+            cols.retain(|c| !spec.skip_cols.contains(c));
+        }
         let mut wanted: Vec<u32> = cols.iter().filter_map(|&c| self.phys(c)).collect();
         wanted.sort_unstable();
         wanted.dedup();
@@ -760,6 +768,7 @@ mod tests {
             pattern: p,
             scope: Scope::All,
             skip_first: false,
+            skip_cols: Vec::new(),
         }
     }
 
@@ -889,6 +898,23 @@ mod tests {
             .find_all(&spec(pat("a", PatternKind::Plain)), 1, &p)
             .unwrap();
         assert_eq!((r.hits.len(), r.cells), (1, 5));
+        // Hidden columns are left out of every scope.
+        let mut hid = spec(pat("a", PatternKind::Plain));
+        hid.skip_cols = vec![0];
+        let r = d.find_all(&hid, 10, &p).unwrap();
+        assert!(r.hits.iter().all(|h| h.col != 0));
+        hid.scope = Scope::Range {
+            row: 0,
+            rows: 9,
+            col: 0,
+            cols: 2,
+        };
+        assert!(d
+            .find_all(&hid, 10, &p)
+            .unwrap()
+            .hits
+            .iter()
+            .all(|h| h.col != 0));
     }
 
     #[test]

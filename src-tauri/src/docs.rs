@@ -6875,6 +6875,7 @@ ca,California
             },
             scope: Scope::All,
             skip_first: true,
+            skip_cols: Vec::new(),
         };
         let hit = docs
             .find_next(id, find.clone(), None, false)
@@ -6904,6 +6905,7 @@ ca,California
             },
             scope: Scope::All,
             skip_first: false,
+            skip_cols: Vec::new(),
         };
         assert_eq!(docs.find_all(id, bad).unwrap_err().kind, "bad_pattern");
         assert_eq!(
