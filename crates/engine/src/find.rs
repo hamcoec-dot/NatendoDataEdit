@@ -1069,6 +1069,98 @@ mod tests {
         }
     }
 
+    fn with(text: &str, kind: PatternKind, f: impl FnOnce(&mut Pattern)) -> Matcher {
+        let mut p = pat(text, kind);
+        f(&mut p);
+        Matcher::new(&p).unwrap()
+    }
+
+    #[test]
+    fn whole_word() {
+        let m = with("Ann", PatternKind::Plain, |p| p.whole_word = true);
+        assert!(m.is_match("Ann Lee") && m.is_match("Lee, Ann") && m.is_match("ann"));
+        assert!(!m.is_match("Annette") && !m.is_match("Joann"));
+        // A pattern ending in a non-letter still works ("Co." in "Smith Co.").
+        let m = with("Co.", PatternKind::Plain, |p| p.whole_word = true);
+        assert!(m.is_match("Smith Co.") && !m.is_match("Costco."));
+        let m = with("an*", PatternKind::Wildcard, |p| p.whole_word = true);
+        assert!(m.is_match("Lee Anna") && !m.is_match("Joanna"));
+        let m = with("[0-9]+", PatternKind::Regex, |p| p.whole_word = true);
+        assert!(m.is_match("Apt 12") && !m.is_match("A12"));
+    }
+
+    #[test]
+    fn ignore_accents() {
+        let m = with("Jose", PatternKind::Plain, |p| p.ignore_accents = true);
+        assert!(m.is_match("José") && m.is_match("JOSÉ") && m.is_match("Jose"));
+        // "e" followed by a separate combining accent.
+        assert!(m.is_match("Jose\u{301}"));
+        let m = with("Jose", PatternKind::Plain, |p| {
+            p.ignore_accents = true;
+            p.match_case = true;
+        });
+        assert!(m.is_match("José") && !m.is_match("JOSÉ"));
+        // Accented letters in the pattern match the plain ones too.
+        let m = with("Zoë", PatternKind::Plain, |p| p.ignore_accents = true);
+        assert!(m.is_match("Zoe") && m.is_match("ZOË"));
+        // In a regular expression, classes and escapes stay as they are.
+        let m = with(r"^Mu[nñ]oz\d?$", PatternKind::Regex, |p| {
+            p.ignore_accents = true
+        });
+        assert!(m.is_match("Muñoz") && m.is_match("Múnoz1") && !m.is_match("Munozz"));
+        let m = with("caf?", PatternKind::Wildcard, |p| p.ignore_accents = true);
+        assert!(m.is_match("Càfe"));
+        // Off, accents count.
+        assert!(!with("Jose", PatternKind::Plain, |_| {}).is_match("José"));
+        // Replacing keeps the rest of the cell.
+        let m = with("jose", PatternKind::Plain, |p| p.ignore_accents = true);
+        assert_eq!(m.replace("Dr. José", "Joe").unwrap().unwrap().0, "Dr. Joe");
+    }
+
+    #[test]
+    fn escapes() {
+        let m = with(r"a\tb", PatternKind::Plain, |p| p.escapes = true);
+        assert!(m.is_match("a\tb") && !m.is_match(r"a\tb"));
+        let m = with(r"a\tb", PatternKind::Plain, |_| {});
+        assert!(m.is_match(r"a\tb") && !m.is_match("a\tb"));
+        let m = with(r"x\n*", PatternKind::Wildcard, |p| p.escapes = true);
+        assert!(m.is_match("x\nmore"));
+        let m = with(r"\u{e9}", PatternKind::Plain, |p| p.escapes = true);
+        assert!(m.is_match("é"));
+        // The replacement too: a line break becomes a space, and back.
+        let m = with(r"\n", PatternKind::Plain, |p| p.escapes = true);
+        assert_eq!(m.replace("a\nb", " ").unwrap().unwrap().0, "a b");
+        let m = with(" ", PatternKind::Plain, |p| p.escapes = true);
+        assert_eq!(m.replace("a b", r"\n").unwrap().unwrap().0, "a\nb");
+        // Without the option, a replacement backslash is kept.
+        let m = with(" ", PatternKind::Plain, |_| {});
+        assert_eq!(m.replace("a b", r"\n").unwrap().unwrap().0, r"a\nb");
+        assert_eq!(unescape(r"a\\b\q\u{zz}"), r"a\b\q\u{zz}");
+    }
+
+    #[test]
+    fn replacement_names_missing_groups() {
+        let m = with(r"(\d+)", PatternKind::Regex, |_| {});
+        assert!(m.check_replacement("$1 and ${1}a and $$2").is_ok());
+        let e = m.check_replacement("$1a").unwrap_err().to_string();
+        assert!(e.contains("${1}a"), "{e}");
+        assert!(m.check_replacement("$2").is_err());
+        let m = with(r"(?P<zip>\d{5})", PatternKind::Regex, |_| {});
+        assert!(m.check_replacement("$zip").is_ok() && m.check_replacement("$zap").is_err());
+        // Plain text never has groups to check.
+        assert!(with("a", PatternKind::Plain, |_| {})
+            .check_replacement("$9")
+            .is_ok());
+        let d = doc("a\n12\n");
+        let e = d.plan_replace(
+            &spec(pat(r"(\d)", PatternKind::Regex)),
+            "$1x",
+            0,
+            &Progress::new(),
+        );
+        assert!(e.is_err());
+    }
+
     fn all(d: &Document) -> Vec<Vec<String>> {
         (0..d.row_count())
             .map(|r| d.row_values(r).unwrap())

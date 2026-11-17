@@ -922,6 +922,7 @@ mod field_tests {
                         kind: PatternKind::Regex,
                         match_case: false,
                         whole_cell: false,
+                        ..Default::default()
                     },
                 },
             }],

@@ -206,6 +206,7 @@ fn main() {
             kind,
             match_case: false,
             whole_cell: false,
+            ..Default::default()
         },
         scope: Scope::Columns { cols: vec![col] },
         skip_first: true,
@@ -979,6 +980,7 @@ fn main() {
             kind: PatternKind::Regex,
             match_case: false,
             whole_cell: true,
+            ..Default::default()
         },
     };
     let spec = checks(vec![(3, pat(r"v\d{1,5}")), (4, pat(r"v[0-4]\d*"))]);
@@ -1495,6 +1497,7 @@ fn main() {
                 kind: PatternKind::Plain,
                 match_case: false,
                 whole_cell: true,
+                ..Default::default()
             },
             subfolders: false,
             types: vec!["csv".into()],

@@ -198,6 +198,7 @@ mod tests {
                 kind: PatternKind::Plain,
                 match_case: false,
                 whole_cell: true,
+                ..Default::default()
             },
             subfolders: false,
             types: Vec::new(),
