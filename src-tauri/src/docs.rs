@@ -890,7 +890,8 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
         | RecipeOp::InsertCols { .. }
         | RecipeOp::DeleteCols { .. }
         | RecipeOp::MoveCols { .. }
-        | RecipeOp::ReplaceAll { .. } => unreachable!("handled by its own command"),
+        | RecipeOp::ReplaceAll { .. }
+        | RecipeOp::RenameColumn { .. } => unreachable!("handled by its own command"),
     }
 }
 
@@ -1854,12 +1855,20 @@ impl Docs {
         Ok(v)
     }
 
-    /// Rename a column: set its cell in the table's first row, one undo step.
+    /// Rename a column: set its cell in the table's first row, one undo step
+    /// (noted for the tab's recipe, so a recipe recorded across a rename
+    /// replays it before the steps that use the new name).
     pub fn set_first_row_cell(&self, id: u32, col: u32, value: String) -> CmdResult<DocInfo> {
         check_write(1, std::iter::once(value.len()))?;
-        self.edit(id, |d| {
-            check_width(d, col as u64 + 1)?;
-            d.set_first_row_cell(col, value)
+        let step = RecipeOp::RenameColumn {
+            col,
+            name: value.clone(),
+        };
+        self.recorded(id, Logged::Step(step), || {
+            self.edit(id, |d| {
+                check_width(d, col as u64 + 1)?;
+                d.set_first_row_cell(col, value)
+            })
         })
     }
 
@@ -3142,6 +3151,9 @@ impl Docs {
                     self.move_cols(id, at, count, to).map(|_| ())
                 }
                 RecipeOp::ReplaceAll { spec, with } => self.replace_all(id, spec, with).map(|_| ()),
+                RecipeOp::RenameColumn { col, name } => {
+                    self.set_first_row_cell(id, col, name).map(|_| ())
+                }
                 other => self.data_op(id, recipe_data_op(other, now)).map(|_| ()),
             };
             r.map_err(|mut e| {
@@ -5014,13 +5026,50 @@ mod tests {
         assert_eq!(docs.first_row_cell(id, 0).unwrap(), "name");
     }
 
+    /// A rename is a recipe step: a recipe recorded across it replays the
+    /// rename on a fresh copy of the file.
+    #[test]
+    fn rename_is_a_recipe_step() {
+        let p = tmp("rename-recipe.csv", b"name,age\r\nAda,30\r\n");
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        docs.set_first_row_cell(id, 1, "years".into()).unwrap();
+        let recipe = docs.recipe_of(id, true, "r").unwrap();
+        assert!(matches!(
+            recipe.steps.as_slice(),
+            [RecipeOp::RenameColumn { col: 1, name }] if name == "years"
+        ));
+        let q = tmp("rename-recipe-2.csv", b"name,age\r\nBo,40\r\n");
+        let id2 = docs.open_path(&q, false).unwrap().id;
+        wait(&docs, id2);
+        docs.run_recipe(id2, &recipe, 0.0, true).unwrap();
+        assert_eq!(docs.first_row_cell(id2, 1).unwrap(), "years");
+        // An undone rename is not part of the recipe.
+        docs.undo(id).unwrap();
+        assert!(docs.recipe_of(id, true, "r").unwrap().steps.is_empty());
+    }
+
     /// A tab busy with a long operation (its lock held) still counts as
     /// showing its file, so the file is never opened a second time.
     #[test]
     fn busy_document_still_counts_as_open() {
         let p = tmp("busy.csv", b"a,b\r\n1,2\r\n");
         let docs = Docs::default();
-        let id = docs.open_path(&p, false).unwrap().id;
+        // A file just written can still be touched by the system (a virus
+        // scan, say) as it opens: "changed while it was being read". Try
+        // again then; that is not what this test is about.
+        let id = (0..20)
+            .find_map(|_| match docs.open_path(&p, false) {
+                Ok(i) => Some(i.id),
+                Err(e) if e.message.contains("changed while") => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    None
+                }
+                Err(e) => panic!("{}", e.message),
+            })
+            .expect("the file opens");
+        wait(&docs, id);
         let entry = docs.get(id).unwrap();
         let _held = entry.write();
         assert_eq!(docs.find_open(&p), Some(id));

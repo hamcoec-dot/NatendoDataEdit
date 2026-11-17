@@ -159,9 +159,11 @@ everything is also in command search.
   one switch changes it, and files without titles get column numbers.
   Rename a column by double-clicking its heading, right-clicking it, or
   Format > Rename column (a file without titles gets a title row). Data
-  check rules that name the column ([first_name]) follow the new name, and
-  undo puts both back. A saved pivot layout or view that names a column
-  this file no longer has asks before using the column in the same place.
+  check rules that name the column ([first_name]) follow the new name (or
+  its number, [#2], when another column has that name too), and undo puts
+  both back. A saved pivot layout or view that names a column this file no
+  longer has asks before using the column in the same place, and the view's
+  rules follow. A rename is a recipe step, so recipes replay it.
 
 ![Renaming the first_name column after double-clicking its heading](docs/screenshots/rename-column.png)
 *Double-click a heading to rename the column.*

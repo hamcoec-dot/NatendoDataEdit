@@ -39,7 +39,7 @@
   import SplitNameDialog from "./lib/SplitNameDialog.svelte";
   import InsertDialog from "./lib/InsertDialog.svelte";
   import RenameColumn from "./lib/RenameColumn.svelte";
-  import { renameInChecks } from "./lib/rename";
+  import { remapChecks, renameInChecks } from "./lib/rename";
   import { TOOLS, localNow, type Cleaner, type CleanSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
   import type { ExportOptions, ImportOptions, ImportStart, Opened, SaveAsOptions } from "./lib/backend";
@@ -697,7 +697,7 @@
       const list = byPlace.slice(0, 8).map((x) => `“${x.was}” → column ${x.c + 1}, “${titles[x.c]}”`).join("; ");
       const a = await ask(
         "Use columns in the same place?",
-        `The view “${v.name}” names ${byPlace.length === 1 ? "a column" : `${byPlace.length} columns`} this file has under another name (renamed, perhaps): ${list}${byPlace.length > 8 ? `, and ${byPlace.length - 8} more` : ""}.`,
+        `The view “${v.name}” names ${byPlace.length === 1 ? "a column" : `${byPlace.length} columns`} this file has under another name (renamed, perhaps): ${list}${byPlace.length > 8 ? `, and ${byPlace.length - 8} more` : ""}.${(v.checks ?? []).some((c) => c.kind.type === "expression") ? " Data check rules in the view that name them follow too." : ""}`,
         [
           { id: "use", label: byPlace.length === 1 ? "Use that column" : "Use those columns", primary: true },
           { id: "skip", label: "Leave them out" },
@@ -738,7 +738,11 @@
       return c === null ? [] : [{ ...h, col: c }];
     });
     t.highlightVersion++;
-    t.checks = (v.checks ?? []).flatMap((c) => {
+    // Row rules name columns by the view's titles: rewrite them for the
+    // columns this file uses (those taken by place have other names).
+    const viewTitles = v.columns.map((c) => c.title);
+    const ruled = remapChecks(v.checks ?? [], viewTitles, titles, (k) => to(k));
+    t.checks = ruled.checks.flatMap((c) => {
       if (c.col === null) return [c];
       const k = to(c.col);
       return k === null ? [] : [{ ...c, col: k }];
@@ -764,7 +768,7 @@
       }
     } else if (t.info.has_filter) await clearFilter();
     t.bump();
-    say(`Applied the view “${v.name}”.${missing ? ` ${plural(missing, "column")} in the view had no match in this file.` : ""}`);
+    say(`Applied the view “${v.name}”.${missing ? ` ${plural(missing, "column")} in the view had no match in this file.` : ""}${ruled.changed ? ` ${ruled.changed === 1 ? "1 data check rule names" : `${ruled.changed} data check rules name`} this file's columns now.` : ""}`);
   }
 
   /** Saved views as commands (for command search). */
@@ -2089,7 +2093,9 @@
       // Row rules in data checks that named the column follow the new name
       // (undone and redone with the rename).
       let followed = "";
-      if (header && titles.length && t.checks.some((k) => k.kind.type === "expression")) {
+      // Without a header row every column was "Column N" to the rules.
+      if (!header) titles = Array.from({ length: Math.min(t.info.cols, 2000) }, () => "");
+      if (titles.length && t.checks.some((k) => k.kind.type === "expression")) {
         const before = $state.snapshot(t.checks) as Check[];
         const r = renameInChecks(before, titles, col, name);
         if (r.changed) {
@@ -2097,6 +2103,7 @@
           t.checkVersion++;
           t.refEdits = [...t.refEdits.filter((e) => e.applied), { at: t.info.history_pos, before, after: r.checks, applied: true }].slice(-50);
           followed = ` ${r.changed === 1 ? "1 data check rule now uses" : `${r.changed} data check rules now use`} the new name.`;
+          if (r.pinned) followed += ` Another column has that name too, so ${r.pinned === 1 ? "1 reference" : `${r.pinned} references`} now name${r.pinned === 1 ? "s" : ""} the column by number ([#${col + 1}] style) to keep pointing at the same column.`;
         }
       }
       say(name.trim() ? `Column ${col + 1} is now "${name}".${followed} Ctrl+Z undoes it.` : `Column ${col + 1} has no name now.${followed} Ctrl+Z undoes it.`);

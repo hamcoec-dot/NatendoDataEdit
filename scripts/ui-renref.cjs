@@ -92,6 +92,37 @@ const url = process.argv[3] || "http://localhost:5193";
   await p.keyboard.press("Control+y");
   await p.waitForTimeout(600);
 
+  // Renaming to a name another column has: the rule is pinned by number.
+  await command("data checks");
+  await p.fill(`${checks} input[aria-label=Rule]`, '[last_name] <> [id]');
+  await p.click(`${checks} button:has-text('Keep and close')`);
+  await p.waitForTimeout(300);
+  await rename(1, "last_name");
+  ok(/by number/.test(await status()), `renaming to another column's name says rules are pinned (${await status()})`);
+  ok((await rule()) === "[#3] <> [id]", `the rule now names column 3 by number (${await rule()})`);
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(600);
+  ok((await rule()) === "[last_name] <> [id]", "undo puts the rule back");
+
+  // A saved view's rules follow the columns it is applied to by place.
+  await command("data checks");
+  await p.fill(`${checks} input[aria-label=Rule]`, '[given name] <> [id]');
+  await p.click(`${checks} button:has-text('Keep and close')`);
+  await p.waitForTimeout(300);
+  await command("save view");
+  await p.fill("[role=dialog]:has(h2:has-text('Save view')) input", "renref view");
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(400);
+  await rename(1, "forename");
+  await command("View: renref view");
+  await p.waitForTimeout(400);
+  const viewAsk = "[role=alertdialog]:has-text('Use columns in the same place')";
+  ok(await p.isVisible(viewAsk), "applying the view asks about the renamed column");
+  ok(/Data check rules in the view that name them follow too/.test((await p.textContent(viewAsk)) || ""), "and says its check rules follow");
+  await p.click(`${viewAsk} button:has-text('Use that column')`);
+  await p.waitForTimeout(800);
+  ok((await rule()) === "[forename] <> [id]", `the view's rule names the column it now uses (${await rule()})`);
+
   // Pivot layout saved with "city" in column 4; rename it, then open the layout.
   await rename(3, "town");
   await command("pivot table");

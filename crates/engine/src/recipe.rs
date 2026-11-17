@@ -124,6 +124,11 @@ pub enum RecipeOp {
         #[serde(default)]
         title: String,
     },
+    /// Rename a column: its cell in the first row (the header row).
+    RenameColumn {
+        col: u32,
+        name: String,
+    },
 }
 
 impl RecipeOp {
@@ -169,6 +174,9 @@ impl RecipeOp {
             RecipeOp::BlankRepeats { .. } => "Blank out repeats".into(),
             RecipeOp::Breaks { .. } => "Add breaks between groups".into(),
             RecipeOp::DeleteHidden => "Delete hidden rows".into(),
+            RecipeOp::RenameColumn { col, name } => {
+                format!("Rename column {} to \"{}\"", col + 1, name)
+            }
             RecipeOp::MapValues { .. } => "Change values from a list".into(),
             RecipeOp::GroupCalc { .. } => "Group figures".into(),
             RecipeOp::Arrange { .. } => "Arrange columns".into(),
@@ -384,6 +392,7 @@ impl Document {
                 let p = self.plan_delete_hidden()?;
                 self.apply_rows(p)
             }
+            RecipeOp::RenameColumn { col, name } => self.set_first_row_cell(*col, name.clone()),
             RecipeOp::MapValues { spec } => {
                 let p = self.plan_map_values(spec, progress)?;
                 self.apply_cells(p)
