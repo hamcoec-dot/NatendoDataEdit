@@ -5139,7 +5139,7 @@
         onpointercancel={tabPointerUp}
         onclick={() => { if (tabDragged) { tabDragged = false; return; } active = i; void tick().then(() => grid?.focus()); }}
         onkeydown={(e) => { if (e.key === "F2") { e.preventDefault(); active = i; void renameFile(); } }}
-        ondblclick={(e) => { e.stopPropagation(); active = i; void renameFile(); }}
+        ondblclick={(e) => { e.stopPropagation(); active = i; if (!t.info.path) void renameFile(); }}
         ondragstart={(e) => e.preventDefault()}
         onlostpointercapture={(e) => { if (tabDrag && e.pointerId === tabDrag.pointer) endTabDrag(false); }}
       >

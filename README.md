@@ -253,9 +253,10 @@ everything is also in command search.
   and drag moves lists them all.
 - **Name your tabs.** Tabs made by a tool are named after what made them,
   for example "Pivot – city by party (voters)", "Subtotals (voters)" or
-  "Compare voters with voters-2024". Double-click a tab that is not saved yet
-  (or right-click › Rename, or F2 on it) to give it your own name; Save then
-  suggests that name for the file.
+  "Compare voters with voters-2024" (a drill-down tab is named after the
+  fields, such as "Rows for one city (voters)", never a value). Double-click a
+  tab that is not saved yet (or right-click › Rename, or F2 on it) to give it
+  your own name; Save then suggests that name for the file.
 - **File tabs** have a right-click menu (Save, Rename, Copy path, Show in
   File Explorer, move left or right, Close, Close other tabs, Close tabs to
   the right, Close unchanged tabs). Double-click the empty part of the tab

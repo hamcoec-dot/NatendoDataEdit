@@ -260,8 +260,9 @@
   }
 
   // Anything that shapes the search (the text, the replacement, a tick
-  // box, the scope or block, hidden columns, the file) closes the preview,
-  // so its Replace all never applies something it did not show.
+  // box, the scope or block, a change to the file) closes the preview. The
+  // preview's Replace all also sends the search it showed (hidden columns
+  // as they were then), and the backend refuses it if that no longer fits.
   $effect(() => {
     void [options.text, options.kind, options.matchCase, options.wholeCell, options.wholeWord, options.ignoreAccents, options.escapes, options.includeHidden, options.scope, block, replacement, tab.version];
     untrack(() => {

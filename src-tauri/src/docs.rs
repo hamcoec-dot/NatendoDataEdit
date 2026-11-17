@@ -4249,16 +4249,25 @@ impl Docs {
         let doc = table.into_document()?;
         let (nid, _) = self.insert(doc, false)?;
         self.inherit_private(nid, &[id], &[]);
-        let path: Vec<&str> = row_path
+        // Named after the fields, never their values: a value can be a
+        // person's name, and the tab name becomes the suggested file name.
+        let titles = Self::pivot_titles(&entry, spec.keep_first);
+        let fields: Vec<String> = spec
+            .rows
             .iter()
-            .chain(col_path)
-            .map(String::as_str)
-            .filter(|s| !s.is_empty())
+            .take(row_path.len())
+            .chain(spec.cols.iter().take(col_path.len()))
+            .map(|f| {
+                titles
+                    .get(f.col as usize)
+                    .cloned()
+                    .unwrap_or_else(|| format!("column {}", f.col + 1))
+            })
             .collect();
-        let what = if path.is_empty() {
-            "all".to_string()
+        let what = if fields.is_empty() {
+            "the grand total".to_string()
         } else {
-            path.join(", ")
+            format!("one {}", fields.join(" and "))
         };
         self.set_title_of(nid, format!("Rows for {what} ({})", self.stem(id)));
         self.info(nid)
@@ -5113,7 +5122,22 @@ pub fn file_name_of(t: &str) -> String {
         .collect();
     let s = s.trim_end_matches(['.', ' ']).trim().to_string();
     if s.is_empty() {
-        "Untitled".into()
+        return "Untitled".into();
+    }
+    // Names Windows keeps for devices (CON, NUL, COM1 ...), with or without
+    // an extension, cannot be file names.
+    let stem = s
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        format!("{s}_file")
     } else {
         s
     }
@@ -6875,6 +6899,10 @@ by party ",
         assert_eq!(docs.set_title(id, "").unwrap().name, "Untitled");
         assert_eq!(file_name_of("Pivot: a/b (voters)?"), "Pivot- a-b (voters)-");
         assert_eq!(file_name_of(" .. "), "Untitled");
+        assert_eq!(file_name_of("con"), "con_file");
+        assert_eq!(file_name_of("NUL.txt"), "NUL.txt_file");
+        assert_eq!(file_name_of("COM1"), "COM1_file");
+        assert_eq!(file_name_of("Console"), "Console");
         assert_eq!(clean_title(&"x".repeat(300)).len(), 120);
         // A saved file keeps its file name; Rename file renames it.
         let p = tmp(
@@ -6913,6 +6941,11 @@ B,y
         };
         let t = docs.pivot_table(id, &spec).unwrap();
         assert_eq!(t.name, "Pivot – city by party (voters)");
+        // A drill-down is named after the fields, never their values.
+        let d = docs
+            .pivot_drill(id, &spec, &["a".into()], &["x".into()])
+            .unwrap();
+        assert_eq!(d.name, "Rows for one city and party (voters)");
     }
 
     #[test]
