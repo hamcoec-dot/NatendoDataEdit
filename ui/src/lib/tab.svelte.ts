@@ -26,6 +26,9 @@ export class Tab {
    *  without one (and switched "First row is header" on): undoing past it
    *  switches the setting off again. */
   headerAddedAt: number | null = null;
+  /** Undo switched that setting off: redo switches it back on (until
+   *  another change is made, which ends the redo). */
+  headerOffByUndo = false;
   /** Data rows (after the header) and columns kept in view while scrolling. */
   frozenRows = $state(0);
   frozenCols = $state(0);

@@ -889,6 +889,8 @@ export interface Backend {
   tabFolders(ids: number[]): Promise<string[]>;
   /** A column's name: its cell in the table's first row, shown or not. */
   firstRowCell(doc: number, col: number): Promise<string>;
+  /** The first row's values (first 2,000 columns, cut to 200 characters). */
+  firstRowNames(doc: number): Promise<string[]>;
   /** Rename a column: set its cell in the table's first row (one undo step). */
   setFirstRowCell(doc: number, col: number, value: string): Promise<DocInfo>;
   folderList(doc: number): Promise<Listing>;
@@ -1249,6 +1251,9 @@ class TauriBackend implements Backend {
   }
   firstRowCell(doc: number, col: number) {
     return call<string>("first_row_cell", { doc, col });
+  }
+  firstRowNames(doc: number) {
+    return call<string[]>("first_row_names", { doc });
   }
   setFirstRowCell(doc: number, col: number, value: string) {
     return call<DocInfo>("set_first_row_cell", { doc, col, value });

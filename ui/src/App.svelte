@@ -224,6 +224,12 @@
     if (!t) return false;
     try {
       t.update(await f(t), dataChanged);
+      // Any other change after undoing an added header row ends its redo,
+      // so redo can no longer switch the header back on.
+      if (t.headerOffByUndo && !undoBusy.has(t)) {
+        t.headerOffByUndo = false;
+        t.headerAddedAt = null;
+      }
       return true;
     } catch (e) {
       say(errorText(e));
@@ -2003,8 +2009,7 @@
         // The table's first row, even if a filter or hidden rows leave
         // another row at the top.
         name = await backend().firstRowCell(t.id, c);
-        const v = await backend().viewport(t.id, 0, 1, 0, Math.min(t.info.cols, 2000), 200);
-        v.cells.slice(0, v.cols).forEach((s, i) => {
+        (await backend().firstRowNames(t.id)).forEach((s, i) => {
           if (i !== c && s.trim()) others.add(s.trim().toLowerCase());
         });
       } catch (e) {
@@ -2723,6 +2728,7 @@
     const t = tab;
     if (!t) return;
     t.headerAddedAt = null;
+    t.headerOffByUndo = false;
     t.header = !t.header;
     t.headerTouched = true;
     grid?.select(t.sel.anchor, t.sel.focus);
@@ -2781,13 +2787,19 @@
       await change({ op });
       // Undoing the header row Rename column added: the setting it switched
       // on goes off again, so the first record is not taken for titles.
-      if (t.headerAddedAt !== null && t.info.history_pos < t.headerAddedAt) {
-        t.headerAddedAt = null;
+      if (t.headerAddedAt !== null && t.info.history_pos < t.headerAddedAt && !t.headerOffByUndo) {
         if (t.header) {
           t.header = false;
+          t.headerOffByUndo = true;
           grid?.select(t.sel.anchor, t.sel.focus);
           say('The added header row is undone, so "First row is header" is off again.');
-        }
+        } else t.headerAddedAt = null;
+      } else if (op === "redo" && t.headerOffByUndo && t.headerAddedAt !== null && t.info.history_pos >= t.headerAddedAt) {
+        // Redo brought the header row back: switch the setting back on.
+        t.headerOffByUndo = false;
+        t.header = true;
+        grid?.select(t.sel.anchor, t.sel.focus);
+        say('The header row is back, so "First row is header" is on again.');
       }
     } finally {
       if (op === "redo") t.redoing--;

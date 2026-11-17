@@ -1253,6 +1253,13 @@ impl Document {
         })
     }
 
+    /// The table's first row (in column order), shown or not.
+    pub fn first_row_values(&self) -> Result<Vec<String>, Error> {
+        self.ready()?;
+        let id = self.doc_id_at(0).ok_or(Error::OutOfRange)?;
+        self.logical_values(id)
+    }
+
     /// Set column `col` of the table's first row (renaming a column), as
     /// one undo step, even while a filter or hidden rows leave it unshown.
     pub fn set_first_row_cell(&mut self, col: u32, value: String) -> Result<(), Error> {

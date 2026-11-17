@@ -1144,6 +1144,11 @@ export class MockBackend implements Backend {
   async firstRowCell(doc: number, col: number): Promise<string> {
     return (await this.cellText(doc, 0, col)).text;
   }
+  async firstRowNames(doc: number): Promise<string[]> {
+    const d = this.get(doc);
+    const v = await this.viewport(doc, 0, 1, 0, Math.min(d.info.cols, 2000), 200);
+    return v.cells.slice(0, v.cols);
+  }
   async setFirstRowCell(doc: number, col: number, value: string): Promise<DocInfo> {
     return this.setCells(doc, [[0, col, value]]);
   }

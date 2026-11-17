@@ -163,6 +163,17 @@ const url = process.argv[3] || "http://localhost:5193";
   await p.waitForTimeout(400);
   ok(/no header row/.test(await p.textContent(dialog)), "renaming again offers to add the row again");
   await p.keyboard.press("Escape");
+  await p.waitForTimeout(200);
+  // Redo twice brings the row and the name back, and the setting on again.
+  await p.keyboard.press("Control+y");
+  await p.waitForTimeout(600);
+  ok(/on again/.test(await status()), `redo puts the header row back and says the setting is on again (${await status()})`);
+  await p.keyboard.press("Control+y");
+  await p.waitForTimeout(600);
+  await p.mouse.dblclick(hx(0), hy);
+  await p.waitForTimeout(400);
+  ok((await p.inputValue(nameBox)) === "record" && !/no header row/.test(await p.textContent(dialog)), "after redo the column is named again, with the header row on");
+  await p.keyboard.press("Escape");
 
   // Alt+Q finds it by "rename header".
   await p.keyboard.press("Alt+q");

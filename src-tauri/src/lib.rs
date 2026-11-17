@@ -286,8 +286,6 @@ async fn tab_folders(docs: DocsState<'_>, ids: Vec<u32>) -> CmdResult<Vec<String
     .await
 }
 
-/// Open a recent file by its id (from `recent_files`). A file already open
-/// in a tab is not opened again: that tab's document comes back.
 /// A column's name: its cell in the table's first row (the header row).
 #[tauri::command]
 async fn first_row_cell(docs: DocsState<'_>, doc: u32, col: u32) -> CmdResult<String> {
@@ -307,6 +305,16 @@ async fn set_first_row_cell(
     blocking(move || docs.set_first_row_cell(doc, col, value)).await
 }
 
+/// The names of the first columns (at most 2,000, each cut to 200
+/// characters): the table's first row, shown or not.
+#[tauri::command]
+async fn first_row_names(docs: DocsState<'_>, doc: u32) -> CmdResult<Vec<String>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.first_row_names(doc, 2_000, 200)).await
+}
+
+/// Open a recent file by its id (from `recent_files`). A file already open
+/// in a tab is not opened again: that tab's document comes back.
 #[tauri::command]
 async fn open_recent(
     docs: DocsState<'_>,
@@ -2888,6 +2896,7 @@ pub fn run() {
             recent_files,
             open_recent,
             first_row_cell,
+            first_row_names,
             set_first_row_cell,
             tab_folders,
             folder_list,

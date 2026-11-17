@@ -1839,6 +1839,21 @@ impl Docs {
         Ok(d.first_row_cell(col)?)
     }
 
+    /// The table's first row (the header row), at most `cols` values, each
+    /// cut to `chars` characters: other columns' names, to warn of a repeat.
+    pub fn first_row_names(&self, id: u32, cols: usize, chars: usize) -> CmdResult<Vec<String>> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        let mut v = d.first_row_values()?;
+        v.truncate(cols);
+        for s in &mut v {
+            if let Some((i, _)) = s.char_indices().nth(chars) {
+                s.truncate(i);
+            }
+        }
+        Ok(v)
+    }
+
     /// Rename a column: set its cell in the table's first row, one undo step.
     pub fn set_first_row_cell(&self, id: u32, col: u32, value: String) -> CmdResult<DocInfo> {
         check_write(1, std::iter::once(value.len()))?;
@@ -4987,6 +5002,7 @@ mod tests {
         docs.hide_rows(id, 0, 1).unwrap();
         assert_eq!(docs.cell_text(id, 0, 0).unwrap().0, "Ada");
         assert_eq!(docs.first_row_cell(id, 0).unwrap(), "name");
+        assert_eq!(docs.first_row_names(id, 10, 2).unwrap(), vec!["na", "ag"]);
         docs.set_first_row_cell(id, 0, "given".into()).unwrap();
         assert_eq!(docs.first_row_cell(id, 0).unwrap(), "given");
         assert_eq!(docs.cell_text(id, 0, 0).unwrap().0, "Ada");
