@@ -87,6 +87,40 @@ const url = process.argv[3] || "http://localhost:5193";
   await p.waitForTimeout(200);
   ok((await activeName()) === before[3], "a click without dragging still picks the tab");
 
+  // A click on a tab closes an open menu (the press is not swallowed).
+  await p.click("button:has-text('File')");
+  await p.waitForTimeout(200);
+  ok(await p.isVisible("[role=menuitem]:has-text('Open recent')"), "File menu open");
+  // (The last tab: the menu covers the first ones.)
+  const m3 = await box(3);
+  await p.mouse.click(m3.x + 20, m3.y + m3.height / 2);
+  await p.waitForTimeout(200);
+  ok(!(await p.isVisible("[role=menuitem]:has-text('Open recent')")), "clicking a tab closes the menu");
+  ok((await activeName()) === before[3], "and shows that tab");
+  await (await p.$$(".tabs .tab"))[1].click();
+  await p.waitForTimeout(200);
+
+  // Keyboard: Ctrl+Shift+PageDown / PageUp move the shown tab.
+  await p.keyboard.press("Control+Shift+PageDown");
+  await p.waitForTimeout(200);
+  ok((await names()).join() === [before[0], before[2], before[1], before[3]].join(), "Ctrl+Shift+PageDown moves the tab right");
+  await p.keyboard.press("Control+Shift+PageUp");
+  await p.waitForTimeout(200);
+  ok((await names()).join() === before.join(), "Ctrl+Shift+PageUp moves it back");
+
+  // A file opening during a drag ends the drag; nothing moves wrongly.
+  const e0 = await box(0);
+  const e3 = await box(3);
+  await p.mouse.move(e0.x + 30, e0.y + e0.height / 2);
+  await p.mouse.down();
+  await p.mouse.move(e3.x + e3.width * 0.8, e0.y + e0.height / 2, { steps: 10 });
+  await p.keyboard.press("Control+n");
+  await p.waitForTimeout(400);
+  await p.mouse.up();
+  await p.waitForTimeout(300);
+  const withNew = await names();
+  ok(withNew.length === 5 && withNew.slice(0, 4).join() === before.join(), `a file opening mid-drag leaves the others in place (${withNew.join(", ")})`);
+
   ok(errors.length === 0, `no page errors ${errors.join("; ")}`);
   await b.close();
   console.log(failed ? `${failed} FAILED` : "ALL PASS");

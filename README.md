@@ -157,6 +157,12 @@ everything is also in command search.
   too few fields are fixed, and each repair is listed.
 - **Title row or not:** the app guesses whether the first row holds titles;
   one switch changes it, and files without titles get column numbers.
+  Rename a column by double-clicking its heading, right-clicking it, or
+  Format > Rename column (a file without titles gets a title row).
+
+![Renaming the first_name column after double-clicking its heading](docs/screenshots/rename-column.png)
+*Double-click a heading to rename the column.*
+
 - **Save As options** with a live preview: separator, quoting (as is, only
   where needed, every value, text but not numbers), quote character, encoding
   and line breaks.
@@ -184,7 +190,8 @@ everything is also in command search.
   columns at once, click the small arrow beside hidden columns to show them
   again, drag the edges of the top-left corner to freeze rows or columns, and
   drag file tabs into another order (the tab follows the pointer and the
-  others slide aside to show where it will land; Esc puts it back). Each move is one undo step, and colour
+  others slide aside to show where it will land; Esc puts it back;
+  Ctrl+Shift+PageUp/PageDown moves the shown tab from the keyboard). Each move is one undo step, and colour
   scales, highlight rules and checks move with their columns. Help > Mouse
   and drag moves lists them all.
 - Light, dark or system theme with an accent colour, font and font size, zoom.

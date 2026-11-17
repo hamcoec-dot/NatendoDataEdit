@@ -38,6 +38,7 @@
   import CleanDialog from "./lib/CleanDialog.svelte";
   import SplitNameDialog from "./lib/SplitNameDialog.svelte";
   import InsertDialog from "./lib/InsertDialog.svelte";
+  import RenameColumn from "./lib/RenameColumn.svelte";
   import { TOOLS, localNow, type Cleaner, type CleanSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
   import type { ExportOptions, ImportOptions, ImportStart, Opened, SaveAsOptions } from "./lib/backend";
@@ -133,6 +134,7 @@
   let splitNameOpen = $state(false);
   /** "Insert rows…" / "Insert columns…" asking how many. */
   let insertAsk = $state<"rows" | "cols" | null>(null);
+  let renameAsk = $state<{ id: number; col: number; name: string; header: boolean; others: Set<string> } | null>(null);
   /** Insert > Symbol is open; `caret` is where the cell editor's cursor was. */
   let symbols = $state<{ caret: number | null } | null>(null);
   let findOpen = $state(false);
@@ -1848,9 +1850,28 @@
   // The tab follows the pointer and the tabs it passes slide aside, opening
   // a gap where it will land; it is put there on letting go (Esc first:
   // nothing moves). Text is never selected while dragging.
-  let tabDrag = $state<{ from: number; x: number; dx: number; moved: boolean; pointer: number; to: number | null; w: number } | null>(null);
+  type TabDrag = {
+    /** The dragged tab (its place is looked up: a file opening or closing
+     *  meanwhile ends the drag). */
+    tab: Tab;
+    count: number;
+    from: number;
+    x: number;
+    /** The bar's scroll when the drag started (the tab stays under the
+     *  pointer while the bar scrolls). */
+    scroll0: number;
+    dx: number;
+    moved: boolean;
+    pointer: number;
+    to: number | null;
+    w: number;
+    /** Last pointer position, for scrolling while it rests near an edge. */
+    clientX: number;
+  };
+  let tabDrag = $state<TabDrag | null>(null);
   let tabBar = $state<HTMLDivElement>();
   let tabDragged = false;
+  let tabScrollTimer: ReturnType<typeof setInterval> | null = null;
 
   function tabDragKey(e: KeyboardEvent): void {
     if (e.key !== "Escape" || !tabDrag) return;
@@ -1858,15 +1879,21 @@
     e.stopPropagation();
     endTabDrag(false);
   }
+  const noSelect = (e: Event) => e.preventDefault();
 
   function endTabDrag(drop: boolean): void {
     const d = tabDrag;
     tabDrag = null;
     window.removeEventListener("keydown", tabDragKey, true);
+    window.removeEventListener("selectstart", noSelect, true);
+    if (tabScrollTimer) clearInterval(tabScrollTimer);
+    tabScrollTimer = null;
     // The click that ends a drag does not also pick a tab by its old place.
     tabDragged = !!d?.moved;
     if (!drop || !d?.moved || d.to === null) return;
-    const [moved] = tabs.splice(d.from, 1);
+    const from = tabs.indexOf(d.tab);
+    if (from !== d.from || tabs.length !== d.count) return;
+    const [moved] = tabs.splice(from, 1);
     tabs.splice(d.to, 0, moved!);
     // The tab just put down is the one shown, as when it is clicked.
     active = d.to;
@@ -1875,12 +1902,38 @@
 
   function tabPointerDown(e: PointerEvent, i: number): void {
     if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
-    // No text selection (or native drag) starts from a tab.
-    e.preventDefault();
+    const t = tabs[i];
+    if (!t || !tabBar) return;
+    // The press is not cancelled (menus still close on it); text selection
+    // is stopped instead, for as long as the drag lasts.
+    window.getSelection()?.removeAllRanges();
+    window.addEventListener("selectstart", noSelect, true);
     tabDragged = false;
-    tabDrag = { from: i, x: e.clientX, dx: 0, moved: false, pointer: e.pointerId, to: null, w: (e.currentTarget as HTMLElement).offsetWidth + 2 };
+    tabDrag = {
+      tab: t, count: tabs.length, from: i, x: e.clientX, scroll0: tabBar.scrollLeft, dx: 0, moved: false,
+      pointer: e.pointerId, to: null, w: (e.currentTarget as HTMLElement).offsetWidth + 2, clientX: e.clientX,
+    };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     window.addEventListener("keydown", tabDragKey, true);
+  }
+
+  /** Follow the pointer: where the tab is drawn and the gap it would land in. */
+  function tabDragAt(clientX: number): void {
+    const d = tabDrag;
+    if (!d || !tabBar) return;
+    // A file opened or closed meanwhile: the places changed, so stop.
+    if (tabs.length !== d.count || tabs[d.from] !== d.tab) return endTabDrag(false);
+    d.clientX = clientX;
+    d.dx = clientX - d.x + (tabBar.scrollLeft - d.scroll0);
+    // The gap nearest the pointer: before the first tab whose middle is
+    // right of it. Tabs are measured where they sit in the bar (offsetLeft
+    // ignores the sliding), so the gap does not chase the animation.
+    const bar = tabBar.getBoundingClientRect();
+    const x = clientX - bar.left + tabBar.scrollLeft;
+    const els = [...tabBar.querySelectorAll<HTMLElement>("[data-tab-index]")];
+    let gap = els.findIndex((el) => x < el.offsetLeft + el.offsetWidth / 2);
+    if (gap < 0) gap = els.length;
+    d.to = dropIndex(d.from, 1, gap, els.length);
   }
 
   function tabPointerMove(e: PointerEvent): void {
@@ -1888,19 +1941,19 @@
     if (!d || e.pointerId !== d.pointer || !tabBar) return;
     if (!d.moved && Math.abs(e.clientX - d.x) < 6) return;
     d.moved = true;
-    d.dx = e.clientX - d.x;
-    // The gap nearest the pointer: before the first tab whose middle is
-    // right of it. Tabs are measured where they sit in the bar (offsetLeft
-    // ignores the sliding), so the gap does not chase the animation.
-    const bar = tabBar.getBoundingClientRect();
-    const x = e.clientX - bar.left + tabBar.scrollLeft;
-    const els = [...tabBar.querySelectorAll<HTMLElement>("[data-tab-index]")];
-    let gap = els.findIndex((el) => x < el.offsetLeft + el.offsetWidth / 2);
-    if (gap < 0) gap = els.length;
-    d.to = dropIndex(d.from, 1, gap, els.length);
-    // Keep the gap in view on a long bar.
-    if (e.clientX < bar.left + 24) tabBar.scrollLeft -= 12;
-    else if (e.clientX > bar.right - 24) tabBar.scrollLeft += 12;
+    tabDragAt(e.clientX);
+    // Near an edge of a long bar, keep scrolling while the pointer rests.
+    if (!tabScrollTimer)
+      tabScrollTimer = setInterval(() => {
+        const t = tabDrag;
+        if (!t || !tabBar) return;
+        const bar = tabBar.getBoundingClientRect();
+        const step = t.clientX < bar.left + 24 ? -12 : t.clientX > bar.right - 24 ? 12 : 0;
+        if (!step) return;
+        const before = tabBar.scrollLeft;
+        tabBar.scrollLeft += step;
+        if (tabBar.scrollLeft !== before) tabDragAt(t.clientX);
+      }, 30);
   }
 
   /** Where tab `i` is drawn during a drag: the dragged one under the
@@ -1918,6 +1971,60 @@
   function tabPointerUp(e: PointerEvent): void {
     if (!tabDrag || e.pointerId !== tabDrag.pointer) return;
     endTabDrag(e.type === "pointerup");
+  }
+
+  /** Move the shown tab one place left or right (Ctrl+Shift+PageUp/Down). */
+  function moveTab(dir: number): void {
+    const i = active;
+    const to = i + dir;
+    if (tabDrag || i < 0 || to < 0 || to >= tabs.length) return;
+    const [t] = tabs.splice(i, 1);
+    tabs.splice(to, 0, t!);
+    active = to;
+    void tick().then(() => grid?.focus());
+  }
+
+  /** Format > Rename column (also a double-click on a column heading). */
+  async function askRename(col?: number): Promise<void> {
+    const t = tab;
+    if (!t || !ready()) return;
+    if (t.info.read_only) {
+      say("This file is locked (read-only); unlock it to rename a column.");
+      return;
+    }
+    const c = col ?? t.sel.focus.col;
+    if (c < 0 || c >= t.info.cols) return;
+    let name = "";
+    const others = new Set<string>();
+    if (t.header && t.info.rows > 0) {
+      try {
+        name = (await backend().cellText(t.id, 0, c)).text;
+        const v = await backend().viewport(t.id, 0, 1, 0, Math.min(t.info.cols, 2000), 200);
+        v.cells.slice(0, v.cols).forEach((s, i) => {
+          if (i !== c && s.trim()) others.add(s.trim().toLowerCase());
+        });
+      } catch (e) {
+        say(errorText(e));
+        return;
+      }
+    }
+    renameAsk = { id: t.id, col: c, name, header: t.header && t.info.rows > 0, others };
+  }
+
+  /** Give column `col` a new title: the header row's cell (one undo step).
+   *  Without a header row, one is added first and switched on. */
+  async function renameColumn(id: number, col: number, name: string, header: boolean): Promise<void> {
+    const t = tab;
+    // The tab may have changed while the box was open.
+    if (!t || t.id !== id || col >= t.info.cols) return;
+    if (!header) {
+      if (!(await change({ op: "insert_rows", at: 0, count: 1 }))) return;
+      t.header = true;
+      t.headerTouched = true;
+    }
+    if (await apply((x) => backend().setCells(x.id, [[0, col, name]]))) {
+      say(name.trim() ? `Column ${col + 1} is now "${name}". Ctrl+Z undoes it.` : `Column ${col + 1} has no name now. Ctrl+Z undoes it.`);
+    }
   }
 
   async function makeHeader(): Promise<void> {
@@ -3092,6 +3199,7 @@
     { id: "format.showCols", label: "&Unhide all columns", keys: ["Ctrl+Shift+0", "Ctrl+Shift+)"], run: () => { tab!.columns.showAll(); tab!.bump(); }, enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
     { id: "format.header", label: "First row is &header", run: toggleHeader, enabled: hasTab, checked: () => !!tab?.header },
     { id: "format.makeHeader", label: "&Make this row the header", run: makeHeader, enabled: ready },
+    { id: "format.renameCol", label: "Re&name column…", run: () => void askRename(), enabled: () => ready() && !tab?.info.read_only && (tab?.info.cols ?? 0) > 0 },
 
     { id: "view.freeze", label: "&Freeze panes at cursor", run: freezeAtCursor, enabled: hasTab },
     { id: "view.freezeRow", label: "Freeze top &row", run: () => { tab!.frozenRows = 1; tab!.frozenCols = 0; }, enabled: hasTab },
@@ -3127,6 +3235,8 @@
     })),
     { id: "window.next", label: "Next file", keys: ["Ctrl+PageDown", "Ctrl+Tab"], run: () => switchTab(1), enabled: () => tabs.length > 1 },
     { id: "window.prev", label: "Previous file", keys: ["Ctrl+PageUp", "Ctrl+Shift+Tab"], run: () => switchTab(-1), enabled: () => tabs.length > 1 },
+    { id: "window.moveTabLeft", label: "Move file tab left", keys: ["Ctrl+Shift+PageUp"], run: () => moveTab(-1), enabled: () => active > 0 },
+    { id: "window.moveTabRight", label: "Move file tab right", keys: ["Ctrl+Shift+PageDown"], run: () => moveTab(1), enabled: () => active >= 0 && active < tabs.length - 1 },
     { id: "data.sortAsc", label: "Sort &A → Z", run: () => sortByColumn(false), enabled: ready, repeatable: true },
     { id: "data.sortDesc", label: "Sort &Z → A", run: () => sortByColumn(true), enabled: ready, repeatable: true },
     { id: "data.sort", label: "&Custom sort…", run: openSortDialog, enabled: ready },
@@ -3259,7 +3369,7 @@
       ],
     },
     { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.symbol"] },
-    { label: "F&ormat", items: ["format.header", "format.makeHeader", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "format.wrap", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.hideCols", "format.showCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
+    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "format.wrap", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.hideCols", "format.showCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
     {
       label: "&Data",
       items: [
@@ -3305,7 +3415,7 @@
   const contextItems: Record<string, string[]> = {
     cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "edit.fillDown", "edit.fillRight"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
-    col: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.hideCols", "format.showCols", "-", "edit.clear"],
+    col: ["format.renameCol", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.hideCols", "format.showCols", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showCols"],
   };
 
@@ -4185,6 +4295,7 @@
         onclick={() => { if (tabDragged) { tabDragged = false; return; } active = i; void tick().then(() => grid?.focus()); }}
         onkeydown={() => {}}
         ondragstart={(e) => e.preventDefault()}
+        onlostpointercapture={(e) => { if (tabDrag && e.pointerId === tabDrag.pointer) endTabDrag(false); }}
       >
         <span>{t.info.modified ? "● " : ""}{t.info.name}</span>
         {#if tabFolder[t.id]}<span class="tab-folder">{tabFolder[t.id]}</span>{/if}
@@ -4215,6 +4326,7 @@
           readOnly={!tab.info.indexed}
           onCommit={commitCell}
           onContext={openContext}
+          onRenameCol={(c) => void askRename(c)}
           onMessage={say}
           onFilterButton={(col, x, y) => (filterMenu = { col, x, y })}
           onFill={(dir, count, swap) => void fillHandle(dir, count, swap)}
@@ -4866,6 +4978,18 @@
     count={kind === "rows" ? tab.rect.rows : tab.rect.cols}
     onRun={(n, after) => { const rows = kind === "rows"; insertAsk = null; void (rows ? insertRows(after, n) : insertCols(after, n)).then(() => grid?.focus()); }}
     onClose={() => { insertAsk = null; void tick().then(() => grid?.focus()); }}
+  />
+{/if}
+
+{#if renameAsk}
+  {@const r = renameAsk}
+  <RenameColumn
+    number={r.col + 1}
+    name={r.name}
+    header={r.header}
+    others={r.others}
+    onRun={(name) => { const { id, col, header } = r; renameAsk = null; void renameColumn(id, col, name, header).then(() => grid?.focus()); }}
+    onClose={() => { renameAsk = null; void tick().then(() => grid?.focus()); }}
   />
 {/if}
 

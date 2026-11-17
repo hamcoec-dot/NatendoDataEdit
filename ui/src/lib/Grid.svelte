@@ -46,9 +46,11 @@
     /** The selected block was dragged by its outline to start at (row, col);
      *  `copy`: Ctrl was held, so copy it instead. */
     onMoveCells?: (from: Rect, row: number, col: number, copy: boolean) => void;
+    /** Double-click on a column heading: rename the column. */
+    onRenameCol?: (col: number) => void;
     readOnly: boolean;
   }
-  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, readOnly }: Props = $props();
+  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, readOnly }: Props = $props();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -1316,6 +1318,13 @@
             break;
           }
         }
+        // A double-click on the heading (not its edge) renames the column.
+        if (e.detail === 2 && onRenameCol && !readOnly && !e.shiftKey && !e.ctrlKey) {
+          moving = null;
+          drag = null;
+          onRenameCol(h.col);
+          break;
+        }
         {
           const r = tab.rect;
           if (!e.shiftKey && !e.ctrlKey && onMoveCols && !readOnly && wholeColsSel(r) && h.col >= r.col && h.col < r.col + r.cols) {
@@ -1496,6 +1505,16 @@
     const [x, y] = local(e);
     const h = hit(x, y);
     if (h.area === "none") return;
+    // Outside the selection, a right-click picks what it is on first (as
+    // in Sheets), so the menu acts on that column, row or cell.
+    const r = tab.rect;
+    const fullCols = Math.max(0, tab.info.cols - 1);
+    if (h.area === "col" && h.edge === null && (h.col < r.col || h.col >= r.col + r.cols || !wholeColsSel(r)))
+      select({ row: tab.firstRow, col: h.col }, { row: lastRow(), col: h.col }, false);
+    else if (h.area === "row" && (h.row < r.row || h.row >= r.row + r.rows))
+      select({ row: h.row, col: 0 }, { row: h.row, col: fullCols }, false);
+    else if (h.area === "cell" && (h.row < r.row || h.row >= r.row + r.rows || h.col < r.col || h.col >= r.col + r.cols))
+      select({ row: h.row, col: h.col }, { row: h.row, col: h.col }, false);
     onContext(e.clientX, e.clientY, h.area);
   }
 

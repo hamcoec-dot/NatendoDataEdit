@@ -93,14 +93,14 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "works out the file on its own": ["file.open", "file.layout", "file.reopenLines"],
   "text safe saving": ["file.save"],
   "repairs broken files": ["file.open"],
-  "title row or not": ["format.header", "format.makeHeader"],
+  "title row or not": ["format.header", "format.makeHeader", "format.renameCol"],
   "save as options": ["file.saveAs"],
   "never lose work": ["file.recover", "file.versions", "file.revert"],
   "big files": ["file.open"],
   // The grid
   "a spreadsheet style grid that stays": ["help.keys", "edit.repeat", "data.filter"],
   "tabs for each open file": [
-    "window.next", "window.prev", "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze",
+    "window.next", "window.prev", "window.moveTabLeft", "window.moveTabRight", "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze",
     "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "edit.moveColsLeft", "edit.moveColsRight",
     "format.hideCols", "format.showCols", "format.autofit", "format.hideRows", "format.showRows", "format.showAllRows",
   ],
