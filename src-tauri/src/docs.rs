@@ -3038,20 +3038,16 @@ impl Docs {
         f: impl FnOnce() -> CmdResult<T>,
     ) -> CmdResult<T> {
         let entry = self.get(id)?;
-        let first = {
+        let (first, before) = {
             let d = entry.read();
-            d.row_values(0).ok()
+            (d.row_values(0).ok(), d.history_pos())
         };
         let out = f()?;
         let pos = entry.read().history_pos();
         let mut log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
-        // Steps past this point were undone and are now replaced.
-        let undoable = !matches!(
-            logged,
-            Logged::Step(RecipeOp::Filter { .. } | RecipeOp::ClearFilter)
-        );
-        log.steps
-            .retain(|(p, _)| if undoable { *p < pos } else { *p <= pos });
+        // Steps past where this one started were undone and are now
+        // replaced (filters are undo steps too, so this holds for them).
+        log.steps.retain(|(p, _)| *p <= before);
         if log.steps.is_empty() {
             log.first_row = first;
         }
@@ -5070,6 +5066,47 @@ mod tests {
         // An undone rename is not part of the recipe.
         docs.undo(id).unwrap();
         assert!(docs.recipe_of(id, true, "r").unwrap().steps.is_empty());
+    }
+
+    /// An undone step is not kept in the recipe when a filter comes next
+    /// (filters are undo steps).
+    #[test]
+    fn undone_step_then_filter_leaves_the_recipe() {
+        use natendo_engine::filter::{ColumnFilter, Condition, TextOp};
+        let p = tmp("undone-filter.csv", b"name,age\r\nAda,30\r\nBo,40\r\n");
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        docs.set_first_row_cell(id, 1, "years".into()).unwrap();
+        docs.undo(id).unwrap();
+        let spec = FilterSpec {
+            columns: vec![ColumnFilter {
+                col: 0,
+                rule: Rule::Conditions {
+                    first: Condition::Text {
+                        op: TextOp::NotEquals,
+                        text: "Bo".into(),
+                        match_case: false,
+                    },
+                    second: None,
+                    or: false,
+                },
+            }],
+            keep_first: true,
+            read: Default::default(),
+        };
+        docs.filter(id, spec).unwrap();
+        let recipe = docs.recipe_of(id, true, "r").unwrap();
+        assert!(
+            matches!(recipe.steps.as_slice(), [RecipeOp::Filter { .. }]),
+            "{:?}",
+            recipe.steps
+        );
+        // Undoing the filter leaves nothing; redo brings it back.
+        docs.undo(id).unwrap();
+        assert!(docs.recipe_of(id, true, "r").unwrap().steps.is_empty());
+        docs.redo(id).unwrap();
+        assert_eq!(docs.recipe_of(id, true, "r").unwrap().steps.len(), 1);
     }
 
     /// A tab busy with a long operation (its lock held) still counts as

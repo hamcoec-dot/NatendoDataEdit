@@ -143,6 +143,81 @@ const url = process.argv[3] || "http://localhost:5193";
   await key("Control+z");
   ok((await state()).w1 === w1, `Ctrl+Z brings the column back at its width (${w1})`);
 
+  // ---- a long check list does not slow each key press, and steps share it ----
+  const cost = await p.evaluate(() => {
+    const t = window.__nde.tab;
+    const values = Array.from({ length: 100000 }, (_, i) => `value ${i}`);
+    t.checks = [{ col: 2, kind: { type: "list", values, match_case: false } }];
+    t.recordView();
+    const t0 = performance.now();
+    for (let i = 0; i < 50; i++) t.recordView();
+    return (performance.now() - t0) / 50;
+  });
+  ok(cost < 5, `with a 100,000-value check list a key press costs ${cost.toFixed(2)} ms to note`);
+  for (let i = 0; i < 4; i++) {
+    await select(2 + i, 1);
+    await focusGrid();
+    await p.keyboard.type(`e${i}`);
+    await key("Enter");
+  }
+  const shared = await p.evaluate(() => {
+    const t = window.__nde.tab;
+    const looks = [...t.stepViews.values()].slice(-4).map((s) => s.before.look.checks);
+    return new Set(looks).size;
+  });
+  ok(shared === 1, `four edits share one copy of the check list (${shared})`);
+  for (let i = 0; i < 4; i++) await key("Control+z");
+  await key("Control+z"); // and the check list itself
+  ok((await p.evaluate(() => window.__nde.tab.checks.length)) === 0, "Ctrl+Z takes the check list off again");
+
+  // ---- opening a filter menu after Undo leaves Redo working ----
+  await select(1, 1);
+  await focusGrid();
+  await p.keyboard.type("r1");
+  await key("Enter");
+  await key("Control+z");
+  await command("Filter"); // arrows off
+  await focusGrid();
+  await select(1, 2);
+  await key("Alt+ArrowDown");
+  await key("Escape");
+  await focusGrid();
+  ok((await state()).canRedo, "after opening and closing a filter menu, Ctrl+Y can still redo");
+  await key("Control+y");
+  ok((await state()).modified, "and it redoes the edit");
+  await key("Control+z");
+
+  // ---- a saved view applies, and undoes, in one step ----
+  await command("Alternating row colours");
+  await select(1, 3);
+  await command("Sort A");
+  await select(1, 2);
+  await command("Filter by selected value");
+  await command("Save view to a file");
+  await focusGrid();
+  for (let i = 0; i < 3; i++) await key("Control+z");
+  s = await state();
+  ok(!s.banded && !s.filtered, "back to no banding and no filter");
+  await command("Apply a view from a file");
+  await p.waitForTimeout(1500);
+  s = await state();
+  ok(s.banded && s.filtered, "Apply a view: banding and the filter are back");
+  await focusGrid();
+  await key("Control+z");
+  s = await state();
+  ok(!s.banded && !s.filtered, "one Ctrl+Z takes the whole view back");
+  await key("Control+y");
+  s = await state();
+  ok(s.banded && s.filtered, "one Ctrl+Y puts it all back");
+
+  // ---- Alt+Q finds Undo by what it now covers ----
+  await p.keyboard.press("Alt+q");
+  await p.keyboard.type("undo filter");
+  await p.waitForTimeout(300);
+  const hits = await p.$$eval("#command-results [role=option]", (e) => e.slice(0, 5).map((x) => x.textContent.trim()));
+  ok(hits.some((h) => /^Undo/.test(h)), `Alt+Q "undo filter" offers Undo (${hits.slice(0, 3).join(" / ")})`);
+  await p.keyboard.press("Escape");
+
   ok(errors.length === 0, `no page errors ${errors.join("; ")}`);
   await b.close();
   console.log(failed ? `${failed} FAILED` : "ALL PASS");

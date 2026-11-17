@@ -65,6 +65,13 @@ export class Columns {
     this.rebuild();
   }
 
+  /** A short text that changes whenever `snapshot` would (cheap to compare:
+   *  only the overrides, which are few unless many columns were resized). */
+  key(): string {
+    const f: [number, DisplayFormat][] = [...this.formats];
+    return JSON.stringify([this.defaultWidth, [...this.widths], [...this.hiddenWas], f, [...this.wraps]]);
+  }
+
   /** A copy of the widths, hidden columns, formats and wrapping (for undo). */
   snapshot(): ColSnap {
     return {

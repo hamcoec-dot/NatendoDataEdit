@@ -665,6 +665,18 @@
   async function applyView(v: View): Promise<void> {
     const t = tab;
     if (!t) return;
+    // The view's look and its sort and filter undo (and redo) as one step.
+    t.recordView();
+    const start = t.info.history_pos;
+    t.grouping = true;
+    try {
+      await applyViewSteps(v, t);
+    } finally {
+      t.endGroup(start);
+    }
+  }
+
+  async function applyViewSteps(v: View, t: Tab): Promise<void> {
     const headerWas = t.header;
     if (v.header !== t.header) {
       t.header = v.header;
@@ -1040,6 +1052,7 @@
           const d = await backend().save(t.id, { saveAs, overwriteChanged, allowLossy, options });
           if (!d) return false; // dialog cancelled
           t.update(d, true);
+          if (!d.can_undo) t.afterSave();
           say(`Saved ${d.name}.`);
           return true;
         } catch (e) {
@@ -1846,7 +1859,8 @@
     const to = r.row + dir;
     if (to < t.firstRow || to + r.rows > t.info.rows) return;
     if (await change({ op: "move_rows", at: r.row, count: r.rows, to })) {
-      grid?.select({ row: t.sel.anchor.row + dir, col: t.sel.anchor.col }, { row: t.sel.focus.row + dir, col: t.sel.focus.col });
+      const a = t.sel.active;
+      grid?.select({ row: t.sel.anchor.row + dir, col: t.sel.anchor.col }, { row: t.sel.focus.row + dir, col: t.sel.focus.col }, true, a && { row: a.row + dir, col: a.col });
     }
   }
 
@@ -1859,7 +1873,8 @@
     if (await change({ op: "move_cols", at: r.col, count: r.cols, to })) {
       // Carry the moved columns' widths, formats and wrapping with them.
       t.noteColMove(r.col, r.cols, to);
-      grid?.select({ row: t.sel.anchor.row, col: t.sel.anchor.col + dir }, { row: t.sel.focus.row, col: t.sel.focus.col + dir });
+      const a = t.sel.active;
+      grid?.select({ row: t.sel.anchor.row, col: t.sel.anchor.col + dir }, { row: t.sel.focus.row, col: t.sel.focus.col + dir }, true, a && { row: a.row, col: a.col + dir });
     }
   }
 
@@ -2868,23 +2883,34 @@
     if (look && look.pos === pos) {
       if (op === "undo") t.lookRedo.push(t.lookSteps.pop()!);
       else t.lookSteps.push(t.lookRedo.pop()!);
-      t.restoreView({ look: op === "undo" ? look.before : look.after, filter: null, sort: null }, false);
+      t.restoreView({ look: op === "undo" ? look.before : look.after, sort: null }, false);
       return;
     }
     if (op === "redo" && t.redoCut === pos) return;
+    // A saved view's sort, filter and look go back (or forward) together.
+    const group = op === "undo" ? t.groups.find((g) => g.end === pos) : t.groups.find((g) => g.start === pos);
+    const target = group ? (op === "undo" ? group.start : group.end) : op === "undo" ? pos - 1 : pos + 1;
     undoBusy.add(t);
     if (op === "redo") t.redoing++;
     try {
-      await change({ op });
-      // The widths, formats, filter rules and so on as they were before the
-      // step undone, or after the step redone.
+      for (;;) {
+        const at = t.info.history_pos;
+        await change({ op });
+        // Data-check rules a rename rewrote follow each step.
+        followRefEdits(t, op);
+        if (t.info.history_pos === at || t.info.history_pos === target) break;
+      }
+      // The widths, formats and so on as they were before the step undone,
+      // or after the step redone; the filter rules as the engine has them.
       const now = t.info.history_pos;
-      const step = op === "undo" && now === pos - 1 ? t.stepViews.get(pos)?.before : op === "redo" && now === pos + 1 ? t.stepViews.get(now)?.after : undefined;
+      const step = now !== target ? undefined : op === "undo" ? t.stepViews.get(target + 1)?.before : t.stepViews.get(now)?.after;
       if (step) t.restoreView(step, true);
-      else if (now !== pos && t.info.has_filter) t.filter = await backend().filterSpec(t.id).catch(() => t.filter);
+      if (now !== pos) {
+        t.filter = t.info.has_filter ? await backend().filterSpec(t.id).catch(() => t.filter) : null;
+        if (t.info.has_filter) t.filterButtons = true;
+      }
       // Undoing the header row Rename column added: the setting it switched
       // on goes off again, so the first record is not taken for titles.
-      followRefEdits(t, op);
       if (t.headerAddedAt !== null && t.info.history_pos < t.headerAddedAt && !t.headerOffByUndo) {
         if (t.header) {
           t.header = false;

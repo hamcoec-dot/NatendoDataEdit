@@ -16,11 +16,15 @@ export const DISPLAY_CHARS = 512;
 const MAX_UNDO = 10_000;
 /** Undo steps kept for changes to how the table looks (widths and so on). */
 const MAX_VIEW_STEPS = 1_000;
+/** About this much memory may hold looks kept for undo; past it the oldest
+ *  are let go (a 100,000-value check list is a few megabytes). */
+const LOOK_BUDGET = 64 << 20;
 
 /** How the table looks, beyond the file: what Undo puts back for a change
  *  that only touches the look (widths, hiding columns, display formats,
  *  wrapping, highlight rules, colour scales, banding, the group line, row
- *  height, data checks and the filter arrows). */
+ *  height and data checks). Parts that did not change are shared with the
+ *  look before, so keeping one per undo step costs little. */
 export interface ViewLook {
   cols: ColSnap;
   highlights: Highlight[];
@@ -29,13 +33,12 @@ export interface ViewLook {
   divider: number | null;
   rowLines: number;
   checks: Check[];
-  filterButtons: boolean;
 }
-/** The look, plus the filter rules and last sort (those change with an
- *  engine undo step, so only engine steps put them back). */
+/** The look, plus the last sort (it changes with an engine undo step, so
+ *  only engine steps put it back; the filter rules are read from the engine,
+ *  which holds them). */
 export interface ViewSnap {
   look: ViewLook;
-  filter: FilterSpec | null;
   sort: SortSpec | null;
 }
 /** A change to the look alone, made at undo position `pos`. */
@@ -43,6 +46,19 @@ export interface LookStep {
   pos: number;
   before: ViewLook;
   after: ViewLook;
+}
+
+/** Two looks hold the same values (parts shared or equal). */
+function sameLook(a: ViewLook, b: ViewLook): boolean {
+  return (
+    a.banded === b.banded &&
+    a.divider === b.divider &&
+    a.rowLines === b.rowLines &&
+    (a.cols === b.cols || JSON.stringify(a.cols) === JSON.stringify(b.cols)) &&
+    (a.highlights === b.highlights || JSON.stringify(a.highlights) === JSON.stringify(b.highlights)) &&
+    (a.scales === b.scales || JSON.stringify(a.scales) === JSON.stringify(b.scales)) &&
+    (a.checks === b.checks || JSON.stringify(a.checks) === JSON.stringify(b.checks))
+  );
 }
 
 export class Tab {
@@ -174,10 +190,19 @@ export class Tab {
   redoCut: number | null = null;
   /** Bumped when the look steps change (Undo and Redo enable). */
   undoVersion = $state(0);
+  /** Saved views applied: their engine steps (from `start` to `end`) and
+   *  look undo and redo as one. */
+  groups: { start: number; end: number }[] = [];
+  /** A saved view is being applied (its look joins its first engine step). */
+  grouping = false;
   /** The look as last recorded, and the undo position then. */
   private lastView: ViewSnap | null = null;
-  private lastKey = "";
   private lastPos = -1;
+  /** What the parts of `lastView` were copied from (to tell cheaply whether
+   *  they changed: these lists are replaced, never changed in place). */
+  private lastRefs: { cols: string; highlights: unknown; scales: unknown; checks: unknown; sort: unknown } | null = null;
+  /** Memory held by looks kept for undo (roughly). */
+  private lookBytes = 0;
   /** Undo position of a new engine step waiting for its "after" look. */
   private pendingStep: number | null = null;
 
@@ -219,44 +244,85 @@ export class Tab {
     if (this.divider !== null) this.divider = place(this.divider);
   }
 
-  /** The look now (copies). */
+  /** The look now. Only parts that changed since the last look are copied
+   *  (and only they are turned into text to compare); the rest are shared,
+   *  so a key press costs next to nothing however long the lists are.
+   *  The same object comes back while nothing changed. */
   snapView(): ViewSnap {
-    return {
-      look: {
-        cols: this.columns.snapshot(),
-        highlights: $state.snapshot(this.highlights) as Highlight[],
-        scales: $state.snapshot(this.scales) as ColumnScale[],
-        banded: this.banded,
-        divider: this.divider,
-        rowLines: this.rowLines,
-        checks: $state.snapshot(this.checks) as Check[],
-        filterButtons: this.filterButtons,
-      },
-      filter: this.filter ? ($state.snapshot(this.filter) as FilterSpec) : null,
-      sort: this.sort ? ($state.snapshot(this.sort) as SortSpec) : null,
+    const last = this.lastView;
+    const refs = this.lastRefs;
+    const cols = this.columns.key();
+    const same = (a: unknown, b: unknown): boolean => a === b;
+    if (
+      last &&
+      refs &&
+      refs.cols === cols &&
+      same(refs.highlights, this.highlights) &&
+      same(refs.scales, this.scales) &&
+      same(refs.checks, this.checks) &&
+      same(refs.sort, this.sort) &&
+      last.look.banded === this.banded &&
+      last.look.divider === this.divider &&
+      last.look.rowLines === this.rowLines
+    )
+      return last;
+    let bytes = 64;
+    const copy = <T>(changed: boolean, keep: T | undefined, v: unknown): T => {
+      if (!changed && keep !== undefined) return keep;
+      const c = $state.snapshot(v) as T;
+      bytes += JSON.stringify(c ?? null).length * 2;
+      return c;
     };
+    const colsChanged = !refs || refs.cols !== cols;
+    const look: ViewLook = {
+      cols: colsChanged || !last ? this.columns.snapshot() : last.look.cols,
+      highlights: copy<Highlight[]>(!refs || !same(refs.highlights, this.highlights), last?.look.highlights, this.highlights),
+      scales: copy<ColumnScale[]>(!refs || !same(refs.scales, this.scales), last?.look.scales, this.scales),
+      banded: this.banded,
+      divider: this.divider,
+      rowLines: this.rowLines,
+      checks: copy<Check[]>(!refs || !same(refs.checks, this.checks), last?.look.checks, this.checks),
+    };
+    if (colsChanged) bytes += cols.length * 2;
+    const sort = copy<SortSpec | null>(!refs || !same(refs.sort, this.sort), last?.sort, this.sort);
+    this.lastRefs = { cols, highlights: this.highlights, scales: this.scales, checks: this.checks, sort: this.sort };
+    this.noteLookBytes(bytes);
+    return { look, sort };
+  }
+
+  /** Count memory held by a new look; past the budget, let the oldest
+   *  looks go (their steps can no longer put the look back). */
+  private noteLookBytes(n: number): void {
+    this.lookBytes += n;
+    if (this.lookBytes <= LOOK_BUDGET) return;
+    const keys = [...this.stepViews.keys()].sort((a, b) => a - b);
+    const cut = keys[Math.floor(keys.length / 2)] ?? Infinity;
+    for (const k of keys) if (k < cut) this.stepViews.delete(k);
+    const half = Math.floor(this.lookSteps.length / 2);
+    this.lookSteps = this.lookSteps.slice(half);
+    this.lookBytes = Math.floor(this.lookBytes / 2);
+    this.undoVersion++;
   }
 
   /** Note a change to the look since last time as one undo step (called
    *  after each click or key, and before undo, redo and engine changes).
    *  After an engine step it only takes the look as it is now. */
   recordView(): void {
+    const was = this.lastView;
     const now = this.snapView();
-    const key = JSON.stringify(now.look);
     const pos = this.info.history_pos;
-    if (this.lastView === null || pos !== this.lastPos) {
+    if (was === null || pos !== this.lastPos) {
       const s = this.pendingStep === pos ? this.stepViews.get(pos) : undefined;
       if (s) s.after = now;
       this.pendingStep = null;
-    } else if (key !== this.lastKey) {
-      this.lookSteps.push({ pos, before: this.lastView.look, after: now.look });
+    } else if (now !== was && !sameLook(now.look, was.look)) {
+      this.lookSteps.push({ pos, before: was.look, after: now.look });
       if (this.lookSteps.length > MAX_VIEW_STEPS) this.lookSteps.shift();
       if (this.lookRedo.length || this.info.can_redo) this.redoCut = pos;
       this.lookRedo = [];
       this.undoVersion++;
     }
     this.lastView = now;
-    this.lastKey = key;
     this.lastPos = pos;
   }
 
@@ -264,13 +330,39 @@ export class Tab {
    *  or redo has put back what follows it, such as renamed rules). */
   baseline(): void {
     this.lastView = this.snapView();
-    this.lastKey = JSON.stringify(this.lastView.look);
     this.lastPos = this.info.history_pos;
     this.pendingStep = null;
   }
 
-  /** Put a look back. `engine`: for an engine undo or redo (the filter
-   *  and sort come back too; data checks follow the rename rules instead). */
+  /** A saved view was applied from undo position `start`: its look and
+   *  engine steps undo and redo as one. */
+  endGroup(start: number): void {
+    this.grouping = false;
+    const pos = this.info.history_pos;
+    const now = this.snapView();
+    if (pos > start) {
+      const s = this.stepViews.get(pos);
+      if (s) s.after = now;
+      this.groups = [...this.groups.filter((g) => g.end <= start), { start, end: pos }].slice(-MAX_VIEW_STEPS);
+      this.lastView = now;
+      this.lastPos = pos;
+      this.pendingStep = null;
+    }
+  }
+
+  /** After a save rewrote the file the engine's undo history is gone:
+   *  drop the looks kept for its steps. */
+  afterSave(): void {
+    const pos = this.info.history_pos;
+    this.stepViews.clear();
+    this.groups = [];
+    this.lookSteps = this.lookSteps.filter((s) => s.pos >= pos);
+    this.lookBytes = 0;
+    this.undoVersion++;
+  }
+
+  /** Put a look back. `engine`: for an engine undo or redo (the sort comes
+   *  back too; data checks follow the rename rules instead). */
   restoreView(s: ViewSnap, engine: boolean): void {
     const l = s.look;
     this.columns.restore(l.cols);
@@ -281,17 +373,13 @@ export class Tab {
     this.banded = l.banded;
     this.divider = l.divider;
     this.rowLines = l.rowLines;
-    this.filterButtons = l.filterButtons;
     if (engine) {
-      this.filter = this.info.has_filter && s.filter ? structuredClone(s.filter) : null;
       this.sort = s.sort ? structuredClone(s.sort) : null;
     } else {
       this.checks = structuredClone(l.checks);
       this.checkVersion++;
     }
-    this.lastView = this.snapView();
-    this.lastKey = JSON.stringify(this.lastView.look);
-    this.lastPos = this.info.history_pos;
+    this.baseline();
     this.undoVersion++;
     this.bump();
   }
@@ -309,8 +397,9 @@ export class Tab {
 
   /** Take new engine info; refetch cells when the data may have changed. */
   update(info: DocInfo, dataChanged: boolean): void {
-    // A look change made just before this engine change is a step of its own.
-    this.recordView();
+    // A look change made just before this engine change is a step of its own
+    // (while a saved view is applied, its look joins its first engine step).
+    if (!this.grouping) this.recordView();
     const structural =
       info.cols !== this.info.cols || info.rows !== this.info.rows || info.filtered !== this.info.filtered;
     if (!info.has_filter) this.filter = null;
@@ -333,6 +422,7 @@ export class Tab {
       // before it (the look after it is taken once it has settled).
       this.lookRedo = [];
       this.redoCut = null;
+      if (this.groups.some((g) => g.end > before)) this.groups = this.groups.filter((g) => g.end <= before);
       for (const k of [...this.stepViews.keys()]) if (k > before) this.stepViews.delete(k);
       if (after === before + 1 && this.lastView) {
         this.stepViews.set(after, { before: this.lastView, after: null });

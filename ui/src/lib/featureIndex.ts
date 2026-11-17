@@ -121,7 +121,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "type ahead suggestions": ["view.typeahead", "edit.pickDate", "view.spellcheck"],
   "cut and paste that moves": ["edit.cut", "edit.paste", "edit.moveCut", "edit.cancelCut"],
   "undo and redo for everything": ["edit.undo", "edit.redo"],
-  "the active cell stays put": ["edit.selectAll"],
+  "the active cell stays put": [],
   "one row per page form view": ["data.form"],
   "list of my changes": ["edit.changes", "view.showEdits"],
   "notes and coloured flags on rows": ["edit.note"],

@@ -109,6 +109,14 @@ const url = process.argv[3] || "http://localhost:5193";
   s = await sel();
   ok(s.cell.row === 5 && s.cell.col === 3, "then Up goes one above it, not from the bottom");
 
+  // Moving rows from the keyboard keeps the active cell, moved with them.
+  await start(6, 3);
+  await key("Shift+Space");
+  await key("Alt+Shift+ArrowDown");
+  s = await sel();
+  ok(s.rect.row === 7 && s.rect.cols === s.cols && s.cell.row === 7 && s.cell.col === 3, "Alt+Shift+Down moves the row; the active cell moves with it (same column)");
+  await key("Control+z");
+
   // Typing after Ctrl+Shift+Down goes into the active cell.
   await start(3, 1);
   await key("Control+Shift+ArrowDown");

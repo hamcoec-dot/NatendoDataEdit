@@ -262,7 +262,8 @@ everything is also in command search.
   (Filter, Show duplicates, show rows with problems or notes, Clear filter),
   hiding rows and columns, column widths and AutoFit, display formats and
   wrapping, row height, highlight rules, colour scales, banding, the group
-  line and data checks. A deleted column comes back with its width. Filters
+  line and data checks. Applying a saved view is one step. A deleted column
+  comes back with its width. Filters
   and the look of the table do not count as unsaved changes.
 - One-row-per-page form view.
 - **List of my changes** (Edit menu): every cell that differs from the saved

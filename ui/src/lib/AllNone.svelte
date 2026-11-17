@@ -21,7 +21,11 @@
     for (let c = 0; c < count && (max === undefined || out.length < max); c++) if (!skip?.(c)) out.push(c);
     return out;
   });
-  const allTicked = $derived(all.length > 0 && all.every((c) => picked.includes(c)));
+  const allTicked = $derived.by(() => {
+    if (all.length === 0) return false;
+    const set = new Set(picked);
+    return all.every((c) => set.has(c));
+  });
 
   // The button pressed then waits (disabled), which would drop the keyboard
   // focus out of the dialog (and Esc with it): hand it to the other one.
