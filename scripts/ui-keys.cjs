@@ -211,6 +211,90 @@ const url = process.argv[3] || "http://localhost:5194";
   if (process.argv[2]) await p.screenshot({ path: require("path").join(process.argv[2], "column-letters.png"), clip: { x: 0, y: 0, width: 1000, height: 260 } });
   ok(await p.evaluate(() => JSON.parse(localStorage.getItem("nde.prefs") || "{}").colLetters === true || true), "View › Column letters turns on");
 
+  // Find starts on "Selection" with several cells selected, "Whole file" with one.
+  await start(3, 1, 8, 2);
+  await key("Control+f");
+  ok((await p.inputValue("select[aria-label='Search in']")) === "selection", "Find with a block selected searches the selection");
+  await key("Escape");
+  await start(3, 1);
+  await key("Control+f");
+  ok((await p.inputValue("select[aria-label='Search in']")) === "all", "Find with one cell searches the whole file");
+  await key("Escape");
+
+  // After pressing Enter, move: right (Options).
+  await p.evaluate(() => {
+    window.__nde.tab; // the prefs live in the app; set through the Options box below
+  });
+  await p.keyboard.press("Alt+q");
+  await p.waitForTimeout(250);
+  await p.keyboard.type("Options");
+  await p.waitForTimeout(250);
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(400);
+  await p.selectOption("select[aria-label='After pressing Enter, move']", "right");
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(300);
+  await start(12, 1);
+  await p.keyboard.type("x");
+  await key("Enter");
+  s = await sel();
+  ok(s.cell.row === 12 && s.cell.col === 2, `with "move right", Enter after typing moves right (R${s.cell.row + 1} C${s.cell.col + 1})`);
+  await key("Shift+Enter");
+  s = await sel();
+  ok(s.cell.col === 1, "Shift+Enter moves back left");
+  await p.evaluate(() => window.__nde.grid.focus());
+  await p.keyboard.press("Alt+q");
+  await p.waitForTimeout(250);
+  await p.keyboard.type("Options");
+  await p.waitForTimeout(250);
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(400);
+  await p.selectOption("select[aria-label='After pressing Enter, move']", "down");
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(300);
+
+  // Ctrl+Shift+0 shows only the hidden columns inside the selection.
+  await p.evaluate(() => {
+    const t = window.__nde.tab;
+    t.columns.setWidth(2, 0);
+    t.columns.setWidth(5, 0);
+    t.bump();
+  });
+  await start(3, 1, 3, 3);
+  await key("Control+Shift+0");
+  let hidden = await p.evaluate(() => [window.__nde.tab.columns.isHidden(2), window.__nde.tab.columns.isHidden(5)]);
+  ok(!hidden[0] && hidden[1], "Ctrl+Shift+0 over columns 2-4 shows column 3 only");
+  await start(3, 1);
+  await key("Control+Shift+0");
+  hidden = await p.evaluate(() => window.__nde.tab.columns.hiddenCount());
+  ok(hidden === 0, "with no hidden column inside the selection, it shows them all");
+
+  // Column width… box.
+  await start(3, 1, 3, 2);
+  await p.keyboard.press("Alt+q");
+  await p.waitForTimeout(250);
+  await p.keyboard.type("Set column width");
+  await p.waitForTimeout(250);
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(400);
+  await p.keyboard.press("Control+a");
+  await p.keyboard.type("222");
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(300);
+  const widths = await p.evaluate(() => [window.__nde.tab.columns.width(1), window.__nde.tab.columns.width(2)]);
+  ok(widths[0] === 222 && widths[1] === 222, `Column width… sets both columns to 222 (${widths})`);
+
+  // Auto-fit measures a long value far down the file.
+  await p.evaluate(() => window.__nde.grid.select({ row: 999990, col: 2 }));
+  await p.waitForTimeout(400);
+  await p.keyboard.type("A very long last name far down at the bottom of the file");
+  await key("Enter");
+  await start(3, 2);
+  await p.evaluate(() => window.__nde.grid.autoFit(2));
+  await p.waitForTimeout(1500);
+  const fit = await p.evaluate(() => window.__nde.tab.columns.width(2));
+  ok(fit > 300, `auto-fit counts a long value at the bottom of the file (width ${fit})`);
+
   // Ctrl+A: the block first, then everything.
   await start(3, 3, 1000000, 3);
   await key("Delete");

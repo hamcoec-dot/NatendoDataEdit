@@ -18,6 +18,8 @@ export interface PrefsData {
   alignNumbers: boolean;
   /** Column headings also show spreadsheet letters (A, B, C). */
   colLetters: boolean;
+  /** Where Enter moves after typing (Shift+Enter goes the other way). */
+  enterMove: EnterMove;
   /** Underline misspelt words while editing cells. */
   spellcheck: boolean;
   /** The agent link was switched on (it starts again with the app). */
@@ -53,6 +55,15 @@ export interface PrefsData {
 }
 
 export type TotalKind = "sum" | "average" | "count" | "numbers" | "min" | "max" | "distinct" | "chars";
+export type EnterMove = "down" | "right" | "up" | "left" | "none";
+export const ENTER_MOVES: EnterMove[] = ["down", "right", "up", "left", "none"];
+
+/** The step Enter takes ([rows, columns]); Shift+Enter takes the opposite. */
+export function enterStep(move: EnterMove, back: boolean): [number, number] {
+  const s: [number, number] = move === "down" ? [1, 0] : move === "up" ? [-1, 0] : move === "right" ? [0, 1] : move === "left" ? [0, -1] : [0, 0];
+  return back ? [-s[0], -s[1]] : s;
+}
+
 export const TOTAL_KINDS: TotalKind[] = ["sum", "average", "count", "numbers", "min", "max", "distinct", "chars"];
 
 /** The saved list of status-bar totals, cleaned (unknown kinds dropped,
@@ -107,6 +118,7 @@ const DEFAULTS: PrefsData = {
   gridLines: true,
   alignNumbers: true,
   colLetters: false,
+  enterMove: "down",
   spellcheck: true,
   agentLink: false,
   shortcuts: {},
@@ -146,6 +158,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       gridLines: p.gridLines !== false,
       alignNumbers: p.alignNumbers !== false,
       colLetters: p.colLetters === true,
+      enterMove: ENTER_MOVES.includes(p.enterMove as EnterMove) ? (p.enterMove as EnterMove) : "down",
       spellcheck: p.spellcheck !== false,
       agentLink: p.agentLink === true,
       shortcuts: p.shortcuts && typeof p.shortcuts === "object" ? p.shortcuts : {},

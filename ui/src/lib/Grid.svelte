@@ -5,7 +5,7 @@
   // text box over the active cell.
   import { onMount, tick, untrack } from "svelte";
   import type { Tab } from "./tab.svelte";
-  import { prefs } from "./prefs.svelte";
+  import { enterStep, prefs } from "./prefs.svelte";
   import { contains, rectOf, type Cell, type Rect, type Selection } from "./selection";
   import { blockTarget, dropIndex, gapAt, onOutline } from "./dragmove";
   import type { ViewportData } from "./binary";
@@ -1150,6 +1150,8 @@
    *  remembers where the run of Tabs started, and Enter goes down, back to
    *  that column. */
   export function advance(dr: number, dc: number): void {
+    // Enter set to stay put (Options): nothing moves.
+    if (dr === 0 && dc === 0) return;
     const r = tab.rect;
     const a = tab.cell;
     advancing = true;
@@ -1256,11 +1258,15 @@
 
   /** Fit a column to the widest value currently loaded on screen. */
   export function autoFit(col: number): void {
-    fitOne(col, (r) => tab.cache.get(r, col));
-    tab.bump();
+    void fitCols(col, 1);
   }
 
-  function fitOne(col: number, value: (row: number) => string | undefined): void {
+  /** Rows read at the top and at the bottom of the file when fitting, so a
+   *  long value off screen is measured too (Excel measures every row; this
+   *  is close enough at any size). */
+  const FIT_SAMPLE_ROWS = 2_000;
+
+  function fitOne(col: number, value: (row: number) => string | undefined, more: string[] = []): void {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.font = headerFont;
@@ -1271,6 +1277,9 @@
       const t = value(r);
       if (t) best = Math.max(best, ctx.measureText(displayText(t).slice(0, 200)).width);
     }
+    // The longest few of the sampled values (measuring is the slow part).
+    const longest = more.filter(Boolean).sort((a, b) => b.length - a.length).slice(0, 50);
+    for (const t of longest) best = Math.max(best, ctx.measureText(displayText(t).slice(0, 200)).width);
     tab.columns.setWidth(col, Math.min(600, Math.max(40, Math.ceil(best) + 2 * Math.round(fontPx * 0.45) + 4)));
   }
 
@@ -1311,14 +1320,43 @@
         i = j + 1;
       }
     }
+    // The first and last rows of the file, a band of columns at a time.
+    const samples = new Map<number, string[]>(cols.map((c) => [c, []]));
+    const first = tab.firstRow;
+    const total = tab.info.rows - first;
+    if (total > 0) {
+      const per = Math.max(50, Math.min(FIT_SAMPLE_ROWS, Math.floor(VIEWPORT_CELLS / cols.length)));
+      const spans: [number, number][] = total <= 2 * per ? [[first, total]] : [[first, per], [tab.info.rows - per, per]];
+      const lo = cols[0]!;
+      const hi = cols[cols.length - 1]!;
+      for (const [row, n2] of spans) {
+        for (let c0 = lo; c0 <= hi; c0 += Math.max(1, Math.floor(VIEWPORT_CELLS / n2))) {
+          const width = Math.min(hi - c0 + 1, Math.max(1, Math.floor(VIEWPORT_CELLS / n2)));
+          try {
+            const d = await backend().viewport(tab.id, row, n2, c0, width, 200);
+            for (const c of cols) {
+              if (c < d.firstCol || c >= d.firstCol + d.cols) continue;
+              const out = samples.get(c)!;
+              for (let i = 0; i < d.rows; i++) out.push(d.cells[i * d.cols + (c - d.firstCol)] ?? "");
+            }
+          } catch {
+            // Fit to what is known.
+          }
+        }
+      }
+    }
     for (const c of cols) {
       const d = reads.find((x) => c >= x.firstCol && c < x.firstCol + x.cols);
-      fitOne(c, (r) => {
-        const v = tab.cache.get(r, c);
-        if (v !== undefined || !d) return v;
-        const i = r - d.firstRow;
-        return i >= 0 && i < d.rows ? d.cells[i * d.cols + (c - d.firstCol)] : undefined;
-      });
+      fitOne(
+        c,
+        (r) => {
+          const v = tab.cache.get(r, c);
+          if (v !== undefined || !d) return v;
+          const i = r - d.firstRow;
+          return i >= 0 && i < d.rows ? d.cells[i * d.cols + (c - d.firstCol)] : undefined;
+        },
+        samples.get(c),
+      );
     }
     tab.bump();
     if (shown > cols.length) onMessage(`Fitted the first ${MAX_FIT_COLS} of ${shown.toLocaleString()} columns: fitting works on up to ${MAX_FIT_COLS} at once.`);
@@ -2017,10 +2055,10 @@
       editor.setRangeText(e.shiftKey ? nowTime() : today(), s, editor.selectionEnd, "end");
     } else if (e.key === "Enter" && !e.altKey && !e.shiftKey && !e.ctrlKey) {
       e.preventDefault();
-      if (await commitEdit()) advance(1, 0);
+      if (await commitEdit()) advance(...enterStep(prefs.data.enterMove, false));
     } else if (e.key === "Enter" && e.shiftKey && !e.altKey) {
       e.preventDefault();
-      if (await commitEdit()) advance(-1, 0);
+      if (await commitEdit()) advance(...enterStep(prefs.data.enterMove, true));
     } else if (e.key === "Enter" && e.altKey && editor) {
       // Alt+Enter: a line break inside the cell.
       e.preventDefault();

@@ -90,7 +90,6 @@ export const PHRASES: [string, string][] = [
   ["dark mode", "theme dark"],
   ["light mode", "theme light"],
   ["word wrap", "wrap"],
-  ["column width", "autofit"],
 ];
 
 /** Lower case, accents off, punctuation to spaces. */

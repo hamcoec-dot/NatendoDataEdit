@@ -2,7 +2,7 @@
   import { onMount, tick } from "svelte";
   import { backend, errorText, isCmdError, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
   import { Tab } from "./lib/tab.svelte";
-  import { prefs, customFont, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
+  import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
   import { parseGoto } from "./lib/goto";
@@ -2805,6 +2805,43 @@
     say(on ? `Text wraps in ${plural(cols.length, "column")}; rows grew to fit what is on screen (Format › Row height to change it).` : `Text no longer wraps in ${plural(cols.length, "column")}.`);
   }
 
+  /** Ctrl+Shift+0: the hidden columns inside the selection come back (as in
+   *  Excel); with none inside it, every hidden column does. */
+  function unhideCols(): void {
+    const t = tab;
+    if (!t) return;
+    const r = t.rect;
+    if (r.cols > 1 && t.columns.hiddenIn(r.col, r.col + r.cols)) {
+      t.columns.showRange(r.col, r.col + r.cols);
+      say("Showed the hidden columns inside the selection.");
+    } else {
+      const n = t.columns.hiddenCount();
+      t.columns.showAll();
+      say(`Showed all ${plural(n, "hidden column")}. (Select across hidden columns first to show just those.)`);
+    }
+    t.bump();
+  }
+
+  /** Format › Column width…: an exact width for the selected columns. */
+  function askColWidth(): void {
+    const t = tab;
+    if (!t) return;
+    const cols = selectedCols(t).filter((c) => !t.columns.isHidden(c));
+    if (!cols.length) return;
+    const w0 = Math.round(t.columns.width(cols[0]!));
+    prompt = {
+      title: "Column width",
+      label: `Width of ${cols.length === 1 ? "the column" : plural(cols.length, "column")} in pixels`,
+      value: String(w0),
+      note: "20 to 2,000. Double-click a column's right edge to fit it to its text instead.",
+      check: (v) => (/^\d+$/.test(v.trim()) && Number(v) >= 20 && Number(v) <= 2000 ? "" : "Type a whole number from 20 to 2,000."),
+      done: (v) => {
+        for (const c of cols) t.columns.setWidth(c, Number(v));
+        t.bump();
+      },
+    };
+  }
+
   function askRowLines(): void {
     const t = tab;
     if (!t) return;
@@ -3382,6 +3419,14 @@
       return;
     }
     const sel = window.getSelection()?.toString() ?? "";
+    // As in Excel: with several cells selected, Find and Replace look only
+    // in them (whole columns: in those columns); with one cell, everywhere.
+    const t = tab;
+    if (t && !findOpen) {
+      const r = t.rect;
+      if (cellCount(r) > 1) findOptions.scope = wholeCols(r, t) && !wholeRows(r, t) ? "column" : wholeRows(r, t) && wholeCols(r, t) ? "all" : "selection";
+      else if (findOptions.scope !== "all") findOptions.scope = "all";
+    }
     findOpen = true;
     findReplace = replace;
     if (sel && sel.length < 200 && !sel.includes("\n")) findOptions.text = sel;
@@ -3664,7 +3709,9 @@
 
     { id: "format.autofit", label: "&AutoFit column width", run: () => { const r = tab!.rect; void grid?.fitCols(r.col, r.cols); }, enabled: hasTab },
     { id: "format.hideCols", label: "&Hide columns", keys: ["Ctrl+0"], run: hideCols, enabled: hasTab },
-    { id: "format.showCols", label: "&Unhide all columns", keys: ["Ctrl+Shift+0", "Ctrl+Shift+)"], run: () => { tab!.columns.showAll(); tab!.bump(); }, enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
+    { id: "format.showCols", label: "&Unhide columns", keys: ["Ctrl+Shift+0", "Ctrl+Shift+)"], run: () => unhideCols(), enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
+    { id: "format.colWidth", label: "Set column &width…", run: () => askColWidth(), enabled: hasTab },
+    { id: "format.showAllCols", label: "Unhide all columns", run: () => { tab!.columns.showAll(); tab!.bump(); }, enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
     { id: "format.header", label: "First row is &header", run: toggleHeader, enabled: hasTab, checked: () => !!tab?.header },
     { id: "format.makeHeader", label: "&Make this row the header", run: makeHeader, enabled: ready },
     { id: "format.renameCol", label: "Re&name column…", run: () => void askRename(menuCol ?? undefined), enabled: () => ready() && !tab?.info.read_only && (tab?.info.cols ?? 0) > 0 },
@@ -3848,7 +3895,7 @@
       ],
     },
     { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.symbol"] },
-    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.hideCols", "format.showCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
+    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
     {
       label: "&Data",
       items: [
@@ -3894,8 +3941,8 @@
   const contextItems: Record<string, string[]> = {
     cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "edit.fillDown", "edit.fillRight"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
-    col: ["format.renameCol", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.hideCols", "format.showCols", "-", "edit.clear"],
-    corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showCols"],
+    col: ["format.renameCol", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "edit.clear"],
+    corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showAllCols"],
   };
 
   const toolbar: (string | "-")[] = [
@@ -4111,7 +4158,7 @@
       }
       case "Enter":
         e.preventDefault();
-        grid.advance(e.shiftKey ? -1 : 1, 0);
+        grid.advance(...enterStep(prefs.data.enterMove, e.shiftKey));
         return;
       case "Tab":
         e.preventDefault();

@@ -122,6 +122,20 @@
     </p>
   </fieldset>
   <fieldset>
+    <legend>Editing</legend>
+    <label class="row"
+      >After pressing Enter, move
+      <select aria-label="After pressing Enter, move" bind:value={prefs.data.enterMove} onchange={() => prefs.save()}>
+        <option value="down">down</option>
+        <option value="right">right</option>
+        <option value="up">up</option>
+        <option value="left">left</option>
+        <option value="none">nowhere (stay on the cell)</option>
+      </select></label
+    >
+    <p class="note">Shift+Enter moves the other way. Inside a selected block, Enter moves within the block (unless set to stay).</p>
+  </fieldset>
+  <fieldset>
     <legend>Autosave and recovery</legend>
     <label class="row"><input type="checkbox" bind:checked={prefs.data.autosave} onchange={() => prefs.save()} /> Keep a recovery copy of unsaved changes every
       <input type="number" min="1" max="60" step="1" style="width: 4em" bind:value={prefs.data.autosaveMinutes} onchange={() => { prefs.data.autosaveMinutes = Math.min(60, Math.max(1, Math.round(Number(prefs.data.autosaveMinutes) || 2))); prefs.save(); }} /> minutes</label>
