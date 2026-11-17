@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/engine", "crates/cli", "src-tauri"]
 
 [workspace.package]
-version = "0.3.6"
+version = "0.3.5"
 edition = "2021"
 license = "UNLICENSED"
 authors = ["Natendo"]
