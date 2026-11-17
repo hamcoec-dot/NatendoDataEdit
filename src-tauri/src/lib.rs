@@ -2037,9 +2037,11 @@ async fn fill_cells(
     col: u32,
     cols: u32,
     value: String,
+    skip: Option<Vec<u32>>,
 ) -> CmdResult<DocInfo> {
     let docs = docs.inner().clone();
-    blocking(move || docs.fill(doc, row, rows, col, cols, value)).await
+    let skip = skip.unwrap_or_default();
+    blocking(move || docs.fill_skipping(doc, row, rows, col, cols, value, &skip)).await
 }
 
 #[tauri::command]
@@ -2067,9 +2069,11 @@ async fn copy_cells(
     rows: u64,
     col: u32,
     cols: u32,
+    skip: Option<Vec<u32>>,
 ) -> CmdResult<String> {
     let docs = docs.inner().clone();
-    blocking(move || docs.copy(doc, row, rows, col, cols)).await
+    let skip = skip.unwrap_or_default();
+    blocking(move || docs.copy_skipping(doc, row, rows, col, cols, &skip)).await
 }
 
 /// Row and column structure changes and undo/redo, in one command.

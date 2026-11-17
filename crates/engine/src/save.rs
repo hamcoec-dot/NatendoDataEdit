@@ -2068,6 +2068,7 @@ mod tests {
                             count: 3,
                             mode: if b % 2 == 0 { FillMode::Auto } else { FillMode::AutoSwap },
                             read: Default::default(),
+                            skip_cols: Vec::new(),
                         }, &p)
                         .and_then(|plan| d.apply_cells(plan)),
                     3 => d

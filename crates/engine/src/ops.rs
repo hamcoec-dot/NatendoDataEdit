@@ -93,6 +93,22 @@ pub struct CellPlan {
 }
 
 impl CellPlan {
+    /// The plan without its cells in columns `skip` (hidden columns).
+    pub(crate) fn without_cols(mut self, skip: &[u32]) -> CellPlan {
+        if skip.is_empty() {
+            return self;
+        }
+        let mut removed = 0u64;
+        for (_, cells) in &mut self.changes {
+            let before = cells.len();
+            cells.retain(|(c, _)| !skip.contains(c));
+            removed += (before - cells.len()) as u64;
+        }
+        self.changes.retain(|(_, c)| !c.is_empty());
+        self.cells = self.cells.saturating_sub(removed);
+        self
+    }
+
     /// The number of columns the table needs for this plan.
     pub fn widest(&self) -> u32 {
         self.changes
@@ -141,6 +157,12 @@ pub struct PasteSpec {
     /// Rows become columns.
     pub transpose: bool,
     pub read: ReadOptions,
+    /// Columns the paste passes over (hidden ones): pasted columns go to
+    /// the next columns not listed, as pasted rows go to the next shown rows.
+    pub skip_cols: Vec<u32>,
+    /// A paste taller than the shown rows left stops at the last shown row
+    /// (the rest is left out) instead of adding the rest as new rows.
+    pub stop_at_end: bool,
 }
 
 enum Outcome {
@@ -273,6 +295,8 @@ pub struct FillSpec {
     pub count: u64,
     pub mode: FillMode,
     pub read: ReadOptions,
+    /// Columns left as they are (hidden ones).
+    pub skip_cols: Vec<u32>,
 }
 
 /// How to split a column.
@@ -554,14 +578,23 @@ impl Document {
                 "at most {MAX_BLOCK_CELLS} cells can be pasted at once"
             )));
         }
-        if spec.col as u64 + width as u64 > MAX_EDIT_COL as u64 + 1 {
-            return Err(Error::OutOfRange);
+        // Pasted column k goes to the k-th column from the paste point that
+        // is not skipped (a hidden column is passed over).
+        let mut cols: Vec<u32> = Vec::with_capacity(width as usize);
+        let mut c = spec.col as u64;
+        while cols.len() < width as usize {
+            if c > MAX_EDIT_COL as u64 {
+                return Err(Error::OutOfRange);
+            }
+            if !spec.skip_cols.contains(&(c as u32)) {
+                cols.push(c as u32);
+            }
+            c += 1;
         }
         let n = self.row_count();
         if spec.row > n {
             return Err(Error::OutOfRange);
         }
-        let cols: Vec<u32> = (spec.col..spec.col + width).collect();
         let reader = Cols::new(self, &cols);
         let mut plan = CellPlan::new(self);
         let inside = (n - spec.row).min(height);
@@ -582,7 +615,7 @@ impl Document {
                     match combine(dest, src, spec.op, spec.read) {
                         Outcome::Write(v) => {
                             if !needs_dest || v != dest {
-                                cells.push((spec.col + k as u32, v));
+                                cells.push((cols[k], v));
                             }
                         }
                         Outcome::Keep => {}
@@ -599,12 +632,20 @@ impl Document {
                 plan.changes.push((id, cells));
             }
         }
+        if spec.stop_at_end {
+            return Ok(plan);
+        }
         for line in grid.into_iter().skip(inside as usize) {
-            let mut row = vec![String::new(); spec.col as usize + line.len()];
+            let wide = line.len().min(cols.len());
+            let mut row = vec![
+                String::new();
+                cols.get(wide.wrapping_sub(1))
+                    .map_or(0, |&c| c as usize + 1)
+            ];
             for (k, src) in line.into_iter().enumerate() {
                 if let Outcome::Write(v) = combine("", &src, spec.op, spec.read) {
                     plan.cells += u64::from(!v.is_empty());
-                    row[spec.col as usize + k] = v;
+                    row[cols[k] as usize] = v;
                 }
             }
             plan.append.push(row);
@@ -791,7 +832,7 @@ impl Document {
                 }
             }
         }
-        Ok(plan)
+        Ok(plan.without_cols(&spec.skip_cols))
     }
 
     // ---- data edges ----
@@ -1605,6 +1646,119 @@ X
             all(&d).iter().map(|r| r[1].clone()).collect::<Vec<_>>(),
             ["v", "1", "", "2", "3"]
         );
+    }
+
+    /// A filter that shows rows whose first column is "a".
+    fn filter_a(d: &mut Document) {
+        use crate::filter::{ColumnFilter, FilterSpec, Rule};
+        d.set_filter(&FilterSpec {
+            columns: vec![ColumnFilter {
+                col: 0,
+                rule: Rule::Values {
+                    values: vec!["a".into()],
+                    blanks: false,
+                },
+            }],
+            keep_first: true,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+
+    fn whole(d: &mut Document) -> String {
+        d.clear_filter();
+        (0..d.row_count())
+            .map(|r| {
+                (0..d.col_count())
+                    .map(|c| d.cell(r, c).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    #[test]
+    fn filtered_paste_fills_shown_rows_and_can_stop_at_the_end() {
+        let grid = |n: usize| (0..n).map(|i| vec![format!("P{i}")]).collect::<Vec<_>>();
+        let p = Progress::new();
+        // Taller than the shown rows, stopping at the end: nothing added.
+        let mut d = doc("k,v\na,1\nb,2\na,3\nb,4\na,5\n");
+        filter_a(&mut d);
+        let spec = PasteSpec {
+            row: 1,
+            col: 1,
+            stop_at_end: true,
+            ..Default::default()
+        };
+        let plan = d.plan_paste(&spec, grid(5), &p).unwrap();
+        assert_eq!(plan.cells, 3);
+        d.apply_cells(plan).unwrap();
+        assert_eq!(whole(&mut d), "k,v/a,P0/b,2/a,P1/b,4/a,P2");
+        // Adding the rest as new rows (today's way).
+        let mut d = doc("k,v\na,1\nb,2\na,3\nb,4\na,5\n");
+        filter_a(&mut d);
+        let plan = d
+            .plan_paste(
+                &PasteSpec {
+                    row: 1,
+                    col: 1,
+                    ..Default::default()
+                },
+                grid(5),
+                &p,
+            )
+            .unwrap();
+        d.apply_cells(plan).unwrap();
+        assert_eq!(whole(&mut d), "k,v/a,P0/b,2/a,P1/b,4/a,P2/,P3/,P4");
+        // Undo (the paste, then clearing the filter) restores everything.
+        while d.undo() {}
+        assert_eq!(whole(&mut d), "k,v/a,1/b,2/a,3/b,4/a,5");
+    }
+
+    #[test]
+    fn paste_and_fill_pass_over_skipped_columns() {
+        let p = Progress::new();
+        let mut d = doc("a,b,c,d\n1,2,3,4\n");
+        let spec = PasteSpec {
+            row: 1,
+            col: 0,
+            skip_cols: vec![1],
+            ..Default::default()
+        };
+        let plan = d
+            .plan_paste(&spec, vec![vec!["x".into(), "y".into(), "z".into()]], &p)
+            .unwrap();
+        d.apply_cells(plan).unwrap();
+        assert_eq!(whole(&mut d), "a,b,c,d/x,2,y,z");
+        // Paste Special (add) over a skipped column too.
+        let spec = PasteSpec {
+            row: 1,
+            col: 0,
+            op: PasteOp::Add,
+            skip_cols: vec![0],
+            ..Default::default()
+        };
+        let mut d = doc("a,b\n1,2\n");
+        let plan = d.plan_paste(&spec, vec![vec!["5".into()]], &p).unwrap();
+        d.apply_cells(plan).unwrap();
+        assert_eq!(whole(&mut d), "a,b/1,7");
+        // Fill down leaves a skipped column alone.
+        let mut d = doc("a,b\n1,2\n,\n,\n");
+        let spec = FillSpec {
+            row: 1,
+            col: 0,
+            rows: 1,
+            cols: 2,
+            dir: Dir::Down,
+            count: 2,
+            mode: crate::fill::FillMode::Copy,
+            read: Default::default(),
+            skip_cols: vec![1],
+        };
+        let plan = d.plan_fill(&spec, &p).unwrap();
+        d.apply_cells(plan).unwrap();
+        assert_eq!(whole(&mut d), "a,b/1,2/1,/1,");
     }
 
     #[test]

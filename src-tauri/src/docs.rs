@@ -1962,6 +1962,21 @@ impl Docs {
         cols: u32,
         value: String,
     ) -> CmdResult<DocInfo> {
+        self.fill_skipping(id, row, rows, col, cols, value, &[])
+    }
+
+    /// [`Docs::fill`] leaving columns `skip` (hidden ones) as they are.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_skipping(
+        &self,
+        id: u32,
+        row: u64,
+        rows: u64,
+        col: u32,
+        cols: u32,
+        value: String,
+        skip: &[u32],
+    ) -> CmdResult<DocInfo> {
         let n = rows.saturating_mul(cols as u64);
         check_write(n, std::iter::once(value.len()))?;
         if (value.len() as u64).saturating_mul(n) > MAX_WRITE_CHARS as u64 {
@@ -1975,7 +1990,7 @@ impl Docs {
             }
             let mut cells = Vec::with_capacity(n as usize);
             for r in row..r1 {
-                for c in col..c1 {
+                for c in (col..c1).filter(|c| !skip.contains(c)) {
                     cells.push((r, c, value.clone()));
                 }
             }
@@ -1986,6 +2001,20 @@ impl Docs {
     /// Selected cells as tab-separated text for the clipboard. Values with a
     /// tab, quote or line break are quoted, so pasting round-trips.
     pub fn copy(&self, id: u32, row: u64, rows: u64, col: u32, cols: u32) -> CmdResult<String> {
+        self.copy_skipping(id, row, rows, col, cols, &[])
+    }
+
+    /// [`Docs::copy`] leaving out columns `skip` (hidden ones), so what is
+    /// not shown never reaches the clipboard.
+    pub fn copy_skipping(
+        &self,
+        id: u32,
+        row: u64,
+        rows: u64,
+        col: u32,
+        cols: u32,
+        skip: &[u32],
+    ) -> CmdResult<String> {
         let n = rows.saturating_mul(cols as u64);
         if n > MAX_COPY_CELLS {
             return Err(CmdError::new(
@@ -2017,11 +2046,16 @@ impl Docs {
             let end = (r + band).min(r1);
             let v = d.viewport(r..end, col..col.saturating_add(cols), per_cell)?;
             for i in 0..v.rows {
+                let mut first = true;
                 for c in 0..v.cols {
+                    if skip.contains(&(col + c)) {
+                        continue;
+                    }
                     let k = (i * v.cols + c) as usize;
-                    if c > 0 {
+                    if !first {
                         out.push('\t');
                     }
+                    first = false;
                     if v.truncated[k] {
                         // Over its share of the band: read this cell alone.
                         let (rr, cc) = (r + i as u64, col + c);
@@ -5408,6 +5442,7 @@ mod tests {
                         col: 1,
                         cols: 1,
                         value: String::new(),
+                        skip_cols: Vec::new(),
                     },
                 },
             )
@@ -6819,6 +6854,21 @@ ca,California
         assert_eq!(e.kind, "out_of_memory");
         assert!(docs.set_cells(id, vec![(0, 100, "x".into())]).is_ok());
         assert_eq!(docs.info(id).unwrap().cols, 101);
+    }
+
+    #[test]
+    fn hidden_columns_are_not_copied_or_filled() {
+        let docs = Docs::default();
+        let p = tmp("hc.csv", b"a,b,c\n1,2,3\n");
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        assert_eq!(
+            docs.copy_skipping(id, 0, 2, 0, 3, &[1]).unwrap(),
+            "a\tc\r\n1\t3\r\n"
+        );
+        docs.fill_skipping(id, 1, 1, 0, 3, "x".into(), &[1])
+            .unwrap();
+        assert_eq!(docs.copy(id, 1, 1, 0, 3).unwrap(), "x\t2\tx\r\n");
     }
 
     #[test]

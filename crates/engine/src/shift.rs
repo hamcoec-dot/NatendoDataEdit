@@ -23,6 +23,9 @@ pub struct RectFill {
     pub col: u32,
     pub cols: u32,
     pub value: String,
+    /// Columns in the block left as they are (hidden ones).
+    #[serde(default)]
+    pub skip_cols: Vec<u32>,
 }
 
 /// Which way the other cells move.
@@ -95,6 +98,10 @@ impl Document {
         check_block(self, spec.row, spec.rows, spec.col, spec.cols)?;
         if !spec.value.is_empty()
             || self.is_filtered()
+            || spec
+                .skip_cols
+                .iter()
+                .any(|c| (spec.col..spec.col + spec.cols).contains(c))
             || spec.row + spec.rows != self.row_count()
             || spec.row > MAX_KEPT_ABOVE
         {
@@ -138,15 +145,19 @@ impl Document {
         }
         let mut plan = CellPlan::new(self);
         let value = &spec.value;
+        let cols: Vec<u32> = (spec.col..spec.col + spec.cols)
+            .filter(|c| !spec.skip_cols.contains(c))
+            .collect();
+        if cols.is_empty() {
+            return Ok(plan);
+        }
         plan.changes = self.par_rows(spec.row..spec.row + spec.rows, progress, |_, id, _| {
             Ok(Some((
                 id,
-                (spec.col..spec.col + spec.cols)
-                    .map(|c| (c, value.clone()))
-                    .collect(),
+                cols.iter().map(|&c| (c, value.clone())).collect(),
             )))
         })?;
-        plan.cells = n;
+        plan.cells = spec.rows * cols.len() as u64;
         Ok(plan)
     }
 
@@ -395,6 +406,7 @@ mod tests {
             col: 1,
             cols: 1,
             value: String::new(),
+            skip_cols: Vec::new(),
         };
         let plan = d.plan_clear_columns(&spec).unwrap().unwrap();
         d.apply_cols(plan).unwrap();
@@ -437,6 +449,7 @@ mod tests {
             col: 1,
             cols: 2,
             value: String::new(),
+            skip_cols: Vec::new(),
         };
         let plan = d.plan_clear_columns(&spec).unwrap().expect("whole columns");
         d.apply_cols(plan).unwrap();
