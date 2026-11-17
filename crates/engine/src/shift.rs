@@ -413,6 +413,19 @@ mod tests {
             d.change_list(&Progress::new()).unwrap().cleared_cols,
             vec![1]
         );
+        // Typing into the cleared column, then clearing it again: still one
+        // cleared column, and its cells are not listed one by one.
+        d.set_cell(2, 1, "typed".into()).unwrap();
+        let plan = d.plan_clear_columns(&spec).unwrap().unwrap();
+        d.apply_cols(plan).unwrap();
+        let l = d.change_list(&Progress::new()).unwrap();
+        assert_eq!(l.cleared_cols, vec![1]);
+        assert!(l.added_cols.is_empty() && l.deleted_cols.is_empty());
+        assert_eq!(l.cells_total, 0);
+        assert_eq!(
+            d.edited_cells(0..4, 0..3).unwrap(),
+            vec![(1, 1), (2, 1), (3, 1)]
+        );
     }
 
     #[test]

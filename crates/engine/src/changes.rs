@@ -78,11 +78,18 @@ impl Document {
     /// The file's column that physical column `p` stands for: itself, or
     /// the column it replaced when it was cleared at once (while that one
     /// is gone from the table).
+    /// A column cleared twice points to the first clear's column, which
+    /// points to the file's: the chain is followed back to the file.
     fn file_column(&self, p: u32, present: &HashSet<u32>) -> Option<u32> {
-        match self.swapped.get(&p) {
-            Some(&old) if !present.contains(&old) => Some(old),
-            _ => None,
+        let mut at = p;
+        // Each clear adds one link; a chain can't be longer than the clears.
+        for _ in 0..=self.swapped.len() {
+            match self.swapped.get(&at) {
+                Some(&old) if !present.contains(&old) => at = old,
+                _ => break,
+            }
         }
+        (at != p).then_some(at)
     }
 
     /// What changed since the file was opened or last saved: the first
@@ -135,6 +142,7 @@ impl Document {
             .map(|(c, _)| c as u32)
             .collect();
         let kept: Vec<u32> = from.iter().copied().filter(|&p| p < width).collect();
+        let cleared_set: HashSet<u32> = list.cleared_cols.iter().copied().collect();
         list.moved_cols = kept.windows(2).any(|w| w[0] > w[1]);
         // Rows: one pass in table order.
         let edited: HashSet<u32> = self.edited_ids().into_iter().collect();
@@ -188,6 +196,11 @@ impl Document {
                         let old = self.original_values(id)?;
                         let new = self.physical_values(id)?;
                         for (c, &p) in map.iter().enumerate() {
+                            // A cleared column is listed as a whole, not
+                            // cell by cell.
+                            if cleared_set.contains(&(c as u32)) {
+                                continue;
+                            }
                             let o = old.get(from[c] as usize).map_or("", String::as_str);
                             let n = new.get(p as usize).map_or("", String::as_str);
                             if o != n {
