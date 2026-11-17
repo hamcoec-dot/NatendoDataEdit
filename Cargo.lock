@@ -2448,6 +2448,7 @@ dependencies = [
 name = "natendo-engine"
 version = "0.3.8"
 dependencies = [
+ "aho-corasick",
  "chacha20poly1305",
  "chardetng",
  "crc32fast",

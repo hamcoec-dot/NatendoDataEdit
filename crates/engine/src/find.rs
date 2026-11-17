@@ -281,6 +281,84 @@ fn regex_ignore_accents(src: &str) -> String {
     out
 }
 
+/// A regular expression replacement split at its case marks: `\U` upper
+/// case and `\L` lower case until `\E`, `\u` and `\l` for the next letter
+/// only (as in Notepad++ and VS Code), applied to the expanded text so a
+/// group's value is never read as marks.
+struct CaseTemplate<'a> {
+    parts: Vec<(Case, Option<bool>, &'a str)>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Case {
+    Keep,
+    Upper,
+    Lower,
+}
+
+impl<'a> CaseTemplate<'a> {
+    fn new(rep: &'a str) -> Self {
+        let mut parts = Vec::new();
+        let (mut case, mut once) = (Case::Keep, None);
+        let mut start = 0;
+        let b = rep.as_bytes();
+        let mut i = 0;
+        while i + 1 < b.len() {
+            if b[i] == b'\\' && matches!(b[i + 1], b'U' | b'L' | b'E' | b'u' | b'l') {
+                if start < i || once.is_some() {
+                    parts.push((case, once.take(), &rep[start..i]));
+                }
+                match b[i + 1] {
+                    b'U' => case = Case::Upper,
+                    b'L' => case = Case::Lower,
+                    b'E' => case = Case::Keep,
+                    b'u' => once = Some(true),
+                    _ => once = Some(false),
+                }
+                i += 2;
+                start = i;
+            } else {
+                i += 1;
+            }
+        }
+        parts.push((case, once, &rep[start..]));
+        CaseTemplate { parts }
+    }
+
+    fn expand(&self, caps: &regex::Captures<'_>, out: &mut String) {
+        if self.parts.len() == 1 && self.parts[0].0 == Case::Keep && self.parts[0].1.is_none() {
+            caps.expand(self.parts[0].2, out);
+            return;
+        }
+        let mut pending: Option<bool> = None;
+        let mut piece = String::new();
+        for (case, once, text) in &self.parts {
+            if once.is_some() {
+                pending = *once;
+            }
+            piece.clear();
+            caps.expand(text, &mut piece);
+            let mut cased = match case {
+                Case::Keep => piece.clone(),
+                Case::Upper => piece.to_uppercase(),
+                Case::Lower => piece.to_lowercase(),
+            };
+            if let Some(up) = pending {
+                if let Some(first) = cased.chars().next() {
+                    let rest = cased[first.len_utf8()..].to_string();
+                    cased = if up {
+                        first.to_uppercase().collect::<String>() + &rest
+                    } else {
+                        first.to_lowercase().collect::<String>() + &rest
+                    };
+                    pending = None;
+                }
+            }
+            out.push_str(&cased);
+        }
+    }
+}
+
 /// `\t` `\n` `\r` `\\` `\u{XXXX}` in text as the characters they name;
 /// any other backslash stays as it is.
 pub(crate) fn unescape(t: &str) -> Cow<'_, str> {
@@ -466,6 +544,7 @@ impl Matcher {
                 hits += 1;
             }
         } else {
+            let template = CaseTemplate::new(rep);
             let mut piece = String::new();
             for caps in self.re.captures_iter(s) {
                 let m = caps.get(0).expect("group 0 always matches");
@@ -474,7 +553,7 @@ impl Matcher {
                 }
                 push(&mut out, &s[last..m.start()])?;
                 piece.clear();
-                caps.expand(rep, &mut piece);
+                template.expand(&caps, &mut piece);
                 push(&mut out, &piece)?;
                 last = m.end();
                 hits += 1;
@@ -590,10 +669,11 @@ impl Matcher {
 }
 
 /// Which cells to search.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Scope {
     /// Every column of every shown row.
+    #[default]
     All,
     /// These columns of every shown row.
     Columns { cols: Vec<u32> },
@@ -675,6 +755,25 @@ pub struct ReplacePlan {
     pub hits: u64,
     /// The first changes, for showing before applying.
     pub preview: Vec<Change>,
+}
+
+/// At most this many pairs in one batch replace, and this much text.
+pub const MAX_BATCH_PAIRS: usize = 100_000;
+pub const MAX_BATCH_BYTES: usize = 16 << 20;
+
+/// Many find → replace pairs at once (a pasted two-column list, a file or
+/// another tab).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BatchReplace {
+    pub pairs: Vec<(String, String)>,
+    /// A cell must equal a "find" (codes, names); otherwise every
+    /// occurrence inside cells is replaced.
+    pub whole_cell: bool,
+    pub match_case: bool,
+    pub scope: Scope,
+    pub skip_first: bool,
+    pub skip_cols: Vec<u32>,
 }
 
 /// How many cells match, and where a cell is among them (Find's "3 of 1,204").
@@ -1157,6 +1256,95 @@ impl Document {
         let m = Matcher::new(&spec.pattern)?;
         m.check_replacement(replacement)?;
         let area = self.area(spec)?;
+        self.plan_cells_with(&area, preview, progress, |t| m.replace(t, replacement))
+    }
+
+    /// Replace many pairs at once (batch replace from a list): every pair in
+    /// one pass, all at once (with A→B and B→C, an "A" becomes "B", never
+    /// "C"), the longest match first. Whole cell: a cell equal to a "find"
+    /// becomes its "replace". Inside cells: every occurrence.
+    pub fn plan_batch_replace(
+        &self,
+        spec: &BatchReplace,
+        preview: usize,
+        progress: &Progress,
+    ) -> Result<ReplacePlan, Error> {
+        self.ready_for_bulk()?;
+        if spec.pairs.len() > MAX_BATCH_PAIRS {
+            return Err(Error::Invalid(format!(
+                "at most {MAX_BATCH_PAIRS} pairs can be replaced at once"
+            )));
+        }
+        let bytes: usize = spec.pairs.iter().map(|(a, b)| a.len() + b.len()).sum();
+        if bytes > MAX_BATCH_BYTES {
+            return Err(Error::Invalid("the list of pairs is too large".into()));
+        }
+        let pairs: Vec<&(String, String)> =
+            spec.pairs.iter().filter(|(a, _)| !a.is_empty()).collect();
+        if pairs.is_empty() {
+            return Err(Error::Invalid("the list has nothing to look for".into()));
+        }
+        let find = FindSpec {
+            pattern: Pattern::default(),
+            scope: spec.scope.clone(),
+            skip_first: spec.skip_first,
+            skip_cols: spec.skip_cols.clone(),
+        };
+        let area = self.area(&find)?;
+        let key = |s: &str| -> String {
+            if spec.match_case {
+                s.to_string()
+            } else {
+                s.to_lowercase()
+            }
+        };
+        if spec.whole_cell {
+            // The first pair for a value wins.
+            let mut map: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
+            for (a, b) in &pairs {
+                map.entry(key(a)).or_insert(b.as_str());
+            }
+            return self.plan_cells_with(&area, preview, progress, |t| {
+                Ok(map.get(&key(t)).map(|b| (b.to_string(), 1)))
+            });
+        }
+        let ac = aho_corasick::AhoCorasick::builder()
+            .match_kind(aho_corasick::MatchKind::LeftmostLongest)
+            .ascii_case_insensitive(!spec.match_case)
+            .build(pairs.iter().map(|(a, _)| a.as_str()))
+            .map_err(|e| Error::Invalid(format!("the list could not be used: {e}")))?;
+        self.plan_cells_with(&area, preview, progress, |t| {
+            let mut out = String::new();
+            let mut last = 0;
+            let mut hits = 0u64;
+            for m in ac.find_iter(t) {
+                out.push_str(&t[last..m.start()]);
+                out.push_str(&pairs[m.pattern().as_usize()].1);
+                last = m.end();
+                hits += 1;
+                if out.len() > MAX_RESULT_CELL_BYTES {
+                    return Err(Error::OutOfMemory(
+                        "a replacement would make a cell too large",
+                    ));
+                }
+            }
+            if hits == 0 {
+                return Ok(None);
+            }
+            out.push_str(&t[last..]);
+            Ok(Some((out, hits)))
+        })
+    }
+
+    /// Work out a replace over `area` with `f` giving each cell's new text
+    /// and its number of matches (`None`: no match).
+    fn plan_cells_with(
+        &self,
+        area: &Area,
+        preview: usize,
+        progress: &Progress,
+        f: impl Fn(&str) -> Result<Option<(String, u64)>, Error> + Sync,
+    ) -> Result<ReplacePlan, Error> {
         let (r0, r1) = (area.rows.start, area.rows.end);
         progress.start(r1.saturating_sub(r0));
         let created = AtomicUsize::new(0);
@@ -1184,7 +1372,7 @@ impl Document {
                     let mut err = None;
                     self.each_cell(&area, r, false, &mut buf, |k, t| {
                         let phys = self.phys(area.cols[k])?;
-                        match m.replace(t, replacement) {
+                        match f(t) {
                             Ok(Some((new, n))) if new != t => {
                                 if !charge(&created, new.len()) {
                                     err = Some(Error::OutOfMemory(
@@ -1511,6 +1699,65 @@ mod tests {
         let m = with(" ", PatternKind::Plain, |_| {});
         assert_eq!(m.replace("a b", r"\n").unwrap().unwrap().0, r"a\nb");
         assert_eq!(unescape(r"a\\b\q\u{zz}"), r"a\b\q\u{zz}");
+    }
+
+    #[test]
+    fn batch_replace_all_at_once() {
+        let d = doc("a,b\nA,x B y\nB,C\nzz,ab\n");
+        let p = Progress::new();
+        let pairs = vec![
+            ("A".to_string(), "B".to_string()),
+            ("B".to_string(), "C".to_string()),
+            ("ab".to_string(), "Q".to_string()),
+        ];
+        // Whole cell, case blind: A -> B, B -> C (never A -> C).
+        let spec = BatchReplace {
+            pairs: pairs.clone(),
+            whole_cell: true,
+            scope: Scope::All,
+            skip_first: true,
+            ..Default::default()
+        };
+        let plan = d.plan_batch_replace(&spec, 10, &p).unwrap();
+        let got: Vec<(u64, &str, &str)> = plan
+            .preview
+            .iter()
+            .map(|c| (c.row, c.before.as_str(), c.after.as_str()))
+            .collect();
+        assert_eq!(got, vec![(1, "A", "B"), (2, "B", "C"), (3, "ab", "Q")]);
+        // Inside cells, match case, longest first.
+        let spec = BatchReplace {
+            pairs,
+            match_case: true,
+            scope: Scope::All,
+            skip_first: true,
+            ..Default::default()
+        };
+        let plan = d.plan_batch_replace(&spec, 10, &p).unwrap();
+        let got: Vec<&str> = plan.preview.iter().map(|c| c.after.as_str()).collect();
+        assert_eq!(got, vec!["B", "x C y", "C", "Q"]);
+        // Limits.
+        let big = BatchReplace {
+            pairs: vec![("a".into(), "b".into()); MAX_BATCH_PAIRS + 1],
+            ..Default::default()
+        };
+        assert!(d.plan_batch_replace(&big, 0, &p).is_err());
+    }
+
+    #[test]
+    fn replacement_case_marks() {
+        let m = with(r"(\w+) (\w+)", PatternKind::Regex, |_| {});
+        let r = |rep: &str, s: &str| m.replace(s, rep).unwrap().unwrap().0;
+        assert_eq!(r(r"\U$1\E $2", "ada lovelace"), "ADA lovelace");
+        assert_eq!(r(r"\u$2, \u$1", "ada lovelace"), "Lovelace, Ada");
+        assert_eq!(r(r"\L$0", "ADA LOVELACE"), "ada lovelace");
+        assert_eq!(r(r"\l$1", "ADA X"), "aDA");
+        // A group's own text is never read as a mark.
+        let m = with(r"(.+)", PatternKind::Regex, |_| {});
+        assert_eq!(m.replace(r"a\Ub", r"\U$1").unwrap().unwrap().0, r"A\UB");
+        // Plain text replacements are taken as they are.
+        let m = with("x", PatternKind::Plain, |_| {});
+        assert_eq!(m.replace("x", r"\Uy").unwrap().unwrap().0, r"\Uy");
     }
 
     #[test]

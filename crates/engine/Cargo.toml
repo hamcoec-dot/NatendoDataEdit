@@ -16,6 +16,7 @@ encoding_rs = "0.8"
 chardetng = "0.1"
 rayon = "1.10"
 regex = "1.11"
+aho-corasick = "1.1"
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
 # Spreadsheet files (.xlsx/.ods) are read and written by our own small ZIP
