@@ -758,6 +758,11 @@ pub struct ReplacePlan {
 }
 
 impl ReplacePlan {
+    /// The rows (ids) the plan changes.
+    pub fn row_ids(&self) -> Vec<u32> {
+        self.changes.iter().map(|(id, _)| *id).collect()
+    }
+
     /// Leave these cells (shown row, logical column) out of the plan: the
     /// changes the user unticked in the preview.
     pub fn exclude(&mut self, cells: &[(u64, u32)]) {
@@ -1411,28 +1416,37 @@ impl Document {
         progress: &Progress,
     ) -> Result<crate::reshape::RowPlan, Error> {
         let rows = self.matching_rows(spec, progress)?;
+        let ids: Vec<u32> = rows.iter().filter_map(|&r| self.id_at(r)).collect();
+        Ok(self.plan_show_ids(&ids, spec.skip_first))
+    }
+
+    /// Show only these rows (ids; a view, undoable); the first row stays
+    /// when it holds titles.
+    pub fn plan_show_ids(&self, ids: &[u32], keep_first: bool) -> crate::reshape::RowPlan {
         let base = self.next_row_id();
         let mut bits = vec![0u64; (base as usize).div_ceil(64)];
-        let mut set = |id: u32| bits[(id >> 6) as usize] |= 1 << (id & 63);
-        if spec.skip_first && self.row_count() > 0 {
+        let mut set = |id: u32| {
+            if id < base {
+                bits[(id >> 6) as usize] |= 1 << (id & 63);
+            }
+        };
+        if keep_first && self.row_count() > 0 {
             set(self.id_at(0).expect("a first row"));
         }
-        for &r in &rows {
-            if let Some(id) = self.id_at(r) {
-                set(id);
-            }
+        for &id in ids {
+            set(id);
         }
         let mut plan = crate::reshape::RowPlan::new(self);
-        plan.rows = rows.len() as u64;
+        plan.rows = ids.len() as u64;
         plan.view = Some(crate::document::View::new(
             crate::filter::FilterSpec {
-                keep_first: spec.skip_first,
+                keep_first,
                 ..Default::default()
             },
             bits,
             base,
         ));
-        Ok(plan)
+        plan
     }
 
     /// Delete the rows with a match (one undo step).

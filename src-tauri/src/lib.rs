@@ -2276,6 +2276,24 @@ async fn replace_page(
 }
 
 #[tauri::command]
+async fn column_pairs(
+    docs: DocsState<'_>,
+    doc: u32,
+    find_col: u32,
+    with_col: u32,
+    skip_first: bool,
+) -> CmdResult<Vec<(String, String)>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.column_pairs(doc, find_col, with_col, skip_first)).await
+}
+
+#[tauri::command]
+async fn show_changed(docs: DocsState<'_>, doc: u32, keep_first: bool) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.show_changed(doc, keep_first)).await
+}
+
+#[tauri::command]
 async fn find_rows(
     docs: DocsState<'_>,
     doc: u32,
@@ -3027,6 +3045,8 @@ pub fn run() {
             replace_confirm,
             batch_preview,
             find_rows,
+            show_changed,
+            column_pairs,
             find_notes,
             replace_titles,
             batch_confirm,

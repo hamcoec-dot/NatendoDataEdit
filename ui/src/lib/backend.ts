@@ -896,6 +896,10 @@ export interface Backend {
   findNotes(doc: number, pattern: Pattern): Promise<import("./notes").NoteMark[]>;
   /** Column titles a replace would change: [column, new title]. */
   replaceTitles(doc: number, spec: FindSpec, replacement: string): Promise<[number, string][]>;
+  /** Show only the rows the last Replace all changed. */
+  showChanged(doc: number, keepFirst: boolean): Promise<DocInfo>;
+  /** Two columns of a tab as (find, replace with) pairs. */
+  columnPairs(doc: number, findCol: number, withCol: number, skipFirst: boolean): Promise<[string, string][]>;
   /** Batch replace from a list: what would change (kept for confirm). */
   batchPreview(doc: number, spec: BatchReplace): Promise<ReplaceReport>;
   /** Apply exactly the previewed batch replace (one undo step). */
@@ -1265,6 +1269,12 @@ class TauriBackend implements Backend {
   }
   replaceTitles(doc: number, spec: FindSpec, replacement: string) {
     return call<[number, string][]>("replace_titles", { doc, spec, replacement });
+  }
+  showChanged(doc: number, keepFirst: boolean) {
+    return call<DocInfo>("show_changed", { doc, keepFirst });
+  }
+  columnPairs(doc: number, findCol: number, withCol: number, skipFirst: boolean) {
+    return call<[string, string][]>("column_pairs", { doc, findCol, withCol, skipFirst });
   }
   batchPreview(doc: number, spec: BatchReplace) {
     return call<ReplaceReport>("batch_preview", { doc, spec });

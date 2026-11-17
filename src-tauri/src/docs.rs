@@ -350,6 +350,8 @@ pub struct Entry {
     /// The last replace computed for a preview, reused by "Replace all"
     /// when nothing changed since (request as JSON, plan).
     replace: Mutex<Option<(String, ReplacePlan)>>,
+    /// Rows (ids) the last Replace all changed ("Show changed rows").
+    changed_rows: Mutex<Vec<u32>>,
     cancel: AtomicBool,
     /// Opened with quoted cells never spanning lines (cleared once a save
     /// has reloaded the file normally).
@@ -1243,6 +1245,7 @@ impl Docs {
             doc: RwLock::new(doc),
             job: Mutex::new(None),
             replace: Mutex::new(None),
+            changed_rows: Mutex::new(Vec::new()),
             cancel: AtomicBool::new(false),
             line_by_line: AtomicBool::new(line_by_line),
             error: Mutex::new(None),
@@ -2846,6 +2849,45 @@ impl Docs {
         Ok(out)
     }
 
+    /// Two columns of a tab as (find, replace with) pairs for a batch
+    /// replace: shown rows, the first one left out when it holds titles,
+    /// rows with an empty "find" skipped.
+    pub fn column_pairs(
+        &self,
+        id: u32,
+        find_col: u32,
+        with_col: u32,
+        skip_first: bool,
+    ) -> CmdResult<Vec<(String, String)>> {
+        use natendo_engine::find::{MAX_BATCH_BYTES, MAX_BATCH_PAIRS};
+        let entry = self.get(id)?;
+        let d = entry.read();
+        if find_col >= d.col_count() || with_col >= d.col_count() {
+            return Err(CmdError::new("invalid", "that column is not in the tab"));
+        }
+        let mut out = Vec::new();
+        let mut bytes = 0usize;
+        for r in u64::from(skip_first)..d.row_count() {
+            let a = d.cell(r, find_col).unwrap_or_default();
+            if a.is_empty() {
+                continue;
+            }
+            let b = d.cell(r, with_col).unwrap_or_default();
+            bytes += a.len() + b.len();
+            out.push((a, b));
+            if out.len() > MAX_BATCH_PAIRS || bytes > MAX_BATCH_BYTES {
+                return Err(CmdError::new(
+                    "too_large",
+                    format!(
+                        "a list can hold at most {} pairs and 16 MB of text",
+                        group(MAX_BATCH_PAIRS as u64)
+                    ),
+                ));
+            }
+        }
+        Ok(out)
+    }
+
     /// What a batch replace (many pairs) would change; the plan is kept for
     /// [`Docs::batch_confirm`].
     pub fn batch_preview(
@@ -2912,6 +2954,7 @@ impl Docs {
             }
         };
         let (cells, hits) = (plan.cells, plan.hits);
+        let rows = plan.row_ids();
         let info = self.edit(id, |d| d.apply_replace(plan)).map_err(|e| {
             if e.kind == "changed" && exact {
                 CmdError::new(
@@ -2922,12 +2965,32 @@ impl Docs {
                 e
             }
         })?;
+        *entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner()) = rows;
         Ok(ReplaceReport {
             cells,
             hits,
             preview: Vec::new(),
             info: Some(info),
         })
+    }
+
+    /// Show only the rows the last Replace all changed (a view, undoable).
+    pub fn show_changed(&self, id: u32, keep_first: bool) -> CmdResult<DocInfo> {
+        let ids = self
+            .get(id)?
+            .changed_rows
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if ids.is_empty() {
+            return Err(CmdError::new("invalid", "nothing was replaced yet"));
+        }
+        self.compute_apply(
+            id,
+            "Filtering",
+            |d, _| Ok(d.plan_show_ids(&ids, keep_first)),
+            |d, plan| d.apply_rows(plan),
+        )
     }
 
     /// Replace in one cell (Find's Replace button): an edit by hand, not a
@@ -2998,7 +3061,9 @@ impl Docs {
             .map(|(_, plan)| plan);
         let attempt = |plan: ReplacePlan| -> CmdResult<ReplaceReport> {
             let (cells, hits) = (plan.cells, plan.hits);
+            let rows = plan.row_ids();
             let info = self.edit(id, |d| d.apply_replace(plan))?;
+            *entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner()) = rows;
             Ok(ReplaceReport {
                 cells,
                 hits,
@@ -7185,7 +7250,20 @@ ca,California
         docs.find_rows(id, spec.clone(), FindRowsAction::Flag { flag: 1 })
             .unwrap();
         let (noted, _) = docs.note_list(id, 10).unwrap();
+
         assert_eq!(noted.iter().filter(|n| n.flag == 1).count(), 1);
+        docs.clear_filter(id).unwrap();
+        assert_eq!(
+            docs.column_pairs(id, 0, 1, true).unwrap(),
+            vec![
+                ("x1".to_string(), "a".to_string()),
+                ("b".to_string(), "c".to_string())
+            ]
+        );
+        assert!(docs.show_changed(id, true).is_err());
+        docs.replace_preview(id, spec.clone(), "y".into()).unwrap();
+        docs.replace_confirm(id, spec, "y".into()).unwrap();
+        assert_eq!(docs.show_changed(id, true).unwrap().rows, 2);
     }
 
     #[test]

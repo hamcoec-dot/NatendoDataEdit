@@ -1126,6 +1126,7 @@ export class MockBackend implements Backend {
     const p = this.planReplace(this.get(doc), spec, replacement);
     const skip = new Set(exclude.map(([r, c]) => `${r}:${c}`));
     const changes = p.changes.filter(([r, c]) => !skip.has(`${r}:${c}`));
+    this.changedRows = [...new Set(changes.map(([r]) => this.rowId(this.get(doc), r)))];
     const info = changes.length ? await this.setCells(doc, changes) : this.refresh(this.get(doc));
     return { cells: changes.length, hits: p.hits, preview: [], info };
   }
@@ -1188,6 +1189,25 @@ export class MockBackend implements Backend {
   }
 
   private batchKey = "";
+  private changedRows: number[] = [];
+
+  async showChanged(doc: number, keepFirst: boolean): Promise<DocInfo> {
+    const d = this.get(doc);
+    if (!this.changedRows.length) throw err("invalid", "nothing was replaced yet");
+    const keep = new Set(this.changedRows);
+    for (let r = this.rowCount(d) - 1; r >= (keepFirst ? 1 : 0); r--) if (!keep.has(this.rowId(d, r))) await this.change(doc, { op: "hide_rows", at: r, count: 1 });
+    return this.refresh(d);
+  }
+
+  async columnPairs(doc: number, findCol: number, withCol: number, skipFirst: boolean): Promise<[string, string][]> {
+    const d = this.get(doc);
+    const out: [string, string][] = [];
+    for (let r = skipFirst ? 1 : 0; r < this.rowCount(d); r++) {
+      const a = this.value(d, r, findCol);
+      if (a) out.push([a, this.value(d, r, withCol)]);
+    }
+    return out;
+  }
   private batchPlan(d: MockDoc, spec: BatchReplace): [number, number, string][] {
     const { r0, r1, cols } = this.area(d, { pattern: { text: "x", kind: "plain", match_case: false, whole_cell: false }, scope: spec.scope, skip_first: spec.skip_first, skip_cols: spec.skip_cols });
     const key = (s: string) => (spec.match_case ? s : s.toLowerCase());
@@ -1221,6 +1241,7 @@ export class MockBackend implements Backend {
     this.batchKey = "";
     if (!ok) throw err("changed", "the list or the file changed since the preview; nothing was replaced. Look at the changes again");
     const plan = this.batchPlan(this.get(doc), spec);
+    this.changedRows = [...new Set(plan.map(([r]) => this.rowId(this.get(doc), r)))];
     const info = plan.length ? await this.setCells(doc, plan) : this.refresh(this.get(doc));
     return { cells: plan.length, hits: plan.length, preview: [], info };
   }
