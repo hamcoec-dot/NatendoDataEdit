@@ -1,7 +1,7 @@
 // One open document as the UI sees it: engine info, selection, view
 // settings (header row, frozen panes, column widths) and its cell cache.
 
-import type { Check } from "./backend";
+import type { Check, FindSpec } from "./backend";
 import type { Highlight } from "./views";
 import type { ColumnScale } from "./m10";
 import type { SortSpec } from "./backend";
@@ -154,6 +154,11 @@ export class Tab {
   rowLines = $state(1);
   /** Colours for cells on screen: "row:col" or "row:*" (whole row). */
   marks = new Map<string, number>();
+  /** The find bar's search while it is open (every match on screen is lit
+   *  up), its version (bumped on each change) and the lit cells "row:col". */
+  findSpec: FindSpec | null = null;
+  findVersion = 0;
+  findHits = new Set<string>();
 
   /** Set by the grid showing this tab: draw again now. */
   onRedraw: (() => void) | null = null;

@@ -248,6 +248,9 @@ export interface Pattern {
   kind: PatternKind;
   match_case: boolean;
   whole_cell: boolean;
+  whole_word?: boolean;
+  ignore_accents?: boolean;
+  escapes?: boolean;
 }
 export type Condition =
   | { type: "text"; op: TextOp; text: string; match_case?: boolean }
@@ -337,6 +340,8 @@ export interface FindSpec {
   pattern: Pattern;
   scope: Scope;
   skip_first: boolean;
+  /** Columns left out (hidden ones, unless "Include hidden" is ticked). */
+  skip_cols?: number[];
 }
 export interface Found {
   row: number;
@@ -355,6 +360,13 @@ export interface Hit {
 export interface FindAll {
   hits: Hit[];
   cells: number;
+}
+export interface FindCount {
+  cells: number;
+  /** Matching cells before the one asked about (Find next order). */
+  before: number;
+  /** That cell matches. */
+  here: boolean;
 }
 export interface ReplaceReport {
   cells: number;
@@ -846,6 +858,11 @@ export interface Backend {
   filterValues(doc: number, col: number, spec: FilterSpec, search: string | null): Promise<ValueList>;
   findNext(doc: number, spec: FindSpec, from: [number, number] | null, backward: boolean): Promise<Found | null>;
   findAll(doc: number, spec: FindSpec): Promise<FindAll>;
+  /** Count matches ("3 of 1,204"); a newer count or a change cancels it
+   *  (kind "cancelled" or "busy"). */
+  findCount(doc: number, spec: FindSpec, at: [number, number] | null): Promise<FindCount>;
+  /** Matching cells in a window of the grid, to light them up. */
+  findMarks(doc: number, spec: FindSpec, row: number, rows: number, col: number, cols: number): Promise<[number, number][]>;
   replacePreview(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport>;
   replaceAll(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport>;
   /** Matches in a piece of text, as [start, end) UTF-16 offsets. */
@@ -1185,6 +1202,12 @@ class TauriBackend implements Backend {
   }
   findAll(doc: number, spec: FindSpec) {
     return call<FindAll>("find_all", { doc, spec });
+  }
+  findCount(doc: number, spec: FindSpec, at: [number, number] | null) {
+    return call<FindCount>("find_count", { doc, spec, at });
+  }
+  findMarks(doc: number, spec: FindSpec, row: number, rows: number, col: number, cols: number) {
+    return call<[number, number][]>("find_marks", { doc, spec, row, rows, col, cols });
   }
   replacePreview(doc: number, spec: FindSpec, replacement: string) {
     return call<ReplaceReport>("replace_preview", { doc, spec, replacement });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { conditionOf, describeRule, emptyForm, findSpecOf, formOf, ruleFor, withRule } from "./filters";
+import { FIND_DEFAULTS, conditionOf, describeRule, emptyForm, findSpecOf, formOf, ruleFor, withRule } from "./filters";
 import { decodeViewport, encodeViewport } from "./binary";
 import { MockBackend } from "./mock";
 import type { Condition } from "./backend";
@@ -32,12 +32,14 @@ describe("filter rules", () => {
 
   it("turns find options into a search", () => {
     const sel = { row: 2, rows: 3, col: 1, cols: 2 };
-    const o = { text: "x", kind: "wildcard" as const, matchCase: true, wholeCell: false, scope: "column" as const };
-    expect(findSpecOf(o, sel, true)).toEqual({
-      pattern: { text: "x", kind: "wildcard", match_case: true, whole_cell: false },
+    const o = { ...FIND_DEFAULTS, text: "x", kind: "wildcard" as const, matchCase: true, wholeWord: true, scope: "column" as const };
+    expect(findSpecOf(o, sel, true, [4])).toEqual({
+      pattern: { text: "x", kind: "wildcard", match_case: true, whole_cell: false, whole_word: true, ignore_accents: false, escapes: false },
       scope: { kind: "columns", cols: [1, 2] },
       skip_first: true,
+      skip_cols: [4],
     });
+    expect(findSpecOf({ ...o, includeHidden: true }, sel, true, [4]).skip_cols).toEqual([]);
     expect(findSpecOf({ ...o, scope: "selection" }, sel, false).scope).toEqual({ kind: "range", ...sel });
   });
 });

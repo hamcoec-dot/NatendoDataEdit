@@ -17,7 +17,7 @@
   import FilterMenu from "./lib/FilterMenu.svelte";
   import SortDialog from "./lib/SortDialog.svelte";
   import FindPanel from "./lib/FindPanel.svelte";
-  import { describeRule, ruleFor, withRule, type FindOptions } from "./lib/filters";
+  import { FIND_DEFAULTS, describeRule, ruleFor, withRule, type FindOptions } from "./lib/filters";
   import type { Pattern, Rule, SortKey, SortSpec, DataOp, Dir, FillSpec, OpReport, TableOp } from "./lib/backend";
   import OpDialog, { type OpKind } from "./lib/OpDialog.svelte";
   import FormView from "./lib/FormView.svelte";
@@ -147,7 +147,7 @@
   let findPanel = $state<ReturnType<typeof FindPanel>>();
   /** The block Find and Replace keep to (see FindPanel's `block`). */
   let findBlock = $state<Rect | null>(null);
-  let findOptions = $state<FindOptions>({ text: "", kind: "plain", matchCase: false, wholeCell: false, scope: "all" });
+  let findOptions = $state<FindOptions>({ ...FIND_DEFAULTS });
   /** Search inside the expanded cell bar (the multi-line editor). */
   let cellFind = $state<{ text: string; hits: [number, number][]; at: number } | null>(null);
   /** Messages shown this session, newest first (the Activity panel). */
@@ -3995,7 +3995,7 @@
     ...TOOLS.map((tl) => ({ id: `clean.tool.${tl.id}`, label: `${tl.label}…`, run: () => { cleanTool = tl.id; }, enabled: ready })),
     { id: "find.find", label: "&Find…", keys: ["Ctrl+F", "Shift+F5"], run: () => openFind(false), enabled: hasTab },
     { id: "find.replace", label: "&Replace…", keys: ["Ctrl+H"], run: () => openFind(true), enabled: ready },
-    { id: "find.next", label: "Find &next", keys: ["F3"], run: () => findAgain(false), enabled: hasTab },
+    { id: "find.next", label: "Find &next", keys: ["F3", "Shift+F4"], run: () => findAgain(false), enabled: hasTab },
     { id: "find.prev", label: "Find &previous", keys: ["Shift+F3"], run: () => findAgain(true), enabled: hasTab },
     { id: "view.panel", label: "Side &panel", keys: ["Ctrl+F1"], run: () => showPanel(prefs.data.panel ? null : panelTab), checked: () => !!prefs.data.panel },
     { id: "view.panelSummary", label: "Column summary", run: () => showPanel("summary"), checked: () => prefs.data.panel === "summary" },
@@ -4255,6 +4255,9 @@
     if (cleanTool || splitNameOpen || insertAsk || search !== null || shortcutsOpen || highlightOpen || subtotalOpen || pivotDoc !== null || prompt) return;
     if ((openMenu !== null || context) && menuKey(e)) return;
     altAlone = e.key === "Alt";
+    // The find bar's own keys (Alt+C, Alt+W, Alt+R, Alt+L, Alt+Enter) are
+    // not menu keys.
+    if (e.defaultPrevented && (e.target as HTMLElement | null)?.closest?.(".find")) return;
     const field = inTextField(e.target);
     // Outside text boxes, an Alt the event forgot still counts (see
     // watchAlt); inside one only for the search shortcut, so typing is never

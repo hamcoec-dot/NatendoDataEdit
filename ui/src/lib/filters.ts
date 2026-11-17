@@ -198,18 +198,48 @@ export interface FindOptions {
   kind: PatternKind;
   matchCase: boolean;
   wholeCell: boolean;
+  /** Only whole words: "Ann" finds "Ann Lee", not "Annette". */
+  wholeWord: boolean;
+  /** "Jose" finds "José" too. */
+  ignoreAccents: boolean;
+  /** \t \n \r \\ \u{..} stand for those characters (plain and wildcards;
+   *  also in the replacement). */
+  escapes: boolean;
+  /** Search hidden columns too (they are skipped otherwise, as in Excel). */
+  includeHidden: boolean;
   scope: ScopeChoice;
 }
+
+export const FIND_DEFAULTS: FindOptions = {
+  text: "",
+  kind: "plain",
+  matchCase: false,
+  wholeCell: false,
+  wholeWord: false,
+  ignoreAccents: false,
+  escapes: false,
+  includeHidden: false,
+  scope: "all",
+};
 
 /** The search the find bar describes, for a selection and header setting. */
 export function findSpecOf(
   o: FindOptions,
   sel: { row: number; rows: number; col: number; cols: number },
   header: boolean,
+  hidden: number[] = [],
 ): FindSpec {
-  const pattern: Pattern = { text: o.text, kind: o.kind, match_case: o.matchCase, whole_cell: o.wholeCell };
+  const pattern: Pattern = {
+    text: o.text,
+    kind: o.kind,
+    match_case: o.matchCase,
+    whole_cell: o.wholeCell,
+    whole_word: o.wholeWord,
+    ignore_accents: o.ignoreAccents,
+    escapes: o.escapes,
+  };
   let scope: Scope = { kind: "all" };
   if (o.scope === "selection") scope = { kind: "range", ...sel };
   else if (o.scope === "column") scope = { kind: "columns", cols: Array.from({ length: sel.cols }, (_, i) => sel.col + i) };
-  return { pattern, scope, skip_first: header };
+  return { pattern, scope, skip_first: header, skip_cols: o.includeHidden ? [] : hidden };
 }

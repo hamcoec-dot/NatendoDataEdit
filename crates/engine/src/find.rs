@@ -646,6 +646,17 @@ pub struct ReplacePlan {
     pub preview: Vec<Change>,
 }
 
+/// How many cells match, and where a cell is among them (Find's "3 of 1,204").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct FindCount {
+    /// Matching cells.
+    pub cells: u64,
+    /// Matching cells before the given one (in Find next order).
+    pub before: u64,
+    /// The given cell matches.
+    pub here: bool,
+}
+
 /// The cells a search covers, resolved against the document.
 pub(crate) struct Area {
     pub(crate) rows: Range<u64>,
@@ -657,26 +668,52 @@ pub(crate) struct Area {
     slot: Vec<Option<usize>>,
 }
 
+/// Text for a one-line list: a line break shows as ⏎ (one for `\r\n`), a
+/// tab as →, a no-break space as ·, so they can be seen.
+pub(crate) fn visible(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push('⏎');
+            }
+            '\n' => out.push('⏎'),
+            '\t' => out.push('→'),
+            '\u{a0}' => out.push('·'),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn snippet(s: &str, hit: Range<usize>) -> (String, u32, u32) {
     let before: Vec<char> = s[..hit.start].chars().collect();
     let skip = before.len().saturating_sub(SNIPPET_CHARS);
-    let mut text: String = before[skip..].iter().collect();
-    let start = text.chars().count() as u32;
+    let mut text = visible(&before[skip..].iter().collect::<String>());
     if skip > 0 {
         text.insert(0, '…');
     }
-    let m: String = s[hit.clone()].chars().take(SNIPPET_CHARS * 2).collect();
+    let start = text.chars().count() as u32;
+    let m = visible(
+        &s[hit.clone()]
+            .chars()
+            .take(SNIPPET_CHARS * 2)
+            .collect::<String>(),
+    );
     let len = m.chars().count() as u32;
     text.push_str(&m);
     let after = &s[hit.end..];
     let tail: String = after.chars().take(SNIPPET_CHARS).collect();
     let more = tail.len() < after.len();
-    text.push_str(&tail);
+    text.push_str(&visible(&tail));
     if more {
         text.push('…');
     }
-    let text = text.replace(['\r', '\n', '\t'], " ");
-    (text, start + (skip > 0) as u32, len)
+    (text, start, len)
 }
 
 pub(crate) fn short(s: &str) -> String {
@@ -684,7 +721,7 @@ pub(crate) fn short(s: &str) -> String {
     if t.len() < s.len() {
         t.push('…');
     }
-    t.replace(['\r', '\n', '\t'], " ")
+    visible(&t)
 }
 
 impl Document {
@@ -714,7 +751,9 @@ impl Document {
         };
         let mut cols = cols;
         if !spec.skip_cols.is_empty() {
-            cols.retain(|c| !spec.skip_cols.contains(c));
+            let mut skip = spec.skip_cols.clone();
+            skip.sort_unstable();
+            cols.retain(|c| skip.binary_search(c).is_err());
         }
         let mut wanted: Vec<u32> = cols.iter().filter_map(|&c| self.phys(c)).collect();
         wanted.sort_unstable();
@@ -927,6 +966,94 @@ impl Document {
         Ok(FindAll { hits, cells })
     }
 
+    /// Count the matching cells, and how many come before `at` (row, column)
+    /// in Find next order (rows, then columns), for "3 of 1,204".
+    pub fn find_count(
+        &self,
+        spec: &FindSpec,
+        at: Option<(u64, u32)>,
+        progress: &Progress,
+    ) -> Result<FindCount, Error> {
+        let m = Matcher::new(&spec.pattern)?;
+        let area = self.area(spec)?;
+        let (r0, r1) = (area.rows.start, area.rows.end);
+        progress.start(r1.saturating_sub(r0));
+        if r0 >= r1 || area.cols.is_empty() {
+            return Ok(FindCount::default());
+        }
+        // The cell's place in the column order (columns are in order).
+        let (ar, ak, exact) = match at {
+            Some((r, c)) => {
+                let k = area.cols.partition_point(|&x| x < c);
+                (r, k, area.cols.get(k) == Some(&c))
+            }
+            // No cell: nothing counts as before it.
+            None => (0, 0, false),
+        };
+        let blocks = (r1 - r0).div_ceil(BLOCK);
+        let parts: Vec<FindCount> = (0..blocks)
+            .into_par_iter()
+            .map(|b| -> Result<FindCount, Error> {
+                let s = r0 + b * BLOCK;
+                let e = (s + BLOCK).min(r1);
+                let mut out = FindCount::default();
+                let mut buf = Vec::new();
+                for r in s..e {
+                    self.each_cell(&area, r, false, &mut buf, |k, t| {
+                        if m.is_match(t) {
+                            out.cells += 1;
+                            if r < ar || (r == ar && k < ak) {
+                                out.before += 1;
+                            } else if r == ar && k == ak && exact {
+                                out.here = true;
+                            }
+                        }
+                        None::<()>
+                    });
+                }
+                progress.step(e - s)?;
+                Ok(out)
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(parts
+            .into_iter()
+            .fold(FindCount::default(), |a, p| FindCount {
+                cells: a.cells + p.cells,
+                before: a.before + p.before,
+                here: a.here || p.here,
+            }))
+    }
+
+    /// The searched cells that match in a window of the grid (what is on
+    /// screen), as (row, column): for lighting up every match.
+    pub fn find_marks(
+        &self,
+        spec: &FindSpec,
+        row: u64,
+        rows: u64,
+        col: u32,
+        cols: u32,
+    ) -> Result<Vec<(u64, u32)>, Error> {
+        const MAX_WINDOW: u64 = 1_000;
+        let m = Matcher::new(&spec.pattern)?;
+        let area = self.area(spec)?;
+        let r0 = row.max(area.rows.start);
+        let r1 = row.saturating_add(rows.min(MAX_WINDOW)).min(area.rows.end);
+        let c1 = col.saturating_add(cols.min(MAX_WINDOW as u32));
+        let mut out = Vec::new();
+        let mut buf = Vec::new();
+        for r in r0..r1 {
+            self.each_cell(&area, r, false, &mut buf, |k, t| {
+                let c = area.cols[k];
+                if c >= col && c < c1 && m.is_match(t) {
+                    out.push((r, c));
+                }
+                None::<()>
+            });
+        }
+        Ok(out)
+    }
+
     /// Work out a replace-all (nothing changes yet). `preview` changes are
     /// kept for showing first.
     pub fn plan_replace(
@@ -1073,6 +1200,40 @@ mod tests {
         let mut p = pat(text, kind);
         f(&mut p);
         Matcher::new(&p).unwrap()
+    }
+
+    #[test]
+    fn counts_and_marks() {
+        let d = doc("a,b,c\nx,ax,b\nax,c,x\n");
+        let s = spec(pat("x", PatternKind::Plain));
+        let p = Progress::new();
+        let c = d.find_count(&s, Some((1, 1)), &p).unwrap();
+        assert_eq!(
+            c,
+            FindCount {
+                cells: 4,
+                before: 1,
+                here: true
+            }
+        );
+        let c = d.find_count(&s, Some((2, 1)), &p).unwrap();
+        assert_eq!((c.before, c.here), (3, false));
+        assert_eq!(d.find_count(&s, None, &p).unwrap().before, 0);
+        assert_eq!(
+            d.find_marks(&s, 0, 3, 0, 3).unwrap(),
+            vec![(1, 0), (1, 1), (2, 0), (2, 2)]
+        );
+        assert_eq!(d.find_marks(&s, 2, 5, 1, 5).unwrap(), vec![(2, 2)]);
+        let mut hid = s.clone();
+        hid.skip_cols = vec![0];
+        assert_eq!(d.find_count(&hid, None, &p).unwrap().cells, 2);
+    }
+
+    #[test]
+    fn special_characters_show_in_lists() {
+        assert_eq!(visible("a\r\nb\tc\u{a0}d\ne"), "a⏎b→c·d⏎e");
+        let (t, s, l) = snippet("one\r\ntwo\tthree", 5..8);
+        assert_eq!((t.as_str(), s, l), ("one⏎two→three", 4, 3));
     }
 
     #[test]

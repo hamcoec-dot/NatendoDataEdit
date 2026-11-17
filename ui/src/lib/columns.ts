@@ -62,6 +62,13 @@ export class Columns {
     return this.widths.get(c) === 0;
   }
 
+  /** The hidden columns, in order. */
+  hiddenList(): number[] {
+    const out: number[] = [];
+    for (const [c, w] of this.widths) if (w === 0) out.push(c);
+    return out.sort((a, b) => a - b);
+  }
+
   setWidth(c: number, w: number): void {
     const width = Math.max(0, Math.round(w));
     const was = this.widths.get(c);

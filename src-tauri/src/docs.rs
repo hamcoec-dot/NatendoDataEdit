@@ -26,7 +26,7 @@ use natendo_engine::export::{ExportFormat, ExportOptions, ExportReport};
 use natendo_engine::expr::Lookups;
 use natendo_engine::expr::{ComputePreview, ComputeSpec};
 use natendo_engine::filter::{FilterSpec, Rule, ValueList};
-use natendo_engine::find::{Change, FindAll, FindSpec, Matcher, Pattern, ReplacePlan};
+use natendo_engine::find::{Change, FindAll, FindCount, FindSpec, Matcher, Pattern, ReplacePlan};
 use natendo_engine::highlight::{Highlight, Mark};
 use natendo_engine::join::{
     AppendSource, AppendSpec, JoinPreview, JoinReport, JoinSource, JoinSpec, LookupTable,
@@ -366,6 +366,9 @@ pub struct Entry {
     /// The quick totals being worked out for the selection, if any: a newer
     /// selection or any change cancels them.
     totals: Mutex<Option<Arc<Progress>>>,
+    /// The find bar's match count being worked out, if any: a newer count
+    /// or any change cancels it.
+    find_count: Mutex<Option<Arc<Progress>>>,
     /// Type-ahead values of one column, for one revision (memory only).
     #[allow(clippy::type_complexity)]
     typeahead: Mutex<Option<(u64, u32, Arc<Vec<(String, String)>>)>>,
@@ -500,6 +503,14 @@ impl Entry {
 
     fn cancel_totals(&self) {
         if let Some(p) = self.totals.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            p.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(p) = self
+            .find_count
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             p.cancel.store(true, Ordering::Relaxed);
         }
     }
@@ -1218,6 +1229,7 @@ impl Docs {
             locked: AtomicBool::new(false),
             checks: Mutex::new(None),
             totals: Mutex::new(None),
+            find_count: Mutex::new(None),
             typeahead: Mutex::new(None),
             writers: AtomicU32::new(0),
             closed: AtomicBool::new(false),
@@ -2473,6 +2485,64 @@ impl Docs {
         let job = entry.start("Searching")?;
         let d = entry.read();
         Ok(d.find_all(&spec, MAX_FIND_HITS, &job.progress)?)
+    }
+
+    /// The find bar's count ("3 of 1,204"), worked out in the background: a
+    /// newer count or a change cancels it ("cancelled"), and it never waits
+    /// behind a change ("busy").
+    pub fn find_count(
+        &self,
+        id: u32,
+        spec: FindSpec,
+        at: Option<(u64, u32)>,
+    ) -> CmdResult<FindCount> {
+        let entry = self.get(id)?;
+        let progress = Arc::new(Progress::new());
+        {
+            let mut slot = entry.find_count.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(old) = slot.replace(progress.clone()) {
+                old.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(CmdError::new("busy", "the file is being changed"))
+            }
+        };
+        if entry.change_waiting() {
+            drop(d);
+            return Err(CmdError::new("busy", "the file is being changed"));
+        }
+        let r = d.find_count(&spec, at, &progress);
+        drop(d);
+        let mut slot = entry.find_count.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.as_ref().is_some_and(|p| Arc::ptr_eq(p, &progress)) {
+            *slot = None;
+        }
+        Ok(r?)
+    }
+
+    /// The matching cells on screen, to light them up.
+    pub fn find_marks(
+        &self,
+        id: u32,
+        spec: FindSpec,
+        row: u64,
+        rows: u64,
+        col: u32,
+        cols: u32,
+    ) -> CmdResult<Vec<(u64, u32)>> {
+        let entry = self.get(id)?;
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(CmdError::new("busy", "the file is being changed"))
+            }
+        };
+        Ok(d.find_marks(&spec, row, rows, col, cols)?)
     }
 
     /// What "Replace all" would change; the plan is kept for it.

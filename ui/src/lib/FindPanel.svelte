@@ -1,7 +1,8 @@
 <script lang="ts">
   // Find and replace bar. Searches run in the engine (safe regular
   // expressions, whole files of any size); results select cells in the grid.
-  import { backend, errorText, type DocInfo, type FindAll, type FindSpec, type ReplaceReport } from "./backend";
+  import { backend, errorText, type DocInfo, type FindAll, type FindCount, type FindSpec, type ReplaceReport } from "./backend";
+  import { onDestroy } from "svelte";
   import type { Tab } from "./tab.svelte";
   import { findSpecOf, type FindOptions } from "./filters";
   import { rectOf, type Rect } from "./selection";
@@ -47,6 +48,71 @@
   let results = $state<FindAll | null>(null);
   let pending = $state<ReplaceReport | null>(null);
 
+  // ---- the count ("3 of 1,204") and matches lit up in the grid ----
+  let count = $state<FindCount | null>(null);
+  /** The cell the count's "3 of" is about. */
+  let countAt = $state<[number, number] | null>(null);
+  let countTimer: ReturnType<typeof setTimeout> | null = null;
+  let countSeq = 0;
+
+  /** Count again after typing stops (300 ms); `at` is the active cell. */
+  function recount(delay = 300): void {
+    if (countTimer) clearTimeout(countTimer);
+    const seq = ++countSeq;
+    countTimer = setTimeout(() => {
+      countTimer = null;
+      if (!options.text) {
+        count = null;
+        return;
+      }
+      const s = spec();
+      const at: [number, number] = [tab.cell.row, tab.cell.col];
+      backend()
+        .findCount(tab.id, s, at)
+        .then((c) => {
+          if (seq !== countSeq) return;
+          count = c;
+          countAt = at;
+        })
+        .catch((e: unknown) => {
+          if (seq !== countSeq) return;
+          const kind = (e as { kind?: string } | null)?.kind;
+          // Busy or cancelled: try once more shortly; a bad pattern: no count.
+          if (kind === "busy" || kind === "cancelled") recount(600);
+          else count = null;
+        });
+    }, delay);
+  }
+
+  /** What the count says now. */
+  const countText = $derived.by(() => {
+    if (!count || !options.text) return "";
+    if (count.cells === 0) return "No matches";
+    const total = count.cells.toLocaleString();
+    const at = countAt;
+    if (count.here && at && at[0] === tab.cell.row && at[1] === tab.cell.col) return `${(count.before + 1).toLocaleString()} of ${total}`;
+    return `${total} match${count.cells === 1 ? "" : "es"}`;
+  });
+
+  // Whatever changes the search (text, options, block, the file) counts
+  // again and lights up the matches on screen.
+  $effect(() => {
+    void [options.text, options.kind, options.matchCase, options.wholeCell, options.wholeWord, options.ignoreAccents, options.escapes, options.includeHidden, options.scope, block, tab.version];
+    const s = options.text ? $state.snapshot(spec()) : null;
+    tab.findSpec = s;
+    tab.findVersion++;
+    tab.onRedraw?.();
+    recount();
+  });
+
+  onDestroy(() => {
+    if (countTimer) clearTimeout(countTimer);
+    countSeq++;
+    tab.findSpec = null;
+    tab.findVersion++;
+    tab.onRedraw?.();
+  });
+
   export function focus(): void {
     findInput?.focus();
     findInput?.select();
@@ -62,7 +128,23 @@
     const r = options.scope !== "all" && block ? block : rectOf(tab.sel);
     const o = { ...options };
     if (o.scope === "selection" && r.rows * r.cols <= 1) o.scope = "all";
-    return findSpecOf(o, { row: r.row, rows: r.rows, col: r.col, cols: r.cols }, tab.header);
+    return findSpecOf(o, { row: r.row, rows: r.rows, col: r.col, cols: r.cols }, tab.header, tab.columns.hiddenList());
+  }
+
+
+  /** Alt+C / Alt+W / Alt+R / Alt+L while the bar has focus (as in VS Code):
+   *  match case, whole word, regular expression, in selection. */
+  function onBarKey(e: KeyboardEvent): void {
+    if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const k = e.key.toLowerCase();
+    if (k === "c") options.matchCase = !options.matchCase;
+    else if (k === "w") options.wholeWord = !options.wholeWord;
+    else if (k === "r") options.kind = options.kind === "regex" ? "plain" : "regex";
+    else if (k === "l") options.scope = options.scope === "all" ? "selection" : "all";
+    else return;
+    e.preventDefault();
+    results = null;
+    pending = null;
   }
 
   function ready(): boolean {
@@ -86,6 +168,7 @@
       }
       onSelect(hit.row, hit.col);
       status = hit.wrapped ? `Found (search started over from the ${backward ? "end" : "top"}).` : "";
+      recount(0);
     } catch (e) {
       status = errorText(e);
     }
@@ -152,7 +235,10 @@
     if (e.key === "Enter") {
       e.preventDefault();
       e.stopPropagation();
-      if (inReplace && !e.shiftKey) void replaceOne();
+      // Alt+Enter: Find all; Ctrl+Alt+Enter: Replace all (with its preview).
+      if (e.altKey && e.ctrlKey) void previewAll();
+      else if (e.altKey) void findAll();
+      else if (inReplace && !e.shiftKey) void replaceOne();
       else void next(e.shiftKey);
     } else if (e.key === "Escape") {
       e.preventDefault();
@@ -167,21 +253,29 @@
   }
 </script>
 
-<div class="find" role="search" aria-label="Find and replace">
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div class="find" role="search" aria-label="Find and replace" onkeydown={onBarKey}>
   <div class="line">
     <button type="button" class="twist" aria-label={replace ? "Hide replace" : "Show replace"} title="Replace (Ctrl+H)" onclick={() => (replace = !replace)}>{replace ? "▾" : "▸"}</button>
     <input bind:this={findInput} class="text" aria-label="Find" placeholder="Find" bind:value={options.text} onkeydown={(e) => onKey(e, false)} oninput={() => { results = null; pending = null; status = ""; }} />
+    {#if countText}<span class="count" aria-live="polite">{countText}</span>{/if}
     <button type="button" title="Find previous (Shift+F3, Shift+Enter)" aria-label="Find previous" onclick={() => void next(true)}>↑</button>
     <button type="button" title="Find next (F3, Enter)" aria-label="Find next" onclick={() => void next(false)}>↓</button>
-    <button type="button" onclick={() => void findAll()}>Find all</button>
-    <select aria-label="Pattern kind" bind:value={options.kind}>
+    <button type="button" title="Find all (Alt+Enter)" onclick={() => void findAll()}>Find all</button>
+    <select aria-label="Pattern kind" title="Alt+R: regular expression on or off" bind:value={options.kind}>
       <option value="plain">Plain text</option>
       <option value="wildcard">Wildcards (* ? ~)</option>
       <option value="regex">Regular expression</option>
     </select>
-    <label><input type="checkbox" bind:checked={options.matchCase} /> Match case</label>
+    <label title="Alt+C"><input type="checkbox" bind:checked={options.matchCase} /> Match case</label>
+    <label title="Alt+W: &quot;Ann&quot; finds &quot;Ann Lee&quot;, not &quot;Annette&quot;"><input type="checkbox" bind:checked={options.wholeWord} /> Whole word</label>
     <label><input type="checkbox" bind:checked={options.wholeCell} /> Whole cell</label>
-    <select aria-label="Search in" bind:value={options.scope}>
+    <label title="&quot;Jose&quot; finds &quot;José&quot; too"><input type="checkbox" bind:checked={options.ignoreAccents} /> Ignore accents</label>
+    {#if options.kind !== "regex"}
+      <label title="\t tab, \n line break, \r return, \\ backslash, \u&#123;A0&#125; any character (in Replace with too)"><input type="checkbox" bind:checked={options.escapes} /> \t \n</label>
+    {/if}
+    <label title="Hidden columns are skipped unless this is ticked"><input type="checkbox" bind:checked={options.includeHidden} /> Include hidden</label>
+    <select aria-label="Search in" title="Alt+L: selection or whole file" bind:value={options.scope}>
       <option value="all">Whole file</option>
       <option value="selection">{blockCells && options.scope === "selection" ? `Selection ${blockCells}` : "Selection"}</option>
       <option value="column">{blockCols && options.scope === "column" ? `Selected columns ${blockCols}` : "Selected columns"}</option>
@@ -194,7 +288,7 @@
       <span class="twist"></span>
       <input class="text" aria-label="Replace with" placeholder={options.kind === "regex" ? "Replace with ($1 = first group)" : "Replace with"} bind:value={replacement} onkeydown={(e) => onKey(e, true)} />
       <button type="button" onclick={() => void replaceOne()}>Replace</button>
-      <button type="button" onclick={() => void previewAll()}>Replace all…</button>
+      <button type="button" title="Replace all (Ctrl+Alt+Enter)" onclick={() => void previewAll()}>Replace all…</button>
     </div>
   {/if}
   {#if pending}
@@ -289,6 +383,12 @@
   }
   .spacer {
     flex: 1;
+  }
+  .count {
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+    min-width: 70px;
   }
   .status {
     color: var(--muted);

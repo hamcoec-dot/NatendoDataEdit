@@ -2261,6 +2261,32 @@ async fn find_next(
 }
 
 #[tauri::command]
+async fn find_count(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: FindSpec,
+    at: Option<(u64, u32)>,
+) -> CmdResult<natendo_engine::find::FindCount> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.find_count(doc, spec, at)).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn find_marks(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: FindSpec,
+    row: u64,
+    rows: u64,
+    col: u32,
+    cols: u32,
+) -> CmdResult<Vec<(u64, u32)>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.find_marks(doc, spec, row, rows, col, cols)).await
+}
+
+#[tauri::command]
 async fn find_all(docs: DocsState<'_>, doc: u32, spec: FindSpec) -> CmdResult<FindAll> {
     let docs = docs.inner().clone();
     blocking(move || docs.find_all(doc, spec)).await
@@ -2892,6 +2918,8 @@ pub fn run() {
             filter_values,
             find_next,
             find_all,
+            find_count,
+            find_marks,
             replace_preview,
             replace_all,
             find_in_text,

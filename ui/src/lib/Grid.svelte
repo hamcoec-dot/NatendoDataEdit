@@ -20,6 +20,8 @@
   const PROBLEM_COLOR = "#e5484d";
   /** Corner mark on cells that differ from the file ("Show my edits"). */
   const EDIT_COLOR = "#f5a524";
+  /** Find matches: a yellow that reads on light and dark grids. */
+  const FIND_COLOR = "#ffd43b";
   /** Row flag colours 1-6 (red, orange, yellow, green, blue, purple). */
   const FLAG_COLORS = ["", "#e5484d", "#f76b15", "#e2b400", "#30a46c", "#0090ff", "#8e4ec6"];
 
@@ -447,7 +449,38 @@
     scrollTick++;
     positionEditor();
     wantMarks(rows, cols);
+    wantFindHits(rows, cols);
     wantNotes(rows);
+  }
+
+  /** Ask which cells on screen match the find bar's search. */
+  let findKey = "";
+  function wantFindHits(rows: { frozen: Span; body: Span }, cols: { frozen: Span; body: Span }): void {
+    const spec = tab.findSpec;
+    if (!spec || !spec.pattern.text) {
+      if (tab.findHits.size) tab.findHits = new Set();
+      findKey = "";
+      return;
+    }
+    const c0 = Math.min(cols.frozen.start, cols.body.start);
+    const c1 = Math.max(cols.frozen.end, cols.body.end);
+    const areas = [rows.frozen, rows.body].filter((a) => a.end > a.start);
+    const key = `${tab.id}|${tab.version}|${tab.findVersion}|${areas.map((a) => `${a.start}-${a.end}`).join(",")}|${c0}-${c1}`;
+    if (key === findKey) return;
+    findKey = key;
+    const t = tab;
+    void Promise.all(areas.map((a) => backend().findMarks(t.id, spec, a.start, a.end - a.start, c0, c1 - c0)))
+      .then((all) => {
+        if (findKey !== key) return;
+        const hits = new Set<string>();
+        for (const list of all) for (const [r, c] of list) hits.add(`${r}:${c}`);
+        t.findHits = hits;
+        draw();
+      })
+      .catch(() => {
+        // A bad pattern or a busy file: nothing lit; asked again on the next draw.
+        if (findKey === key) findKey = "";
+      });
   }
 
   // ---- highlight rules -------------------------------------------------------
@@ -984,6 +1017,13 @@
         if (contains(sel, r, c) && !(r === active.row && c === active.col)) {
           ctx.fillStyle = colors.accent;
           ctx.globalAlpha = 0.12;
+          ctx.fillRect(x, y, cw, rowH);
+          ctx.globalAlpha = 1;
+        }
+        if (tab.findHits.size && tab.findHits.has(`${r}:${c}`)) {
+          // Every match of the find bar's search, lit up.
+          ctx.fillStyle = FIND_COLOR;
+          ctx.globalAlpha = 0.35;
           ctx.fillRect(x, y, cw, rowH);
           ctx.globalAlpha = 1;
         }

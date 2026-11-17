@@ -22,6 +22,7 @@ import type {
   ImportStart,
   Opened,
   FindAll,
+  FindCount,
   FindSpec,
   Found,
   JobInfo,
@@ -98,19 +99,56 @@ interface MockDoc {
 
 /** A JavaScript RegExp for a pattern (the browser stub only; the real app
  *  uses the engine's linear-time matcher). */
+/** \t \n \r \\ \u{..} as the characters they name (Find's "Escapes"). */
+export function unescapeText(t: string): string {
+  return t.replace(/\\(t|n|r|\\|u\{([0-9a-fA-F]{1,6})\})/g, (m, k: string, hex?: string) => {
+    if (hex) {
+      const n = parseInt(hex, 16);
+      return n <= 0x10ffff ? String.fromCodePoint(n) : m;
+    }
+    return k === "t" ? "\t" : k === "n" ? "\n" : k === "r" ? "\r" : "\\";
+  });
+}
+
+let accentForms: Map<string, string> | null = null;
+/** "e" → "eéèêë…": a letter's accented forms (the Latin blocks). */
+function accentsOf(base: string): string {
+  if (!accentForms) {
+    accentForms = new Map();
+    for (const [a, b] of [[0xc0, 0x24f], [0x1e00, 0x1eff]] as const)
+      for (let u = a; u <= b; u++) {
+        const c = String.fromCodePoint(u);
+        const l = c.toLowerCase();
+        const k = l.normalize("NFD")[0]!;
+        if (k !== l && /[a-z]/.test(k)) accentForms.set(k, (accentForms.get(k) ?? "") + l);
+      }
+  }
+  return accentForms.get(base) ?? "";
+}
+function accentClass(c: string, esc: (s: string) => string): string {
+  const k = c.toLowerCase().normalize("NFD")[0]!;
+  if (!/[a-z]/.test(k)) return esc(c);
+  const upper = c !== c.toLowerCase();
+  const forms = k + accentsOf(k);
+  return `(?:[${upper ? forms.toUpperCase() : forms}]\\p{M}*)`;
+}
+
 function regexOf(p: Pattern, global = false): RegExp {
   let body: string;
-  if (p.kind === "regex") body = p.text;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const lit = (s: string) => (p.ignore_accents ? [...s].map((c) => accentClass(c, esc)).join("") : esc(s));
+  const text = p.escapes && p.kind !== "regex" ? unescapeText(p.text) : p.text;
+  if (p.kind === "regex") body = p.ignore_accents ? text.replace(/(?<!\\)[A-Za-z\u00c0-\u024f]/g, (c) => accentClass(c, esc)) : text;
   else {
-    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (p.kind === "plain") body = esc(p.text);
+    if (p.kind === "plain") body = lit(text);
     else
-      body = p.text
+      body = text
         .split(/(~[*?~]|\*|\?)/)
-        .map((t) => (t === "*" ? "[\\s\\S]*" : t === "?" ? "[\\s\\S]" : t.startsWith("~") && t.length === 2 ? esc(t[1]!) : esc(t)))
+        .map((t) => (t === "*" ? "[\\s\\S]*" : t === "?" ? "[\\s\\S]" : t.startsWith("~") && t.length === 2 ? lit(t[1]!) : lit(t)))
         .join("");
   }
   if (p.whole_cell) body = `^(?:${body})$`;
+  else if (p.whole_word) body = `(?<![\\p{L}\\p{N}_])(?:${body})(?![\\p{L}\\p{N}_])`;
   return new RegExp(body, (p.match_case ? "" : "i") + (global ? "g" : "") + "u");
 }
 
@@ -949,18 +987,21 @@ export class MockBackend implements Backend {
   private area(d: MockDoc, spec: FindSpec): { r0: number; r1: number; cols: number[] } {
     const n = this.rowCount(d);
     const first = spec.skip_first && n > 0 ? 1 : 0;
-    const all = Array.from({ length: this.colCount(d) }, (_, i) => i);
+    const skip = new Set(spec.skip_cols ?? []);
+    const all = Array.from({ length: this.colCount(d) }, (_, i) => i).filter((c) => !skip.has(c));
     switch (spec.scope.kind) {
       case "all":
         return { r0: first, r1: n, cols: all };
       case "columns":
-        return { r0: first, r1: n, cols: spec.scope.cols.filter((c) => c < all.length) };
-      case "range":
+        return { r0: first, r1: n, cols: spec.scope.cols.filter((c) => all.includes(c)) };
+      case "range": {
+        const g = spec.scope;
         return {
           r0: spec.scope.row,
           r1: Math.min(n, spec.scope.row + spec.scope.rows),
-          cols: all.slice(spec.scope.col, spec.scope.col + spec.scope.cols),
+          cols: all.filter((c) => c >= g.col && c < g.col + g.cols),
         };
+      }
     }
   }
 
@@ -990,6 +1031,34 @@ export class MockBackend implements Backend {
     return null;
   }
 
+  async findCount(doc: number, spec: FindSpec, at: [number, number] | null): Promise<FindCount> {
+    const d = this.get(doc);
+    if (!spec.pattern.text) throw err("bad_pattern", "the pattern is not valid: enter something to look for");
+    const re = regexOf(spec.pattern);
+    const { r0, r1, cols } = this.area(d, spec);
+    const out: FindCount = { cells: 0, before: 0, here: false };
+    for (let r = r0; r < r1; r++)
+      for (let k = 0; k < cols.length; k++) {
+        const c = cols[k]!;
+        if (!re.test(this.value(d, r, c))) continue;
+        out.cells++;
+        if (at && (r < at[0] || (r === at[0] && c < at[1]))) out.before++;
+        else if (at && r === at[0] && c === at[1]) out.here = true;
+      }
+    return out;
+  }
+
+  async findMarks(doc: number, spec: FindSpec, row: number, rows: number, col: number, cols: number): Promise<[number, number][]> {
+    const d = this.get(doc);
+    if (!spec.pattern.text) return [];
+    const re = regexOf(spec.pattern);
+    const a = this.area(d, spec);
+    const out: [number, number][] = [];
+    for (let r = Math.max(row, a.r0); r < Math.min(row + rows, a.r1); r++)
+      for (const c of a.cols) if (c >= col && c < col + cols && re.test(this.value(d, r, c))) out.push([r, c]);
+    return out;
+  }
+
   async findAll(doc: number, spec: FindSpec): Promise<FindAll> {
     const d = this.get(doc);
     const re = regexOf(spec.pattern);
@@ -1009,6 +1078,7 @@ export class MockBackend implements Backend {
 
   private planReplace(d: MockDoc, spec: FindSpec, rep: string) {
     const re = regexOf(spec.pattern, true);
+    if (spec.pattern.escapes || spec.pattern.kind === "regex") rep = unescapeText(rep);
     const { r0, r1, cols } = this.area(d, spec);
     const changes: [number, number, string][] = [];
     const preview: ReplaceReport["preview"] = [];
