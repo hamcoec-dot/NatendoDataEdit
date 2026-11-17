@@ -22,6 +22,10 @@ export class Tab {
   header = $state(false);
   /** The user set the header switch, so the automatic guess stays out. */
   headerTouched = false;
+  /** Undo position just after Rename column added a header row to a file
+   *  without one (and switched "First row is header" on): undoing past it
+   *  switches the setting off again. */
+  headerAddedAt: number | null = null;
   /** Data rows (after the header) and columns kept in view while scrolling. */
   frozenRows = $state(0);
   frozenCols = $state(0);

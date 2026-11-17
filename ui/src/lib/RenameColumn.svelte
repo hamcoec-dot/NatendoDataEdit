@@ -44,7 +44,8 @@
       onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); run(); } }}
     />
   </label>
-  {#if !header}<p class="note">This file has no header row, so one is added above the first row: this column gets the name and the others keep their numbers. Ctrl+Z undoes it.</p>{/if}
+  {#if header && !name && !text}<p class="note">Column {number} has no name yet.</p>{/if}
+  {#if !header}<p class="note">This file has no header row, so one is added above the first row and "First row is header" is switched on: this column gets the name and the others keep their numbers. Undoing it (Ctrl+Z twice) takes the row away and switches the setting off again.</p>{/if}
   {#if repeat}<p class="note warn" role="status">Another column already has this name.</p>{/if}
   {#if lineBreak}<p class="note warn" role="alert">A column name can't contain a line break.</p>{/if}
   {#snippet buttons()}

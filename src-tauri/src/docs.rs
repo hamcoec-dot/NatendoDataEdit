@@ -1831,6 +1831,23 @@ impl Docs {
         Ok((v.cells.pop().unwrap_or_default(), truncated))
     }
 
+    /// Column `col` of the table's first row (the header row), wherever
+    /// filters or hidden rows leave it.
+    pub fn first_row_cell(&self, id: u32, col: u32) -> CmdResult<String> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.first_row_cell(col)?)
+    }
+
+    /// Rename a column: set its cell in the table's first row, one undo step.
+    pub fn set_first_row_cell(&self, id: u32, col: u32, value: String) -> CmdResult<DocInfo> {
+        check_write(1, std::iter::once(value.len()))?;
+        self.edit(id, |d| {
+            check_width(d, col as u64 + 1)?;
+            d.set_first_row_cell(col, value)
+        })
+    }
+
     /// Set cells, as one undo step.
     pub fn set_cells(&self, id: u32, cells: Vec<(u64, u32, String)>) -> CmdResult<DocInfo> {
         check_write(cells.len() as u64, cells.iter().map(|c| c.2.len()))?;
@@ -4957,6 +4974,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rep.compare.unwrap().same, 4);
+    }
+
+    /// Renaming writes the table's first row even when hidden rows leave
+    /// another row at the top, and undo puts the old name back.
+    #[test]
+    fn rename_writes_the_real_first_row() {
+        let p = tmp("rename.csv", b"name,age\r\nAda,30\r\nBo,40\r\n");
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        docs.hide_rows(id, 0, 1).unwrap();
+        assert_eq!(docs.cell_text(id, 0, 0).unwrap().0, "Ada");
+        assert_eq!(docs.first_row_cell(id, 0).unwrap(), "name");
+        docs.set_first_row_cell(id, 0, "given".into()).unwrap();
+        assert_eq!(docs.first_row_cell(id, 0).unwrap(), "given");
+        assert_eq!(docs.cell_text(id, 0, 0).unwrap().0, "Ada");
+        // A new column past the last one.
+        docs.set_first_row_cell(id, 2, "city".into()).unwrap();
+        assert_eq!(docs.first_row_cell(id, 2).unwrap(), "city");
+        docs.undo(id).unwrap();
+        docs.undo(id).unwrap();
+        assert_eq!(docs.first_row_cell(id, 0).unwrap(), "name");
     }
 
     /// A tab busy with a long operation (its lock held) still counts as

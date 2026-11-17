@@ -84,6 +84,40 @@ const url = process.argv[3] || "http://localhost:5193";
   await p.keyboard.press("Escape");
   await p.waitForTimeout(200);
 
+  // Several columns selected (B:D): right-click C, Rename renames C.
+  await p.mouse.click(hx(1), hy);
+  await p.keyboard.down("Shift");
+  await p.mouse.click(hx(3), hy);
+  await p.keyboard.up("Shift");
+  await p.waitForTimeout(200);
+  await p.mouse.click(hx(2), hy, { button: "right" });
+  await p.waitForTimeout(300);
+  await p.click(".context [role=menuitem]:has-text('Rename column')");
+  await p.waitForTimeout(400);
+  ok((await p.textContent(`${dialog} h2`)).includes("column 3"), `with B:D selected, the menu renames the right-clicked column C (${await p.textContent(`${dialog} h2`)})`);
+  ok((await p.inputValue(nameBox)) === "last_name", "with C's name");
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(200);
+  // The Format menu still uses the selection's column afterwards.
+  await p.mouse.click(canvas.x + left + 10, canvas.y + HEAD + ROW + 12);
+  await p.click("button:has-text('Format')");
+  await p.click("[role=menuitem]:has-text('Rename column')");
+  await p.waitForTimeout(400);
+  ok((await p.textContent(`${dialog} h2`)).includes("column 1"), "Format > Rename column uses the selected cell's column");
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(200);
+
+  // A block of cells: right-clicking a row number picks that row.
+  await p.mouse.click(canvas.x + left + W + 20, canvas.y + HEAD + ROW + 12);
+  await p.keyboard.down("Shift");
+  await p.mouse.click(canvas.x + left + 2 * W + 20, canvas.y + HEAD + 4 * ROW + 12);
+  await p.keyboard.up("Shift");
+  await p.mouse.click(canvas.x + 20, canvas.y + HEAD + 3 * ROW + 12, { button: "right" });
+  await p.waitForTimeout(300);
+  ok(/^R5 C/.test(await at()), `right-clicking a row number inside a cell block picks that row (${await at()})`);
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(200);
+
   // Dragging a selected column by its heading still moves it.
   await p.mouse.click(hx(1), hy);
   await p.waitForTimeout(300);
@@ -113,6 +147,21 @@ const url = process.argv[3] || "http://localhost:5193";
   await p.waitForTimeout(400);
   ok((await p.inputValue(nameBox)) === "record", "a header row was added with the name");
   ok(!/no header row/.test(await p.textContent(dialog)), "and is now on");
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(200);
+  // Two undos take the row away and switch the setting off again.
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(600);
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(600);
+  ok(/off again/.test(await status()), `undoing the added row says the setting is off again (${await status()})`);
+  await p.click("button:has-text('Format')");
+  const headerOn = await p.$eval("[role=menuitemcheckbox]:has-text('First row is header'), [role=menuitem]:has-text('First row is header')", (e) => e.getAttribute("aria-checked") === "true");
+  await p.keyboard.press("Escape");
+  ok(!headerOn, "\"First row is header\" is off again after the undos");
+  await p.mouse.dblclick(hx(0), hy);
+  await p.waitForTimeout(400);
+  ok(/no header row/.test(await p.textContent(dialog)), "renaming again offers to add the row again");
   await p.keyboard.press("Escape");
 
   // Alt+Q finds it by "rename header".

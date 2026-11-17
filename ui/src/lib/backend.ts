@@ -887,6 +887,10 @@ export interface Backend {
   openRecent(id: string): Promise<Opened>;
   /** Per tab: the folder telling same-named files apart ("" for the rest). */
   tabFolders(ids: number[]): Promise<string[]>;
+  /** A column's name: its cell in the table's first row, shown or not. */
+  firstRowCell(doc: number, col: number): Promise<string>;
+  /** Rename a column: set its cell in the table's first row (one undo step). */
+  setFirstRowCell(doc: number, col: number, value: string): Promise<DocInfo>;
   folderList(doc: number): Promise<Listing>;
   folderOpen(doc: number, index: number): Promise<Opened>;
   viewSave(view: View): Promise<string | null>;
@@ -1242,6 +1246,12 @@ class TauriBackend implements Backend {
   }
   tabFolders(ids: number[]) {
     return call<string[]>("tab_folders", { ids });
+  }
+  firstRowCell(doc: number, col: number) {
+    return call<string>("first_row_cell", { doc, col });
+  }
+  setFirstRowCell(doc: number, col: number, value: string) {
+    return call<DocInfo>("set_first_row_cell", { doc, col, value });
   }
   folderList(doc: number) {
     return call<Listing>("folder_list", { doc });

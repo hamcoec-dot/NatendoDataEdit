@@ -1140,6 +1140,14 @@ export class MockBackend implements Backend {
     });
   }
 
+  // The stub has no hidden first row: shown row 0 is the first row.
+  async firstRowCell(doc: number, col: number): Promise<string> {
+    return (await this.cellText(doc, 0, col)).text;
+  }
+  async setFirstRowCell(doc: number, col: number, value: string): Promise<DocInfo> {
+    return this.setCells(doc, [[0, col, value]]);
+  }
+
   async tabFolders(ids: number[]): Promise<string[]> {
     const paths = ids.map((id) => this.docs.get(id)?.info.path ?? null);
     const name = (p: string) => p.split("/").at(-1)!.toLowerCase();

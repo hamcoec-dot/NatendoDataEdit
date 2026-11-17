@@ -26,7 +26,8 @@
     tab: Tab;
     /** Commit an edit of one cell (or, with `fill`, of every selected cell). */
     onCommit: (row: number, col: number, value: string, fill: boolean) => Promise<boolean>;
-    onContext: (x: number, y: number, area: "cell" | "row" | "col" | "corner") => void;
+    /** `col`: the column under the pointer (the heading menu's Rename acts on it). */
+    onContext: (x: number, y: number, area: "cell" | "row" | "col" | "corner", col: number) => void;
     onMessage: (text: string) => void;
     /** The filter button on column `col`'s header was clicked (x, y: where
      *  to open its menu, in window coordinates). */
@@ -1511,11 +1512,11 @@
     const fullCols = Math.max(0, tab.info.cols - 1);
     if (h.area === "col" && h.edge === null && (h.col < r.col || h.col >= r.col + r.cols || !wholeColsSel(r)))
       select({ row: tab.firstRow, col: h.col }, { row: lastRow(), col: h.col }, false);
-    else if (h.area === "row" && (h.row < r.row || h.row >= r.row + r.rows))
+    else if (h.area === "row" && (h.row < r.row || h.row >= r.row + r.rows || !wholeRowsSel(r)))
       select({ row: h.row, col: 0 }, { row: h.row, col: fullCols }, false);
     else if (h.area === "cell" && (h.row < r.row || h.row >= r.row + r.rows || h.col < r.col || h.col >= r.col + r.cols))
       select({ row: h.row, col: h.col }, { row: h.row, col: h.col }, false);
-    onContext(e.clientX, e.clientY, h.area);
+    onContext(e.clientX, e.clientY, h.area, "col" in h ? h.col : -1);
   }
 
   function onWheel(e: WheelEvent): void {

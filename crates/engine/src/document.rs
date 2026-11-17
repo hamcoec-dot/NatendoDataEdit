@@ -1230,13 +1230,39 @@ impl Document {
     /// Set many cells as one undo step.
     pub fn set_cells(&mut self, cells: Vec<(u64, u32, String)>) -> Result<(), Error> {
         self.ready()?;
-        let mut widest = 0u32;
         // Shown rows to ids, before anything changes.
         let cells: Vec<(u32, u32, String)> = cells
             .into_iter()
             .map(|(r, c, v)| self.id_at(r).map(|id| (id, c, v)))
             .collect::<Option<_>>()
             .ok_or(Error::OutOfRange)?;
+        self.set_cells_by_id(cells)
+    }
+
+    /// The value in column `col` of the table's first row (the header row
+    /// when there is one), whether or not a filter or hidden rows show it.
+    pub fn first_row_cell(&self, col: u32) -> Result<String, Error> {
+        self.ready()?;
+        let id = self.doc_id_at(0).ok_or(Error::OutOfRange)?;
+        let mut v = self.logical_values(id)?;
+        let c = col as usize;
+        Ok(if c < v.len() {
+            std::mem::take(&mut v[c])
+        } else {
+            String::new()
+        })
+    }
+
+    /// Set column `col` of the table's first row (renaming a column), as
+    /// one undo step, even while a filter or hidden rows leave it unshown.
+    pub fn set_first_row_cell(&mut self, col: u32, value: String) -> Result<(), Error> {
+        self.ready()?;
+        let id = self.doc_id_at(0).ok_or(Error::OutOfRange)?;
+        self.set_cells_by_id(vec![(id, col, value)])
+    }
+
+    fn set_cells_by_id(&mut self, cells: Vec<(u32, u32, String)>) -> Result<(), Error> {
+        let mut widest = 0u32;
         for (_, col, _) in &cells {
             if *col > MAX_EDIT_COL {
                 return Err(Error::OutOfRange);

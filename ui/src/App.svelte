@@ -134,6 +134,8 @@
   let splitNameOpen = $state(false);
   /** "Insert rows…" / "Insert columns…" asking how many. */
   let insertAsk = $state<"rows" | "cols" | null>(null);
+  /** Set while a command picked from a heading's menu runs. */
+  let menuCol: number | null = null;
   let renameAsk = $state<{ id: number; col: number; name: string; header: boolean; others: Set<string> } | null>(null);
   /** Insert > Symbol is open; `caret` is where the cell editor's cursor was. */
   let symbols = $state<{ caret: number | null } | null>(null);
@@ -1998,7 +2000,9 @@
     const others = new Set<string>();
     if (t.header && t.info.rows > 0) {
       try {
-        name = (await backend().cellText(t.id, 0, c)).text;
+        // The table's first row, even if a filter or hidden rows leave
+        // another row at the top.
+        name = await backend().firstRowCell(t.id, c);
         const v = await backend().viewport(t.id, 0, 1, 0, Math.min(t.info.cols, 2000), 200);
         v.cells.slice(0, v.cols).forEach((s, i) => {
           if (i !== c && s.trim()) others.add(s.trim().toLowerCase());
@@ -2018,11 +2022,16 @@
     // The tab may have changed while the box was open.
     if (!t || t.id !== id || col >= t.info.cols) return;
     if (!header) {
+      if (t.info.filtered) {
+        say("Show all rows first (a filter or hidden rows are on), then rename the column.");
+        return;
+      }
       if (!(await change({ op: "insert_rows", at: 0, count: 1 }))) return;
       t.header = true;
       t.headerTouched = true;
+      t.headerAddedAt = t.info.history_pos;
     }
-    if (await apply((x) => backend().setCells(x.id, [[0, col, name]]))) {
+    if (await apply((x) => backend().setFirstRowCell(x.id, col, name))) {
       say(name.trim() ? `Column ${col + 1} is now "${name}". Ctrl+Z undoes it.` : `Column ${col + 1} has no name now. Ctrl+Z undoes it.`);
     }
   }
@@ -2713,6 +2722,7 @@
   function toggleHeader(): void {
     const t = tab;
     if (!t) return;
+    t.headerAddedAt = null;
     t.header = !t.header;
     t.headerTouched = true;
     grid?.select(t.sel.anchor, t.sel.focus);
@@ -2769,6 +2779,16 @@
     if (op === "redo") t.redoing++;
     try {
       await change({ op });
+      // Undoing the header row Rename column added: the setting it switched
+      // on goes off again, so the first record is not taken for titles.
+      if (t.headerAddedAt !== null && t.info.history_pos < t.headerAddedAt) {
+        t.headerAddedAt = null;
+        if (t.header) {
+          t.header = false;
+          grid?.select(t.sel.anchor, t.sel.focus);
+          say('The added header row is undone, so "First row is header" is off again.');
+        }
+      }
     } finally {
       if (op === "redo") t.redoing--;
       undoBusy.delete(t);
@@ -3199,7 +3219,7 @@
     { id: "format.showCols", label: "&Unhide all columns", keys: ["Ctrl+Shift+0", "Ctrl+Shift+)"], run: () => { tab!.columns.showAll(); tab!.bump(); }, enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
     { id: "format.header", label: "First row is &header", run: toggleHeader, enabled: hasTab, checked: () => !!tab?.header },
     { id: "format.makeHeader", label: "&Make this row the header", run: makeHeader, enabled: ready },
-    { id: "format.renameCol", label: "Re&name column…", run: () => void askRename(), enabled: () => ready() && !tab?.info.read_only && (tab?.info.cols ?? 0) > 0 },
+    { id: "format.renameCol", label: "Re&name column…", run: () => void askRename(menuCol ?? undefined), enabled: () => ready() && !tab?.info.read_only && (tab?.info.cols ?? 0) > 0 },
 
     { id: "view.freeze", label: "&Freeze panes at cursor", run: freezeAtCursor, enabled: hasTab },
     { id: "view.freezeRow", label: "Freeze top &row", run: () => { tab!.frozenRows = 1; tab!.frozenCols = 0; }, enabled: hasTab },
@@ -3453,12 +3473,16 @@
   }
 
   async function runCmd(id: string): Promise<void> {
+    // Picked from a heading's right-click menu: the column it was opened on.
+    menuCol = context ? contextCol : null;
     openMenu = null;
     context = null;
     try {
       await reg.run(id);
     } catch (e) {
       say(errorText(e));
+    } finally {
+      menuCol = null;
     }
     if (!dialog && document.activeElement === document.body) grid?.focus();
   }
@@ -4069,7 +4093,11 @@
     root.style.setProperty("--ui-font", prefs.data.font);
   });
 
-  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner"): void {
+  /** The column a heading's right-click menu was opened on (Rename acts
+   *  on it, not on the selection's focus column). */
+  let contextCol: number | null = null;
+  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner", col: number): void {
+    contextCol = area === "col" ? col : null;
     openMenu = null;
     // The cut items show only while something is cut.
     const cutItems = new Set(["edit.moveCut", "edit.cancelCut"]);
