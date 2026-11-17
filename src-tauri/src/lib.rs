@@ -305,13 +305,17 @@ async fn set_first_row_cell(
     blocking(move || docs.set_first_row_cell(doc, col, value)).await
 }
 
-/// The names of the first columns (at most 2,000, each cut to 200
-/// characters): the table's first row, shown or not.
+/// The names of the columns (at most 20,000, each cut to 200 characters):
+/// the table's first row, shown or not.
 #[tauri::command]
 async fn first_row_names(docs: DocsState<'_>, doc: u32) -> CmdResult<Vec<String>> {
     let docs = docs.inner().clone();
-    blocking(move || docs.first_row_names(doc, 2_000, 200)).await
+    blocking(move || docs.first_row_names(doc, docs::MAX_NAME_COLS, NAME_CHARS)).await
 }
+
+/// Names longer than this come back cut (the UI then names such a column
+/// by number in rules).
+const NAME_CHARS: usize = 200;
 
 /// Open a recent file by its id (from `recent_files`). A file already open
 /// in a tab is not opened again: that tab's document comes back.

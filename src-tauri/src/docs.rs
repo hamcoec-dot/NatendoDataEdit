@@ -333,6 +333,10 @@ pub struct JobInfo {
     pub fraction: f64,
 }
 
+/// Most columns whose names are read at once (for rules that follow a
+/// rename, and views): 20,000 names of at most 200 characters.
+pub const MAX_NAME_COLS: usize = 20_000;
+
 /// One open document.
 pub struct Entry {
     /// Read/write lock: long operations compute under a read lock, so the
@@ -1843,6 +1847,8 @@ impl Docs {
     /// The table's first row (the header row), at most `cols` values, each
     /// cut to `chars` characters: other columns' names, to warn of a repeat.
     pub fn first_row_names(&self, id: u32, cols: usize, chars: usize) -> CmdResult<Vec<String>> {
+        // Bounded: at most MAX_NAME_COLS names of `chars` characters.
+        let cols = cols.min(MAX_NAME_COLS);
         let entry = self.get(id)?;
         let d = entry.read();
         let mut v = d.first_row_values()?;
@@ -4826,6 +4832,22 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str, body: &[u8]) -> PathBuf {
+        // Tests run in parallel: two tests writing one temp file break each
+        // other now and then. Each name belongs to the first test (thread)
+        // that uses it.
+        static OWNERS: std::sync::Mutex<Option<HashMap<String, String>>> =
+            std::sync::Mutex::new(None);
+        let me = std::thread::current().name().unwrap_or("").to_string();
+        let mut owners = OWNERS.lock().unwrap_or_else(|p| p.into_inner());
+        let owner = owners
+            .get_or_insert_with(HashMap::new)
+            .entry(name.to_string())
+            .or_insert_with(|| me.clone());
+        assert_eq!(
+            *owner, me,
+            "temp file {name} is used by two tests; give one another name"
+        );
+        drop(owners);
         let dir = std::env::temp_dir().join(format!("nde-docs-{}-{name}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join(name);
@@ -5054,21 +5076,9 @@ mod tests {
     /// showing its file, so the file is never opened a second time.
     #[test]
     fn busy_document_still_counts_as_open() {
-        let p = tmp("busy.csv", b"a,b\r\n1,2\r\n");
+        let p = tmp("busy-open.csv", b"a,b\r\n1,2\r\n");
         let docs = Docs::default();
-        // A file just written can still be touched by the system (a virus
-        // scan, say) as it opens: "changed while it was being read". Try
-        // again then; that is not what this test is about.
-        let id = (0..20)
-            .find_map(|_| match docs.open_path(&p, false) {
-                Ok(i) => Some(i.id),
-                Err(e) if e.message.contains("changed while") => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    None
-                }
-                Err(e) => panic!("{}", e.message),
-            })
-            .expect("the file opens");
+        let id = docs.open_path(&p, false).unwrap().id;
         wait(&docs, id);
         let entry = docs.get(id).unwrap();
         let _held = entry.write();

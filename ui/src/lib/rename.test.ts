@@ -64,6 +64,14 @@ describe("remapExpr (saved views by place)", () => {
   });
 });
 
+describe("long titles", () => {
+  it("names a column whose title may be cut short by number", () => {
+    const long = "x".repeat(200);
+    expect(remapExpr("[a] = 1", ["a"], [long], (k) => k)).toEqual({ expr: "[#1] = 1", pinned: 1 });
+    expect(remapExpr("[a] = 1", ["a"], ["x".repeat(199)], (k) => k).expr).toBe(`[${"x".repeat(199)}] = 1`);
+  });
+});
+
 describe("renameInChecks / remapChecks", () => {
   it("changes only row rules that use the column", () => {
     const checks: Check[] = [

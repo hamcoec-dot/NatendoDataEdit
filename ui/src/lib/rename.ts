@@ -67,6 +67,11 @@ function refs(expr: string): { start: number; end: number; name: string }[] | nu
   return out;
 }
 
+/** Titles this long may have been cut short when read (the backend sends
+ *  names of at most this many characters): a rule names such a column by
+ *  number instead. */
+export const NAME_CHARS = 200;
+
 /** `expr`, written against columns titled `from`, rewritten for columns
  *  titled `to`, where column k of `from` is column `place(k)` of `to`
  *  (null: gone, its references are left as they are). A reference keeps
@@ -95,7 +100,7 @@ export function remapExpr(
     const c = place(k);
     if (c === null || c >= t.length || resolveColumn(r.name, t) === c) continue;
     let ref: string;
-    if (resolveColumn(t[c]!, t) === c) ref = columnRef(t[c]!);
+    if (t[c]!.length < NAME_CHARS && resolveColumn(t[c]!, t) === c) ref = columnRef(t[c]!);
     else {
       ref = `[#${c + 1}]`;
       pinned++;

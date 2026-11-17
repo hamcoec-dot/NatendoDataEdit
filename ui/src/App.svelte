@@ -674,9 +674,12 @@
     // The real titles (the grid only knows those on screen), as views
     // keep them: 60 characters, one line.
     let titles = shownTitles(t);
+    // Full names (up to 200 characters) for the view's data-check rules.
+    let ruleTitles: string[] = Array.from({ length: t.info.cols }, () => "");
     if (t.header && t.info.rows > 0) {
       try {
         const first = await backend().firstRowNames(t.id);
+        ruleTitles = first;
         titles = titles.map((x, c) => {
           const v1 = (first[c] ?? "").replace(/[\r\n\t]+/g, " ").slice(0, 60);
           return v1 || x;
@@ -741,7 +744,7 @@
     // Row rules name columns by the view's titles: rewrite them for the
     // columns this file uses (those taken by place have other names).
     const viewTitles = v.columns.map((c) => c.title);
-    const ruled = remapChecks(v.checks ?? [], viewTitles, titles, (k) => to(k));
+    const ruled = remapChecks(v.checks ?? [], viewTitles, ruleTitles, (k) => to(k));
     t.checks = ruled.checks.flatMap((c) => {
       if (c.col === null) return [c];
       const k = to(c.col);
@@ -2094,7 +2097,11 @@
       // (undone and redone with the rename).
       let followed = "";
       // Without a header row every column was "Column N" to the rules.
-      if (!header) titles = Array.from({ length: Math.min(t.info.cols, 2000) }, () => "");
+      if (!header) titles = Array.from({ length: Math.min(t.info.cols, 20_000) }, () => "");
+      // Past the names read (a file over 20,000 columns wide): rules are
+      // not followed, and the status says so.
+      const unread = col >= titles.length && t.checks.some((k) => k.kind.type === "expression");
+      if (unread) titles = [];
       if (titles.length && t.checks.some((k) => k.kind.type === "expression")) {
         const before = $state.snapshot(t.checks) as Check[];
         const r = renameInChecks(before, titles, col, name);
@@ -2106,6 +2113,7 @@
           if (r.pinned) followed += ` Another column has that name too, so ${r.pinned === 1 ? "1 reference" : `${r.pinned} references`} now name${r.pinned === 1 ? "s" : ""} the column by number ([#${col + 1}] style) to keep pointing at the same column.`;
         }
       }
+      if (unread) followed = " Data check rules were not updated: this file is too wide to read every column's name.";
       say(name.trim() ? `Column ${col + 1} is now "${name}".${followed} Ctrl+Z undoes it.` : `Column ${col + 1} has no name now.${followed} Ctrl+Z undoes it.`);
     }
   }
