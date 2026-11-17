@@ -1109,6 +1109,25 @@ export class MockBackend implements Backend {
     return { changes, preview, hits };
   }
 
+  private previewKey = "";
+  async replaceConfirm(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport> {
+    const key = JSON.stringify([spec, replacement]);
+    const ok = key === this.previewKey;
+    this.previewKey = "";
+    if (!ok) throw err("changed", "the search or the file changed since the preview; nothing was replaced. Look at the changes again (Replace all…)");
+    return this.replaceAll(doc, spec, replacement);
+  }
+
+  async findCountCancel(): Promise<void> {}
+
+  async setDocTitle(doc: number, title: string): Promise<DocInfo> {
+    const d = this.get(doc);
+    if (d.info.path) throw err("has_path", "this tab is a saved file: use Rename file to rename it");
+    const t = title.replace(/[\u0000-\u001f]/g, " ").trim().replace(/\s+/g, " ").slice(0, 120);
+    d.info.name = t || "Untitled";
+    return this.refresh(d);
+  }
+
   private lastReplace: ReplaceReport["preview"] = [];
   async replacePage(_doc: number, offset: number, count: number): Promise<ReplaceReport["preview"]> {
     return this.lastReplace.slice(offset, offset + Math.min(count, 500));
@@ -1117,6 +1136,7 @@ export class MockBackend implements Backend {
   async replacePreview(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport> {
     const p = this.planReplace(this.get(doc), spec, replacement);
     const d = this.get(doc);
+    this.previewKey = JSON.stringify([spec, replacement]);
     this.lastReplace = p.changes.slice(0, 100_000).map(([r, c, after]) => ({ row: r, number: this.pos(d, r), col: c, before: this.value(d, r, c), after }));
     return { cells: p.changes.length, hits: p.hits, preview: p.preview, info: null };
   }
@@ -2185,7 +2205,13 @@ export class MockBackend implements Backend {
   }
 
   async pivotTable(doc: number, spec: PivotSpec): Promise<DocInfo> {
-    return this.tableDoc(this.pivotLines(doc, spec));
+    const info = await this.tableDoc(this.pivotLines(doc, spec));
+    const { titles } = this.pivotData(doc, spec.keep_first);
+    const names = (f: PivotField[]) => f.map((x) => titles[x.col] ?? `column ${x.col + 1}`).join(", ");
+    const [r, c] = [names(spec.rows), names(spec.cols)];
+    const what = r && c ? ` – ${r} by ${c}` : r ? ` – ${r}` : c ? ` – by ${c}` : "";
+    const stem = this.get(doc).info.name.replace(/\.[^. ]{1,5}$/, "");
+    return this.setDocTitle(info.id, `Pivot${what} (${stem})`);
   }
 
   async pivotText(doc: number, spec: PivotSpec): Promise<string> {

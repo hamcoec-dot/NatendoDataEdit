@@ -231,12 +231,24 @@ fn regex_ignore_accents(src: &str) -> String {
                                 break;
                             }
                         }
+                    } else if matches!(n, 'p' | 'P') {
+                        // The one-letter form, \pL: the class letter too.
+                        if let Some(m) = chars.next() {
+                            out.push(m);
+                        }
                     }
                 }
             }
             '[' => {
                 class_depth += 1;
                 out.push(c);
+                // A "]" first in a class ("[]a]", "[^]a]") is a literal.
+                if chars.peek() == Some(&'^') {
+                    out.push(chars.next().expect("peeked"));
+                }
+                if chars.peek() == Some(&']') {
+                    out.push(chars.next().expect("peeked"));
+                }
             }
             ']' if class_depth > 0 => {
                 class_depth -= 1;
@@ -380,7 +392,12 @@ impl Matcher {
             body
         };
         Ok(Matcher {
-            re: build(&source, p.match_case)?,
+            re: build(&source, p.match_case).map_err(|e| match e {
+                Error::BadPattern(m) if accents && m.contains("too complex") => Error::BadPattern(
+                    "the text is too long to search with Ignore accents: untick it or shorten the text".into(),
+                ),
+                e => e,
+            })?,
             literal: p.kind != PatternKind::Regex,
             rep_escapes: p.escapes || p.kind == PatternKind::Regex,
         })
@@ -492,18 +509,25 @@ impl Matcher {
                 Some((_, '{')) => {
                     chars.next();
                     let mut n = String::new();
+                    let mut closed = false;
                     for (_, m) in chars.by_ref() {
                         if m == '}' {
+                            closed = true;
                             break;
                         }
                         n.push(m);
                     }
+                    // "${" with no "}" is plain text to the regex library.
+                    if !closed {
+                        continue;
+                    }
                     n
                 }
                 _ => {
+                    // The regex library reads a name as A-Z a-z 0-9 _ only.
                     let mut n = String::new();
                     while let Some(&(_, m)) = chars.peek() {
-                        if m.is_alphanumeric() || m == '_' {
+                        if m.is_ascii_alphanumeric() || m == '_' {
                             n.push(m);
                             chars.next();
                         } else {
@@ -997,6 +1021,20 @@ impl Document {
         at: Option<(u64, u32)>,
         progress: &Progress,
     ) -> Result<FindCount, Error> {
+        self.find_count_with(spec, at, &mut None, progress)
+    }
+
+    /// [`Document::find_count`] with the matches per block of rows kept in
+    /// `blocks` (for this document revision and search): when given, only
+    /// the block holding `at` is read again, so Find next moving "3 of N"
+    /// to "4 of N" does not read the whole file.
+    pub fn find_count_with(
+        &self,
+        spec: &FindSpec,
+        at: Option<(u64, u32)>,
+        blocks: &mut Option<Vec<u64>>,
+        progress: &Progress,
+    ) -> Result<FindCount, Error> {
         let m = Matcher::new(&spec.pattern)?;
         let area = self.area(spec)?;
         let (r0, r1) = (area.rows.start, area.rows.end);
@@ -1013,31 +1051,55 @@ impl Document {
             // No cell: nothing counts as before it.
             None => (0, 0, false),
         };
-        let blocks = (r1 - r0).div_ceil(BLOCK);
-        let parts: Vec<FindCount> = (0..blocks)
-            .into_par_iter()
-            .map(|b| -> Result<FindCount, Error> {
-                let s = r0 + b * BLOCK;
-                let e = (s + BLOCK).min(r1);
-                let mut out = FindCount::default();
-                let mut buf = Vec::new();
-                for r in s..e {
-                    self.each_cell(&area, r, false, &mut buf, |k, t| {
-                        if m.is_match(t) {
-                            out.cells += 1;
-                            if r < ar || (r == ar && k < ak) {
-                                out.before += 1;
-                            } else if r == ar && k == ak && exact {
-                                out.here = true;
-                            }
+        let nblocks = (r1 - r0).div_ceil(BLOCK);
+        let count_block = |b: u64| -> Result<FindCount, Error> {
+            let s = r0 + b * BLOCK;
+            let e = (s + BLOCK).min(r1);
+            let mut out = FindCount::default();
+            let mut buf = Vec::new();
+            for r in s..e {
+                self.each_cell(&area, r, false, &mut buf, |k, t| {
+                    if m.is_match(t) {
+                        out.cells += 1;
+                        if r < ar || (r == ar && k < ak) {
+                            out.before += 1;
+                        } else if r == ar && k == ak && exact {
+                            out.here = true;
                         }
-                        None::<()>
-                    });
+                    }
+                    None::<()>
+                });
+            }
+            progress.step(e - s)?;
+            Ok(out)
+        };
+        if let Some(kept) = blocks.as_ref().filter(|k| k.len() as u64 == nblocks) {
+            let cells = kept.iter().sum();
+            // Blocks wholly before the cell count in full; only the cell's
+            // own block is read again.
+            let (before, here) = match at {
+                Some((r, _)) if r >= r0 && r < r1 => {
+                    let b = (r - r0) / BLOCK;
+                    let mine = count_block(b)?;
+                    (
+                        kept[..b as usize].iter().sum::<u64>() + mine.before,
+                        mine.here,
+                    )
                 }
-                progress.step(e - s)?;
-                Ok(out)
-            })
+                Some((r, _)) if r >= r1 => (cells, false),
+                _ => (0, false),
+            };
+            return Ok(FindCount {
+                cells,
+                before,
+                here,
+            });
+        }
+        let parts: Vec<FindCount> = (0..nblocks)
+            .into_par_iter()
+            .map(count_block)
             .collect::<Result<_, _>>()?;
+        *blocks = Some(parts.iter().map(|p| p.cells).collect());
         Ok(parts
             .into_iter()
             .fold(FindCount::default(), |a, p| FindCount {
@@ -1279,6 +1341,31 @@ mod tests {
     }
 
     #[test]
+    fn counts_reuse_the_blocks_kept() {
+        let mut body = String::from("a\n");
+        for i in 0..(BLOCK * 2 + 10) {
+            body.push_str(if i % 3 == 0 { "x\n" } else { "y\n" });
+        }
+        let d = doc(&body);
+        let s = spec(pat("x", PatternKind::Plain));
+        let p = Progress::new();
+        let mut kept = None;
+        let at = Some((BLOCK + 4, 0));
+        let full = d.find_count(&s, at, &p).unwrap();
+        let first = d.find_count_with(&s, at, &mut kept, &p).unwrap();
+        assert_eq!(first, full);
+        assert!(kept.is_some());
+        for row in [1, BLOCK + 4, BLOCK * 2 + 9, BLOCK * 2 + 10] {
+            let at = Some((row, 0));
+            assert_eq!(
+                d.find_count_with(&s, at, &mut kept, &p).unwrap(),
+                d.find_count(&s, at, &p).unwrap(),
+                "row {row}"
+            );
+        }
+    }
+
+    #[test]
     fn find_all_counts_per_column() {
         let d = doc("a,b,c\nx,ax,b\nax,c,x\n");
         let r = d
@@ -1385,10 +1472,21 @@ mod tests {
             p.ignore_accents = true
         });
         assert!(m.is_match("Muñoz") && m.is_match("Múnoz1") && !m.is_match("Munozz"));
+        // \pL (short class) and "]" first in a class stay as they are.
+        let m = with(r"^\pL+o$", PatternKind::Regex, |p| p.ignore_accents = true);
+        assert!(m.is_match("Pedró") && !m.is_match("12o"));
+        let m = with(r"[]a]x", PatternKind::Regex, |p| p.ignore_accents = true);
+        assert!(m.is_match("]x") && m.is_match("ax") && !m.is_match("bx"));
         let m = with("caf?", PatternKind::Wildcard, |p| p.ignore_accents = true);
         assert!(m.is_match("Càfe"));
         // Off, accents count.
         assert!(!with("Jose", PatternKind::Plain, |_| {}).is_match("José"));
+        // A very long text with accents ignored is refused with a clear reason.
+        let mut long = pat(&"abcdefghij".repeat(200), PatternKind::Plain);
+        long.ignore_accents = true;
+        if let Err(e) = Matcher::new(&long) {
+            assert!(e.to_string().contains("Ignore accents"), "{e}");
+        }
         // Replacing keeps the rest of the cell.
         let m = with("jose", PatternKind::Plain, |p| p.ignore_accents = true);
         assert_eq!(m.replace("Dr. José", "Joe").unwrap().unwrap().0, "Dr. Joe");
@@ -1424,6 +1522,10 @@ mod tests {
         assert!(m.check_replacement("$2").is_err());
         let m = with(r"(?P<zip>\d{5})", PatternKind::Regex, |_| {});
         assert!(m.check_replacement("$zip").is_ok() && m.check_replacement("$zap").is_err());
+        // Non-ASCII letters end a name ($1é is group 1 then "é"); an
+        // unclosed "${" is plain text.
+        let m = with(r"(\d+)", PatternKind::Regex, |_| {});
+        assert!(m.check_replacement("$1é").is_ok() && m.check_replacement("${1").is_ok());
         // Plain text never has groups to check.
         assert!(with("a", PatternKind::Plain, |_| {})
             .check_replacement("$9")

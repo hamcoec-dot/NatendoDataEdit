@@ -369,6 +369,10 @@ pub struct Entry {
     /// The find bar's match count being worked out, if any: a newer count
     /// or any change cancels it.
     find_count: Mutex<Option<Arc<Progress>>>,
+    /// The last count's matches per block of rows: (search, revision,
+    /// counts), so moving to the next match re-reads one block only.
+    #[allow(clippy::type_complexity)]
+    find_blocks: Mutex<Option<(String, u64, Vec<u64>)>>,
     /// Type-ahead values of one column, for one revision (memory only).
     #[allow(clippy::type_complexity)]
     typeahead: Mutex<Option<(u64, u32, Arc<Vec<(String, String)>>)>>,
@@ -1230,6 +1234,7 @@ impl Docs {
             checks: Mutex::new(None),
             totals: Mutex::new(None),
             find_count: Mutex::new(None),
+            find_blocks: Mutex::new(None),
             typeahead: Mutex::new(None),
             writers: AtomicU32::new(0),
             closed: AtomicBool::new(false),
@@ -1810,6 +1815,40 @@ impl Docs {
             info.name = t;
         }
         Ok(info)
+    }
+
+    /// The tab's name without its extension ("voters" for voters.csv), for
+    /// naming tabs made from it.
+    fn stem(&self, id: u32) -> String {
+        let name = self.info(id).map(|i| i.name).unwrap_or_default();
+        match name.rsplit_once('.') {
+            Some((s, ext)) if !s.is_empty() && ext.len() <= 5 && !ext.contains(' ') => {
+                s.to_string()
+            }
+            _ => name,
+        }
+    }
+
+    fn set_title_of(&self, id: u32, title: String) {
+        if let Ok(entry) = self.get(id) {
+            *entry.title.lock().unwrap_or_else(|p| p.into_inner()) = Some(clean_title(&title));
+        }
+    }
+
+    /// Name a tab that has no file yet (Rename on a new or tool-made tab);
+    /// the name is also what Save suggests. Empty: back to the default.
+    pub fn set_title(&self, id: u32, title: &str) -> CmdResult<DocInfo> {
+        let entry = self.get(id)?;
+        if entry.read().path().is_some() {
+            return Err(CmdError::new(
+                "has_path",
+                "this tab is a saved file: use Rename file to rename it",
+            ));
+        }
+        let t = clean_title(title);
+        *entry.title.lock().unwrap_or_else(|p| p.into_inner()) = (!t.is_empty()).then_some(t);
+        drop(entry);
+        self.info(id)
     }
 
     /// Add a new document (no file yet) under a name, as a new tab.
@@ -2515,13 +2554,39 @@ impl Docs {
             drop(d);
             return Err(CmdError::new("busy", "the file is being changed"));
         }
-        let r = d.find_count(&spec, at, &progress);
+        let key = serde_json::to_string(&spec).unwrap_or_default();
+        let rev = d.revision();
+        let mut blocks = entry
+            .find_blocks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .filter(|(k, r, _)| *k == key && *r == rev)
+            .map(|(_, _, b)| b);
+        let r = d.find_count_with(&spec, at, &mut blocks, &progress);
         drop(d);
+        if let (Ok(_), Some(b)) = (&r, blocks) {
+            *entry.find_blocks.lock().unwrap_or_else(|p| p.into_inner()) = Some((key, rev, b));
+        }
         let mut slot = entry.find_count.lock().unwrap_or_else(|p| p.into_inner());
         if slot.as_ref().is_some_and(|p| Arc::ptr_eq(p, &progress)) {
             *slot = None;
         }
         Ok(r?)
+    }
+
+    /// Stop a count still running (the find bar closed).
+    pub fn find_count_cancel(&self, id: u32) -> CmdResult<()> {
+        let entry = self.get(id)?;
+        if let Some(p) = entry
+            .find_count
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            p.cancel.store(true, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     /// The matching cells on screen, to light them up.
@@ -2595,7 +2660,26 @@ impl Docs {
             with: replacement.clone(),
         };
         self.recorded(id, Logged::Step(step), || {
-            self.replace_all_now(id, spec, replacement)
+            self.replace_all_now(id, spec, replacement, false)
+        })
+    }
+
+    /// The preview's "Replace all": applies exactly the plan the preview
+    /// showed, or nothing. If the search, the replacement or the file
+    /// changed since, it fails ("changed") instead of working out a new,
+    /// unseen plan.
+    pub fn replace_confirm(
+        &self,
+        id: u32,
+        spec: FindSpec,
+        replacement: String,
+    ) -> CmdResult<ReplaceReport> {
+        let step = RecipeOp::ReplaceAll {
+            spec: spec.clone(),
+            with: replacement.clone(),
+        };
+        self.recorded(id, Logged::Step(step), || {
+            self.replace_all_now(id, spec, replacement, true)
         })
     }
 
@@ -2604,6 +2688,7 @@ impl Docs {
         id: u32,
         spec: FindSpec,
         replacement: String,
+        exact: bool,
     ) -> CmdResult<ReplaceReport> {
         let entry = self.get(id)?;
         let key = replace_key(&spec, &replacement);
@@ -2624,11 +2709,20 @@ impl Docs {
                 info: Some(info),
             })
         };
+        let changed = || {
+            CmdError::new(
+                "changed",
+                "the search or the file changed since the preview; nothing was replaced. Look at the changes again (Replace all…)",
+            )
+        };
         if let Some(plan) = kept {
             match attempt(plan) {
+                Err(e) if e.kind == "changed" && exact => return Err(changed()),
                 Err(e) if e.kind == "changed" => {}
                 other => return other,
             }
+        } else if exact {
+            return Err(changed());
         }
         let job = entry.start("Replacing")?;
         let plan = entry
@@ -3968,6 +4062,17 @@ impl Docs {
             from.push(*other);
         }
         self.inherit_private(nid, &from, &[]);
+        let stem = self.stem(id);
+        let title = match &op {
+            TableOp::Pivot { .. } => format!("Pivot ({stem})"),
+            TableOp::Unpivot { .. } => format!("Unpivot ({stem})"),
+            TableOp::Subtotals { .. } => format!("Subtotals ({stem})"),
+            TableOp::Reshape { .. } => format!("Reshaped ({stem})"),
+            TableOp::Stack { .. } => format!("Stacked ({stem})"),
+            TableOp::Sample { .. } => format!("Sample ({stem})"),
+            TableOp::Compare { other, .. } => format!("Compare {stem} with {}", self.stem(*other)),
+        };
+        self.set_title_of(nid, title);
         Ok(TableReport {
             info: self.info(nid)?,
             compare,
@@ -4078,6 +4183,27 @@ impl Docs {
         let doc = table.into_document()?;
         let (nid, _) = self.insert(doc, false)?;
         self.inherit_private(nid, &[id], &[]);
+        let titles = Self::pivot_titles(&entry, spec.keep_first);
+        let names = |fields: &[natendo_engine::pivot::PivotField]| -> String {
+            fields
+                .iter()
+                .map(|f| {
+                    titles
+                        .get(f.col as usize)
+                        .cloned()
+                        .unwrap_or_else(|| format!("column {}", f.col + 1))
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let (rows, cols) = (names(&spec.rows), names(&spec.cols));
+        let what = match (rows.is_empty(), cols.is_empty()) {
+            (false, false) => format!(" – {rows} by {cols}"),
+            (false, true) => format!(" – {rows}"),
+            (true, false) => format!(" – by {cols}"),
+            (true, true) => String::new(),
+        };
+        self.set_title_of(nid, format!("Pivot{what} ({})", self.stem(id)));
         self.info(nid)
     }
 
@@ -4123,6 +4249,18 @@ impl Docs {
         let doc = table.into_document()?;
         let (nid, _) = self.insert(doc, false)?;
         self.inherit_private(nid, &[id], &[]);
+        let path: Vec<&str> = row_path
+            .iter()
+            .chain(col_path)
+            .map(String::as_str)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let what = if path.is_empty() {
+            "all".to_string()
+        } else {
+            path.join(", ")
+        };
+        self.set_title_of(nid, format!("Rows for {what} ({})", self.stem(id)));
         self.info(nid)
     }
 
@@ -4351,6 +4489,7 @@ impl Docs {
         drop(refs);
         drop(docs);
         let (nid, _) = self.insert(table.into_document()?, false)?;
+        self.set_title_of(nid, format!("Combined ({} files)", paths.len()));
         let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
         self.inherit_private(nid, &[], &paths);
         self.info(nid)
@@ -4947,6 +5086,37 @@ pub fn read_recipe(path: &Path) -> CmdResult<Recipe> {
     }
     let bytes = std::fs::read(path).map_err(fail)?;
     Ok(Recipe::from_json(&bytes)?)
+}
+
+/// A tab name as typed: no line breaks or control characters, at most
+/// 120 characters, trimmed.
+pub fn clean_title(t: &str) -> String {
+    let one: String = t
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(120)
+        .collect();
+    one.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A tab name as a file name: characters Windows refuses become "-".
+pub fn file_name_of(t: &str) -> String {
+    let s: String = t
+        .chars()
+        .map(|c| {
+            if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let s = s.trim_end_matches(['.', ' ']).trim().to_string();
+    if s.is_empty() {
+        "Untitled".into()
+    } else {
+        s
+    }
 }
 
 #[cfg(test)]
@@ -6641,6 +6811,108 @@ ca,California
         docs.save(id, Some(p.clone()), false, false, None).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"x\r\n");
         assert_eq!(docs.info(id).unwrap().name, "new.csv");
+    }
+
+    #[test]
+    fn replace_confirm_applies_only_the_previewed_plan() {
+        let docs = Docs::default();
+        let p = tmp("rc.csv", b"a\nzzq\nzzq\nkeep\n");
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let spec = |t: &str| FindSpec {
+            pattern: Pattern {
+                text: t.into(),
+                ..Default::default()
+            },
+            scope: natendo_engine::find::Scope::All,
+            skip_first: false,
+            skip_cols: Vec::new(),
+        };
+        // Previewed one thing, confirmed another: refused, nothing changes.
+        docs.replace_preview(id, spec("zzq"), "yy".into()).unwrap();
+        assert_eq!(
+            docs.replace_confirm(id, spec("zzq"), "WIPED".into())
+                .unwrap_err()
+                .kind,
+            "changed"
+        );
+        assert_eq!(
+            docs.replace_confirm(id, spec("zzq"), "yy".into())
+                .unwrap_err()
+                .kind,
+            "changed"
+        );
+        assert_eq!(docs.find_all(id, spec("zzq")).unwrap().cells, 2);
+        // The file changed after the preview: refused too.
+        docs.replace_preview(id, spec("zzq"), "yy".into()).unwrap();
+        docs.set_cells(id, vec![(3, 0, "zzq".into())]).unwrap();
+        assert_eq!(
+            docs.replace_confirm(id, spec("zzq"), "yy".into())
+                .unwrap_err()
+                .kind,
+            "changed"
+        );
+        assert_eq!(docs.find_all(id, spec("zzq")).unwrap().cells, 3);
+        // The previewed plan itself goes through.
+        docs.replace_preview(id, spec("zzq"), "yy".into()).unwrap();
+        let r = docs.replace_confirm(id, spec("zzq"), "yy".into()).unwrap();
+        assert_eq!(r.cells, 3);
+    }
+
+    #[test]
+    fn unsaved_tabs_can_be_named() {
+        let docs = Docs::default();
+        let id = docs.new_document().unwrap().id;
+        assert_eq!(docs.info(id).unwrap().name, "Untitled");
+        let i = docs
+            .set_title(
+                id,
+                "  Pivot – city
+by party ",
+            )
+            .unwrap();
+        assert_eq!(i.name, "Pivot – city by party");
+        assert_eq!(docs.set_title(id, "").unwrap().name, "Untitled");
+        assert_eq!(file_name_of("Pivot: a/b (voters)?"), "Pivot- a-b (voters)-");
+        assert_eq!(file_name_of(" .. "), "Untitled");
+        assert_eq!(clean_title(&"x".repeat(300)).len(), 120);
+        // A saved file keeps its file name; Rename file renames it.
+        let p = tmp(
+            "named.csv",
+            b"a
+1
+",
+        );
+        let f = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, f);
+        assert_eq!(docs.set_title(f, "x").unwrap_err().kind, "has_path");
+    }
+
+    #[test]
+    fn pivot_tabs_are_named_after_their_fields() {
+        let docs = Docs::default();
+        let p = tmp(
+            "voters.csv",
+            b"city,party
+A,x
+B,y
+",
+        );
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let spec = natendo_engine::pivot::PivotSpec {
+            rows: vec![natendo_engine::pivot::PivotField {
+                col: 0,
+                ..Default::default()
+            }],
+            cols: vec![natendo_engine::pivot::PivotField {
+                col: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let t = docs.pivot_table(id, &spec).unwrap();
+        assert_eq!(t.name, "Pivot – city by party (voters)");
     }
 
     #[test]

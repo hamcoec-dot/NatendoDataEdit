@@ -130,6 +130,21 @@ const url = process.argv[3] || "http://localhost:5181";
   await p.click(`${dialog} button:has-text('Open as a new tab')`);
   await p.waitForTimeout(600);
   ok(/The pivot table has/.test(await p.textContent("body")), "new tab made");
+  // The new tab is named after the pivot, and can be renamed before saving.
+  const tabName = () => p.evaluate(() => window.__nde.tab.info.name);
+  ok(/^Pivot – city/.test(await tabName()) && /\(sample/.test(await tabName()), `the pivot tab is named after its fields (${await tabName()})`);
+  await p.dblclick(".tabs .tab.active span >> nth=0");
+  await p.waitForTimeout(300);
+  await p.fill("[role=dialog] input[type=text]", "Turnout by city");
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(500);
+  ok((await tabName()) === "Turnout by city", `double-click the tab renames it (${await tabName()})`);
+  ok((await p.textContent(".tabs .tab.active")).includes("Turnout by city"), "the tab shows the new name");
+  await p.click(".tabs .tab.active", { button: "right" });
+  await p.waitForTimeout(200);
+  ok(await p.isEnabled(".menu.context .item:has-text('Rename')"), "right-click › Rename works on an unsaved tab");
+  await p.keyboard.press("Escape");
+  if (out) await p.screenshot({ path: require("path").join(out, "tab-rename.png"), clip: { x: 0, y: 0, width: 900, height: 300 } });
 
   // A layout made while "First row is header" was off, reopened after
   // turning it on: the header is not counted as a value.

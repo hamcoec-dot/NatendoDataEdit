@@ -2660,7 +2660,28 @@
 
   async function renameFile(): Promise<void> {
     const t = tab;
-    if (!t?.info.path) return;
+    if (!t) return;
+    if (!t.info.path) {
+      // A tab with no file yet (new, or made by a tool): name it; Save
+      // suggests this name for the file.
+      prompt = {
+        title: "Rename tab",
+        label: "Name",
+        value: t.info.name === "Untitled" ? "" : t.info.name,
+        note: "Save suggests this name for the file.",
+        check: (v) => (v.trim().length > 120 ? "Keep the name to 120 characters." : ""),
+        done: (v) => {
+          void backend()
+            .setDocTitle(t.id, v)
+            .then((d) => {
+              t.update(d, false);
+              say(v.trim() ? `This tab is now called ${d.name}.` : "The tab's name is back to Untitled.");
+            })
+            .catch((e: unknown) => say(errorText(e)));
+        },
+      };
+      return;
+    }
     try {
       const d = await backend().renameFile(t.id);
       if (!d) return;
@@ -3583,6 +3604,12 @@
     findOptions.text = v.slice(0, 1000);
     findOptions.kind = "plain";
     findOptions.wholeCell = mode === "column";
+    // The value as it is: no escapes, no word or accent matching; "like
+    // this" also matches case.
+    findOptions.escapes = false;
+    findOptions.wholeWord = false;
+    findOptions.ignoreAccents = false;
+    if (mode === "column") findOptions.matchCase = true;
     if (mode === "column") {
       findOptions.scope = "column";
       findBlock = { row: 0, rows: Math.max(1, t.info.rows), col: t.cell.col, cols: 1 };
@@ -3974,7 +4001,7 @@
     { id: "tools.largest", label: "Go to the lar&gest number", run: () => void jumpExtreme(true), enabled: ready },
     { id: "tools.smallest", label: "Go to the smallest num&ber", run: () => void jumpExtreme(false), enabled: ready },
     { id: "file.revert", label: "Re&vert to saved", run: () => void revertFile(), enabled: () => !!tab?.info.path },
-    { id: "file.rename", label: "Rena&me file…", run: () => void renameFile(), enabled: () => !!tab?.info.path && !tab?.info.read_only },
+    { id: "file.rename", label: "Rena&me…", run: () => void renameFile(), enabled: () => !!tab && !tab.info.read_only },
     { id: "file.showFolder", label: "Show in File E&xplorer", run: () => void showInFolder(), enabled: () => !!tab?.info.path },
     { id: "file.copyPath", label: "Cop&y file path", run: () => void copyPath(), enabled: () => !!tab?.info.path },
     { id: "file.saveAll", label: "Save a&ll", keys: ["Ctrl+Alt+S"], run: () => void saveAll(), enabled: () => tabs.some((t) => t.info.modified) },
@@ -5111,7 +5138,8 @@
         onpointerup={tabPointerUp}
         onpointercancel={tabPointerUp}
         onclick={() => { if (tabDragged) { tabDragged = false; return; } active = i; void tick().then(() => grid?.focus()); }}
-        onkeydown={() => {}}
+        onkeydown={(e) => { if (e.key === "F2") { e.preventDefault(); active = i; void renameFile(); } }}
+        ondblclick={(e) => { e.stopPropagation(); active = i; void renameFile(); }}
         ondragstart={(e) => e.preventDefault()}
         onlostpointercapture={(e) => { if (tabDrag && e.pointerId === tabDrag.pointer) endTabDrag(false); }}
       >

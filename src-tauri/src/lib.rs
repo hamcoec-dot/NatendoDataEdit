@@ -2167,7 +2167,7 @@ async fn save(
         let path: Option<PathBuf> = if save_as || current.is_none() {
             let name = match current.as_ref().and_then(|p| p.file_name()) {
                 Some(n) => n.to_string_lossy().into_owned(),
-                None => format!("{}.csv", docs.info(doc)?.name),
+                None => format!("{}.csv", docs::file_name_of(&docs.info(doc)?.name)),
             };
             let mut dialog = rfd::FileDialog::new()
                 .set_title("Save As")
@@ -2269,6 +2269,28 @@ async fn replace_page(
 ) -> CmdResult<Vec<natendo_engine::find::Change>> {
     let docs = docs.inner().clone();
     blocking(move || docs.replace_page(doc, offset, count)).await
+}
+
+#[tauri::command]
+async fn replace_confirm(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: FindSpec,
+    replacement: String,
+) -> CmdResult<ReplaceReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.replace_confirm(doc, spec, replacement)).await
+}
+
+#[tauri::command]
+fn find_count_cancel(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
+    docs.find_count_cancel(doc)
+}
+
+#[tauri::command]
+async fn set_doc_title(docs: DocsState<'_>, doc: u32, title: String) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.set_title(doc, &title)).await
 }
 
 #[tauri::command]
@@ -2931,6 +2953,9 @@ pub fn run() {
             find_all,
             find_count,
             find_marks,
+            set_doc_title,
+            find_count_cancel,
+            replace_confirm,
             replace_page,
             replace_preview,
             replace_all,

@@ -104,7 +104,17 @@ const url = process.argv[3] || "http://localhost:5196";
   await p.waitForTimeout(400);
   ok(/Changes 51–100/.test(await p.textContent(".find .pager")), "the next page");
   if (out) await p.screenshot({ path: path.join(out, "find-replace-preview.png"), clip: { x: 0, y: 0, width: 1360, height: 560 } });
-  await p.click(".find .confirm button:has-text('Cancel')");
+  // Changing anything that shapes the search closes the preview, so its
+  // Replace all never applies something it did not show.
+  await p.fill("input[aria-label='Replace with']", "WIPED");
+  await p.waitForTimeout(200);
+  ok(!(await p.isVisible(".find .confirm")), "changing Replace with closes the preview");
+  ok(/preview was closed/.test(await p.textContent(".find .status")), "and says so");
+  await p.keyboard.press("Control+Alt+Enter");
+  await p.waitForTimeout(1500);
+  await tick("Match case").check();
+  await p.waitForTimeout(200);
+  ok(!(await p.isVisible(".find .confirm")), "so does ticking a box");
 
   // A replacement naming a missing group is refused before any change.
   await p.selectOption("select[aria-label='Pattern kind']", "regex");

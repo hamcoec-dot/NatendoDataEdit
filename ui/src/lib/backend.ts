@@ -866,6 +866,13 @@ export interface Backend {
   /** Matching cells in a window of the grid, to light them up. */
   findMarks(doc: number, spec: FindSpec, row: number, rows: number, col: number, cols: number): Promise<[number, number][]>;
   replacePreview(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport>;
+  /** The preview's Replace all: applies exactly the previewed plan, or
+   *  fails ("changed") if the search or the file changed since. */
+  replaceConfirm(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport>;
+  /** Stop a count still running (the find bar closed). */
+  findCountCancel(doc: number): Promise<void>;
+  /** Name a tab that has no file yet (also what Save suggests). */
+  setDocTitle(doc: number, title: string): Promise<DocInfo>;
   /** A page of the last Replace all preview: every change, in order. */
   replacePage(doc: number, offset: number, count: number): Promise<ReplaceReport["preview"]>;
   replaceAll(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport>;
@@ -1212,6 +1219,15 @@ class TauriBackend implements Backend {
   }
   findMarks(doc: number, spec: FindSpec, row: number, rows: number, col: number, cols: number) {
     return call<[number, number][]>("find_marks", { doc, spec, row, rows, col, cols });
+  }
+  replaceConfirm(doc: number, spec: FindSpec, replacement: string) {
+    return call<ReplaceReport>("replace_confirm", { doc, spec, replacement });
+  }
+  findCountCancel(doc: number) {
+    return call<void>("find_count_cancel", { doc });
+  }
+  setDocTitle(doc: number, title: string) {
+    return call<DocInfo>("set_doc_title", { doc, title });
   }
   replacePage(doc: number, offset: number, count: number) {
     return call<ReplaceReport["preview"]>("replace_page", { doc, offset, count });

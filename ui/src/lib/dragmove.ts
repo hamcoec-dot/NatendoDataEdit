@@ -24,6 +24,7 @@ export const MOUSE_MOVES: { label: string; keys: string }[] = [
   { label: "Pick from a list of the column's values", keys: "Click the arrow on a list cell, or Alt+Down" },
   { label: "File tab menu (close others, reopen...)", keys: "Right-click the tab" },
   { label: "New file", keys: "Double-click the empty part of the tab bar" },
+  { label: "Rename a tab (a saved file: rename the file)", keys: "Double-click the tab" },
   { label: "See a link's address", keys: "Point at it (Ctrl+click opens it)" },
   { label: "Put a file tab elsewhere", keys: "Drag the tab" },
   { label: "Rename a column", keys: "Double-click its heading" },

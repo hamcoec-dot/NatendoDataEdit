@@ -2,7 +2,7 @@
   // Find and replace bar. Searches run in the engine (safe regular
   // expressions, whole files of any size); results select cells in the grid.
   import { backend, errorText, type DocInfo, type FindAll, type FindCount, type FindSpec, type ReplaceReport } from "./backend";
-  import { onDestroy } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import { cellDiff } from "./textDiff";
   import { clearFindHistory, findHistory, rememberFind, rememberReplace, stepHistory } from "./findHistory.svelte";
   import type { Tab } from "./tab.svelte";
@@ -111,6 +111,7 @@
   onDestroy(() => {
     if (countTimer) clearTimeout(countTimer);
     countSeq++;
+    void backend().findCountCancel(tab.id).catch(() => {});
     tab.findSpec = null;
     tab.findVersion++;
     tab.onRedraw?.();
@@ -231,12 +232,19 @@
     await next(false);
   }
 
+  /** The search and replacement the open preview shows: its Replace all
+   *  applies exactly these (the backend refuses if anything changed). */
+  let previewed: { spec: FindSpec; replacement: string } | null = null;
+
   async function previewAll(): Promise<void> {
     if (!ready()) return;
     rememberReplace(replacement);
     try {
-      const r = await run("Looking for matches", () => backend().replacePreview(tab.id, spec(), replacement));
+      const s = spec();
+      const rep = replacement;
+      const r = await run("Looking for matches", () => backend().replacePreview(tab.id, s, rep));
       if (!r) return;
+      previewed = { spec: s, replacement: rep };
       if (r.cells === 0) {
         status = "Nothing to replace.";
         pending = null;
@@ -251,10 +259,26 @@
     }
   }
 
+  // Anything that shapes the search (the text, the replacement, a tick
+  // box, the scope or block, hidden columns, the file) closes the preview,
+  // so its Replace all never applies something it did not show.
+  $effect(() => {
+    void [options.text, options.kind, options.matchCase, options.wholeCell, options.wholeWord, options.ignoreAccents, options.escapes, options.includeHidden, options.scope, block, replacement, tab.version];
+    untrack(() => {
+      if (!pending) return;
+      pending = null;
+      previewed = null;
+      status = "The search changed, so the preview was closed: press Replace all… to see the changes again.";
+    });
+  });
+
   async function replaceAll(): Promise<void> {
+    const what = previewed;
     pending = null;
+    previewed = null;
+    if (!what) return;
     try {
-      const r = await run("Replacing", () => backend().replaceAll(tab.id, spec(), replacement));
+      const r = await run("Replacing", () => backend().replaceConfirm(tab.id, what.spec, what.replacement));
       if (!r) return;
       if (r.info) onChanged(r.info);
       status = `Replaced ${r.hits.toLocaleString()} match${r.hits === 1 ? "" : "es"} in ${r.cells.toLocaleString()} cell${r.cells === 1 ? "" : "s"}. Undo (Ctrl+Z) reverts it all.`;
@@ -348,8 +372,23 @@
     e.stopPropagation();
   }
 
+  // Column titles for the lists, read from the file (row 0 may not be in
+  // the cell cache after scrolling far down).
+  let heads = $state<string[]>([]);
+  $effect(() => {
+    if ((!results && !pending) || !tab.header) return;
+    const t = tab;
+    const cols = Math.min(t.info.cols, 2000);
+    untrack(() => {
+      void backend()
+        .viewport(t.id, 0, 1, 0, cols, 80)
+        .then((v) => (heads = v.cells.map((x) => x.replace(/[\r\n\t]+/g, " "))))
+        .catch(() => {});
+    });
+  });
+
   function title(c: number): string {
-    const t = tab.header ? tab.cache.get(0, c) : undefined;
+    const t = tab.header ? (heads[c] || tab.cache.get(0, c)) : undefined;
     return t ? `${t} (column ${c + 1})` : `Column ${c + 1}`;
   }
 </script>
@@ -433,7 +472,7 @@
         </div>
       </div>
       <div class="line">
-        <span class="muted">With <code>\t \n</code> ticked, <code>\t</code> is a tab and <code>\n</code> a line break (in Replace with too). Recent searches are kept only until you close the app.</span>
+        <span class="muted">With <code>\t \n</code> ticked, <code>\t</code> is a tab and <code>\n</code> a line break (in Replace with too). In a regular expression's replacement <code>\n</code> and <code>\t</code> always work that way, so write <code>\\</code> for a backslash. Whole word needs spaces or punctuation around a word, so it does not split Chinese or Japanese text. Recent searches are kept only until you close the app.</span>
         <button type="button" onclick={() => { clearFindHistory(); status = "Search history cleared."; }}>Clear search history</button>
       </div>
     </div>
