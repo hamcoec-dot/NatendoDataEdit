@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.3.7_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.3.8_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -309,6 +309,19 @@ everything is also in command search.
   empty column to insert or delete by hand. Esc cancels. The right-click menus
   of cells, row numbers and column headings have Cut, Copy, Paste, Move what
   was cut here and Cancel cut.
+- **Paste into filtered rows**: while a filter is on or rows are hidden,
+  Paste, Paste Special, fill, Ctrl+Enter, Delete and Copy work on the rows you
+  can see, and hidden rows are left as they were (the status line says how
+  many). A paste taller than the rows showing from there down asks first:
+  fill the shown rows and stop, add the rest as new rows at the end, or
+  cancel. No choice ever writes over a hidden row. Hidden columns are passed
+  over the same way: a paste skips them, clear and fill leave them alone, and
+  Copy leaves them out, so a hidden ID or birth date column never reaches the
+  clipboard.
+
+![The question when pasting 5 rows with only 3 rows showing: fill the shown rows and stop, add the rest at the end, or cancel](docs/screenshots/paste-taller-than-filter.png)
+*Pasting more rows than are showing asks first, with the real numbers.*
+
 - Edit in the cell or in a larger, multi-line edit box; a cell bar with a
   "Go to" box. Enter in the cell bar puts the value in and moves down, as in
   Excel's formula bar (Ctrl+Enter puts it into every selected cell).

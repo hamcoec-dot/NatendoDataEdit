@@ -1015,6 +1015,9 @@ pub struct OpReport {
     pub cols: u32,
     /// Cells left alone (Paste Special: not a number, division by zero).
     pub skipped: u64,
+    /// Paste, fill, clear: hidden rows between the rows written, left as
+    /// they were.
+    pub hidden_rows: u64,
     /// Join and append: what matched.
     pub join: Option<JoinReport>,
     /// Cleaners: cells a step could not read (not a date or number);
@@ -1953,6 +1956,7 @@ impl Docs {
     }
 
     /// Set every cell of a rectangle to one value (clear, fill), one undo step.
+    #[cfg(test)]
     pub fn fill(
         &self,
         id: u32,
@@ -2000,6 +2004,7 @@ impl Docs {
 
     /// Selected cells as tab-separated text for the clipboard. Values with a
     /// tab, quote or line break are quoted, so pasting round-trips.
+    #[cfg(test)]
     pub fn copy(&self, id: u32, row: u64, rows: u64, col: u32, cols: u32) -> CmdResult<String> {
         self.copy_skipping(id, row, rows, col, cols, &[])
     }
@@ -3616,6 +3621,7 @@ impl Docs {
                 Planned::Cells(c) => {
                     r.cells = c.cells;
                     r.skipped = c.skipped;
+                    r.hidden_rows = c.hidden_rows;
                 }
                 Planned::Cols(c) => {
                     r.cells = c.cells;

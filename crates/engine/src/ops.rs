@@ -90,6 +90,22 @@ pub struct CellPlan {
     pub(crate) grow_to: Option<u32>,
     /// Cells left alone (Paste Special: not a number, division by zero).
     pub skipped: u64,
+    /// Rows a filter or hiding kept out between the first and last row
+    /// written (left as they were).
+    pub hidden_rows: u64,
+}
+
+impl Document {
+    /// Rows hidden (by a filter or by hand) between shown rows `rows`.
+    pub(crate) fn hidden_between(&self, rows: std::ops::Range<u64>) -> u64 {
+        if !self.is_filtered() || rows.end <= rows.start + 1 {
+            return 0;
+        }
+        match (self.row_number(rows.start), self.row_number(rows.end - 1)) {
+            (Some(a), Some(b)) => (b - a + 1).saturating_sub(rows.end - rows.start),
+            _ => 0,
+        }
+    }
 }
 
 impl CellPlan {
@@ -127,6 +143,7 @@ impl CellPlan {
             append: Vec::new(),
             cells: 0,
             skipped: 0,
+            hidden_rows: 0,
             grow_to: None,
         }
     }
@@ -625,6 +642,7 @@ impl Document {
                 let c = cells.len() as u64;
                 Ok((!cells.is_empty() || skipped > 0).then_some((id, cells, c, skipped)))
             })?;
+        plan.hidden_rows = self.hidden_between(spec.row..spec.row + inside);
         for (id, cells, c, s) in rows {
             plan.cells += c;
             plan.skipped += s;
@@ -831,6 +849,13 @@ impl Document {
                     plan.changes.push((id, cells));
                 }
             }
+        }
+        if vertical {
+            let target = match spec.dir {
+                Dir::Down => rows_end..rows_end + count,
+                _ => spec.row - count..spec.row,
+            };
+            plan.hidden_rows = self.hidden_between(target);
         }
         Ok(plan.without_cols(&spec.skip_cols))
     }
@@ -1714,6 +1739,98 @@ X
         // Undo (the paste, then clearing the filter) restores everything.
         while d.undo() {}
         assert_eq!(whole(&mut d), "k,v/a,1/b,2/a,3/b,4/a,5");
+    }
+
+    #[test]
+    fn filtered_paste_never_touches_hidden_rows_or_columns() {
+        // Many pseudo-random filters, paste points, sizes and hidden
+        // columns: every hidden row and skipped column keeps its value.
+        let mut seed = 7u64;
+        let mut next = |n: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        for _ in 0..200 {
+            let rows = 3 + next(12) as usize;
+            let mut body = String::from(
+                "k,a,b,c
+",
+            );
+            for r in 0..rows {
+                let k = if next(2) == 0 { "a" } else { "b" };
+                body.push_str(&format!(
+                    "{k},{r}a,{r}b,{r}c
+"
+                ));
+            }
+            let mut d = doc(&body);
+            let before: Vec<Vec<String>> = (0..d.row_count())
+                .map(|r| (0..4).map(|c| d.cell(r, c).unwrap_or_default()).collect())
+                .collect();
+            filter_a(&mut d);
+            let shown: Vec<u64> = (0..d.row_count()).filter_map(|r| d.row_number(r)).collect();
+            if shown.len() < 2 {
+                continue;
+            }
+            let skip = vec![1 + next(3) as u32];
+            let h = 1 + next(6) as usize;
+            let w = 1 + next(2) as usize;
+            let grid = vec![vec!["P".to_string(); w]; h];
+            let spec = PasteSpec {
+                row: 1 + next(shown.len() as u64 - 1),
+                col: 1,
+                skip_cols: skip.clone(),
+                stop_at_end: true,
+                ..Default::default()
+            };
+            let Ok(plan) = d.plan_paste(&spec, grid, &Progress::new()) else {
+                continue;
+            };
+            d.apply_cells(plan).unwrap();
+            d.clear_filter();
+            for (r, row) in before.iter().enumerate() {
+                let hidden = !shown.contains(&(r as u64));
+                for (c, v) in row.iter().enumerate() {
+                    if hidden || skip.contains(&(c as u32)) || c == 0 {
+                        assert_eq!(
+                            d.cell(r as u64, c as u32).unwrap_or_default(),
+                            *v,
+                            "row {r} col {c}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(d.row_count() as usize, before.len(), "no rows added");
+        }
+    }
+
+    #[test]
+    fn hidden_rows_between_are_counted() {
+        let mut d = doc("k,v
+a,1
+b,2
+a,3
+b,4
+a,5
+");
+        assert_eq!(d.hidden_between(1..4), 0);
+        filter_a(&mut d);
+        // Shown rows 1..4 are file rows 1, 3, 5: two hidden between.
+        assert_eq!(d.hidden_between(1..4), 2);
+        let plan = d
+            .plan_paste(
+                &PasteSpec {
+                    row: 1,
+                    col: 1,
+                    ..Default::default()
+                },
+                vec![vec!["x".into()]; 3],
+                &Progress::new(),
+            )
+            .unwrap();
+        assert_eq!(plan.hidden_rows, 2);
     }
 
     #[test]

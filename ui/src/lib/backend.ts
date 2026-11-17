@@ -401,6 +401,8 @@ export interface FillSpec {
   count: number;
   mode: FillMode;
   read?: ReadOptions;
+  /** Columns left as they are (hidden ones). */
+  skip_cols?: number[];
 }
 export type PasteOp = "none" | "add" | "subtract" | "multiply" | "divide";
 export interface PasteSpec {
@@ -410,6 +412,10 @@ export interface PasteSpec {
   skip_blanks: boolean;
   transpose: boolean;
   read?: ReadOptions;
+  /** Columns passed over (hidden ones): pasted columns go to the next ones. */
+  skip_cols?: number[];
+  /** Taller than the shown rows left: stop at the last shown row. */
+  stop_at_end?: boolean;
 }
 export interface Duplicates {
   cols: number[];
@@ -541,7 +547,7 @@ export type DataOp =
   | { op: "group_calc"; spec: GroupCalc }
   | { op: "arrange"; spec: Arrange }
   | { op: "extract"; spec: Extract }
-  | { op: "fill_rect"; spec: { row: number; rows: number; col: number; cols: number; value: string } }
+  | { op: "fill_rect"; spec: { row: number; rows: number; col: number; cols: number; value: string; skip_cols?: number[] } }
   | { op: "shift_cells"; spec: { row: number; rows: number; col: number; cols: number; shift: "up" | "left" | "down" | "right" } };
 
 /** A computed column: an expression over the row's cells. */
@@ -717,6 +723,8 @@ export type TableOp =
   | { op: "sample"; spec: Sample }
   | { op: "compare"; other: number; spec: CompareSpec };
 export interface OpReport {
+  /** Paste, fill, clear: hidden rows between the rows written, left alone. */
+  hidden_rows?: number;
   info: DocInfo | null;
   cells: number;
   rows: number;
@@ -844,8 +852,10 @@ export interface Backend {
   viewport(doc: number, row: number, rows: number, col: number, cols: number, maxChars: number): Promise<ViewportData>;
   cellText(doc: number, row: number, col: number): Promise<{ text: string; truncated: boolean }>;
   setCells(doc: number, cells: [number, number, string][]): Promise<DocInfo>;
-  fillCells(doc: number, row: number, rows: number, col: number, cols: number, value: string): Promise<DocInfo>;
-  copyCells(doc: number, row: number, rows: number, col: number, cols: number): Promise<string>;
+  /** `skip`: columns left as they are (hidden ones). */
+  fillCells(doc: number, row: number, rows: number, col: number, cols: number, value: string, skip?: number[]): Promise<DocInfo>;
+  /** `skip`: columns left out (hidden ones). */
+  copyCells(doc: number, row: number, rows: number, col: number, cols: number, skip?: number[]): Promise<string>;
   /** Move (or with `copy`, copy) a block of cells so its top-left lands on (toRow, toCol), one undo step. */
   moveCells(doc: number, row: number, rows: number, col: number, cols: number, toRow: number, toCol: number, copy: boolean): Promise<DocInfo>;
   change(doc: number, change: Change): Promise<DocInfo>;
@@ -1166,11 +1176,11 @@ class TauriBackend implements Backend {
   setCells(doc: number, cells: [number, number, string][]) {
     return call<DocInfo>("set_cells", { doc, cells });
   }
-  fillCells(doc: number, row: number, rows: number, col: number, cols: number, value: string) {
-    return call<DocInfo>("fill_cells", { doc, row, rows, col, cols, value });
+  fillCells(doc: number, row: number, rows: number, col: number, cols: number, value: string, skip?: number[]) {
+    return call<DocInfo>("fill_cells", { doc, row, rows, col, cols, value, skip: skip ?? null });
   }
-  copyCells(doc: number, row: number, rows: number, col: number, cols: number) {
-    return call<string>("copy_cells", { doc, row, rows, col, cols });
+  copyCells(doc: number, row: number, rows: number, col: number, cols: number, skip?: number[]) {
+    return call<string>("copy_cells", { doc, row, rows, col, cols, skip: skip ?? null });
   }
   moveCells(doc: number, row: number, rows: number, col: number, cols: number, toRow: number, toCol: number, copy: boolean) {
     return call<DocInfo>("move_cells", { doc, row, rows, col, cols, toRow, toCol, copy });

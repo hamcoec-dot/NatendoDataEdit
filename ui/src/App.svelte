@@ -1228,7 +1228,7 @@
       // A big block is one engine job (with progress and Cancel).
       if (cellCount(r) > MAX_CELLS_PER_CHANGE) return fillRect(r, value);
       t.whatNext = what;
-      return apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, value));
+      return apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, value, hiddenColsOf(x)));
     }
     if (value === t.cache.get(row, col) && !t.cache.isTruncated(row, col)) return true;
     const no = shownRowNo(t, row);
@@ -1245,7 +1245,7 @@
       return;
     }
     t.whatNext = "clearing cells";
-    if (await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, ""))) {
+    if (await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, "", hiddenColsOf(x)))) {
       t.noteStepSel({ anchor: { row: r.row, col: r.col }, focus: { row: r.row + r.rows - 1, col: r.col + r.cols - 1 } });
       say(`Cleared ${plural(cellCount(r), "cell")}. Ctrl+Z undoes it.`);
     }
@@ -1260,7 +1260,7 @@
       return;
     }
     t.whatNext = "clearing cells";
-    await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, ""));
+    await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, "", hiddenColsOf(x)));
   }
 
   /** One value into every cell of a big block (clearing it when ""), as an
@@ -1271,7 +1271,7 @@
     if (rep) {
       // Undo selects the block (not a tool over the whole table).
       if (tab) tab.noteStepSel({ anchor: { row: r.row, col: r.col }, focus: { row: r.row + r.rows - 1, col: r.col + r.cols - 1 } });
-      say(`${value ? "Filled" : "Cleared"} ${plural(n, "cell")}. Undo (Ctrl+Z) takes it back.`);
+      say(`${value ? "Filled" : "Cleared"} ${plural(rep.cells || n, "cell")}.${hiddenNote(rep)} Undo (Ctrl+Z) takes it back.`);
     }
     return !!rep;
   }
@@ -1311,7 +1311,7 @@
     } else {
       try {
         if (cellCount(r) >= LARGE_COPY && !(await privacyGate("The copy goes to the clipboard, where other programs can read it.", [r.col, r.cols]))) return;
-        clip = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols);
+        clip = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols, hiddenColsOf(t));
         await navigator.clipboard.writeText(clip);
         copiedFrom = t.id;
       } catch (e) {
@@ -1437,10 +1437,28 @@
       return;
     }
     // The engine parses the text again and writes it as one undo step,
-    // adding rows past the end if needed.
-    const done = await runOp({ op: "paste", spec: { row: r.row, col: r.col, op: "none", skip_blanks: false, transpose: false }, text }, "Pasting");
+    // adding rows past the end if needed (asked first while rows are hidden).
+    const fit = await askOverflow(t, r.row, rows.length);
+    if (!fit) {
+      afterPaste = null;
+      say("Nothing was pasted.");
+      return;
+    }
+    const rowsBefore = t.info.rows;
+    const done = await runOp({ op: "paste", spec: { row: r.row, col: r.col, op: "none", skip_blanks: false, transpose: false, stop_at_end: fit === "stop" }, text }, "Pasting");
     if (done) {
-      grid?.select({ row: r.row, col: r.col }, { row: r.row + rows.length - 1, col: r.col + width - 1 });
+      const shown = Math.min(rows.length, rowsBefore - r.row);
+      const added = fit === "add" ? rows.length - shown : 0;
+      if (fit === "add" && added > 0) {
+        // The new rows at the end, selected so they are never lost from view.
+        const last = t.info.rows - 1;
+        grid?.select({ row: last - added + 1, col: r.col }, { row: last, col: r.col + width - 1 });
+        say(`Pasted ${plural(shown, "row")} into the shown rows and added ${plural(added, "new row")} at the end of the file.${hiddenNote(done)} Ctrl+Z undoes it.`);
+      } else {
+        grid?.select({ row: r.row, col: r.col }, { row: r.row + Math.min(rows.length, Math.max(1, shown)) - 1, col: r.col + width - 1 });
+        if (fit === "stop") say(`Pasted ${plural(shown, "row")}; the last ${plural(rows.length - shown, "row")} of what you copied ${rows.length - shown === 1 ? "was" : "were"} left out.${hiddenNote(done)} Ctrl+Z undoes it.`);
+        else if (rowsHidden(t) && (done.hidden_rows ?? 0) > 0) say(`Pasted ${plural(rows.length, "row")} into the shown rows only.${hiddenNote(done)} Ctrl+Z undoes it.`);
+      }
       t.noteStepSel(t.sel);
     }
     if (done && afterPaste) say(afterPaste);
@@ -1532,9 +1550,48 @@
   }
 
   /** Run a data operation as a long job; returns its report. */
+  /** The hidden columns of a tab (paste, fill, clear and copy pass over them). */
+  function hiddenColsOf(t: Tab): number[] {
+    return t.columns.hiddenList();
+  }
+
+  /** Rows are hidden (a filter, or by hand). */
+  const rowsHidden = (t: Tab): boolean => t.info.filtered || (t.info.hidden_rows ?? 0) > 0;
+
+  /** A paste taller than the shown rows left while rows are hidden: ask
+   *  first. "stop" fills the shown rows and leaves the rest out, "add" puts
+   *  the rest in new rows at the end, null is Cancel. */
+  async function askOverflow(t: Tab, row: number, height: number): Promise<"stop" | "add" | "fits" | null> {
+    const left = t.info.rows - row;
+    if (!rowsHidden(t) || height <= left) return "fits";
+    const extra = height - left;
+    const hidden = Math.max(0, t.info.total_rows - t.info.rows);
+    const a = await ask(
+      `You're pasting ${plural(height, "row")}, but only ${plural(left, "row")} ${left === 1 ? "is" : "are"} showing from here down`,
+      `${t.filter ? "A filter is on" : "Some rows are hidden"}, so Natendo pastes into the rows you can see and leaves the ${plural(hidden, "hidden row")} alone.`,
+      [
+        { id: "stop", label: `Fill the ${plural(left, "shown row")} and stop`, primary: true },
+        { id: "add", label: `Fill them, then add the other ${plural(extra, "row")} at the end of the file` },
+        { id: "cancel", label: "Cancel" },
+      ],
+      "cancel",
+      `"Fill and stop" leaves out the last ${plural(extra, "row")} of what you copied (they stay on the clipboard). New rows at the end always show${t.filter ? ", even if they don't match the filter" : ""}.`,
+    );
+    return a === "stop" || a === "add" ? a : null;
+  }
+
+  /** The status line after a paste, fill or clear that passed over hidden rows. */
+  function hiddenNote(rep: OpReport | null): string {
+    const n = rep?.hidden_rows ?? 0;
+    return n > 0 ? ` ${plural(n, "hidden row")} between them ${n === 1 ? "was" : "were"} left as ${n === 1 ? "it was" : "they were"}.` : "";
+  }
+
   async function runOp(op: DataOp, label: string): Promise<OpReport | null> {
     const t = tab;
     if (!t) return null;
+    // What can't be seen isn't touched: hidden columns are passed over.
+    const hide = hiddenColsOf(t);
+    if (hide.length && (op.op === "paste" || op.op === "fill" || op.op === "fill_rect")) op.spec.skip_cols = hide;
     try {
       t.whatNext = label.toLowerCase();
       t.wideNext = true;
@@ -1623,14 +1680,26 @@
     }
     const op = r.data;
     if (!op) return;
+    if (op.op === "paste") {
+      // Paste Special: the same question as a paste when it is taller than
+      // the shown rows left.
+      const g = parseTsv(op.text);
+      const height = op.spec.transpose ? Math.max(0, ...g.map((x) => x.length)) : g.length;
+      const fit = await askOverflow(t, op.spec.row, height);
+      if (!fit) {
+        say("Nothing was pasted.");
+        return;
+      }
+      op.spec.stop_at_end = fit === "stop";
+    }
     const rep = await runOp(op, op.op === "fill" ? "Filling" : op.op === "paste" ? "Pasting" : "Working");
     if (!rep) return;
     switch (op.op) {
       case "paste":
-        say(`Changed ${plural(rep.cells, "cell")}.${rep.skipped ? ` ${plural(rep.skipped, "cell")} left as they were (not numbers, or division by zero).` : ""}`);
+        say(`Changed ${plural(rep.cells, "cell")}.${rep.skipped ? ` ${plural(rep.skipped, "cell")} left as they were (not numbers, or division by zero).` : ""}${hiddenNote(rep)}`);
         break;
       case "fill":
-        say(`Filled ${plural(rep.cells, "cell")}.`);
+        say(`Filled ${plural(rep.cells, "cell")}.${hiddenNote(rep)}`);
         break;
       case "show_duplicates":
         t.filter = null;

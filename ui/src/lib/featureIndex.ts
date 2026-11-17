@@ -131,6 +131,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "more excel and google sheets keys": ["edit.contextMenu", "format.display", "format.asNumber", "format.asDate", "format.asCurrency", "format.asPercent", "format.clearDisplay", "edit.copyAbove", "edit.today", "edit.now", "edit.selectAll", "edit.selectRegion", "view.toActive", "edit.shrinkSel", "edit.nextCorner", "edit.extendMode"],
   "right click menus say how many": ["edit.contextMenu"],
   "name your tabs": ["file.rename"],
+  "paste into filtered rows": ["edit.paste", "edit.pasteSpecial", "data.filterBySel"],
   "file tabs": ["file.closeOthers", "file.closeRight", "file.reopenClosed", "file.closeUnchanged", "window.next", "window.prev"],
   "set column width types an": ["format.colWidth", "format.autofit", "format.showCols", "format.showAllCols"],
   "where enter goes": ["file.options"],

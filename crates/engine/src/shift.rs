@@ -158,6 +158,7 @@ impl Document {
             )))
         })?;
         plan.cells = spec.rows * cols.len() as u64;
+        plan.hidden_rows = self.hidden_between(spec.row..spec.row + spec.rows);
         Ok(plan)
     }
 
