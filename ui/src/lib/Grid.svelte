@@ -1196,6 +1196,33 @@
     return Math.max(1, Math.floor((viewH() - bodyTop()) / rowH) - 1);
   }
 
+  /** How many visible columns fit on screen (Alt+PgDn moves this far). */
+  export function pageCols(): number {
+    const cols = visibleCols();
+    let n = 0;
+    for (let c = cols.body.start; c < cols.body.end; c++) if (tab.columns.width(c) > 0) n++;
+    return Math.max(1, n - 1);
+  }
+
+  /** Where a cell is on screen (its bottom-left corner), for a menu opened
+   *  from the keyboard; the top-left of the grid when it is off screen. */
+  export function cellPoint(c: Cell): { x: number; y: number } {
+    const b = canvas.getBoundingClientRect();
+    const r = cellRect(c);
+    return r ? { x: b.left + r.x + 4, y: b.top + r.y + r.h } : { x: b.left + rowHeaderW, y: b.top + headH };
+  }
+
+  /** Space on a tick box ticks or unticks it. Returns false when the
+   *  active cell is not a tick box. */
+  export async function toggleActiveTick(): Promise<boolean> {
+    const { row, col } = tab.cell;
+    if (readOnly || tab.columns.formats.get(col)?.kind !== "checkbox" || (tab.header && row === 0)) return false;
+    const t = tab.cache.get(row, col);
+    if (t === undefined || tickOf(t) === null) return false;
+    await toggleTick(row, col);
+    return true;
+  }
+
   export function scrollIntoView(c: Cell): void {
     const fr = frozenRows();
     const off = tab.firstRow;

@@ -76,7 +76,7 @@
   import ToolsDialog, { type ToolsRun } from "./lib/ToolsDialog.svelte";
   import { unchangedTabs, type ScaleKind, type ToolKind } from "./lib/m10";
   import { autosaveDue, type RecoveryItem, type Suggestion, type Suggestions, type VersionItem } from "./lib/m9";
-  import { BASIC_KEYS, cleanFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat } from "./lib/m9";
+  import { BASIC_KEYS, cleanFormat, defaultFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat } from "./lib/m9";
   import { defaultPage, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS } from "./lib/m8";
   import type { Check, CheckSpec, ComputeSpec, PageSetup } from "./lib/backend";
   import { exportDefaults } from "./lib/transfer";
@@ -1812,9 +1812,113 @@
       target = dir === "up" ? [t.firstRow, f.col] : dir === "down" ? [last, f.col] : dir === "left" ? [f.row, 0] : [f.row, Math.max(0, t.info.cols - 1)];
     }
     if (t !== tab || !grid) return;
-    const cell = { row: Math.max(t.firstRow, target[0]), col: target[1] };
+    // The engine does not know which columns are hidden: land on the
+    // nearest shown one instead (as in Excel).
+    let col = target[1];
+    if (t.columns.width(col) === 0) {
+      const back = dir === "left" ? 1 : -1;
+      const near = t.columns.step(col, back);
+      col = t.columns.width(near) > 0 ? near : t.columns.step(col, back === 1 ? -1 : 1);
+    }
+    const cell = { row: Math.max(t.firstRow, target[0]), col };
     if (extend) grid.select(t.sel.anchor, cell, true, t.sel.active);
     else grid.select(cell);
+  }
+
+  /** F8: arrow keys extend the selection until F8 or Esc. */
+  let extendMode = $state(false);
+  function toggleExtend(): void {
+    extendMode = !extendMode;
+    say(extendMode ? "Extend mode: the arrow keys grow the selection. F8 or Esc ends it." : "Extend mode off.");
+  }
+
+  /** The block of data around the active cell, bounded by blank rows and
+   *  columns (Excel's current region), found with the same edges Ctrl+arrow
+   *  uses. */
+  async function regionOf(t: Tab): Promise<Rect | null> {
+    const c = t.cell;
+    const blank = (r: number, col: number): boolean => r < t.firstRow || col < 0 || r >= t.info.rows || col >= t.info.cols || (t.cache.get(r, col) ?? "") === "";
+    if (blank(c.row, c.col)) return null;
+    const edge = async (dir: Dir): Promise<[number, number]> => {
+      const [dr, dc] = dir === "up" ? [-1, 0] : dir === "down" ? [1, 0] : dir === "left" ? [0, -1] : [0, 1];
+      if (blank(c.row + dr, c.col + dc)) return [c.row, c.col];
+      return backend().dataEdge(t.id, c.row, c.col, dir);
+    };
+    try {
+      const [up, down, left, right] = await Promise.all([edge("up"), edge("down"), edge("left"), edge("right")]);
+      const row = Math.max(t.firstRow, up[0]);
+      return { row, rows: down[0] - row + 1, col: left[1], cols: right[1] - left[1] + 1 };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Ctrl+A: the block of data around the cell first, everything on the
+   *  second press (as in Excel). */
+  async function selectAll(): Promise<void> {
+    const t = tab;
+    if (!t || !grid) return;
+    const all = () => grid?.select({ row: t.firstRow, col: 0 }, { row: t.info.rows - 1, col: t.info.cols - 1 }, false, t.cell);
+    const r = await regionOf(t);
+    const cur = t.rect;
+    const whole = !r || (r.row <= t.firstRow && r.rows >= t.info.rows - t.firstRow && r.col === 0 && r.cols >= t.info.cols);
+    const same = r && cur.row === r.row && cur.rows === r.rows && cur.col === r.col && cur.cols === r.cols;
+    if (whole || same || t !== tab) return void all();
+    grid.select({ row: r.row, col: r.col }, { row: r.row + r.rows - 1, col: r.col + r.cols - 1 }, false, t.cell);
+    say("Selected the block of data around the cell. Ctrl+A again selects everything.");
+  }
+
+  async function selectRegion(): Promise<void> {
+    const t = tab;
+    if (!t || !grid) return;
+    const r = await regionOf(t);
+    if (!r || t !== tab) return;
+    grid.select({ row: r.row, col: r.col }, { row: r.row + r.rows - 1, col: r.col + r.cols - 1 }, false, t.cell);
+  }
+
+  /** Shift+F10 or the Menu key: the right-click menu at the active cell. */
+  function contextFromKeys(): void {
+    const t = tab;
+    if (!t || !grid) return;
+    const r = t.rect;
+    const area = wholeRows(r, t) && !wholeCols(r, t) ? "row" : wholeCols(r, t) && !wholeRows(r, t) ? "col" : "cell";
+    grid.scrollIntoView(t.cell);
+    const p = grid.cellPoint(t.cell);
+    openContext(p.x, p.y, area, t.cell.col);
+  }
+
+  /** Ctrl+': edit the cell, starting with the value of the cell above. */
+  function copyAbove(): void {
+    const t = tab;
+    if (!t || !grid) return;
+    const { row, col } = t.cell;
+    if (row <= t.firstRow) return;
+    void grid.startEdit(t.cache.get(row - 1, col) ?? "");
+  }
+
+  /** Ctrl+.: the active cell goes round the selection's corners clockwise. */
+  function nextCorner(): void {
+    const t = tab;
+    if (!t || !grid) return;
+    const r = t.rect;
+    const r1 = r.row + r.rows - 1;
+    const c1 = r.col + r.cols - 1;
+    const corners = [
+      { row: r.row, col: r.col },
+      { row: r.row, col: c1 },
+      { row: r1, col: c1 },
+      { row: r1, col: r.col },
+    ];
+    const at = corners.findIndex((k) => k.row === t.cell.row && k.col === t.cell.col);
+    const next = corners[(at + 1) % 4]!;
+    grid.select(t.sel.anchor, t.sel.focus, true, next);
+  }
+
+  /** Ctrl+Shift+1, 3, 4, 5: a display format for the selected columns in one key (as in Google Sheets). */
+  function quickFormat(kind: "number" | "date" | "currency" | "percent"): void {
+    const t = tab;
+    if (!t) return;
+    setFormat(selectedCols(t), defaultFormat(kind));
   }
 
   function openSymbols(): void {
@@ -3464,7 +3568,9 @@
       id: "edit.today",
       label: "Insert today's date",
       keys: ["Ctrl+;"],
-      run: () => commitCell(tab!.cell.row, tab!.cell.col, grid?.today() ?? "", false),
+      // As in Excel: the date goes into the cell being edited, so a time can
+      // be added, Enter keeps it and Esc drops it.
+      run: () => grid?.startEdit(grid.today()),
       enabled: ready,
     },
     {
@@ -3482,16 +3588,23 @@
       id: "edit.now",
       label: "Insert current time",
       keys: ["Ctrl+Shift+:", "Ctrl+Shift+;"],
-      run: () => commitCell(tab!.cell.row, tab!.cell.col, grid?.nowTime() ?? "", false),
+      run: () => grid?.startEdit(grid.nowTime()),
       enabled: ready,
     },
     {
       id: "edit.selectAll",
       label: "Select &all",
       keys: ["Ctrl+A", "Ctrl+Shift+Space"],
-      run: () => grid?.select({ row: tab!.firstRow, col: 0 }, { row: tab!.info.rows - 1, col: tab!.info.cols - 1 }, false),
+      run: () => selectAll(),
       enabled: hasTab,
     },
+    { id: "edit.selectRegion", label: "Select the current block of data", keys: ["Ctrl+Shift+*", "Ctrl+Shift+8"], run: () => selectRegion(), enabled: hasTab },
+    { id: "edit.contextMenu", label: "Open the right-click menu", keys: ["Shift+F10", "ContextMenu"], run: () => contextFromKeys(), enabled: hasTab },
+    { id: "edit.copyAbove", label: "Copy the value from the cell above", keys: ["Ctrl+'", 'Ctrl+Shift+"'], run: () => copyAbove(), enabled: ready },
+    { id: "view.toActive", label: "Scroll back to the active cell", keys: ["Ctrl+Backspace"], run: () => { if (tab) grid?.scrollIntoView(tab.cell); }, enabled: hasTab },
+    { id: "edit.shrinkSel", label: "Select just the active cell", keys: ["Shift+Backspace"], run: () => { if (tab) grid?.select(tab.cell); }, enabled: hasTab },
+    { id: "edit.nextCorner", label: "Move the active cell to the next corner of the selection", keys: ["Ctrl+."], run: () => nextCorner(), enabled: hasTab },
+    { id: "edit.extendMode", label: "Extend the selection with the arrow keys (on or off)", keys: ["F8"], run: () => toggleExtend(), enabled: hasTab, checked: () => extendMode },
     {
       id: "edit.goto",
       label: "&Go to…",
@@ -3560,10 +3673,10 @@
       },
       checked: () => prefs.data.font === f.value,
     })),
-    { id: "window.next", label: "Next file", keys: ["Ctrl+PageDown", "Ctrl+Tab"], run: () => switchTab(1), enabled: () => tabs.length > 1 },
-    { id: "window.prev", label: "Previous file", keys: ["Ctrl+PageUp", "Ctrl+Shift+Tab"], run: () => switchTab(-1), enabled: () => tabs.length > 1 },
-    { id: "window.moveTabLeft", label: "Move file tab left", keys: ["Ctrl+Shift+PageUp"], run: () => moveTab(-1), enabled: () => active > 0 },
-    { id: "window.moveTabRight", label: "Move file tab right", keys: ["Ctrl+Shift+PageDown"], run: () => moveTab(1), enabled: () => active >= 0 && active < tabs.length - 1 },
+    { id: "window.next", label: "Next file", keys: ["Ctrl+PageDown", "Ctrl+Tab", "Ctrl+Shift+PageDown"], run: () => switchTab(1), enabled: () => tabs.length > 1 },
+    { id: "window.prev", label: "Previous file", keys: ["Ctrl+PageUp", "Ctrl+Shift+Tab", "Ctrl+Shift+PageUp"], run: () => switchTab(-1), enabled: () => tabs.length > 1 },
+    { id: "window.moveTabLeft", label: "Move file tab left", keys: ["Ctrl+Alt+Shift+PageUp"], run: () => moveTab(-1), enabled: () => active > 0 },
+    { id: "window.moveTabRight", label: "Move file tab right", keys: ["Ctrl+Alt+Shift+PageDown"], run: () => moveTab(1), enabled: () => active >= 0 && active < tabs.length - 1 },
     { id: "data.sortAsc", label: "Sort &A → Z", run: () => sortByColumn(false), enabled: ready, repeatable: true },
     { id: "data.sortDesc", label: "Sort &Z → A", run: () => sortByColumn(true), enabled: ready, repeatable: true },
     { id: "data.sort", label: "&Custom sort…", run: openSortDialog, enabled: ready },
@@ -3581,9 +3694,13 @@
     { id: "format.wrap", label: "&Wrap text", run: toggleWrap, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.wraps.has(c)) },
     { id: "format.rowHeight", label: "Row &height (lines)…", run: askRowLines, enabled: hasTab },
     { id: "format.fitRows", label: "Fit row height to wrapped text", run: () => grid?.fitRowLines(), enabled: () => !!tab && tab.columns.wraps.size > 0 },
-    { id: "format.display", label: "&Display format (numbers, dates, tick boxes)…", run: openFormat, enabled: hasTab },
+    { id: "format.display", label: "&Display format (numbers, dates, tick boxes)…", keys: ["Ctrl+1"], run: openFormat, enabled: hasTab },
+    { id: "format.asNumber", label: "Show as number (1,234.00)", keys: ["Ctrl+Shift+1", "Ctrl+Shift+!"], run: () => quickFormat("number"), enabled: hasTab },
+    { id: "format.asDate", label: "Show as date", keys: ["Ctrl+Shift+3", "Ctrl+Shift+#"], run: () => quickFormat("date"), enabled: hasTab },
+    { id: "format.asCurrency", label: "Show as currency ($1,234.00)", keys: ["Ctrl+Shift+4", "Ctrl+Shift+$"], run: () => quickFormat("currency"), enabled: hasTab },
+    { id: "format.asPercent", label: "Show as percent (12%)", keys: ["Ctrl+Shift+5", "Ctrl+Shift+%"], run: () => quickFormat("percent"), enabled: hasTab },
     { id: "format.bakeDisplay", label: "Write the display format into the cells", run: () => void bakeFormats(), enabled: () => !!tab && !tab.busy && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
-    { id: "format.clearDisplay", label: "Remove display format", run: () => { if (tab) setFormat(selectedCols(tab), null); }, enabled: () => !!tab && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
+    { id: "format.clearDisplay", label: "Remove display format", keys: ["Ctrl+\\"], run: () => { if (tab) setFormat(selectedCols(tab), null); }, enabled: () => !!tab && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
     { id: "view.banded", label: "Alternating row &colours", run: toggleBanded, enabled: hasTab, checked: () => !!tab?.banded },
     { id: "data.shuffle", label: "Shu&ffle rows (random order)", run: () => void shuffleRows(), enabled: ready, repeatable: true },
     { id: "tools.fillBlanks", label: "&Fill blank cells…", run: () => openTools("fill_blanks"), enabled: ready },
@@ -3670,7 +3787,7 @@
     { id: "view.openViewFile", label: "Apply a view from a file…", run: () => void openViewFile(), enabled: ready },
     { id: "file.readOnly", label: "&Lock (read-only)", run: () => void toggleReadOnly(), enabled: () => !!tab && tab.info.indexed, checked: () => !!tab?.info.read_only },
     { id: "data.subtotals", label: "S&ubtotals…", run: () => { subtotalOpen = true; }, enabled: ready },
-    { id: "help.search", label: "&Search commands…", keys: ["Alt+Q"], run: () => { search = ""; } },
+    { id: "help.search", label: "&Search commands…", keys: ["Alt+Q", "Alt+/"], run: () => { search = ""; } },
     { id: "help.shortcuts", label: "&Customize shortcuts…", run: () => { shortcutsOpen = true; } },
     { id: "help.keys", label: "&Keyboard shortcuts", keys: ["Ctrl+/", "F1"], run: () => { keysMouse = false; keysOpen = true; } },
     { id: "help.mouse", label: "&Mouse and drag moves", run: () => { keysMouse = true; keysOpen = true; } },
@@ -3908,7 +4025,8 @@
     if (!gridFocused || !tab || !grid) return;
     const t = tab;
 
-    const extend = e.shiftKey;
+    // F8 (extend mode): arrows grow the selection as if Shift were held.
+    const extend = e.shiftKey || extendMode;
     const last = Math.max(t.firstRow, t.info.rows - 1);
     const lastCol = Math.max(0, t.info.cols - 1);
     const f = extend ? t.sel.focus : t.cell;
@@ -3939,24 +4057,29 @@
         return;
       case "PageDown":
         e.preventDefault();
-        if (altOf(e)) grid.move(0, 10, extend);
+        if (altOf(e)) grid.move(0, grid.pageCols(), extend);
         else grid.move(grid.pageRows(), 0, extend);
         return;
       case "PageUp":
         e.preventDefault();
-        if (altOf(e)) grid.move(0, -10, extend);
+        if (altOf(e)) grid.move(0, -grid.pageCols(), extend);
         else grid.move(-grid.pageRows(), 0, extend);
         return;
-      case "Home":
+      case "Home": {
         e.preventDefault();
-        if (e.ctrlKey) to(t.firstRow, 0);
-        else to(f.row, 0);
+        // Hidden columns are skipped (as in Excel).
+        const first = Math.max(0, t.columns.firstVisible(0));
+        if (e.ctrlKey) to(t.firstRow, first);
+        else to(f.row, first);
         return;
-      case "End":
+      }
+      case "End": {
         e.preventDefault();
-        if (e.ctrlKey) to(last, lastCol);
-        else to(f.row, lastCol);
+        const end = t.columns.width(lastCol) > 0 ? lastCol : t.columns.step(lastCol, -1);
+        if (e.ctrlKey) to(last, end);
+        else to(f.row, end);
         return;
+      }
       case "Enter":
         e.preventDefault();
         grid.advance(e.shiftKey ? -1 : 1, 0);
@@ -3970,14 +4093,25 @@
         void grid.startEdit("");
         return;
       case "Escape":
+        // Esc drops a cut or the copy outline and leaves extend mode; the
+        // selection stays (as in Excel and Google Sheets).
         if (t.cut) cancelCut();
         else cutEpoch++;
         if (t.copied) {
           t.copied = null;
           t.bump();
         }
-        grid.select(t.cell);
+        if (extendMode) toggleExtend();
         return;
+    }
+    if (key === "Space") {
+      // Space on a tick box ticks or unticks it (as in Google Sheets).
+      const c = t.cell;
+      if (t.columns.formats.get(c.col)?.kind === "checkbox" && !(t.header && c.row === 0)) {
+        e.preventDefault();
+        void grid.toggleActiveTick();
+        return;
+      }
     }
     if (key === "Shift+Space") {
       e.preventDefault();
