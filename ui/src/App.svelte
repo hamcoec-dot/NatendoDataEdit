@@ -3552,13 +3552,17 @@
     const sel = window.getSelection()?.toString() ?? "";
     // As in Excel: with several cells selected, Find and Replace look only
     // in them (whole columns: in those columns); with one cell, everywhere.
+    // Pressed again while Find is open, a new block selected since is
+    // taken; one cell (a hit) keeps the block searched so far.
     const t = tab;
-    if (t && !findOpen) {
-      const r = t.rect;
-      if (cellCount(r) > 1) findOptions.scope = wholeCols(r, t) && !wholeRows(r, t) ? "column" : wholeRows(r, t) && wholeCols(r, t) ? "all" : "selection";
-      else if (findOptions.scope === "selection") findOptions.scope = "all";
+    const r = t?.rect;
+    if (t && r && cellCount(r) > 1) {
+      findOptions.scope = wholeCols(r, t) && !wholeRows(r, t) ? "column" : wholeRows(r, t) && wholeCols(r, t) ? "all" : "selection";
       // The block searched stays the one selected now, whatever a hit selects.
-      findBlock = cellCount(r) > 1 && findOptions.scope !== "all" ? { ...r } : null;
+      findBlock = findOptions.scope !== "all" ? { ...r } : null;
+    } else if (t && !findOpen) {
+      if (findOptions.scope === "selection") findOptions.scope = "all";
+      findBlock = null;
     }
     findOpen = true;
     findReplace = replace;

@@ -247,6 +247,21 @@ const url = process.argv[3] || "http://localhost:5194";
   await p.waitForTimeout(800);
   const after = await p.evaluate(() => [window.__nde.tab.cache.get(3, 1), window.__nde.tab.cache.get(4, 2), window.__nde.tab.cache.get(41, 1)]);
   ok(after[0] === "done" && after[1] === "done" && after[2] === "zzq", `Replace all changes only the block (${after.join(",")})`);
+  // The block shows in the scope box; with Find still open, selecting
+  // another block and pressing Ctrl+H again searches that one instead.
+  const label = () => p.evaluate(() => { const s = document.querySelector("select[aria-label='Search in']"); return s.options[s.selectedIndex].textContent; });
+  ok((await label()) === "Selection A3:C7", `the scope box names the block (${await label()})`);
+  await start(40, 0, 42, 2);
+  await key("Control+h");
+  await p.waitForTimeout(200);
+  ok((await label()) === "Selection A41:C43", `Ctrl+H again takes the new block (${await label()})`);
+  await p.fill("input[aria-label='Find']", "zzq");
+  await p.fill("input[aria-label='Replace with']", "done");
+  await p.click("button:has-text('Replace all…')");
+  await p.waitForTimeout(500);
+  await p.click(".find button.primary:has-text('Replace all')");
+  await p.waitForTimeout(800);
+  ok((await p.evaluate(() => window.__nde.tab.cache.get(41, 1))) === "done", "Replace all then works in the new block");
   await key("Escape");
 
   // After pressing Enter, move: right (Options).

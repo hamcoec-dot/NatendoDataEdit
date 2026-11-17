@@ -131,6 +131,36 @@ const url = process.argv[3] || "http://localhost:5181";
   await p.waitForTimeout(600);
   ok(/The pivot table has/.test(await p.textContent("body")), "new tab made");
 
+  // A layout made while "First row is header" was off, reopened after
+  // turning it on: the header is not counted as a value.
+  await p.keyboard.press("Control+Tab");
+  await p.waitForTimeout(300);
+  const cmd = async (t) => {
+    await p.evaluate(() => window.__nde.grid.focus());
+    await p.keyboard.press("Alt+q");
+    await p.keyboard.type(t);
+    await p.waitForTimeout(250);
+    await p.keyboard.press("Enter");
+    await p.waitForTimeout(500);
+  };
+  if (await p.evaluate(() => window.__nde.tab.header)) await cmd("First row is header");
+  ok(!(await p.evaluate(() => window.__nde.tab.header)), "header turned off");
+  await cmd("pivot table");
+  await p.waitForTimeout(600);
+  const off = await p.$$eval(`${dialog} tbody tr`, (rs) => rs.map((r) => r.children[0].textContent.trim()));
+  ok(off.includes("city"), `with no header row, the first row is a value (${off.slice(0, 3).join(",")})`);
+  await p.keyboard.press("Escape");
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(300);
+  await cmd("First row is header");
+  ok(await p.evaluate(() => window.__nde.tab.header), "header turned on");
+  await cmd("pivot table");
+  await p.waitForTimeout(800);
+  const on = await p.$$eval(`${dialog} tbody tr`, (rs) => rs.map((r) => r.children[0].textContent.trim()));
+  ok(on.length > 2 && !on.includes("city"), `reopened with a header row, the header is not a value (${on.slice(0, 3).join(",")})`);
+  await p.keyboard.press("Escape");
+  await p.keyboard.press("Escape");
+
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   await b.close();
   process.exit(failed ? 1 : 0);

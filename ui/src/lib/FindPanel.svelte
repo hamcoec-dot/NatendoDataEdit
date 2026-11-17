@@ -5,6 +5,7 @@
   import type { Tab } from "./tab.svelte";
   import { findSpecOf, type FindOptions } from "./filters";
   import { rectOf, type Rect } from "./selection";
+  import { colLetters } from "./goto";
 
   interface Props {
     tab: Tab;
@@ -35,6 +36,10 @@
       block = r.rows * r.cols > 1 ? { ...r } : null;
     }
   });
+
+  // The block in the scope box, so it is clear which one is searched.
+  const blockCells = $derived(block ? `${colLetters(block.col)}${block.row + 1}:${colLetters(block.col + block.cols - 1)}${block.row + block.rows}` : "");
+  const blockCols = $derived(block ? (block.cols > 1 ? `${colLetters(block.col)}:${colLetters(block.col + block.cols - 1)}` : colLetters(block.col)) : "");
 
   let findInput = $state<HTMLInputElement>();
   let replacement = $state("");
@@ -178,8 +183,8 @@
     <label><input type="checkbox" bind:checked={options.wholeCell} /> Whole cell</label>
     <select aria-label="Search in" bind:value={options.scope}>
       <option value="all">Whole file</option>
-      <option value="selection">Selection</option>
-      <option value="column">Selected columns</option>
+      <option value="selection">{blockCells && options.scope === "selection" ? `Selection ${blockCells}` : "Selection"}</option>
+      <option value="column">{blockCols && options.scope === "column" ? `Selected columns ${blockCols}` : "Selected columns"}</option>
     </select>
     <span class="spacer"></span>
     <button type="button" class="x" aria-label="Close find" title="Close (Esc)" onclick={onClose}>✕</button>

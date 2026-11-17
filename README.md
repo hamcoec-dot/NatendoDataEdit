@@ -377,7 +377,9 @@ everything is also in command search.
 - Find and replace with plain text, wildcards or patterns (regular
   expressions); next change, largest and smallest jumps. With several cells
   selected, Find and Replace keep to that block (Find next moves inside it and
-  Replace all changes only it), as in Excel.
+  Replace all changes only it), as in Excel. The Search in box names the
+  block (for example "Selection A3:C7"); select another block and press
+  Ctrl+F or Ctrl+H again to search that one.
 - **Search a whole folder** of table files (Ctrl+Shift+F), including Excel and
   JSON files and subfolders; click a hit to open that file at that cell.
 - Sort by several columns, numbers and dates in the right order, natural text

@@ -834,15 +834,33 @@ impl Document {
                     .map_or(first, |e| e + 1)
             }
         };
+        // Which of columns c0..=c1 are filled in `row`, from one read of it.
+        let filled = |row: u64, c0: u32, c1: u32| -> Vec<u32> {
+            let Some(id) = self.id_at(row) else {
+                return Vec::new();
+            };
+            let mut pairs: Vec<(u32, u32)> = (c0..=c1)
+                .filter_map(|c| self.phys(c).map(|p| (p, c)))
+                .collect();
+            pairs.sort_unstable();
+            pairs.dedup_by_key(|x| x.0);
+            let wanted: Vec<u32> = pairs.iter().map(|x| x.0).collect();
+            let mut buf = Vec::new();
+            self.read_cells(id, &wanted, &mut buf);
+            pairs
+                .iter()
+                .zip(buf.iter())
+                .filter(|(_, v)| !v.is_empty())
+                .map(|((_, c), _)| *c)
+                .collect()
+        };
         loop {
             let mut grew = false;
             if r1 + 1 < n {
                 let below = r1 + 1;
                 let mut to = r1;
-                for c in c0..=c1 {
-                    if !self.cell_empty(below, c) {
-                        to = to.max(run_end(below, c, true));
-                    }
+                for c in filled(below, c0, c1) {
+                    to = to.max(run_end(below, c, true));
                 }
                 if to > r1 {
                     r1 = to;
@@ -852,28 +870,80 @@ impl Document {
             if r0 > first {
                 let above = r0 - 1;
                 let mut to = r0;
-                for c in c0..=c1 {
-                    if !self.cell_empty(above, c) {
-                        to = to.min(run_end(above, c, false));
-                    }
+                for c in filled(above, c0, c1) {
+                    to = to.min(run_end(above, c, false));
                 }
                 if to < r0 {
                     r0 = to;
                     grew = true;
                 }
             }
-            if c1 + 1 < w && self.seek(r0..r1 + 1, false, c1 + 1, false).is_some() {
-                c1 += 1;
-                grew = true;
-            }
-            if c0 > 0 && self.seek(r0..r1 + 1, false, c0 - 1, false).is_some() {
-                c0 -= 1;
-                grew = true;
+            // Columns grow in one step: one read of the rows so far tells
+            // which columns outside the box have data; the next ones join up
+            // to the first empty column on each side.
+            if c0 > 0 || c1 + 1 < w {
+                let outside: Vec<u32> = (0..c0).chain(c1 + 1..w).collect();
+                let has = self.cols_with_data(r0..r1 + 1, &outside);
+                let (b0, width) = (c0, c1 - c0 + 1);
+                let filled = |c: u32| {
+                    has[if c < b0 {
+                        c as usize
+                    } else {
+                        (c - width) as usize
+                    }]
+                };
+                while c1 + 1 < w && filled(c1 + 1) {
+                    c1 += 1;
+                    grew = true;
+                }
+                while c0 > 0 && filled(c0 - 1) {
+                    c0 -= 1;
+                    grew = true;
+                }
             }
             if !grew {
                 return Ok(Some((r0, r1, c0, c1)));
             }
         }
+    }
+
+    /// For each of the (logical) columns `cols`, whether any shown row in
+    /// `rows` has data there, reading each row once.
+    fn cols_with_data(&self, rows: std::ops::Range<u64>, cols: &[u32]) -> Vec<bool> {
+        let mut pairs: Vec<(u32, usize)> = cols
+            .iter()
+            .enumerate()
+            .filter_map(|(k, &c)| self.phys(c).map(|p| (p, k)))
+            .collect();
+        pairs.sort_unstable();
+        let mut wanted: Vec<u32> = pairs.iter().map(|x| x.0).collect();
+        wanted.dedup();
+        let row_has = |r: u64| -> Vec<bool> {
+            let mut has = vec![false; wanted.len()];
+            if let Some(id) = self.id_at(r) {
+                let mut buf = Vec::new();
+                self.read_cells(id, &wanted, &mut buf);
+                for (h, v) in has.iter_mut().zip(buf.iter()) {
+                    *h = !v.is_empty();
+                }
+            }
+            has
+        };
+        let by_phys = rows.into_par_iter().map(row_has).reduce(
+            || vec![false; wanted.len()],
+            |mut a, b| {
+                for (x, y) in a.iter_mut().zip(b) {
+                    *x |= y;
+                }
+                a
+            },
+        );
+        let mut out = vec![false; cols.len()];
+        for (p, k) in pairs {
+            let i = wanted.binary_search(&p).expect("wanted");
+            out[k] = by_phys[i];
+        }
+        out
     }
 
     /// First shown row in `rows` (searched from the end when `backward`)
@@ -1557,6 +1627,19 @@ X
         // With the first row as a header, it is not part of any block.
         assert_eq!(d.current_region(1, 4, 1).unwrap(), Some((1, 1, 4, 4)));
         assert_eq!(d.current_region(0, 0, 1).unwrap(), None);
+        // A wide block grows to all its columns in one pass.
+        let row = vec!["v"; 3000].join(",");
+        let wide = doc(&format!(
+            "{row}
+{row}
+"
+        ));
+        let t = std::time::Instant::now();
+        assert_eq!(
+            wide.current_region(1, 1500, 0).unwrap(),
+            Some((0, 1, 0, 2999))
+        );
+        assert!(t.elapsed().as_secs() < 2, "slow: {:?}", t.elapsed());
     }
 
     #[test]

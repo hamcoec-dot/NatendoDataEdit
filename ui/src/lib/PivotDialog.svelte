@@ -54,6 +54,12 @@
   let { doc, titles, header, rows, initial, sample, onTable, onCopy, onDrill, onSay, onConfirmSave, onClose }: Props = $props();
 
   let spec = $state<PivotSpec>(untrack(() => structuredClone(initial ?? newSpec(header))));
+
+  // The tab's "First row is header" decides, also for a layout kept from
+  // when it was off: otherwise the header would be counted as a value.
+  $effect(() => {
+    if (spec.keep_first !== header) spec.keep_first = header;
+  });
   let grid = $state<PivotGrid | null>(null);
   let busy = $state(false);
   let progress = $state<number | null>(null);
