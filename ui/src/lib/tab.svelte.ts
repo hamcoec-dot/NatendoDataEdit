@@ -201,8 +201,12 @@ export class Tab {
   /** What the parts of `lastView` were copied from (to tell cheaply whether
    *  they changed: these lists are replaced, never changed in place). */
   private lastRefs: { cols: string; highlights: unknown; scales: unknown; checks: unknown; sort: unknown } | null = null;
-  /** Memory held by looks kept for undo (roughly). */
+  /** Memory held by looks kept for undo (roughly), and each look's share
+   *  (counted down once when a step holding it is let go; a look still
+   *  shared by a later step is then undercounted, which only lets a little
+   *  more be kept). */
   private lookBytes = 0;
+  private lookSize = new WeakMap<ViewLook, number>();
   /** Undo position of a new engine step waiting for its "after" look. */
   private pendingStep: number | null = null;
 
@@ -247,7 +251,13 @@ export class Tab {
   /** The look now. Only parts that changed since the last look are copied
    *  (and only they are turned into text to compare); the rest are shared,
    *  so a key press costs next to nothing however long the lists are.
-   *  The same object comes back while nothing changed. */
+   *  The same object comes back while nothing changed.
+   *
+   *  This relies on the highlight rules, colour scales, data checks and sort
+   *  being REPLACED whenever they change (`t.checks = [...]`), never changed
+   *  in place (no push, splice or `t.checks[i].x = ...`): a change in place
+   *  would not be seen, so it would not be an undo step, and it would also
+   *  change the copies kept for undo. Dialogs edit their own copies. */
   snapView(): ViewSnap {
     const last = this.lastView;
     const refs = this.lastRefs;
@@ -286,6 +296,7 @@ export class Tab {
     if (colsChanged) bytes += cols.length * 2;
     const sort = copy<SortSpec | null>(!refs || !same(refs.sort, this.sort), last?.sort, this.sort);
     this.lastRefs = { cols, highlights: this.highlights, scales: this.scales, checks: this.checks, sort: this.sort };
+    this.lookSize.set(look, bytes);
     this.noteLookBytes(bytes);
     return { look, sort };
   }
@@ -297,11 +308,37 @@ export class Tab {
     if (this.lookBytes <= LOOK_BUDGET) return;
     const keys = [...this.stepViews.keys()].sort((a, b) => a - b);
     const cut = keys[Math.floor(keys.length / 2)] ?? Infinity;
-    for (const k of keys) if (k < cut) this.stepViews.delete(k);
+    for (const k of keys) if (k < cut) this.dropStepView(k);
     const half = Math.floor(this.lookSteps.length / 2);
+    for (const s of this.lookSteps.slice(0, half)) this.releaseStep(s.before, s.after);
     this.lookSteps = this.lookSteps.slice(half);
-    this.lookBytes = Math.floor(this.lookBytes / 2);
+    // Still over (the oldest looks were shared): start the count afresh.
+    if (this.lookBytes > LOOK_BUDGET) this.lookBytes = Math.floor(LOOK_BUDGET / 2);
     this.undoVersion++;
+  }
+
+  /** Redo of look changes is over (a new change was made). */
+  private clearLookRedo(): void {
+    for (const s of this.lookRedo) this.releaseStep(s.before, s.after);
+    this.lookRedo = [];
+  }
+
+  /** A kept look is let go: count its memory down (once). */
+  private releaseStep(...looks: (ViewLook | undefined)[]): void {
+    for (const l of looks) {
+      if (!l) continue;
+      const n = this.lookSize.get(l);
+      if (n === undefined) continue;
+      this.lookSize.delete(l);
+      this.lookBytes = Math.max(0, this.lookBytes - n);
+    }
+  }
+
+  private dropStepView(k: number): void {
+    const s = this.stepViews.get(k);
+    if (!s) return;
+    this.stepViews.delete(k);
+    this.releaseStep(s.before.look, s.after?.look);
   }
 
   /** Note a change to the look since last time as one undo step (called
@@ -317,9 +354,12 @@ export class Tab {
       this.pendingStep = null;
     } else if (now !== was && !sameLook(now.look, was.look)) {
       this.lookSteps.push({ pos, before: was.look, after: now.look });
-      if (this.lookSteps.length > MAX_VIEW_STEPS) this.lookSteps.shift();
+      if (this.lookSteps.length > MAX_VIEW_STEPS) {
+        const old = this.lookSteps.shift()!;
+        this.releaseStep(old.before, old.after);
+      }
       if (this.lookRedo.length || this.info.can_redo) this.redoCut = pos;
-      this.lookRedo = [];
+      this.clearLookRedo();
       this.undoVersion++;
     }
     this.lastView = now;
@@ -358,6 +398,7 @@ export class Tab {
     this.groups = [];
     this.lookSteps = this.lookSteps.filter((s) => s.pos >= pos);
     this.lookBytes = 0;
+    this.lookSize = new WeakMap();
     this.undoVersion++;
   }
 
@@ -420,15 +461,15 @@ export class Tab {
     if (after > before && this.redoing === 0) {
       // A new change ends the redo of look changes too, and takes the look
       // before it (the look after it is taken once it has settled).
-      this.lookRedo = [];
+      this.clearLookRedo();
       this.redoCut = null;
       if (this.groups.some((g) => g.end > before)) this.groups = this.groups.filter((g) => g.end <= before);
-      for (const k of [...this.stepViews.keys()]) if (k > before) this.stepViews.delete(k);
+      for (const k of [...this.stepViews.keys()]) if (k > before) this.dropStepView(k);
       if (after === before + 1 && this.lastView) {
         this.stepViews.set(after, { before: this.lastView, after: null });
         this.pendingStep = after;
       }
-      if (this.stepViews.size > MAX_UNDO) this.stepViews.delete(this.stepViews.keys().next().value!);
+      if (this.stepViews.size > MAX_UNDO) this.dropStepView(this.stepViews.keys().next().value!);
     }
     if (after !== before) setTimeout(() => this.recordView(), 0);
     this.info = info;
