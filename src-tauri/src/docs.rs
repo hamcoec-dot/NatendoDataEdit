@@ -923,6 +923,7 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
         | RecipeOp::DeleteCols { .. }
         | RecipeOp::MoveCols { .. }
         | RecipeOp::ReplaceAll { .. }
+        | RecipeOp::BatchReplace { .. }
         | RecipeOp::RenameColumn { .. } => unreachable!("handled by its own command"),
     }
 }
@@ -2703,6 +2704,101 @@ impl Docs {
         })
     }
 
+    /// What a batch replace (many pairs) would change; the plan is kept for
+    /// [`Docs::batch_confirm`].
+    pub fn batch_preview(
+        &self,
+        id: u32,
+        spec: natendo_engine::find::BatchReplace,
+    ) -> CmdResult<ReplaceReport> {
+        let entry = self.get(id)?;
+        let key = format!("batch:{}", serde_json::to_string(&spec).unwrap_or_default());
+        let job = entry.start("Looking for matches")?;
+        let plan = entry
+            .read()
+            .plan_batch_replace(&spec, PREVIEW_CHANGES, &job.progress)?;
+        drop(job);
+        let report = ReplaceReport {
+            cells: plan.cells,
+            hits: plan.hits,
+            preview: plan.preview.clone(),
+            info: None,
+        };
+        *entry.replace.lock().unwrap_or_else(|p| p.into_inner()) = Some((key, plan));
+        Ok(report)
+    }
+
+    /// Apply exactly the previewed batch replace (one undo step), or fail
+    /// ("changed") if the list or the file changed since.
+    pub fn batch_confirm(
+        &self,
+        id: u32,
+        spec: natendo_engine::find::BatchReplace,
+    ) -> CmdResult<ReplaceReport> {
+        let step = RecipeOp::BatchReplace { spec: spec.clone() };
+        self.recorded(id, Logged::Step(step), || self.batch_apply(id, spec, true))
+    }
+
+    fn batch_apply(
+        &self,
+        id: u32,
+        spec: natendo_engine::find::BatchReplace,
+        exact: bool,
+    ) -> CmdResult<ReplaceReport> {
+        let entry = self.get(id)?;
+        let key = format!("batch:{}", serde_json::to_string(&spec).unwrap_or_default());
+        let kept = entry
+            .replace
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, plan)| plan);
+        let plan = match kept {
+            Some(p) => p,
+            None if exact => {
+                return Err(CmdError::new(
+                    "changed",
+                    "the list or the file changed since the preview; nothing was replaced. Look at the changes again",
+                ))
+            }
+            None => {
+                let job = entry.start("Replacing")?;
+                let p = entry.read().plan_batch_replace(&spec, 0, &job.progress)?;
+                drop(job);
+                p
+            }
+        };
+        let (cells, hits) = (plan.cells, plan.hits);
+        let info = self.edit(id, |d| d.apply_replace(plan)).map_err(|e| {
+            if e.kind == "changed" && exact {
+                CmdError::new(
+                    "changed",
+                    "the file changed since the preview; nothing was replaced. Look at the changes again",
+                )
+            } else {
+                e
+            }
+        })?;
+        Ok(ReplaceReport {
+            cells,
+            hits,
+            preview: Vec::new(),
+            info: Some(info),
+        })
+    }
+
+    /// Replace in one cell (Find's Replace button): an edit by hand, not a
+    /// recipe step.
+    pub fn replace_cell(
+        &self,
+        id: u32,
+        spec: FindSpec,
+        replacement: String,
+    ) -> CmdResult<ReplaceReport> {
+        self.replace_all_now(id, spec, replacement, false)
+    }
+
     /// The preview's "Replace all": applies exactly the plan the preview
     /// showed, or nothing. If the search, the replacement or the file
     /// changed since, it fails ("changed") instead of working out a new,
@@ -3381,6 +3477,7 @@ impl Docs {
                     self.move_cols(id, at, count, to).map(|_| ())
                 }
                 RecipeOp::ReplaceAll { spec, with } => self.replace_all(id, spec, with).map(|_| ()),
+                RecipeOp::BatchReplace { spec } => self.batch_apply(id, spec, false).map(|_| ()),
                 RecipeOp::RenameColumn { col, name } => {
                     self.set_first_row_cell(id, col, name).map(|_| ())
                 }
@@ -6891,6 +6988,28 @@ ca,California
         docs.save(id, Some(p.clone()), false, false, None).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"x\r\n");
         assert_eq!(docs.info(id).unwrap().name, "new.csv");
+    }
+
+    #[test]
+    fn batch_replace_preview_then_confirm() {
+        let docs = Docs::default();
+        let p = tmp("br.csv", b"code\nA\nB\nC\n");
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let spec = natendo_engine::find::BatchReplace {
+            pairs: vec![("A".into(), "Alpha".into()), ("B".into(), "Beta".into())],
+            whole_cell: true,
+            skip_first: true,
+            ..Default::default()
+        };
+        let pv = docs.batch_preview(id, spec.clone()).unwrap();
+        assert_eq!(pv.cells, 2);
+        let mut other = spec.clone();
+        other.pairs[0].1 = "WIPED".into();
+        assert_eq!(docs.batch_confirm(id, other).unwrap_err().kind, "changed");
+        docs.batch_preview(id, spec.clone()).unwrap();
+        assert_eq!(docs.batch_confirm(id, spec).unwrap().cells, 2);
+        assert_eq!(docs.copy(id, 1, 3, 0, 1).unwrap(), "Alpha\r\nBeta\r\nC\r\n");
     }
 
     #[test]

@@ -51,6 +51,10 @@ pub enum RecipeOp {
         spec: FindSpec,
         with: String,
     },
+    /// Many find → replace pairs at once.
+    BatchReplace {
+        spec: crate::find::BatchReplace,
+    },
     RemoveDuplicates {
         spec: Duplicates,
     },
@@ -154,6 +158,9 @@ impl RecipeOp {
             RecipeOp::ReplaceAll { spec, with } => {
                 format!("Replace \"{}\" with \"{with}\"", spec.pattern.text)
             }
+            RecipeOp::BatchReplace { spec } => {
+                format!("Replace from a list of {} pairs", spec.pairs.len())
+            }
             RecipeOp::RemoveDuplicates { .. } => "Remove duplicate rows".into(),
             RecipeOp::RemoveBlankRows { .. } => "Remove blank rows".into(),
             RecipeOp::RemoveBlankCols { .. } => "Remove blank columns".into(),
@@ -216,6 +223,7 @@ impl RecipeOp {
             self,
             RecipeOp::Filter { .. }
                 | RecipeOp::ReplaceAll { .. }
+                | RecipeOp::BatchReplace { .. }
                 | RecipeOp::FillExample { .. }
                 | RecipeOp::MapValues { .. }
                 | RecipeOp::FillBlanks { .. }
@@ -318,6 +326,10 @@ impl Document {
             RecipeOp::MoveCols { at, count, to } => self.move_cols(*at, *count, *to),
             RecipeOp::ReplaceAll { spec, with } => {
                 let p = self.plan_replace(spec, with, 0, progress)?;
+                self.apply_replace(p)
+            }
+            RecipeOp::BatchReplace { spec } => {
+                let p = self.plan_batch_replace(spec, 0, progress)?;
                 self.apply_replace(p)
             }
             RecipeOp::RemoveDuplicates { spec } => {

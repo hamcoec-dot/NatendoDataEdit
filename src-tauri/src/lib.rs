@@ -2276,6 +2276,37 @@ async fn replace_page(
 }
 
 #[tauri::command]
+async fn batch_preview(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::find::BatchReplace,
+) -> CmdResult<ReplaceReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.batch_preview(doc, spec)).await
+}
+
+#[tauri::command]
+async fn batch_confirm(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::find::BatchReplace,
+) -> CmdResult<ReplaceReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.batch_confirm(doc, spec)).await
+}
+
+#[tauri::command]
+async fn replace_cell(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: FindSpec,
+    replacement: String,
+) -> CmdResult<ReplaceReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.replace_cell(doc, spec, replacement)).await
+}
+
+#[tauri::command]
 async fn replace_confirm(
     docs: DocsState<'_>,
     doc: u32,
@@ -2960,6 +2991,9 @@ pub fn run() {
             set_doc_title,
             find_count_cancel,
             replace_confirm,
+            batch_preview,
+            batch_confirm,
+            replace_cell,
             replace_page,
             replace_preview,
             replace_all,
