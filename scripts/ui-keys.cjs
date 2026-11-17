@@ -1,4 +1,4 @@
-// UI test: Excel and Google Sheets keys added in 0.3.6 (browser stub backend).
+// UI test: Excel and Google Sheets keys added in 0.3.5 (browser stub backend).
 // Shift+F10, Ctrl+1, Ctrl+', Ctrl+Backspace, Shift+Backspace, Ctrl+., F8,
 // Ctrl+A (block, then all), Ctrl+Shift+*, Esc keeps the selection, Space on a
 // tick box, Ctrl+; starts an edit, Ctrl+\, Ctrl+Shift+4, Alt+/, Home/End and
