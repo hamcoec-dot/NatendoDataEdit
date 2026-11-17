@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.3.1_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.3.2_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -183,7 +183,8 @@ everything is also in command search.
   copies it, Esc stops a drag). Resize or double-click-fit several selected
   columns at once, click the small arrow beside hidden columns to show them
   again, drag the edges of the top-left corner to freeze rows or columns, and
-  drag file tabs into another order. Each move is one undo step, and colour
+  drag file tabs into another order (the tab follows the pointer and the
+  others slide aside to show where it will land; Esc puts it back). Each move is one undo step, and colour
   scales, highlight rules and checks move with their columns. Help > Mouse
   and drag moves lists them all.
 - Light, dark or system theme with an accent colour, font and font size, zoom.

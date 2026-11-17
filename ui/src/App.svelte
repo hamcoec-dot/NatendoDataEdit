@@ -1845,32 +1845,79 @@
   }
 
   // ---- file tabs: drag one along the bar to put it elsewhere -----------------
-  let tabDrag = $state<{ from: number; x: number; moved: boolean; pointer: number } | null>(null);
+  // The tab follows the pointer and the tabs it passes slide aside, opening
+  // a gap where it will land; it is put there on letting go (Esc first:
+  // nothing moves). Text is never selected while dragging.
+  let tabDrag = $state<{ from: number; x: number; dx: number; moved: boolean; pointer: number; to: number | null; w: number } | null>(null);
+  let tabBar = $state<HTMLDivElement>();
+  let tabDragged = false;
+
+  function tabDragKey(e: KeyboardEvent): void {
+    if (e.key !== "Escape" || !tabDrag) return;
+    e.preventDefault();
+    e.stopPropagation();
+    endTabDrag(false);
+  }
+
+  function endTabDrag(drop: boolean): void {
+    const d = tabDrag;
+    tabDrag = null;
+    window.removeEventListener("keydown", tabDragKey, true);
+    // The click that ends a drag does not also pick a tab by its old place.
+    tabDragged = !!d?.moved;
+    if (!drop || !d?.moved || d.to === null) return;
+    const [moved] = tabs.splice(d.from, 1);
+    tabs.splice(d.to, 0, moved!);
+    // The tab just put down is the one shown, as when it is clicked.
+    active = d.to;
+    void tick().then(() => grid?.focus());
+  }
 
   function tabPointerDown(e: PointerEvent, i: number): void {
     if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
-    tabDrag = { from: i, x: e.clientX, moved: false, pointer: e.pointerId };
+    // No text selection (or native drag) starts from a tab.
+    e.preventDefault();
+    tabDragged = false;
+    tabDrag = { from: i, x: e.clientX, dx: 0, moved: false, pointer: e.pointerId, to: null, w: (e.currentTarget as HTMLElement).offsetWidth + 2 };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    window.addEventListener("keydown", tabDragKey, true);
   }
 
   function tabPointerMove(e: PointerEvent): void {
     const d = tabDrag;
-    if (!d || e.pointerId !== d.pointer) return;
+    if (!d || e.pointerId !== d.pointer || !tabBar) return;
     if (!d.moved && Math.abs(e.clientX - d.x) < 6) return;
     d.moved = true;
-    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-tab-index]");
-    const to = over ? Number(over.dataset.tabIndex) : NaN;
-    if (!Number.isInteger(to) || to === d.from || to < 0 || to >= tabs.length) return;
-    const current = tabs[active];
-    const [moved] = tabs.splice(d.from, 1);
-    tabs.splice(to, 0, moved!);
-    if (current) active = tabs.indexOf(current);
-    d.from = to;
+    d.dx = e.clientX - d.x;
+    // The gap nearest the pointer: before the first tab whose middle is
+    // right of it. Tabs are measured where they sit in the bar (offsetLeft
+    // ignores the sliding), so the gap does not chase the animation.
+    const bar = tabBar.getBoundingClientRect();
+    const x = e.clientX - bar.left + tabBar.scrollLeft;
+    const els = [...tabBar.querySelectorAll<HTMLElement>("[data-tab-index]")];
+    let gap = els.findIndex((el) => x < el.offsetLeft + el.offsetWidth / 2);
+    if (gap < 0) gap = els.length;
+    d.to = dropIndex(d.from, 1, gap, els.length);
+    // Keep the gap in view on a long bar.
+    if (e.clientX < bar.left + 24) tabBar.scrollLeft -= 12;
+    else if (e.clientX > bar.right - 24) tabBar.scrollLeft += 12;
+  }
+
+  /** Where tab `i` is drawn during a drag: the dragged one under the
+   *  pointer, the ones it has passed slid aside by its width. */
+  function tabShift(i: number): string | undefined {
+    const d = tabDrag;
+    if (!d?.moved) return undefined;
+    if (i === d.from) return `translateX(${d.dx}px)`;
+    if (d.to === null) return undefined;
+    if (d.to > d.from && i > d.from && i <= d.to) return `translateX(${-d.w}px)`;
+    if (d.to < d.from && i >= d.to && i < d.from) return `translateX(${d.w}px)`;
+    return undefined;
   }
 
   function tabPointerUp(e: PointerEvent): void {
     if (!tabDrag || e.pointerId !== tabDrag.pointer) return;
-    tabDrag = null;
+    endTabDrag(e.type === "pointerup");
   }
 
   async function makeHeader(): Promise<void> {
@@ -4126,17 +4173,18 @@
     {/if}
   {/if}
 
-  <div class="tabs" role="tablist" aria-label="Open files">
+  <div class="tabs" class:tab-dragging={tabDrag?.moved} role="tablist" aria-label="Open files" bind:this={tabBar}>
     {#each tabs as t, i (t.id)}
-      <div class="tab" class:active={i === active} class:dragging={tabDrag?.moved && tabs[tabDrag.from] === t} role="tab" aria-selected={i === active} tabindex="-1" title={t.info.path ?? t.info.name}
+      <div class="tab" class:active={i === active} class:dragging={tabDrag?.moved && tabs[tabDrag.from] === t} style:transform={tabShift(i)} role="tab" aria-selected={i === active} tabindex="-1" title={t.info.path ?? t.info.name}
         data-tab-index={i}
         onmousedown={(e) => { if (e.button === 1) { e.preventDefault(); void closeTab(i); } }}
         onpointerdown={(e) => tabPointerDown(e, i)}
         onpointermove={tabPointerMove}
         onpointerup={tabPointerUp}
         onpointercancel={tabPointerUp}
-        onclick={() => { active = i; void tick().then(() => grid?.focus()); }}
+        onclick={() => { if (tabDragged) { tabDragged = false; return; } active = i; void tick().then(() => grid?.focus()); }}
         onkeydown={() => {}}
+        ondragstart={(e) => e.preventDefault()}
       >
         <span>{t.info.modified ? "● " : ""}{t.info.name}</span>
         {#if tabFolder[t.id]}<span class="tab-folder">{tabFolder[t.id]}</span>{/if}
@@ -5033,12 +5081,21 @@
     padding: 3px 0;
   }
   .tabs {
+    position: relative;
     display: flex;
     gap: 2px;
     padding: 4px 8px 0;
     background: var(--bg);
     border-bottom: 1px solid var(--border);
     overflow-x: auto;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .tabs.tab-dragging {
+    cursor: grabbing;
+  }
+  .tabs.tab-dragging .tab:not(.dragging) {
+    transition: transform 0.12s ease;
   }
   .tab {
     display: flex;
@@ -5060,8 +5117,14 @@
     box-shadow: inset 0 2px 0 var(--accent);
   }
   .tab.dragging {
-    opacity: 0.7;
+    position: relative;
+    z-index: 2;
+    background: var(--surface);
+    color: var(--text);
     cursor: grabbing;
+    box-shadow:
+      inset 0 2px 0 var(--accent),
+      0 4px 14px rgba(0, 0, 0, 0.25);
   }
   .tab-folder {
     color: var(--muted);
