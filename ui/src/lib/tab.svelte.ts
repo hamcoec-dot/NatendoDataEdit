@@ -185,6 +185,13 @@ export class Tab {
    *  position it made: undo and redo put the widths, formats and so on
    *  back as they were (a deleted column comes back with its width). */
   stepViews = new Map<number, { before: ViewSnap; after: ViewSnap | null }>();
+  /** What each engine step was and where (by the undo position it made):
+   *  undo and redo select those cells again and say what was undone. */
+  stepWhat = new Map<number, { what: string | null; sel: Selection }>();
+  /** What the next engine change is (set just before it is made). */
+  whatNext: string | null = null;
+  /** The label of the command running now, if any (set by the app). */
+  static activeCommand: () => string | null = () => null;
   /** A look change made after undoing: the engine's redo is over at this
    *  position (as a new change would end it). */
   redoCut: number | null = null;
@@ -465,6 +472,11 @@ export class Tab {
       this.redoCut = null;
       if (this.groups.some((g) => g.end > before)) this.groups = this.groups.filter((g) => g.end <= before);
       for (const k of [...this.stepViews.keys()]) if (k > before) this.dropStepView(k);
+      for (const k of [...this.stepWhat.keys()]) if (k > before) this.stepWhat.delete(k);
+      const cmd = Tab.activeCommand();
+      const what = cmd ? `“${cmd}”` : this.whatNext;
+      this.stepWhat.set(after, { what, sel: { ...this.sel } });
+      if (this.stepWhat.size > MAX_UNDO) this.stepWhat.delete(this.stepWhat.keys().next().value!);
       if (after === before + 1 && this.lastView) {
         this.stepViews.set(after, { before: this.lastView, after: null });
         this.pendingStep = after;
@@ -472,6 +484,7 @@ export class Tab {
       if (this.stepViews.size > MAX_UNDO) this.dropStepView(this.stepViews.keys().next().value!);
     }
     if (after !== before) setTimeout(() => this.recordView(), 0);
+    this.whatNext = null;
     this.info = info;
     this.columns.setCount(info.cols);
     if (dataChanged || structural) this.cache.invalidate();

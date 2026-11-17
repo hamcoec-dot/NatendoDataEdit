@@ -152,6 +152,31 @@ const url = process.argv[3] || "http://localhost:5194";
   });
   ok(keep, "alignment and cut-off survive a snapshot and restore");
 
+  // ---- 5. Undo and Redo select what changed and say what it was ----
+  const status = () => p.textContent("footer.status");
+  const sel = () => p.evaluate(() => ({ ...window.__nde.tab.cell, rect: { ...window.__nde.tab.rect } }));
+  await put(8, 2, "zzz");
+  await start(1, 0);
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(500);
+  let s = await sel();
+  ok(s.row === 8 && s.col === 2, `Undo selects the cell typed in (R${s.row + 1} C${s.col + 1})`);
+  ok(/Undid typing in R9 C3/.test(await status()), `Undo says what it undid (${await status()})`);
+  await start(1, 0);
+  await p.keyboard.press("Control+y");
+  await p.waitForTimeout(500);
+  s = await sel();
+  ok(s.row === 8 && s.col === 2 && /Redid typing in R9 C3/.test(await status()), "Redo selects it again and says so");
+  await start(10, 1, 12, 2);
+  await p.keyboard.press("Delete");
+  await p.waitForTimeout(400);
+  await start(1, 0);
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(500);
+  s = await sel();
+  ok(s.rect.row === 10 && s.rect.rows === 3 && s.rect.col === 1 && s.rect.cols === 2, "Undo of a cleared block selects the block");
+  ok(/Undid “?Clear/i.test(await status()) || /Undid clearing cells/.test(await status()), `Undo names the command (${await status()})`);
+
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   await b.close();
   console.log(failed ? `${failed} FAILED` : "ALL PASS");

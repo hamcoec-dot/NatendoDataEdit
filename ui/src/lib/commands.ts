@@ -118,11 +118,21 @@ export class Registry {
     return !!c && (c.enabled?.() ?? true);
   }
 
+  /** The label of the command running now (Undo names the change it made). */
+  active: string | null = null;
+
   async run(id: string): Promise<boolean> {
     const c = this.byId.get(id);
     if (!c || !(c.enabled?.() ?? true)) return false;
     if (c.repeatable) this.lastRepeatable = id;
-    await c.run();
+    const label = c.label.replace(/&/g, "").replace(/…$/, "");
+    const outer = this.active;
+    this.active = label;
+    try {
+      await c.run();
+    } finally {
+      this.active = outer;
+    }
     return true;
   }
 

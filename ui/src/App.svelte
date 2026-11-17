@@ -1220,9 +1220,11 @@
       const r = t.rect;
       // A big block is one engine job (with progress and Cancel).
       if (cellCount(r) > MAX_CELLS_PER_CHANGE) return fillRect(r, value);
+      t.whatNext = "filling cells";
       return apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, value));
     }
     if (value === t.cache.get(row, col) && !t.cache.isTruncated(row, col)) return true;
+    t.whatNext = `typing in R${row + 1} C${col + 1}`;
     return apply((x) => backend().setCells(x.id, [[row, col, value]]));
   }
 
@@ -1234,6 +1236,7 @@
       await fillRect(r, "");
       return;
     }
+    t.whatNext = "clearing cells";
     await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, ""));
   }
 
@@ -1485,6 +1488,7 @@
     const t = tab;
     if (!t) return null;
     try {
+      t.whatNext = label.toLowerCase();
       const rep = await runJob(label, () => backend().dataOp(t.id, op));
       if (!rep) return null;
       if (rep.info) t.update(rep.info, true);
@@ -1801,7 +1805,23 @@
     symbols = { caret: grid?.editorCaret() ?? null };
   }
 
+  /** How Undo names a change made with `change`. */
+  const CHANGE_WHAT: Partial<Record<Change["op"], string>> = {
+    insert_rows: "inserting rows",
+    delete_rows: "deleting rows",
+    move_rows: "moving rows",
+    insert_cols: "inserting columns",
+    delete_cols: "deleting columns",
+    move_cols: "moving columns",
+    hide_rows: "hiding rows",
+    show_rows: "showing rows",
+    shuffle_rows: "shuffling rows",
+    flip_rows: "flipping rows",
+    delete_col_list: "deleting columns",
+  };
+
   async function change(c: Change, dataChanged = true): Promise<boolean> {
+    if (tab && c.op !== "undo" && c.op !== "redo") tab.whatNext = CHANGE_WHAT[c.op] ?? null;
     return apply((x) => backend().change(x.id, c), dataChanged);
   }
 
@@ -1966,6 +1986,7 @@
       );
       return;
     }
+    t.whatNext = copy ? "copying cells" : "moving cells";
     if (await apply((x) => backend().moveCells(x.id, from.row, from.rows, from.col, from.cols, row, col, copy))) {
       grid?.select({ row, col }, { row: row + from.rows - 1, col: col + from.cols - 1 });
       const n = cellCount(from);
@@ -2158,6 +2179,7 @@
       t.headerTouched = true;
       t.headerAddedAt = t.info.history_pos;
     }
+    t.whatNext = "renaming a column";
     if (await apply((x) => backend().setFirstRowCell(x.id, col, name))) {
       // Row rules in data checks that named the column follow the new name
       // (undone and redone with the rename).
@@ -2970,6 +2992,7 @@
       if (op === "undo") t.lookRedo.push(t.lookSteps.pop()!);
       else t.lookSteps.push(t.lookRedo.pop()!);
       t.restoreView({ look: op === "undo" ? look.before : look.after, sort: null }, false);
+      say(`${op === "undo" ? "Undid" : "Redid"} a change to how the table looks (widths, formats, hiding and so on).`);
       return;
     }
     if (op === "redo" && t.redoCut === pos) return;
@@ -2991,6 +3014,17 @@
       const now = t.info.history_pos;
       const step = now !== target ? undefined : op === "undo" ? t.stepViews.get(target + 1)?.before : t.stepViews.get(now)?.after;
       if (step) t.restoreView(step, true);
+      // Select what the step changed and say what it was (as Excel does).
+      if (now !== pos) {
+        const w = t.stepWhat.get(op === "undo" ? pos : now);
+        if (w && t.info.rows > 0 && t.info.cols > 0) {
+          const fit = (c: { row: number; col: number }) => ({ row: Math.min(c.row, t.info.rows - 1), col: Math.min(c.col, t.info.cols - 1) });
+          grid?.select(fit(w.sel.anchor), fit(w.sel.focus), true, w.sel.active ? fit(w.sel.active) : undefined);
+        }
+        const n = Math.abs(now - pos);
+        const what = w?.what ?? "the last change";
+        say(`${op === "undo" ? "Undid" : "Redid"} ${what}${n > 1 ? ` (${n} steps together)` : ""}.`);
+      }
       if (now !== pos) {
         t.filter = t.info.has_filter ? await backend().filterSpec(t.id).catch(() => t.filter) : null;
         if (t.info.has_filter) t.filterButtons = true;
@@ -3093,6 +3127,7 @@
     const t = tab;
     if (!t) return false;
     try {
+      t.whatNext = label.toLowerCase();
       const d = await runJob(label, () => f(t));
       if (!d) return false;
       t.update(d, true);
@@ -3333,6 +3368,7 @@
 
   // ---- commands ------------------------------------------------------------------------
   const reg = new Registry();
+  Tab.activeCommand = () => reg.active;
   const setTheme = (t: Theme) => () => {
     prefs.data.theme = t;
     prefs.save();
