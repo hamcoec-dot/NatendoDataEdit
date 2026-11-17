@@ -23,6 +23,8 @@ import type {
   Opened,
   FindAll,
   FindCount,
+  FindRowsAction,
+  BatchReplace,
   FindSpec,
   Found,
   JobInfo,
@@ -1116,12 +1118,111 @@ export class MockBackend implements Backend {
   }
 
   private previewKey = "";
-  async replaceConfirm(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport> {
+  async replaceConfirm(doc: number, spec: FindSpec, replacement: string, exclude: [number, number][] = []): Promise<ReplaceReport> {
     const key = JSON.stringify([spec, replacement]);
     const ok = key === this.previewKey;
     this.previewKey = "";
     if (!ok) throw err("changed", "the search or the file changed since the preview; nothing was replaced. Look at the changes again (Replace all…)");
+    const p = this.planReplace(this.get(doc), spec, replacement);
+    const skip = new Set(exclude.map(([r, c]) => `${r}:${c}`));
+    const changes = p.changes.filter(([r, c]) => !skip.has(`${r}:${c}`));
+    const info = changes.length ? await this.setCells(doc, changes) : this.refresh(this.get(doc));
+    return { cells: changes.length, hits: p.hits, preview: [], info };
+  }
+
+  async replaceCell(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport> {
     return this.replaceAll(doc, spec, replacement);
+  }
+
+  private matchingRows(d: MockDoc, spec: FindSpec): number[] {
+    const re = regexOf(spec.pattern);
+    const { r0, r1, cols } = this.area(d, spec);
+    const out: number[] = [];
+    for (let r = r0; r < r1; r++) if (cols.some((c) => re.test(this.value(d, r, c)))) out.push(r);
+    return out;
+  }
+
+  async findRows(doc: number, spec: FindSpec, action: FindRowsAction): Promise<DocInfo> {
+    const d = this.get(doc);
+    const rows = this.matchingRows(d, spec);
+    switch (action.kind) {
+      case "copy": {
+        const width = this.colCount(d);
+        const line = (r: number) => Array.from({ length: width }, (_, c) => this.value(d, r, c));
+        const lines = [...(spec.skip_first ? [line(0)] : []), ...rows.map(line)];
+        const info = this.make("Untitled", Math.max(1, lines.length), width);
+        await this.setCells(info.id, lines.flatMap((l, r) => l.map((v, c) => [r, c, v] as [number, number, string])));
+        return this.setDocTitle(info.id, `Matches (${d.info.name.replace(/\.[^. ]{1,5}$/, "")})`);
+      }
+      case "flag":
+        for (const r of rows) await this.noteSet(doc, r, action.flag, "");
+        return this.refresh(d);
+      case "delete":
+        for (const r of [...rows].reverse()) await this.change(doc, { op: "delete_rows", at: r, count: 1 });
+        return this.refresh(d);
+      case "show": {
+        const keep = new Set(rows);
+        for (let r = this.rowCount(d) - 1; r >= (spec.skip_first ? 1 : 0); r--) if (!keep.has(r)) await this.change(doc, { op: "hide_rows", at: r, count: 1 });
+        return this.refresh(d);
+      }
+    }
+  }
+
+  async findNotes(doc: number, pattern: Pattern): Promise<import("./notes").NoteMark[]> {
+    const re = regexOf(pattern);
+    const [all] = await this.noteList(doc);
+    return all.filter((n) => re.test(n.text));
+  }
+
+  async replaceTitles(doc: number, spec: FindSpec, replacement: string): Promise<[number, string][]> {
+    const d = this.get(doc);
+    const re = regexOf(spec.pattern, true);
+    const out: [number, string][] = [];
+    const cols = spec.scope.kind === "columns" ? spec.scope.cols : Array.from({ length: this.colCount(d) }, (_, i) => i);
+    for (const c of cols) {
+      const t = this.value(d, 0, c);
+      const n = t.replace(re, replacement);
+      if (n !== t) out.push([c, n]);
+    }
+    return out;
+  }
+
+  private batchKey = "";
+  private batchPlan(d: MockDoc, spec: BatchReplace): [number, number, string][] {
+    const { r0, r1, cols } = this.area(d, { pattern: { text: "x", kind: "plain", match_case: false, whole_cell: false }, scope: spec.scope, skip_first: spec.skip_first, skip_cols: spec.skip_cols });
+    const key = (s: string) => (spec.match_case ? s : s.toLowerCase());
+    const map = new Map<string, string>();
+    for (const [a, b] of spec.pairs) if (a && !map.has(key(a))) map.set(key(a), b);
+    const finds = [...spec.pairs].filter(([a]) => a).sort((x, y) => y[0].length - x[0].length);
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = finds.length ? new RegExp(finds.map(([a]) => esc(a)).join("|"), spec.match_case ? "g" : "gi") : null;
+    const out: [number, number, string][] = [];
+    for (let r = r0; r < r1; r++)
+      for (const c of cols) {
+        const v = this.value(d, r, c);
+        let n: string | undefined;
+        if (spec.whole_cell) n = map.get(key(v));
+        else if (re) n = v.replace(re, (m) => map.get(key(m)) ?? m);
+        if (n !== undefined && n !== v) out.push([r, c, n]);
+      }
+    return out;
+  }
+
+  async batchPreview(doc: number, spec: BatchReplace): Promise<ReplaceReport> {
+    const d = this.get(doc);
+    const plan = this.batchPlan(d, spec);
+    this.batchKey = JSON.stringify(spec);
+    this.lastReplace = plan.map(([r, c, after]) => ({ row: r, number: this.pos(d, r), col: c, before: this.value(d, r, c), after }));
+    return { cells: plan.length, hits: plan.length, preview: this.lastReplace.slice(0, 50), info: null };
+  }
+
+  async batchConfirm(doc: number, spec: BatchReplace): Promise<ReplaceReport> {
+    const ok = JSON.stringify(spec) === this.batchKey;
+    this.batchKey = "";
+    if (!ok) throw err("changed", "the list or the file changed since the preview; nothing was replaced. Look at the changes again");
+    const plan = this.batchPlan(this.get(doc), spec);
+    const info = plan.length ? await this.setCells(doc, plan) : this.refresh(this.get(doc));
+    return { cells: plan.length, hits: plan.length, preview: [], info };
   }
 
   async findCountCancel(): Promise<void> {}

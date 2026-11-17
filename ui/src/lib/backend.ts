@@ -363,6 +363,15 @@ export interface FindAll {
   /** Matching cells per column: [column, count], all of them. */
   per_col?: [number, number][];
 }
+export type FindRowsAction = { kind: "show" } | { kind: "delete" } | { kind: "copy" } | { kind: "flag"; flag: number };
+export interface BatchReplace {
+  pairs: [string, string][];
+  whole_cell: boolean;
+  match_case: boolean;
+  scope: Scope;
+  skip_first: boolean;
+  skip_cols?: number[];
+}
 export interface FindCount {
   cells: number;
   /** Matching cells before the one asked about (Find next order). */
@@ -878,7 +887,19 @@ export interface Backend {
   replacePreview(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport>;
   /** The preview's Replace all: applies exactly the previewed plan, or
    *  fails ("changed") if the search or the file changed since. */
-  replaceConfirm(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport>;
+  replaceConfirm(doc: number, spec: FindSpec, replacement: string, exclude?: [number, number][]): Promise<ReplaceReport>;
+  /** Replace in one cell (Find's Replace button; not a recipe step). */
+  replaceCell(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport>;
+  /** Act on the rows with a match. */
+  findRows(doc: number, spec: FindSpec, action: FindRowsAction): Promise<DocInfo>;
+  /** Row notes that match a search. */
+  findNotes(doc: number, pattern: Pattern): Promise<import("./notes").NoteMark[]>;
+  /** Column titles a replace would change: [column, new title]. */
+  replaceTitles(doc: number, spec: FindSpec, replacement: string): Promise<[number, string][]>;
+  /** Batch replace from a list: what would change (kept for confirm). */
+  batchPreview(doc: number, spec: BatchReplace): Promise<ReplaceReport>;
+  /** Apply exactly the previewed batch replace (one undo step). */
+  batchConfirm(doc: number, spec: BatchReplace): Promise<ReplaceReport>;
   /** Stop a count still running (the find bar closed). */
   findCountCancel(doc: number): Promise<void>;
   /** Name a tab that has no file yet (also what Save suggests). */
@@ -1230,8 +1251,26 @@ class TauriBackend implements Backend {
   findMarks(doc: number, spec: FindSpec, row: number, rows: number, col: number, cols: number) {
     return call<[number, number][]>("find_marks", { doc, spec, row, rows, col, cols });
   }
-  replaceConfirm(doc: number, spec: FindSpec, replacement: string) {
-    return call<ReplaceReport>("replace_confirm", { doc, spec, replacement });
+  replaceConfirm(doc: number, spec: FindSpec, replacement: string, exclude?: [number, number][]) {
+    return call<ReplaceReport>("replace_confirm", { doc, spec, replacement, exclude: exclude ?? null });
+  }
+  replaceCell(doc: number, spec: FindSpec, replacement: string) {
+    return call<ReplaceReport>("replace_cell", { doc, spec, replacement });
+  }
+  findRows(doc: number, spec: FindSpec, action: FindRowsAction) {
+    return call<DocInfo>("find_rows", { doc, spec, action });
+  }
+  findNotes(doc: number, pattern: Pattern) {
+    return call<import("./notes").NoteMark[]>("find_notes", { doc, pattern });
+  }
+  replaceTitles(doc: number, spec: FindSpec, replacement: string) {
+    return call<[number, string][]>("replace_titles", { doc, spec, replacement });
+  }
+  batchPreview(doc: number, spec: BatchReplace) {
+    return call<ReplaceReport>("batch_preview", { doc, spec });
+  }
+  batchConfirm(doc: number, spec: BatchReplace) {
+    return call<ReplaceReport>("batch_confirm", { doc, spec });
   }
   findCountCancel(doc: number) {
     return call<void>("find_count_cancel", { doc });
