@@ -360,6 +360,8 @@ export interface Hit {
 export interface FindAll {
   hits: Hit[];
   cells: number;
+  /** Matching cells per column: [column, count], all of them. */
+  per_col?: [number, number][];
 }
 export interface FindCount {
   cells: number;
@@ -864,6 +866,8 @@ export interface Backend {
   /** Matching cells in a window of the grid, to light them up. */
   findMarks(doc: number, spec: FindSpec, row: number, rows: number, col: number, cols: number): Promise<[number, number][]>;
   replacePreview(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport>;
+  /** A page of the last Replace all preview: every change, in order. */
+  replacePage(doc: number, offset: number, count: number): Promise<ReplaceReport["preview"]>;
   replaceAll(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport>;
   /** Matches in a piece of text, as [start, end) UTF-16 offsets. */
   findInText(text: string, pattern: Pattern): Promise<[number, number][]>;
@@ -1208,6 +1212,9 @@ class TauriBackend implements Backend {
   }
   findMarks(doc: number, spec: FindSpec, row: number, rows: number, col: number, cols: number) {
     return call<[number, number][]>("find_marks", { doc, spec, row, rows, col, cols });
+  }
+  replacePage(doc: number, offset: number, count: number) {
+    return call<ReplaceReport["preview"]>("replace_page", { doc, offset, count });
   }
   replacePreview(doc: number, spec: FindSpec, replacement: string) {
     return call<ReplaceReport>("replace_preview", { doc, spec, replacement });

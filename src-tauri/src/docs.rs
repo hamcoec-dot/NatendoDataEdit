@@ -2570,6 +2570,18 @@ impl Docs {
         Ok(report)
     }
 
+    /// A page of the kept Replace all preview (all changes, not just the
+    /// first ones).
+    pub fn replace_page(&self, id: u32, offset: u64, count: usize) -> CmdResult<Vec<Change>> {
+        let entry = self.get(id)?;
+        let kept = entry.replace.lock().unwrap_or_else(|p| p.into_inner());
+        let Some((_, plan)) = kept.as_ref() else {
+            return Err(CmdError::new("changed", "look for the matches again"));
+        };
+        let d = entry.read();
+        Ok(d.replace_page(plan, offset, count.min(500))?)
+    }
+
     /// Replace every match, as one undo step. Reuses the previewed plan
     /// when it is for the same request and the document did not change.
     pub fn replace_all(

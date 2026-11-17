@@ -620,6 +620,10 @@ pub struct FindAll {
     pub hits: Vec<Hit>,
     /// Cells that match (all of them, not just those listed).
     pub cells: u64,
+    /// Matching cells per column (column, count), all of them, in column
+    /// order; columns with none are left out.
+    #[serde(default)]
+    pub per_col: Vec<(u32, u64)>,
 }
 
 /// One cell a replace would change (for the preview).
@@ -638,6 +642,9 @@ pub struct Change {
 pub struct ReplacePlan {
     revision: u64,
     changes: Vec<(u32, Vec<(u32, String)>)>,
+    /// For each entry of `changes`: its shown row and the logical column of
+    /// each changed cell (for paging through the preview).
+    at: Vec<(u64, Vec<u32>)>,
     /// Cells that change.
     pub cells: u64,
     /// Matches replaced.
@@ -921,21 +928,23 @@ impl Document {
             return Ok(FindAll {
                 hits: Vec::new(),
                 cells: 0,
+                per_col: Vec::new(),
             });
         }
+        let ncols = area.cols.len();
         let blocks = (r1 - r0).div_ceil(BLOCK);
-        let parts: Vec<(Vec<Hit>, u64)> = (0..blocks)
+        let parts: Vec<(Vec<Hit>, Vec<u64>)> = (0..blocks)
             .into_par_iter()
-            .map(|b| -> Result<(Vec<Hit>, u64), Error> {
+            .map(|b| -> Result<(Vec<Hit>, Vec<u64>), Error> {
                 let s = r0 + b * BLOCK;
                 let e = (s + BLOCK).min(r1);
                 let mut hits = Vec::new();
-                let mut count = 0u64;
+                let mut count = vec![0u64; ncols];
                 let mut buf = Vec::new();
                 for r in s..e {
                     self.each_cell(&area, r, false, &mut buf, |k, t| {
                         if let Some(range) = m.find(t) {
-                            count += 1;
+                            count[k] += 1;
                             if hits.len() < limit {
                                 let (text, start, len) = snippet(t, range);
                                 hits.push(Hit {
@@ -956,14 +965,28 @@ impl Document {
             })
             .collect::<Result<_, _>>()?;
         let mut hits = Vec::new();
-        let mut cells = 0;
+        let mut per = vec![0u64; ncols];
         for (h, c) in parts {
-            cells += c;
+            for (a, b) in per.iter_mut().zip(c) {
+                *a += b;
+            }
             if hits.len() < limit {
                 hits.extend(h.into_iter().take(limit - hits.len()));
             }
         }
-        Ok(FindAll { hits, cells })
+        let cells = per.iter().sum();
+        let per_col = area
+            .cols
+            .iter()
+            .zip(per)
+            .filter(|(_, n)| *n > 0)
+            .map(|(&c, n)| (c, n))
+            .collect();
+        Ok(FindAll {
+            hits,
+            cells,
+            per_col,
+        })
     }
 
     /// Count the matching cells, and how many come before `at` (row, column)
@@ -1075,7 +1098,13 @@ impl Document {
         let (r0, r1) = (area.rows.start, area.rows.end);
         progress.start(r1.saturating_sub(r0));
         let created = AtomicUsize::new(0);
-        type Part = (Vec<(u32, Vec<(u32, String)>)>, Vec<Change>, u64, u64);
+        type Part = (
+            Vec<(u32, Vec<(u32, String)>)>,
+            Vec<(u64, Vec<u32>)>,
+            Vec<Change>,
+            u64,
+            u64,
+        );
         let blocks = r1.saturating_sub(r0).div_ceil(BLOCK);
         let parts: Vec<Part> = (0..blocks)
             .into_par_iter()
@@ -1083,12 +1112,13 @@ impl Document {
                 let s = r0 + b * BLOCK;
                 let e = (s + BLOCK).min(r1);
                 let mut changes = Vec::new();
+                let mut at = Vec::new();
                 let mut shown = Vec::new();
                 let (mut cells, mut hits) = (0u64, 0u64);
                 let mut buf = Vec::new();
                 for r in s..e {
                     let Some(id) = self.id_at(r) else { continue };
-                    let mut row: Vec<(u32, String)> = Vec::new();
+                    let mut row: Vec<(u32, String, u32)> = Vec::new();
                     let mut err = None;
                     self.each_cell(&area, r, false, &mut buf, |k, t| {
                         let phys = self.phys(area.cols[k])?;
@@ -1111,7 +1141,7 @@ impl Document {
                                 }
                                 cells += 1;
                                 hits += n;
-                                row.push((phys, new));
+                                row.push((phys, new, area.cols[k]));
                                 None
                             }
                             Ok(_) => None,
@@ -1126,22 +1156,25 @@ impl Document {
                     }
                     if !row.is_empty() {
                         row.sort_unstable_by_key(|c| c.0);
-                        changes.push((id, row));
+                        at.push((r, row.iter().map(|c| c.2).collect()));
+                        changes.push((id, row.into_iter().map(|(p, s, _)| (p, s)).collect()));
                     }
                 }
                 progress.step(e - s)?;
-                Ok((changes, shown, cells, hits))
+                Ok((changes, at, shown, cells, hits))
             })
             .collect::<Result<_, _>>()?;
         let mut plan = ReplacePlan {
             revision: self.revision(),
             changes: Vec::new(),
+            at: Vec::new(),
             cells: 0,
             hits: 0,
             preview: Vec::new(),
         };
-        for (c, p, cells, hits) in parts {
+        for (c, a, p, cells, hits) in parts {
             plan.changes.extend(c);
+            plan.at.extend(a);
             if plan.preview.len() < preview {
                 plan.preview
                     .extend(p.into_iter().take(preview - plan.preview.len()));
@@ -1150,6 +1183,49 @@ impl Document {
             plan.hits += hits;
         }
         Ok(plan)
+    }
+
+    /// Changes `offset..offset + count` of a computed replace-all, in order,
+    /// for paging through the whole preview (the document must not have
+    /// changed since).
+    pub fn replace_page(
+        &self,
+        plan: &ReplacePlan,
+        offset: u64,
+        count: usize,
+    ) -> Result<Vec<Change>, Error> {
+        if plan.revision != self.revision() {
+            return Err(Error::Changed);
+        }
+        let mut out = Vec::new();
+        let mut skip = offset;
+        let mut buf = Vec::new();
+        for ((id, cells), (row, cols)) in plan.changes.iter().zip(&plan.at) {
+            let n = cells.len() as u64;
+            if skip >= n {
+                skip -= n;
+                continue;
+            }
+            let wanted: Vec<u32> = cells.iter().map(|c| c.0).collect();
+            self.read_cells(*id, &wanted, &mut buf);
+            for (k, ((_, new), col)) in cells.iter().zip(cols).enumerate().skip(skip as usize) {
+                if out.len() >= count {
+                    return Ok(out);
+                }
+                out.push(Change {
+                    row: *row,
+                    number: self.row_number(*row).unwrap_or(*row),
+                    col: *col,
+                    before: short(&buf[k]),
+                    after: short(new),
+                });
+            }
+            skip = 0;
+            if out.len() >= count {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// Apply a computed replace-all as one undo step. Fails with
@@ -1200,6 +1276,46 @@ mod tests {
         let mut p = pat(text, kind);
         f(&mut p);
         Matcher::new(&p).unwrap()
+    }
+
+    #[test]
+    fn find_all_counts_per_column() {
+        let d = doc("a,b,c\nx,ax,b\nax,c,x\n");
+        let r = d
+            .find_all(&spec(pat("x", PatternKind::Plain)), 2, &Progress::new())
+            .unwrap();
+        assert_eq!((r.cells, r.hits.len()), (4, 2));
+        assert_eq!(r.per_col, vec![(0, 2), (1, 1), (2, 1)]);
+    }
+
+    #[test]
+    fn replace_preview_pages() {
+        let d = doc("a,b\nx1,x2\nq,x3\nx4,q\n");
+        let p = Progress::new();
+        let plan = d
+            .plan_replace(&spec(pat("x", PatternKind::Plain)), "y", 1, &p)
+            .unwrap();
+        assert_eq!(plan.preview.len(), 1);
+        let all = d.replace_page(&plan, 0, 10).unwrap();
+        let cells: Vec<(u64, u32, &str, &str)> = all
+            .iter()
+            .map(|c| (c.row, c.col, c.before.as_str(), c.after.as_str()))
+            .collect();
+        assert_eq!(
+            cells,
+            vec![
+                (1, 0, "x1", "y1"),
+                (1, 1, "x2", "y2"),
+                (2, 1, "x3", "y3"),
+                (3, 0, "x4", "y4")
+            ]
+        );
+        let page = d.replace_page(&plan, 1, 2).unwrap();
+        assert_eq!(
+            page.iter().map(|c| c.after.as_str()).collect::<Vec<_>>(),
+            vec!["y2", "y3"]
+        );
+        assert!(d.replace_page(&plan, 9, 2).unwrap().is_empty());
     }
 
     #[test]

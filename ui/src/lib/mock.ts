@@ -1073,7 +1073,15 @@ export class MockBackend implements Backend {
         cells++;
         if (hits.length < 10_000) hits.push({ row: r, number: this.pos(d, r), col: c, text: v.replace(/[\r\n\t]/g, " ").slice(0, 200), start: [...v.slice(0, m.index)].length, len: [...m[0]].length });
       }
-    return { hits, cells };
+    const per = new Map<number, number>();
+    for (const r of this.matchingCells(d, spec)) per.set(r[1], (per.get(r[1]) ?? 0) + 1);
+    return { hits, cells, per_col: [...per].sort((a, b) => a[0] - b[0]) };
+  }
+
+  private *matchingCells(d: MockDoc, spec: FindSpec): Generator<[number, number]> {
+    const re = regexOf(spec.pattern);
+    const { r0, r1, cols } = this.area(d, spec);
+    for (let r = r0; r < r1; r++) for (const c of cols) if (re.test(this.value(d, r, c))) yield [r, c];
   }
 
   private planReplace(d: MockDoc, spec: FindSpec, rep: string) {
@@ -1101,8 +1109,15 @@ export class MockBackend implements Backend {
     return { changes, preview, hits };
   }
 
+  private lastReplace: ReplaceReport["preview"] = [];
+  async replacePage(_doc: number, offset: number, count: number): Promise<ReplaceReport["preview"]> {
+    return this.lastReplace.slice(offset, offset + Math.min(count, 500));
+  }
+
   async replacePreview(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport> {
     const p = this.planReplace(this.get(doc), spec, replacement);
+    const d = this.get(doc);
+    this.lastReplace = p.changes.slice(0, 100_000).map(([r, c, after]) => ({ row: r, number: this.pos(d, r), col: c, before: this.value(d, r, c), after }));
     return { cells: p.changes.length, hits: p.hits, preview: p.preview, info: null };
   }
 

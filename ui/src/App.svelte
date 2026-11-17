@@ -3570,6 +3570,35 @@
     void tick().then(() => findPanel?.focus());
   }
 
+  /** Right-click › Find this value / Replace this value / Find all like
+   *  this in the column: the active cell's text, as plain text. */
+  function findValue(mode: "find" | "replace" | "column"): void {
+    const t = tab;
+    if (!t) return;
+    const v = t.cache.get(t.cell.row, t.cell.col) ?? "";
+    if (!v) {
+      say("The cell is empty: there is nothing to look for.");
+      return;
+    }
+    findOptions.text = v.slice(0, 1000);
+    findOptions.kind = "plain";
+    findOptions.wholeCell = mode === "column";
+    if (mode === "column") {
+      findOptions.scope = "column";
+      findBlock = { row: 0, rows: Math.max(1, t.info.rows), col: t.cell.col, cols: 1 };
+    } else {
+      findOptions.scope = "all";
+      findBlock = null;
+    }
+    findOpen = true;
+    findReplace = mode === "replace";
+    void tick().then(() => {
+      if (mode === "column") void findPanel?.findAll();
+      else if (mode === "replace") findPanel?.focusReplace();
+      else findPanel?.focus();
+    });
+  }
+
   function findAgain(backward: boolean): void {
     if (!findOptions.text) {
       openFind(false);
@@ -3997,6 +4026,9 @@
     { id: "find.replace", label: "&Replace…", keys: ["Ctrl+H"], run: () => openFind(true), enabled: ready },
     { id: "find.next", label: "Find &next", keys: ["F3", "Shift+F4"], run: () => findAgain(false), enabled: hasTab },
     { id: "find.prev", label: "Find &previous", keys: ["Shift+F3"], run: () => findAgain(true), enabled: hasTab },
+    { id: "find.thisValue", label: "Find this &value", run: () => findValue("find"), enabled: hasTab },
+    { id: "find.replaceValue", label: "Replace this val&ue…", run: () => findValue("replace"), enabled: ready },
+    { id: "find.allInColumn", label: "Find all &like this in the column", run: () => findValue("column"), enabled: hasTab },
     { id: "view.panel", label: "Side &panel", keys: ["Ctrl+F1"], run: () => showPanel(prefs.data.panel ? null : panelTab), checked: () => !!prefs.data.panel },
     { id: "view.panelSummary", label: "Column summary", run: () => showPanel("summary"), checked: () => prefs.data.panel === "summary" },
     { id: "view.panelChart", label: "Chart", run: () => showPanel("chart"), checked: () => prefs.data.panel === "chart" },
@@ -4088,7 +4120,7 @@
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "file.rename", "file.copyPath", "file.showFolder", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
+    cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "view.panelSummary", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showAllCols"],

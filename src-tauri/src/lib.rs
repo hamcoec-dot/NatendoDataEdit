@@ -2261,6 +2261,17 @@ async fn find_next(
 }
 
 #[tauri::command]
+async fn replace_page(
+    docs: DocsState<'_>,
+    doc: u32,
+    offset: u64,
+    count: usize,
+) -> CmdResult<Vec<natendo_engine::find::Change>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.replace_page(doc, offset, count)).await
+}
+
+#[tauri::command]
 async fn find_count(
     docs: DocsState<'_>,
     doc: u32,
@@ -2920,6 +2931,7 @@ pub fn run() {
             find_all,
             find_count,
             find_marks,
+            replace_page,
             replace_preview,
             replace_all,
             find_in_text,
