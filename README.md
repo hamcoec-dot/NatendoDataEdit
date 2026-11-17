@@ -234,7 +234,8 @@ everything is also in command search.
 - **Right-click menus say how many** ("Insert 3 rows above", "Delete rows
   5–7"). The cell menu also has Edit cell, Pick from a list, Note and flag,
   Hide rows and columns, Show my edits and List of my changes; the column
-  menu has Set column width… and Column summary.
+  menu has Set column width… and Column summary. In every menu, the item
+  under the pointer (or picked with the arrow keys) is lightly highlighted.
 
 - Tabs for each open file, frozen rows and columns, insert, delete, move,
   hide, resize and auto-fit columns, hide and show rows (Ctrl+9,

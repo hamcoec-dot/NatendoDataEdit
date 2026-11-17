@@ -1971,6 +1971,8 @@
     grid.scrollIntoView(t.cell);
     const p = grid.cellPoint(t.cell);
     openContext(p.x, p.y, area, t.cell.col);
+    // From the keyboard the first item is picked, ready for the arrows.
+    if (context) context.index = 0;
   }
 
   /** Ctrl+': edit the cell, starting with the value of the cell above
@@ -4238,7 +4240,8 @@
     const items = list.filter((x) => x !== "-");
     const idx = openMenu !== null ? menuIndex : (context?.index ?? 0);
     const setIdx = (i: number) => {
-      const n = (i + items.length) % items.length;
+      // Up from "nothing picked yet" goes to the last item.
+      const n = idx < 0 && i < 0 ? items.length - 1 : (i + items.length) % items.length;
       if (openMenu !== null) menuIndex = n;
       else if (context) context.index = n;
     };
@@ -4859,7 +4862,8 @@
     // The cut items show only while something is cut.
     const cutItems = new Set(["edit.moveCut", "edit.cancelCut"]);
     const items = (contextItems[area] ?? []).filter((i) => tab?.cut || !cutItems.has(i));
-    context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items, index: 0 };
+    // Nothing is picked until the pointer or an arrow key moves onto an item.
+    context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items, index: -1 };
   }
 
   const notices = $derived.by(() => {
@@ -5229,7 +5233,17 @@
         {@const c = reg.get(id)}
         {@const pos = context.items.filter((x) => x !== "-").indexOf(id)}
         {#if c}
-          <button type="button" role="menuitem" class="item" class:hot={context.index === pos} disabled={!reg.enabled(id)} onclick={() => void runCmd(id)}>
+          <button
+            type="button"
+            role="menuitem"
+            class="item"
+            class:hot={context.index === pos}
+            disabled={!reg.enabled(id)}
+            onmouseenter={() => {
+              if (context) context.index = pos;
+            }}
+            onclick={() => void runCmd(id)}
+          >
             <span class="check">{c.checked?.() ? "✓" : ""}</span>
             <span class="label">{contextLabel(id) ?? plain(c.label)}</span>
             <span class="keys">{c.keys?.[0] ?? ""}</span>
@@ -5894,9 +5908,16 @@
     border-radius: 5px;
     cursor: default;
   }
-  .item.hot:not(:disabled) {
-    background: var(--accent);
-    color: var(--accent-ink);
+  /* The item under the pointer (or picked with the arrow keys): a quiet
+     tint of the accent colour, readable in the light and dark themes. */
+  .item.hot:not(:disabled),
+  .item:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+    color: var(--text);
+  }
+  .item:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: -2px;
   }
   .item:disabled {
     opacity: 0.45;
