@@ -124,7 +124,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "the active cell stays put": [],
   "typing moves like excel": ["edit.cell"],
   "insert and delete cells": ["insert.cellsAsk", "edit.deleteCellsAsk", "insert.smart", "edit.deleteSmart"],
-  "clear or fill any number of cells": ["edit.clear"],
+  "clear or fill big selections": ["edit.clear"],
   "one row per page form view": ["data.form"],
   "list of my changes": ["edit.changes", "view.showEdits"],
   "notes and coloured flags on rows": ["edit.note"],

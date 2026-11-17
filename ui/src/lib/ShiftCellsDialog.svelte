@@ -59,6 +59,11 @@
       </label>
     {/each}
   </fieldset>
+  {#if choice === "up" || choice === "down"}
+    <p class="warn" role="note">Shifting moves values into other rows: in a list of people, each person's cells in these columns stop lining up with the rest of their record.</p>
+  {:else if choice === "left" || choice === "right"}
+    <p class="warn" role="note">Shifting moves values into other columns: in these rows, values end up under the wrong headings.</p>
+  {/if}
   {#snippet buttons()}
     <button type="button" onclick={onClose}>Cancel</button>
     <button type="button" class="primary" onclick={run}>OK</button>
@@ -76,5 +81,10 @@
   }
   .choices legend {
     margin-bottom: 6px;
+  }
+  .warn {
+    margin: 10px 0 0;
+    max-width: 30em;
+    color: var(--danger, #e5534b);
   }
 </style>

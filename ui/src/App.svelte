@@ -1875,6 +1875,21 @@
     const r = t.rect;
     if (choice === "rows") return insert ? insertRows(false) : deleteRows();
     if (choice === "cols") return insert ? insertCols(false) : deleteCols();
+    const moved = choice === "up" || choice === "down" ? t.info.rows - r.row : r.rows;
+    if ((choice === "up" || choice === "down") && moved > 1_000) {
+      const a = await ask(
+        `Shift cells in ${plural(moved, "row")}?`,
+        `The cells below in ${r.cols === 1 ? "this column" : `these ${r.cols} columns`} move ${choice} in every row down to the end, so they no longer line up with the rest of each row. Undo (Ctrl+Z) takes it back.`,
+        [
+          { id: "go", label: `Shift cells ${choice}`, primary: true },
+          { id: "rows", label: insert ? "Insert entire rows instead" : "Delete entire rows instead" },
+          { id: "cancel", label: "Cancel" },
+        ],
+        "cancel",
+      );
+      if (a === "rows") return insert ? insertRows(false) : deleteRows();
+      if (a !== "go") return;
+    }
     const rep = await runOp({ op: "shift_cells", spec: { row: r.row, rows: r.rows, col: r.col, cols: r.cols, shift: choice } }, insert ? "Inserting cells" : "Deleting cells");
     if (!rep) return;
     const how = { left: "the cells to the right moved left", up: "the cells below moved up", right: "the cells moved right", down: "the cells moved down" }[choice];
@@ -4569,6 +4584,7 @@
           onMoveCols={(at, count, to) => void dragCols(at, count, to)}
           onMoveRows={(at, count, to) => void dragRows(at, count, to)}
           onMoveCells={(from, row, col, copy) => void dragCells(from, row, col, copy)}
+          onJump={(dir, extend) => void jump(dir, extend)}
         />
       {/key}
     {:else}

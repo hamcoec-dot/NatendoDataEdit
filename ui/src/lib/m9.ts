@@ -397,6 +397,7 @@ export const BASIC_KEYS: { label: string; keys: string }[] = [
   { label: "Page up or down", keys: "PageUp, PageDown" },
   { label: "First or last cell", keys: "Ctrl+Home, Ctrl+End" },
   { label: "Edit the cell", keys: "F2 or start typing" },
+  { label: "While typing: arrows keep the text and move on; F2 switches to moving inside the text (and back)", keys: "F2" },
   { label: "Line break in a cell", keys: "Alt+Enter" },
   { label: "Put the value in every selected cell", keys: "Ctrl+Enter" },
   { label: "Move columns, rows or cells somewhere else", keys: "Ctrl+X, pick the place, Ctrl+V" },

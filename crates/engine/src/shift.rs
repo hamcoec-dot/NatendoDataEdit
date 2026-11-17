@@ -60,9 +60,29 @@ fn check_block(d: &Document, row: u64, rows: u64, col: u32, cols: u32) -> Result
     Ok(())
 }
 
-fn too_many() -> Error {
+/// `n` with thousands separators (5,000,000).
+fn commas(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Over the cell cap: say how many, and what to do instead.
+fn too_many(fill: bool) -> Error {
+    let how = if fill {
+        "To clear more, select whole columns down to the last row with no filter on: they clear at once, however many rows there are."
+    } else {
+        "Insert or delete fewer cells, or entire rows or columns instead."
+    };
     Error::Invalid(format!(
-        "at most {MAX_BLOCK_CELLS} cells can change at once"
+        "At most {} cells can change at once. {how}",
+        commas(MAX_BLOCK_CELLS)
     ))
 }
 
@@ -98,6 +118,7 @@ impl Document {
             }
         }
         plan.remove = vec![(spec.col + spec.cols, spec.cols)];
+        plan.swap = true;
         plan.cells = spec.rows.saturating_mul(spec.cols as u64);
         Ok(Some(plan))
     }
@@ -108,7 +129,7 @@ impl Document {
         self.ready_for_bulk()?;
         let n = spec.rows.saturating_mul(spec.cols as u64);
         if n > MAX_BLOCK_CELLS {
-            return Err(too_many());
+            return Err(too_many(true));
         }
         if (spec.value.len() as u64).saturating_mul(n) > MAX_BLOCK_BYTES as u64 {
             return Err(Error::Invalid(
@@ -151,7 +172,7 @@ impl Document {
             Shift::Up | Shift::Down => {
                 let cols: Vec<u32> = (spec.col..spec.col + spec.cols).collect();
                 if (n - spec.row).saturating_mul(spec.cols as u64) > MAX_BLOCK_CELLS {
-                    return Err(too_many());
+                    return Err(too_many(false));
                 }
                 let reader = Cols::new(self, &cols);
                 // Old values from the block's top row down, by row.
@@ -215,7 +236,7 @@ impl Document {
                     .saturating_mul(cols.len() as u64 + spec.cols as u64)
                     > MAX_BLOCK_CELLS
                 {
-                    return Err(too_many());
+                    return Err(too_many(false));
                 }
                 let reader = Cols::new(self, &cols);
                 let k = spec.cols as usize;
@@ -353,6 +374,45 @@ mod tests {
             d.plan_shift_cells(&spec, &Progress::new()),
             Err(Error::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn the_cap_message_has_commas_and_a_way_forward() {
+        assert_eq!(commas(5_000_000), "5,000,000");
+        assert_eq!(commas(999), "999");
+        let Error::Invalid(m) = too_many(true) else {
+            panic!("invalid")
+        };
+        assert!(m.starts_with("At most 5,000,000 cells") && m.contains("whole columns"));
+    }
+
+    #[test]
+    fn a_quick_clear_lists_as_cleared() {
+        let mut d = doc(T);
+        let spec = RectFill {
+            row: 1,
+            rows: 3,
+            col: 1,
+            cols: 1,
+            value: String::new(),
+        };
+        let plan = d.plan_clear_columns(&spec).unwrap().unwrap();
+        d.apply_cols(plan).unwrap();
+        let l = d.change_list(&Progress::new()).unwrap();
+        assert_eq!(l.cleared_cols, vec![1]);
+        assert!(l.added_cols.is_empty() && l.deleted_cols.is_empty() && !l.moved_cols);
+        assert_eq!(l.cells_total, 0, "the header cell is not an edit");
+        assert_eq!(
+            d.edited_cells(0..4, 0..3).unwrap(),
+            vec![(1, 1), (2, 1), (3, 1)]
+        );
+        assert!(d.undo());
+        assert!(d.change_list(&Progress::new()).unwrap().is_empty());
+        assert!(d.redo());
+        assert_eq!(
+            d.change_list(&Progress::new()).unwrap().cleared_cols,
+            vec![1]
+        );
     }
 
     #[test]

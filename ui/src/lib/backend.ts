@@ -310,6 +310,8 @@ export interface ChangeList {
   deleted_total: number;
   added_cols: number[];
   deleted_cols: number[];
+  /** Columns cleared at once (Delete on whole columns), by position now. */
+  cleared_cols?: number[];
   moved_cols: boolean;
   reordered: boolean;
 }

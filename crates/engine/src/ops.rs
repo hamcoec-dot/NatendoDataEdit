@@ -414,6 +414,8 @@ pub struct ColPlan {
     pub cells: u64,
     /// Columns added (split) or removed (merge, blanks).
     pub cols: u32,
+    /// The new columns replace the removed ones, emptied (a quick clear).
+    pub(crate) swap: bool,
 }
 
 impl ColPlan {
@@ -426,6 +428,7 @@ impl ColPlan {
             order: None,
             cells: 0,
             cols: 0,
+            swap: false,
         }
     }
 
@@ -1143,6 +1146,15 @@ impl Document {
             Some((at, n)) => Some((at, self.new_col_ids(n)?)),
             None => None,
         };
+        if plan.swap {
+            if let Some((at, ids)) = &ins {
+                for (k, &id) in ids.iter().enumerate() {
+                    if let Some(old) = self.phys(at + k as u32) {
+                        self.swapped.insert(id, old);
+                    }
+                }
+            }
+        }
         let phys = |d: &Document, c: u32| -> Result<u32, Error> {
             match &ins {
                 Some((at, ids)) if c >= *at => {

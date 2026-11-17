@@ -46,6 +46,10 @@ pub struct ChangeList {
     pub added_cols: Vec<u32>,
     /// Columns of the file deleted (their position in the file).
     pub deleted_cols: Vec<u32>,
+    /// Columns of the file whose cells were all cleared at once (Delete on
+    /// whole columns), by their position now.
+    #[serde(default)]
+    pub cleared_cols: Vec<u32>,
     /// Columns are in another order than in the file.
     pub moved_cols: bool,
     /// Rows are in another order than in the file (sorted or moved).
@@ -59,6 +63,7 @@ impl ChangeList {
             && self.deleted_total == 0
             && self.added_cols.is_empty()
             && self.deleted_cols.is_empty()
+            && self.cleared_cols.is_empty()
             && !self.moved_cols
             && !self.reordered
     }
@@ -70,6 +75,16 @@ const BATCH_ROWS: usize = 16_384;
 const REPORT_ROWS_LISTED: usize = 1_000_000;
 
 impl Document {
+    /// The file's column that physical column `p` stands for: itself, or
+    /// the column it replaced when it was cleared at once (while that one
+    /// is gone from the table).
+    fn file_column(&self, p: u32, present: &HashSet<u32>) -> Option<u32> {
+        match self.swapped.get(&p) {
+            Some(&old) if !present.contains(&old) => Some(old),
+            _ => None,
+        }
+    }
+
     /// What changed since the file was opened or last saved: the first
     /// [`MAX_LISTED`] changed cells and every count. Memory stays small
     /// however many cells changed (the rest are only counted).
@@ -100,14 +115,26 @@ impl Document {
         let mut list = ChangeList::default();
         // Columns.
         let present: HashSet<u32> = map.iter().copied().collect();
-        list.deleted_cols = (0..width).filter(|p| !present.contains(p)).collect();
-        list.added_cols = map
+        // Physical column -> the file's column its old values come from.
+        let from: Vec<u32> = map
+            .iter()
+            .map(|&p| self.file_column(p, &present).unwrap_or(p))
+            .collect();
+        let standing: HashSet<u32> = from.iter().copied().collect();
+        list.deleted_cols = (0..width).filter(|p| !standing.contains(p)).collect();
+        list.cleared_cols = map
+            .iter()
+            .enumerate()
+            .filter(|(_, &p)| self.file_column(p, &present).is_some_and(|o| o < width))
+            .map(|(c, _)| c as u32)
+            .collect();
+        list.added_cols = from
             .iter()
             .enumerate()
             .filter(|(_, &p)| p >= width)
             .map(|(c, _)| c as u32)
             .collect();
-        let kept: Vec<u32> = map.iter().copied().filter(|&p| p < width).collect();
+        let kept: Vec<u32> = from.iter().copied().filter(|&p| p < width).collect();
         list.moved_cols = kept.windows(2).any(|w| w[0] > w[1]);
         // Rows: one pass in table order.
         let edited: HashSet<u32> = self.edited_ids().into_iter().collect();
@@ -161,7 +188,7 @@ impl Document {
                         let old = self.original_values(id)?;
                         let new = self.physical_values(id)?;
                         for (c, &p) in map.iter().enumerate() {
-                            let o = old.get(p as usize).map_or("", String::as_str);
+                            let o = old.get(from[c] as usize).map_or("", String::as_str);
                             let n = new.get(p as usize).map_or("", String::as_str);
                             if o != n {
                                 count += 1;
@@ -201,6 +228,11 @@ impl Document {
         let original = self.original_rows();
         let map = self.logical_to_physical();
         let c1 = cols.end.min(map.len() as u32);
+        let present: HashSet<u32> = map.iter().copied().collect();
+        // Columns cleared at once: every cell that held something is changed.
+        let cleared: Vec<(u32, u32)> = (cols.start..c1)
+            .filter_map(|c| self.file_column(map[c as usize], &present).map(|o| (c, o)))
+            .collect();
         let mut out = Vec::new();
         for r in rows.start..rows.end.min(self.row_count()) {
             let Some(id) = self.id_at(r) else { break };
@@ -218,14 +250,26 @@ impl Document {
             }
             if !self.has_edit(id) {
                 // Columns added since: anything typed in them is an edit,
-                // but an unedited row has none.
+                // but an unedited row has none; a cleared column has one
+                // wherever the file held something.
+                if !cleared.is_empty() {
+                    let old = self.original_values(id)?;
+                    for &(c, o) in &cleared {
+                        if old.get(o as usize).is_some_and(|v| !v.is_empty()) {
+                            out.push((r, c));
+                        }
+                    }
+                }
                 continue;
             }
             let old = self.original_values(id)?;
             let new = self.physical_values(id)?;
             for c in cols.start..c1 {
-                let p = map[c as usize] as usize;
-                if old.get(p).map_or("", String::as_str) != new.get(p).map_or("", String::as_str) {
+                let p = map[c as usize];
+                let o = self.file_column(p, &present).unwrap_or(p) as usize;
+                if old.get(o).map_or("", String::as_str)
+                    != new.get(p as usize).map_or("", String::as_str)
+                {
                     out.push((r, c));
                 }
             }
@@ -299,6 +343,9 @@ impl Document {
         }
         for c in &list.added_cols {
             row(&["Column added", "", "", &title(*c), "", ""], out)?;
+        }
+        for c in &list.cleared_cols {
+            row(&["Column cleared", "", "", &title(*c), "", ""], out)?;
         }
         for c in &list.deleted_cols {
             row(

@@ -22,7 +22,7 @@
   const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
   const title = (c: number) => titles[c] ?? `Column ${c + 1}`;
   const empty = $derived(
-    !!list && !list.cells_total && !list.added_total && !list.deleted_total && !list.added_cols.length && !list.deleted_cols.length && !list.moved_cols && !list.reordered,
+    !!list && !list.cells_total && !list.added_total && !list.deleted_total && !list.added_cols.length && !list.deleted_cols.length && !list.cleared_cols?.length && !list.moved_cols && !list.reordered,
   );
   const shorten = (v: string) => (v.length > 80 ? `${v.slice(0, 80)}…` : v);
 </script>
@@ -38,6 +38,7 @@
       {#if list.added_total}<li>{plural(list.added_total, "row")} added</li>{/if}
       {#if list.deleted_total}<li>{plural(list.deleted_total, "row")} deleted (rows {list.deleted_rows.slice(0, 8).map((r) => (r + 1).toLocaleString()).join(", ")}{list.deleted_total > 8 ? ", …" : ""} of the file)</li>{/if}
       {#if list.added_cols.length}<li>{plural(list.added_cols.length, "column")} added: {list.added_cols.map(title).join(", ")}</li>{/if}
+      {#if list.cleared_cols?.length}<li>{plural(list.cleared_cols.length, "column")} cleared: {list.cleared_cols.map(title).join(", ")}</li>{/if}
       {#if list.deleted_cols.length}<li>{plural(list.deleted_cols.length, "column")} of the file deleted (columns {list.deleted_cols.map((c) => c + 1).join(", ")})</li>{/if}
       {#if list.moved_cols}<li>Columns moved</li>{/if}
       {#if list.reordered}<li>Rows sorted or moved</li>{/if}

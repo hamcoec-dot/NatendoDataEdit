@@ -47,11 +47,13 @@
     /** The selected block was dragged by its outline to start at (row, col);
      *  `copy`: Ctrl was held, so copy it instead. */
     onMoveCells?: (from: Rect, row: number, col: number, copy: boolean) => void;
+    /** Ctrl+arrow (to the edge of the data), after Enter mode keeps an edit. */
+    onJump?: (dir: "up" | "down" | "left" | "right", extend: boolean) => void;
     /** Double-click on a column heading: rename the column. */
     onRenameCol?: (col: number) => void;
     readOnly: boolean;
   }
-  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, readOnly }: Props = $props();
+  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onJump, readOnly }: Props = $props();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -1109,7 +1111,9 @@
     try {
       if (r.rows * r.cols > 1) {
         let { row, col } = a;
-        // Hidden columns are passed over (up to a thousand in a row).
+        // Hidden columns are passed over (up to a thousand in a row); if
+        // the block shows no column at all, nothing moves.
+        let found = false;
         for (let i = 0; i < 1_000; i++) {
           if (dc !== 0) {
             col += dc;
@@ -1130,8 +1134,12 @@
               col = col - 1 < r.col ? r.col + r.cols - 1 : col - 1;
             }
           }
-          if (!tab.columns.isHidden(col)) break;
+          if (!tab.columns.isHidden(col)) {
+            found = true;
+            break;
+          }
         }
+        if (!found) return;
         select(tab.sel.anchor, tab.sel.focus, false, { row, col });
         scrollIntoView({ row, col });
         return;
@@ -1914,10 +1922,13 @@
       return;
     }
     const arrow = ({ ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] } as Record<string, [number, number]>)[e.key];
-    if (arrow && enterMode && !e.ctrlKey && !e.altKey) {
-      // Enter mode: the arrow finishes the edit and moves (Shift extends).
+    if (arrow && enterMode && !e.altKey) {
+      // Enter mode: the arrow finishes the edit and moves (Shift extends);
+      // with Ctrl it jumps to the edge of the data, as in Excel.
       e.preventDefault();
-      if (await commitEdit()) move(arrow[0], arrow[1], e.shiftKey);
+      if (!(await commitEdit())) return;
+      if (e.ctrlKey && onJump) onJump(arrow[0] < 0 ? "up" : arrow[0] > 0 ? "down" : arrow[1] < 0 ? "left" : "right", e.shiftKey);
+      else if (!e.ctrlKey) move(arrow[0], arrow[1], e.shiftKey);
       return;
     }
     if (e.key === "Escape") {

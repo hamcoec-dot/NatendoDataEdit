@@ -73,6 +73,14 @@ const url = process.argv[3] || "http://localhost:5194";
   await start(4, 1);
   ok((await bar()) === "aXb", `the caret moved inside the text (${await bar()})`);
 
+  // Ctrl+arrow while typing keeps the text and jumps to the edge of the data.
+  await start(5, 1);
+  await p.keyboard.type("jump");
+  await key("Control+ArrowDown");
+  s = await sel();
+  ok(!s.editing && s.cell.row > 1000 && s.cell.col === 1, `typing then Ctrl+Down: kept, and jumped to row ${s.cell.row}`);
+  ok((await (async () => { await start(5, 1); return bar(); })()) === "jump", "the typed value was kept");
+
   // ---- 2. Enter and Tab inside a block ----
   await start(10, 1, 12, 2);
   await key("Enter");
@@ -97,6 +105,23 @@ const url = process.argv[3] || "http://localhost:5194";
   s = await sel();
   ok((await at(s, 12, 1)) && s.rect.rows === 3 && s.rect.cols === 2, "typing then Enter: next cell of the block, block kept");
   await p.screenshot({ path: path.join(out, "enter-in-block.png"), clip: { x: 0, y: 0, width: 1360, height: 560 } });
+
+  // A block whose columns are all hidden: Enter stays put.
+  await p.evaluate(() => {
+    const t = window.__nde.tab;
+    t.columns.setWidth(5, 0);
+    t.columns.setWidth(6, 0);
+    t.bump();
+  });
+  await start(10, 5, 11, 6);
+  await key("Enter");
+  s = await sel();
+  ok(await at(s, 10, 5), "Enter in a block with every column hidden stays put");
+  await p.evaluate(() => {
+    const t = window.__nde.tab;
+    t.columns.showAll();
+    t.bump();
+  });
 
   // ---- 3. Tab, Tab, Enter ----
   await start(20, 1);
@@ -157,9 +182,14 @@ const url = process.argv[3] || "http://localhost:5194";
   ok(await p.isVisible(`${dlg}:has-text('Shift cells up')`), "Ctrl+Minus on part of two rows asks how to delete");
   ok(await p.isChecked(`${dlg} input[value=rows]`), "Entire rows is ticked to start");
   ok((await p.evaluate(() => document.activeElement?.getAttribute("value"))) === "rows", "and has the keyboard focus");
-  await p.screenshot({ path: path.join(out, "delete-cells.png"), clip: { x: 0, y: 0, width: 1360, height: 560 } });
+  ok(!(await p.isVisible(`${dlg} .warn`)), "no warning while Entire rows is ticked");
   await p.check(`${dlg} input[value=up]`);
+  ok(/other rows/.test((await p.textContent(`${dlg} .warn`).catch(() => "")) || ""), "picking Shift cells up warns that values move into other rows");
+  await p.screenshot({ path: path.join(out, "delete-cells.png"), clip: { x: 0, y: 0, width: 1360, height: 600 } });
   await p.click(`${dlg} button.primary`);
+  await p.waitForTimeout(400);
+  ok(await p.isVisible("[role=alertdialog], [role=dialog]:has-text('Shift cells in')"), "shifting a million rows asks once more");
+  await p.click("button:has-text('Shift cells up')");
   await p.waitForTimeout(1500);
   ok((await valueAt(2, 1)) === below, `Shift cells up: the cell two rows down moved up (${await bar()})`);
   ok((await p.evaluate(() => window.__nde.tab.info.rows)) === rowsBefore, "no rows were deleted");

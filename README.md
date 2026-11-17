@@ -267,12 +267,14 @@ everything is also in command search.
   whole rows or columns selected go straight away. The cell right-click menu
   has Insert cells… and Delete cells… too.
 
-![The Delete box offering Shift cells left, Shift cells up, Entire rows and Entire columns](docs/screenshots/delete-cells.png)
-*Ctrl+Minus on two rows of two columns: shift the cells, or take the entire rows or columns.*
+![The Delete box offering Shift cells left, Shift cells up, Entire rows and Entire columns, with a warning under Shift cells up](docs/screenshots/delete-cells.png)
+*Ctrl+Minus on two rows of two columns, with Shift cells up picked: the box warns that values move into other rows.*
 
-- **Clear or fill any number of cells:** Delete clears and Ctrl+Enter fills
-  a selection of any size, as one undo step with a progress bar; a whole
-  column of millions of rows clears at once.
+- **Clear or fill big selections:** Delete clears and Ctrl+Enter fills a
+  selection of up to 5 million cells, or whole columns of any length, as one
+  undo step with a progress bar; whole columns down to the last row (with no
+  filter on) clear at once however many rows there are, and List of my
+  changes shows them as cleared.
 - Fill handle, fill series, Ctrl+Enter to fill a whole selection, Paste
   Special (values only, swap rows and columns), special characters.
 - **Type-ahead suggestions** from the column's own values, **pick-from-list

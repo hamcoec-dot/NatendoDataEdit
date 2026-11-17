@@ -386,6 +386,12 @@ pub struct Document {
     cols: Option<Vec<u32>>,
     /// Next physical id for an inserted column (never reused until a save).
     next_col: u32,
+    /// Columns cleared by swapping in a new empty column (a quick clear of
+    /// whole columns): new physical id -> the file's column it replaced, so
+    /// the list of changes can say "cleared" instead of "deleted, added".
+    /// Kept through undo and redo (a pair only counts while the new column
+    /// is in the map and the old one is not); forgotten on save.
+    pub(crate) swapped: HashMap<u32, u32>,
     /// Cached: the column map is exactly the identity over every physical
     /// column, so it changes nothing (cleared whenever anything changes).
     /// 0 = not known, 1 = no, 2 = yes. Atomic so a document can be read
@@ -525,6 +531,7 @@ impl Document {
             next_id: 0,
             cols: None,
             next_col: 0,
+            swapped: HashMap::new(),
             map_identity: AtomicU8::new(0),
             view: None,
             revision: 0,
@@ -2023,6 +2030,7 @@ impl Document {
         self.order = None;
         self.cols = None;
         self.next_col = 0;
+        self.swapped.clear();
         self.map_identity.store(0, Ordering::Relaxed);
         // Freeing millions of edited cells (after a join, say) takes
         // seconds: big leftovers are let go on a background thread.
