@@ -414,6 +414,11 @@ export const BASIC_KEYS: { label: string; keys: string }[] = [
   { label: "Drop the copy outline (the selection stays)", keys: "Esc" },
   { label: "Open a web or e-mail address", keys: "Ctrl+click" },
   { label: "Open a menu", keys: "Alt+letter" },
+  { label: "Find bar: find all", keys: "Alt+Enter" },
+  { label: "Find bar: replace all (shows what changes first)", keys: "Ctrl+Alt+Enter" },
+  { label: "Find bar: match case, whole word, regular expression, selection on or off", keys: "Alt+C, Alt+W, Alt+R, Alt+L" },
+  { label: "Find bar: earlier searches", keys: "Up, Down" },
+  { label: "Find bar list of matches: move, go to a match", keys: "Up, Down, Enter" },
 ];
 
 /** Shortcut groups from menus: each menu's commands that have keys. */

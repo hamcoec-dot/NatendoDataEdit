@@ -141,6 +141,12 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "read only lock for a file": ["file.readOnly"],
   // Find, sort and filter
   "find and replace with plain": ["find.find", "find.replace", "tools.nextChange", "tools.largest", "tools.smallest"],
+  "whole word ignore accents and special characters": ["find.find", "find.replace"],
+  "match count and matches lit up": ["find.find"],
+  "find all list": ["find.find"],
+  "replace all preview of every change": ["find.replace"],
+  "right click a cell to find its value": ["find.thisValue", "find.replaceValue", "find.allInColumn"],
+  "find tips and recent searches": ["find.find"],
   "search a whole folder": ["tools.searchFolder"],
   "sort by several columns numbers": ["data.sort", "data.sortAsc", "data.sortDesc", "tools.flip", "data.shuffle", "data.sortColsAsc", "data.sortColsDesc"],
   "quick filter a filter builder": ["data.filter", "data.filterMenu", "data.filterBySel", "data.clearFilter"],

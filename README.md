@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.3.6_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.3.7_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -380,6 +380,37 @@ everything is also in command search.
   Replace all changes only it), as in Excel. The Search in box names the
   block (for example "Selection A3:C7"); select another block and press
   Ctrl+F or Ctrl+H again to search that one.
+- **Whole word, ignore accents and special characters** in Find: "Ann" can
+  find "Ann Lee" but not "Annette", "Jose" can find "José", and with `	 
+`
+  ticked a tab or line break can be found or put in by Replace. Hidden
+  columns are skipped unless "Include hidden" is ticked. Alt+C, Alt+W, Alt+R
+  and Alt+L switch match case, whole word, regular expression and selection
+  while the find bar has focus.
+- **Match count and matches lit up**: as you type, the find bar says how many
+  cells match ("3 of 1,204" once you are on one) and every match on screen is
+  lit up in the grid.
+- **Find all list** (Alt+Enter) of up to 10,000 matches with arrow keys and
+  Enter, matches per column ("Last name: 812") to show one column at a time,
+  and order by row or by column. Line breaks and tabs show as ⏎ and →.
+- **Replace all preview of every change**, a page at a time, with what is
+  taken out and put in marked inside each cell (Ctrl+Alt+Enter); a regular
+  expression replacement that names a group the pattern lacks (`$2`, or
+  `$1a` for `${1}a`) is caught before anything changes.
+- **Right-click a cell to find its value**: Find this value, Replace this
+  value, or Find all like this in the column.
+- **Find tips and recent searches**: the ? button lists wildcard and pattern
+  examples and the keys; Up and Down in the boxes bring back earlier searches,
+  kept only until the app closes (Clear search history forgets them).
+
+![The find bar: "1 of 142,857" next to the search, every match on screen lit up in yellow](docs/screenshots/find-count.png)
+*Find counts as you type and lights up every match on screen.*
+
+![Find all: matches per column as buttons and a list of matches to move through with the arrow keys](docs/screenshots/find-all-list.png)
+*Find all: matches per column, and a list to move through with the arrow keys.*
+
+![Replace all preview: every change a page at a time, with the added text marked in green](docs/screenshots/find-replace-preview.png)
+*Replace all shows every change first, with what it adds and removes marked in each cell.*
 - **Search a whole folder** of table files (Ctrl+Shift+F), including Excel and
   JSON files and subfolders; click a hit to open that file at that cell.
 - Sort by several columns, numbers and dates in the right order, natural text

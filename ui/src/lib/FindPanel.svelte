@@ -363,19 +363,6 @@
     <button type="button" title="Find previous (Shift+F3, Shift+Enter)" aria-label="Find previous" onclick={() => void next(true)}>↑</button>
     <button type="button" title="Find next (F3, Enter)" aria-label="Find next" onclick={() => void next(false)}>↓</button>
     <button type="button" title="Find all (Alt+Enter)" onclick={() => void findAll()}>Find all</button>
-    <select aria-label="Pattern kind" title="Alt+R: regular expression on or off" bind:value={options.kind}>
-      <option value="plain">Plain text</option>
-      <option value="wildcard">Wildcards (* ? ~)</option>
-      <option value="regex">Regular expression</option>
-    </select>
-    <label title="Alt+C"><input type="checkbox" bind:checked={options.matchCase} /> Match case</label>
-    <label title="Alt+W: &quot;Ann&quot; finds &quot;Ann Lee&quot;, not &quot;Annette&quot;"><input type="checkbox" bind:checked={options.wholeWord} /> Whole word</label>
-    <label><input type="checkbox" bind:checked={options.wholeCell} /> Whole cell</label>
-    <label title="&quot;Jose&quot; finds &quot;José&quot; too"><input type="checkbox" bind:checked={options.ignoreAccents} /> Ignore accents</label>
-    {#if options.kind !== "regex"}
-      <label title="\t tab, \n line break, \r return, \\ backslash, \u&#123;A0&#125; any character (in Replace with too)"><input type="checkbox" bind:checked={options.escapes} /> \t \n</label>
-    {/if}
-    <label title="Hidden columns are skipped unless this is ticked"><input type="checkbox" bind:checked={options.includeHidden} /> Include hidden</label>
     <select aria-label="Search in" title="Alt+L: selection or whole file" bind:value={options.scope}>
       <option value="all">Whole file</option>
       <option value="selection">{blockCells && options.scope === "selection" ? `Selection ${blockCells}` : "Selection"}</option>
@@ -393,6 +380,21 @@
       <button type="button" title="Replace all (Ctrl+Alt+Enter)" onclick={() => void previewAll()}>Replace all…</button>
     </div>
   {/if}
+  <div class="line opts">
+    <select aria-label="Pattern kind" title="Alt+R: regular expression on or off" bind:value={options.kind}>
+      <option value="plain">Plain text</option>
+      <option value="wildcard">Wildcards (* ? ~)</option>
+      <option value="regex">Regular expression</option>
+    </select>
+    <label title="Alt+C"><input type="checkbox" bind:checked={options.matchCase} /> Match case</label>
+    <label title="Alt+W: &quot;Ann&quot; finds &quot;Ann Lee&quot;, not &quot;Annette&quot;"><input type="checkbox" bind:checked={options.wholeWord} /> Whole word</label>
+    <label><input type="checkbox" bind:checked={options.wholeCell} /> Whole cell</label>
+    <label title="&quot;Jose&quot; finds &quot;José&quot; too"><input type="checkbox" bind:checked={options.ignoreAccents} /> Ignore accents</label>
+    {#if options.kind !== "regex"}
+      <label title="\t tab, \n line break, \r return, \\ backslash, \u&#123;A0&#125; any character (in Replace with too)"><input type="checkbox" bind:checked={options.escapes} /> \t \n</label>
+    {/if}
+    <label title="Hidden columns are skipped unless this is ticked"><input type="checkbox" bind:checked={options.includeHidden} /> Include hidden</label>
+  </div>
   {#if help}
     <div class="help" role="note" aria-label="Find tips">
       <div class="cols">
@@ -581,6 +583,9 @@
   }
   code {
     font-family: ui-monospace, Consolas, monospace;
+  }
+  .opts {
+    padding-left: 30px;
   }
   .count {
     color: var(--muted);
