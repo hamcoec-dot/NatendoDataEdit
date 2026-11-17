@@ -179,7 +179,7 @@ const url = process.argv[3] || "http://localhost:5193";
   await command("Filter"); // arrows off
   await focusGrid();
   await select(1, 2);
-  await key("Alt+ArrowDown");
+  await command("Filter menu for this column");
   await key("Escape");
   await focusGrid();
   ok((await state()).canRedo, "after opening and closing a filter menu, Ctrl+Y can still redo");

@@ -36,6 +36,8 @@
     /** The fill handle was dragged `count` rows or columns in `dir`; `swap`
      *  (Ctrl held) switches between copying and continuing a series. */
     onFill?: (dir: Dir, count: number, swap: boolean) => void;
+    /** The fill handle dragged back inside the selection: clear those cells. */
+    onFillClear?: (r: { row: number; rows: number; col: number; cols: number }) => void;
     /** The fill handle was double-clicked: fill down as far as the data
      *  next to the selection goes. */
     onFillAuto?: () => void;
@@ -54,7 +56,7 @@
     onRenameCol?: (col: number) => void;
     readOnly: boolean;
   }
-  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onJump, readOnly }: Props = $props();
+  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onJump, onFillClear, readOnly }: Props = $props();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -168,6 +170,7 @@
     void prefs.data.gridLines;
     void prefs.data.alignNumbers;
     void prefs.data.colLetters;
+    void prefs.data.listArrows;
     void width;
     void height;
     untrack(redraw);
@@ -321,11 +324,37 @@
         }
         ctx.fillStyle = inSel ? colors.text : colors.muted;
         const btn = tab.filterButtons || filtered.has(c) ? FILTER_BTN : 0;
+        // With the filter buttons off, pointing at a heading shows a small
+        // arrow that opens the column's menu (as in Google Sheets).
+        if (!btn && hoverHead === c && cw > FILTER_BTN + 24) drawHeadArrow(ctx, x + cw - FILTER_BTN - 2);
         const mark = c > 0 && tab.columns.isHidden(c - 1);
         const trailing = c === lastHidden;
+        // A small arrow on the columns the rows are sorted by.
+        const arrow = tab.sortArrow(c);
+        const arrowW = arrow ? 12 : 0;
+        if (arrow) {
+          const ax = x + cw - btn - (trailing ? MARK_W + 4 : 0) - 12;
+          const s = Math.max(3, Math.round(fontPx * 0.28));
+          const cy = headH / 2;
+          ctx.save();
+          ctx.fillStyle = colors.accent;
+          ctx.beginPath();
+          if (arrow === "up") {
+            ctx.moveTo(ax, cy + s / 2);
+            ctx.lineTo(ax + s * 2, cy + s / 2);
+            ctx.lineTo(ax + s, cy - s / 2 - 1);
+          } else {
+            ctx.moveTo(ax, cy - s / 2);
+            ctx.lineTo(ax + s * 2, cy - s / 2);
+            ctx.lineTo(ax + s, cy + s / 2 + 1);
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
         ctx.save();
         ctx.beginPath();
-        ctx.rect(x + 4, 0, cw - 8 - btn - (trailing ? MARK_W + 4 : 0), headH);
+        ctx.rect(x + 4, 0, cw - 8 - btn - arrowW - (trailing ? MARK_W + 4 : 0), headH);
         ctx.clip();
         let tx = x + 6 + (mark ? MARK_W : 0);
         if (prefs.data.colLetters) {
@@ -496,7 +525,11 @@
   /** Where the fill handle is on screen (null when off screen). */
   let handle: { x: number; y: number } | null = null;
   /** While dragging the handle: how far, and which way. */
-  let fillTo = $state<{ dir: Dir; count: number } | null>(null);
+  /** The column heading under the pointer (for its menu arrow). */
+  let hoverHead: number | null = null;
+  /** The canvas's tooltip (a link's address). */
+  let tip = $state("");
+  let fillTo = $state<{ dir: Dir; count: number; clear?: boolean } | null>(null);
   const HANDLE = 7;
 
   /** Screen box of cells r0..r1 × c0..c1, clamped to the view. */
@@ -521,7 +554,17 @@
     ctx.beginPath();
     ctx.rect(rowHeaderW, headH, w - rowHeaderW, h - headH);
     ctx.clip();
-    if (fillTo && fillTo.count > 0) {
+    if (fillTo?.clear) {
+      // The cells that will be cleared, shaded.
+      const f = fillTo;
+      const r1 = sel.row + sel.rows - 1;
+      const c1 = sel.col + sel.cols - 1;
+      const b = f.dir === "up" ? screenBox(r1 - f.count + 1, sel.col, r1, c1, w, h) : screenBox(sel.row, c1 - f.count + 1, r1, c1, w, h);
+      ctx.fillStyle = colors.muted;
+      ctx.globalAlpha = 0.35;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.globalAlpha = 1;
+    } else if (fillTo && fillTo.count > 0) {
       const f = fillTo;
       const last = (n: number) => n - 1;
       const [r0, c0, r1, c1] =
@@ -594,6 +637,19 @@
     if (tab.info.rows === 0 || wholeColsSel(r) || wholeRowsSel(r)) return false;
     const b = screenBox(r.row, r.col, r.row + r.rows - 1, r.col + r.cols - 1, viewW(), viewH());
     return px >= rowHeaderW && py >= headH && onOutline(px, py, b);
+  }
+
+  /** Which side of the selection's outline (px, py) is on. */
+  function outlineSide(px: number, py: number): "up" | "down" | "left" | "right" {
+    const r = tab.rect;
+    const b = screenBox(r.row, r.col, r.row + r.rows - 1, r.col + r.cols - 1, viewW(), viewH());
+    const d: [number, "up" | "down" | "left" | "right"][] = [
+      [Math.abs(py - b.y), "up"],
+      [Math.abs(py - (b.y + b.h)), "down"],
+      [Math.abs(px - b.x), "left"],
+      [Math.abs(px - (b.x + b.w)), "right"],
+    ];
+    return d.sort((p, q) => p[0] - q[0])[0]![1];
   }
 
   /** Where the drag would put things with the pointer at (px, py). */
@@ -797,8 +853,17 @@
 
   /** The fill a pointer over cell (row, col) asks for: along the axis it
    *  moved furthest from the selection, as Excel does. */
-  function fillTarget(row: number, col: number): { dir: Dir; count: number } | null {
+  function fillTarget(row: number, col: number): { dir: Dir; count: number; clear?: boolean } | null {
     const s = tab.rect;
+    // Dragged back inside the selection: the cells passed over are cleared
+    // (as in Excel), from the bottom (or the right) up to the pointer.
+    if (row >= s.row && row < s.row + s.rows && col >= s.col && col < s.col + s.cols) {
+      const backRows = s.row + s.rows - 1 - row;
+      const backCols = s.col + s.cols - 1 - col;
+      if (backRows > 0 && backRows >= backCols) return { dir: "up", count: backRows, clear: true };
+      if (backCols > 0) return { dir: "left", count: backCols, clear: true };
+      return null;
+    }
     const down = row - (s.row + s.rows - 1);
     const up = s.row - row;
     const right = col - (s.col + s.cols - 1);
@@ -991,6 +1056,26 @@
       }
       x += cw;
     }
+    // View › List arrows on every cell: a quiet arrow on each cell of a
+    // column with a list of allowed values.
+    if (prefs.data.listArrows && !readOnly && listCols.size) {
+      for (let c = cs.start; c < cs.end; c++) {
+        const cw = tab.columns.width(c);
+        if (!listCols.has(c) || cw <= PICK_BTN + 8) continue;
+        const cx = cs.pos + tab.columns.x(c) - tab.columns.x(cs.start) + cw - PICK_BTN / 2 - 2;
+        ctx.fillStyle = colors.muted;
+        for (let r = rs.start; r < rs.end; r++) {
+          if ((tab.header && r === 0) || (r === active.row && c === active.col)) continue;
+          const cy = rs.pos + (r - rs.start) * rowH + headH / 2;
+          ctx.beginPath();
+          ctx.moveTo(cx - 3, cy - 1.5);
+          ctx.lineTo(cx + 3, cy - 1.5);
+          ctx.lineTo(cx, cy + 2);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+    }
     for (const sp of spills) {
       ctx.save();
       ctx.beginPath();
@@ -1032,6 +1117,22 @@
   const filtered = $derived(new Set(tab.info.filter_cols ?? []));
 
   /** A small arrow button; a funnel when the column has a filter rule. */
+  function drawHeadArrow(ctx: CanvasRenderingContext2D, x: number): void {
+    const h = Math.min(FILTER_BTN, headH - 6);
+    const y = (headH - h) / 2;
+    ctx.fillStyle = colors.surface;
+    ctx.fillRect(x, y, FILTER_BTN, h);
+    ctx.fillStyle = colors.muted;
+    const cx = x + FILTER_BTN / 2;
+    const cy = headH / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - 4, cy - 2);
+    ctx.lineTo(cx + 4, cy - 2);
+    ctx.lineTo(cx, cy + 3);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   function drawFilterButton(ctx: CanvasRenderingContext2D, x: number, on: boolean): void {
     const h = Math.min(FILTER_BTN, headH - 6);
     const y = (headH - h) / 2;
@@ -1435,6 +1536,13 @@
     }
     switch (h.area) {
       case "cell":
+        // Double-click on the selection's outline jumps that way, like
+        // Ctrl+arrow (Shift: selects to there), as in Excel.
+        if (e.detail === 2 && !e.ctrlKey && onJump && onSelOutline(x, y)) {
+          moving = null;
+          onJump(outlineSide(x, y), e.shiftKey);
+          break;
+        }
         // The outline first, Ctrl or not: Ctrl+drag copies the block.
         if (!e.shiftKey && e.detail === 1 && onMoveCells && !readOnly && onSelOutline(x, y)) {
           const from = tab.rect;
@@ -1451,6 +1559,7 @@
           }
         }
         if (!e.shiftKey && !e.ctrlKey && onPickButton(x, y, h.row, h.col)) {
+          if (h.row !== tab.cell.row || h.col !== tab.cell.col) select({ row: h.row, col: h.col });
           void openPick();
           break;
         }
@@ -1495,6 +1604,18 @@
           if (run) {
             tab.columns.showRange(run.from, run.to);
             tab.bump();
+            break;
+          }
+        }
+        if (!(tab.filterButtons || filtered.has(h.col)) && hoverHead === h.col && e.button === 0) {
+          const cols = visibleCols();
+          const right = colX(h.col, cols) + tab.columns.width(h.col);
+          if (x >= right - FILTER_BTN - 4 && tab.columns.width(h.col) > FILTER_BTN + 24) {
+            e.stopPropagation();
+            const r = tab.rect;
+            if (h.col < r.col || h.col >= r.col + r.cols || !wholeColsSel(r)) select({ row: tab.firstRow, col: h.col }, { row: lastRow(), col: h.col }, false);
+            const b = canvas.getBoundingClientRect();
+            onContext(b.left + right - FILTER_BTN - 2, b.top + headH, "col", h.col);
             break;
           }
         }
@@ -1576,6 +1697,14 @@
     }
     if (!drag) {
       const h = hit(x, y);
+      const head = h.area === "col" && h.edge === null ? h.col : null;
+      if (head !== hoverHead) {
+        hoverHead = head;
+        redraw();
+      }
+      // A link's address shows when pointed at (Ctrl+click opens it).
+      const link = h.area === "cell" ? linkAt(h.row, h.col) : null;
+      tip = link ? `${link}\nCtrl+click to open` : "";
       const pointer = h.area === "cell" && ((e.ctrlKey && !!linkAt(h.row, h.col)) || onTickBox(x, y, h.row, h.col) || onPickButton(x, y, h.row, h.col));
       const r = tab.rect;
       const grab =
@@ -1688,7 +1817,12 @@
       const f = fillTo;
       fillTo = null;
       redraw();
-      if (f && f.count > 0) onFill?.(f.dir, f.count, e.ctrlKey);
+      if (f?.clear) {
+        const s = tab.rect;
+        const r = f.dir === "up" ? { row: s.row + s.rows - f.count, rows: f.count, col: s.col, cols: s.cols } : { row: s.row, rows: s.rows, col: s.col + s.cols - f.count, cols: f.count };
+        select({ row: s.row, col: s.col }, f.dir === "up" ? { row: s.row + s.rows - 1 - f.count, col: s.col + s.cols - 1 } : { row: s.row + s.rows - 1, col: s.col + s.cols - 1 - f.count });
+        onFillClear?.(r);
+      } else if (f && f.count > 0) onFill?.(f.dir, f.count, e.ctrlKey);
     }
     drag = null;
   }
@@ -1918,11 +2052,13 @@
     if (next !== null) await onCommit(row, col, next, false);
   }
 
-  /** The pointer is on the pick-list arrow of the active cell. */
+  /** The pointer is on the pick-list arrow of the active cell (of any cell
+   *  with View › List arrows on every cell). */
   function onPickButton(px: number, py: number, row: number, col: number): boolean {
     const a = tab.cell;
-    if (readOnly || row !== a.row || col !== a.col || !listCols.has(col) || (tab.header && row === 0)) return false;
-    const r = cellRect(a);
+    const here = (row === a.row && col === a.col) || prefs.data.listArrows;
+    if (readOnly || !here || !listCols.has(col) || (tab.header && row === 0)) return false;
+    const r = cellRect({ row, col });
     return !!r && r.w > PICK_BTN + 8 && px >= r.x + r.w - PICK_BTN - 4 && py < r.y + headH;
   }
 
@@ -1930,18 +2066,54 @@
   let pickHidden = $state(false);
   /** The user typed in the editor (the list then narrows to the text). */
   let pickTyped = $state(false);
+  /** Alt+Down on a column with no list: the values already in it (Excel's
+   *  "Pick from drop-down list"), for the cell being edited. */
+  let freePick = $state<{ col: number; values: string[] } | null>(null);
+  $effect(() => {
+    if (!editing && freePick) freePick = null;
+  });
   const picks = $derived.by(() => {
     if (!editing || pickHidden || (tab.header && editing.row === 0)) return null;
-    const values = listCols.get(editing.col);
+    const values = listCols.get(editing.col) ?? (freePick?.col === editing.col ? freePick.values : undefined);
     if (!values?.length) return null;
     return pickMatches(values, pickTyped ? editing.value : "");
   });
+  /** Most values a pick list of a column's own values shows. */
+  const FREE_PICK_MAX = 1_000;
 
   /** Edit the active cell with its column's list of allowed values open
    *  (Alt+Down or the arrow). False when the column has no list. */
   export async function openPick(): Promise<boolean> {
     const a = tab.cell;
-    if (!listCols.has(a.col) || (tab.header && a.row === 0)) return false;
+    if (tab.header && a.row === 0) return false;
+    if (!listCols.has(a.col)) {
+      if (readOnly) return false;
+      // No list of allowed values: offer the values already in the column.
+      let values: string[];
+      try {
+        const t = await backend().valueTally(tab.id, { col: a.col, keep_first: tab.header });
+        values = t.values.map((v) => v.value).filter((v) => v !== "");
+        if (values.length > FREE_PICK_MAX) {
+          onMessage(`This column has ${values.length.toLocaleString()} different values, too many for a pick list (up to ${FREE_PICK_MAX.toLocaleString()}). Type to get suggestions instead.`);
+          return true;
+        }
+      } catch (e) {
+        onMessage(errorText(e));
+        return true;
+      }
+      if (!values.length) {
+        onMessage("This column has no values to pick from yet.");
+        return true;
+      }
+      values.sort((x, y) => x.localeCompare(y, undefined, { numeric: true, sensitivity: "base" }));
+      pickHidden = false;
+      pickTyped = false;
+      if (!editing) await startEdit();
+      if (!editing) return true;
+      freePick = { col: a.col, values };
+      pickIndex = values.indexOf(editing.value);
+      return true;
+    }
     pickHidden = false;
     pickTyped = false;
     if (!editing) await startEdit();
@@ -2178,6 +2350,13 @@
     bind:this={canvas}
     onmousedown={onMouseDown}
     onmousemove={onMouseMove}
+    onmouseleave={() => {
+      if (hoverHead !== null) {
+        hoverHead = null;
+        redraw();
+      }
+    }}
+    title={tip || undefined}
     oncontextmenu={onContextMenu}
     onwheel={onWheel}
   ></canvas>
@@ -2210,7 +2389,7 @@
       <div
         class="picks"
         role="listbox"
-        aria-label="Allowed values"
+        aria-label={freePick ? "Values in this column" : "Allowed values"}
         style:left="{editing.x}px"
         style:top="{editing.y + Math.max(editing.h, editing.value.includes('\n') ? editing.h * 3 : editing.h)}px"
         style:min-width="{Math.max(editing.w, 160)}px"
@@ -2232,7 +2411,7 @@
             {v === "" ? "(blank)" : v}
           </div>
         {:else}
-          <div class="pick none">Not in the list of allowed values</div>
+          <div class="pick none">{freePick ? "No value in this column starts like that" : "Not in the list of allowed values"}</div>
         {/each}
       </div>
     {/if}

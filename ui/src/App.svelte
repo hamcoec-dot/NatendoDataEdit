@@ -5,7 +5,7 @@
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
-  import { parseGoto } from "./lib/goto";
+  import { colLetters, parseGoto } from "./lib/goto";
   import { cellCount, type Rect } from "./lib/selection";
   import { dropIndex, MOUSE_MOVES } from "./lib/dragmove";
   import { looksLikeHeader } from "./lib/header";
@@ -1227,6 +1227,18 @@
     if (value === t.cache.get(row, col) && !t.cache.isTruncated(row, col)) return true;
     t.whatNext = `typing in R${row + 1} C${col + 1}`;
     return apply((x) => backend().setCells(x.id, [[row, col, value]]));
+  }
+
+  /** Clear a block of cells (the fill handle dragged back over it). */
+  async function clearRect(r: Rect): Promise<void> {
+    const t = tab;
+    if (!t || !ready()) return;
+    if (cellCount(r) > MAX_CELLS_PER_CHANGE) {
+      await fillRect(r, "");
+      return;
+    }
+    t.whatNext = "clearing cells";
+    if (await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, ""))) say(`Cleared ${plural(cellCount(r), "cell")}. Ctrl+Z undoes it.`);
   }
 
   async function clearSelection(): Promise<void> {
@@ -3116,6 +3128,8 @@
   }
 
   /** Alt+Down: the list of allowed values on a list column, else the filter menu. */
+  /** Alt+Down: on a cell, a pick list (the column's allowed values, or the
+   *  values already in it, as in Excel); on the header row, the filter menu. */
   async function altDown(): Promise<void> {
     if (grid && (await grid.openPick())) return;
     openFilterMenu();
@@ -3369,7 +3383,11 @@
   async function sortRows(spec: SortSpec): Promise<void> {
     const t = tab;
     if (await applyJob("Sorting", (x) => backend().sortRows(x.id, spec))) {
-      if (t) t.sort = spec;
+      if (t) {
+        t.sort = spec;
+        t.sortAt = t.info.history_pos;
+        t.bump();
+      }
       say("Sorted. Undo (Ctrl+Z) puts the rows back.");
     }
   }
@@ -3548,7 +3566,10 @@
       .catch(() => {});
   });
 
-  async function applyCellBar(): Promise<void> {
+  /** Enter in the cell bar: the value goes into the active cell and the
+   *  cursor moves on, as Enter in a cell does (Excel's formula bar).
+   *  Ctrl+Enter puts it into every selected cell and stays. */
+  async function applyCellBar(all = false): Promise<void> {
     const t = tab;
     if (!t) return;
     if (cellBarTruncated) {
@@ -3556,12 +3577,13 @@
       return;
     }
     const f = t.cell;
-    const multi = cellCount(t.rect) > 1;
+    const multi = all && cellCount(t.rect) > 1;
     const ok = await commitCell(f.row, f.col, cellBarText, multi);
     if (ok) {
       cellBarDirty = false;
       cellBarFor = "";
       grid?.focus();
+      if (!all) grid?.advance(...enterStep(prefs.data.enterMove, false));
     }
   }
 
@@ -3573,7 +3595,9 @@
       grid?.focus();
     } else if (e.key === "Enter" && (e.ctrlKey || !cellBarExpanded) && !e.altKey) {
       e.preventDefault();
-      void applyCellBar();
+      // In the expanded bar Enter is a line break, so Ctrl+Enter applies
+      // there (to the active cell, unless several are selected).
+      void applyCellBar(e.ctrlKey);
     } else if (e.key === "Enter" && e.altKey && cellBarInput) {
       e.preventDefault();
       cellBarInput.setRangeText("\n", cellBarInput.selectionStart, cellBarInput.selectionEnd, "end");
@@ -3794,7 +3818,8 @@
     { id: "data.sortDesc", label: "Sort &Z → A", run: () => sortByColumn(true), enabled: ready, repeatable: true },
     { id: "data.sort", label: "&Custom sort…", run: openSortDialog, enabled: ready },
     { id: "data.filter", label: "&Filter", keys: ["Ctrl+Shift+L"], run: toggleFilterButtons, enabled: ready, checked: () => !!tab && (tab.filterButtons || tab.info.has_filter) },
-    { id: "data.filterMenu", label: "Filter &menu for this column", keys: ["Alt+ArrowDown"], run: () => void altDown(), enabled: ready },
+    { id: "data.filterMenu", label: "Filter &menu for this column", run: () => openFilterMenu(), enabled: ready },
+    { id: "edit.pickList", label: "Pick from a list of the column's values", keys: ["Alt+ArrowDown"], run: () => void altDown(), enabled: ready },
     { id: "format.hideRows", label: "Hide &rows", keys: ["Ctrl+9"], run: () => void hideRows(), enabled: ready, repeatable: true },
     { id: "format.showRows", label: "Unhide rows in the selection", keys: ["Ctrl+Shift+9", "Ctrl+Shift+("], run: () => void showRows(false), enabled: () => ready() && !!tab?.info.hidden_rows },
     { id: "format.showAllRows", label: "Unhide all ro&ws", run: () => void showRows(true), enabled: () => ready() && !!tab?.info.hidden_rows },
@@ -3803,6 +3828,7 @@
     { id: "format.alignRight", label: "Align &right", run: () => setAlign("right"), enabled: hasTab, checked: () => alignIs("right") },
     { id: "format.alignAuto", label: "Align a&utomatically", run: () => setAlign(null), enabled: hasTab, checked: () => alignIs(null) },
     { id: "format.clip", label: "Cut off long te&xt", run: toggleClip, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.clips.has(c)) },
+    { id: "view.listArrows", label: "List arrows on every cell", run: () => { prefs.data.listArrows = !prefs.data.listArrows; prefs.save(); }, checked: () => prefs.data.listArrows },
     { id: "view.colLetters", label: "Column &letters (A, B, C)", run: () => { prefs.data.colLetters = !prefs.data.colLetters; prefs.save(); }, checked: () => prefs.data.colLetters },
     { id: "view.alignNumbers", label: "&Numbers on the right", run: () => { prefs.data.alignNumbers = !prefs.data.alignNumbers; prefs.save(); }, checked: () => prefs.data.alignNumbers },
     { id: "format.wrap", label: "&Wrap text", run: toggleWrap, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.wraps.has(c)) },
@@ -3931,7 +3957,7 @@
         "view.panel", "view.panelSummary", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.colLetters", "view.alignNumbers", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.colLetters", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
@@ -3981,9 +4007,9 @@
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "file.rename", "file.copyPath", "file.showFolder", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "edit.fillDown", "edit.fillRight"],
+    cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
-    col: ["format.renameCol", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "edit.clear"],
+    col: ["format.renameCol", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "view.panelSummary", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showAllCols"],
   };
 
@@ -4000,6 +4026,40 @@
     "format.header": "header", "view.freeze": "freeze", "data.sortAsc": "sortAsc", "data.sortDesc": "sortDesc",
     "data.filter": "filter", "find.find": "find", "view.zoomOut": "zoomOut", "view.zoomIn": "zoomIn", "view.cellBar": "panel",
   };
+
+  /** Right-click menu items that say how many, and which (as in Google
+   *  Sheets): "Insert 3 rows above", "Delete rows 4–6". */
+  function contextLabel(id: string): string | null {
+    const t = tab;
+    if (!t) return null;
+    const r = t.rect;
+    const rowNo = (row: number) => ((t.info.filtered ? t.cache.rowNumber(row) : row) ?? row) + 1;
+    const rows = r.rows === 1 ? `row ${rowNo(r.row).toLocaleString()}` : `rows ${rowNo(r.row).toLocaleString()}–${rowNo(r.row + r.rows - 1).toLocaleString()}`;
+    const nRows = r.rows === 1 ? "1 row" : `${r.rows.toLocaleString()} rows`;
+    const colName = (c: number) => (prefs.data.colLetters ? colLetters(c) : `“${columnTitle(t, c)}”`);
+    const cols = r.cols === 1 ? `column ${colName(r.col)}` : `columns ${colName(r.col)}–${colName(r.col + r.cols - 1)}`;
+    const nCols = r.cols === 1 ? "1 column" : `${r.cols.toLocaleString()} columns`;
+    switch (id) {
+      case "insert.rowsAbove":
+        return `Insert ${nRows} above`;
+      case "insert.rowsBelow":
+        return `Insert ${nRows} below`;
+      case "edit.deleteRows":
+        return `Delete ${rows}`;
+      case "insert.colsLeft":
+        return `Insert ${nCols} left`;
+      case "insert.colsRight":
+        return `Insert ${nCols} right`;
+      case "edit.deleteCols":
+        return `Delete ${cols}`;
+      case "format.hideRows":
+        return `Hide ${rows}`;
+      case "format.hideCols":
+        return `Hide ${cols}`;
+      default:
+        return null;
+    }
+  }
 
   function plain(label: string): string {
     return label.replace("&", "");
@@ -4851,7 +4911,7 @@
         }}
       ></textarea>
       {#if cellBarDirty}
-        <button type="button" class="small primary" onclick={() => void applyCellBar()} title="Apply (Enter{cellBarExpanded ? ', or Ctrl+Enter' : ''})"
+        <button type="button" class="small primary" onclick={() => void applyCellBar(true)} title="Apply (Enter{cellBarExpanded ? ', or Ctrl+Enter' : ''})"
           >{cellCount(tab.rect) > 1 ? `Apply to ${cellCount(tab.rect).toLocaleString()} cells` : "Apply"}</button
         >
         <button type="button" class="small" onclick={() => { cellBarDirty = false; cellBarFor = ""; }}>Cancel</button>
@@ -4942,6 +5002,7 @@
           onMessage={say}
           onFilterButton={(col, x, y) => (filterMenu = { col, x, y })}
           onFill={(dir, count, swap) => void fillHandle(dir, count, swap)}
+          onFillClear={(r) => void clearRect(r)}
           onFillAuto={() => void fillHandleAuto()}
           onOpenLink={(url) => void openLink(url)}
           onMoveCols={(at, count, to) => void dragCols(at, count, to)}
@@ -5032,7 +5093,7 @@
         {#if c}
           <button type="button" role="menuitem" class="item" class:hot={context.index === pos} disabled={!reg.enabled(id)} onclick={() => void runCmd(id)}>
             <span class="check">{c.checked?.() ? "✓" : ""}</span>
-            <span class="label">{plain(c.label)}</span>
+            <span class="label">{contextLabel(id) ?? plain(c.label)}</span>
             <span class="keys">{c.keys?.[0] ?? ""}</span>
           </button>
         {/if}

@@ -104,6 +104,16 @@ export class Tab {
   highlights = $state<Highlight[]>([]);
   /** The last sort run here (kept with views). */
   sort = $state<SortSpec | null>(null);
+  /** The undo position the last sort made: its columns show a sort arrow
+   *  until the sort is undone (or another one replaces it). */
+  sortAt = $state<number | null>(null);
+
+  /** The sort arrow a column shows, if any. */
+  sortArrow(c: number): "up" | "down" | null {
+    if (!this.sort || this.sortAt === null || this.info.history_pos < this.sortAt) return null;
+    const k = this.sort.keys.find((x) => x.col === c);
+    return k ? (k.descending ? "down" : "up") : null;
+  }
   /** Bumped when the highlight rules change. */
   highlightVersion = 0;
   /** Notes and flags on rows on screen (shown row -> flag and text). */

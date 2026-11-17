@@ -20,6 +20,9 @@ export interface PrefsData {
   colLetters: boolean;
   /** Where Enter moves after typing (Shift+Enter goes the other way). */
   enterMove: EnterMove;
+  /** Columns with a list of allowed values show the list arrow on every
+   *  cell (as in Google Sheets), not only on the active one. */
+  listArrows: boolean;
   /** Underline misspelt words while editing cells. */
   spellcheck: boolean;
   /** The agent link was switched on (it starts again with the app). */
@@ -119,6 +122,7 @@ const DEFAULTS: PrefsData = {
   alignNumbers: true,
   colLetters: false,
   enterMove: "down",
+  listArrows: false,
   spellcheck: true,
   agentLink: false,
   shortcuts: {},
@@ -158,6 +162,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       gridLines: p.gridLines !== false,
       alignNumbers: p.alignNumbers !== false,
       colLetters: p.colLetters === true,
+      listArrows: p.listArrows === true,
       enterMove: ENTER_MOVES.includes(p.enterMove as EnterMove) ? (p.enterMove as EnterMove) : "down",
       spellcheck: p.spellcheck !== false,
       agentLink: p.agentLink === true,
