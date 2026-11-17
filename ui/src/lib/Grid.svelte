@@ -62,6 +62,15 @@
   let width = $state(0);
   let height = $state(0);
   let editing = $state<{ row: number; col: number; value: string; x: number; y: number; w: number; h: number } | null>(null);
+  /** As in Excel: an edit started by typing is in "Enter mode", where the
+   *  arrow keys finish it and move on; F2 or a double-click start "Edit
+   *  mode", where they move inside the text. F2 switches between the two. */
+  let enterMode = $state(false);
+  /** Where a run of Tab presses started: Enter then goes to the next row in
+   *  that column (like a typewriter's carriage return). */
+  let tabStartCol: number | null = null;
+  /** Set while Enter or Tab moves, so the run of Tabs is kept. */
+  let advancing = false;
   let scrollTick = $state(0);
 
   const SCROLLBAR = 12;
@@ -1066,6 +1075,7 @@
       row: Math.min(Math.max(tab.firstRow, c.row), lastRow()),
       col: Math.min(Math.max(0, c.col), Math.max(0, tab.info.cols - 1)),
     });
+    if (!advancing) tabStartCol = null;
     const sel: Selection = { anchor: clamp(anchor), focus: clamp(focus) };
     if (active) {
       const a = clamp(active);
@@ -1084,6 +1094,60 @@
     const next = { row: f.row + dr, col };
     if (extend) select(tab.sel.anchor, next, true, tab.sel.active);
     else select(next);
+  }
+
+  /** Enter (down, or up with Shift) and Tab (right, or left with Shift),
+   *  as in Excel and Google Sheets: inside a selected block the active cell
+   *  moves through the block (Enter down each column, Tab along each row,
+   *  wrapping round) and the block stays; otherwise Tab moves right and
+   *  remembers where the run of Tabs started, and Enter goes down, back to
+   *  that column. */
+  export function advance(dr: number, dc: number): void {
+    const r = tab.rect;
+    const a = tab.cell;
+    advancing = true;
+    try {
+      if (r.rows * r.cols > 1) {
+        let { row, col } = a;
+        // Hidden columns are passed over (up to a thousand in a row).
+        for (let i = 0; i < 1_000; i++) {
+          if (dc !== 0) {
+            col += dc;
+            if (col >= r.col + r.cols) {
+              col = r.col;
+              row = row + 1 >= r.row + r.rows ? r.row : row + 1;
+            } else if (col < r.col) {
+              col = r.col + r.cols - 1;
+              row = row - 1 < r.row ? r.row + r.rows - 1 : row - 1;
+            }
+          } else {
+            row += dr;
+            if (row >= r.row + r.rows) {
+              row = r.row;
+              col = col + 1 >= r.col + r.cols ? r.col : col + 1;
+            } else if (row < r.row) {
+              row = r.row + r.rows - 1;
+              col = col - 1 < r.col ? r.col + r.cols - 1 : col - 1;
+            }
+          }
+          if (!tab.columns.isHidden(col)) break;
+        }
+        select(tab.sel.anchor, tab.sel.focus, false, { row, col });
+        scrollIntoView({ row, col });
+        return;
+      }
+      if (dc !== 0) {
+        if (tabStartCol === null) tabStartCol = a.col;
+        move(0, dc, false);
+        return;
+      }
+      const back = dr > 0 ? tabStartCol : null;
+      tabStartCol = null;
+      if (back !== null && !tab.columns.isHidden(back)) select({ row: a.row + 1, col: back });
+      else move(dr, 0, false);
+    } finally {
+      advancing = false;
+    }
   }
 
   export function pageRows(): number {
@@ -1660,6 +1724,7 @@
     }
     const r = cellRect(c) ?? { x: rowHeaderW, y: rowH, w: 120, h: rowH };
     pickTyped = initial !== undefined;
+    enterMode = initial !== undefined;
     pickIndex = -1;
     editing = { row: c.row, col: c.col, value, ...r };
     await tick();
@@ -1842,6 +1907,19 @@
       pickHidden = false;
       return;
     }
+    if (e.key === "F2" && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      // F2 switches between Enter mode and Edit mode.
+      e.preventDefault();
+      enterMode = !enterMode;
+      return;
+    }
+    const arrow = ({ ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] } as Record<string, [number, number]>)[e.key];
+    if (arrow && enterMode && !e.ctrlKey && !e.altKey) {
+      // Enter mode: the arrow finishes the edit and moves (Shift extends).
+      e.preventDefault();
+      if (await commitEdit()) move(arrow[0], arrow[1], e.shiftKey);
+      return;
+    }
     if (e.key === "Escape") {
       e.preventDefault();
       cancelEdit();
@@ -1856,10 +1934,10 @@
       editor.setRangeText(e.shiftKey ? nowTime() : today(), s, editor.selectionEnd, "end");
     } else if (e.key === "Enter" && !e.altKey && !e.shiftKey && !e.ctrlKey) {
       e.preventDefault();
-      if (await commitEdit()) move(1, 0, false);
+      if (await commitEdit()) advance(1, 0);
     } else if (e.key === "Enter" && e.shiftKey && !e.altKey) {
       e.preventDefault();
-      if (await commitEdit()) move(-1, 0, false);
+      if (await commitEdit()) advance(-1, 0);
     } else if (e.key === "Enter" && e.altKey && editor) {
       // Alt+Enter: a line break inside the cell.
       e.preventDefault();
@@ -1867,7 +1945,7 @@
       editor.setRangeText("\n", s, editor.selectionEnd, "end");
     } else if (e.key === "Tab") {
       e.preventDefault();
-      if (await commitEdit()) move(0, e.shiftKey ? -1 : 1, false);
+      if (await commitEdit()) advance(0, e.shiftKey ? -1 : 1);
     }
   }
 

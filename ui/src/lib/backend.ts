@@ -522,7 +522,9 @@ export type DataOp =
   | { op: "map_values"; spec: MapValues; from?: MapFrom | null }
   | { op: "group_calc"; spec: GroupCalc }
   | { op: "arrange"; spec: Arrange }
-  | { op: "extract"; spec: Extract };
+  | { op: "extract"; spec: Extract }
+  | { op: "fill_rect"; spec: { row: number; rows: number; col: number; cols: number; value: string } }
+  | { op: "shift_cells"; spec: { row: number; rows: number; col: number; cols: number; shift: "up" | "left" | "down" | "right" } };
 
 /** A computed column: an expression over the row's cells. */
 export interface ComputeSpec {

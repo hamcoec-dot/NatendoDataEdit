@@ -49,6 +49,7 @@ pub mod rows;
 pub mod save;
 pub mod scan;
 pub mod sheet;
+pub mod shift;
 pub mod sort;
 pub mod source;
 pub mod sqlite;

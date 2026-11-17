@@ -39,6 +39,7 @@
   import SplitNameDialog from "./lib/SplitNameDialog.svelte";
   import InsertDialog from "./lib/InsertDialog.svelte";
   import RenameColumn from "./lib/RenameColumn.svelte";
+  import ShiftCellsDialog, { type ShiftChoice } from "./lib/ShiftCellsDialog.svelte";
   import { remapChecks, renameInChecks } from "./lib/rename";
   import { TOOLS, localNow, type Cleaner, type CleanSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
@@ -1211,10 +1212,8 @@
     if (!t) return false;
     if (fill) {
       const r = t.rect;
-      if (cellCount(r) > MAX_CELLS_PER_CHANGE) {
-        say(`One change is limited to ${MAX_CELLS_PER_CHANGE.toLocaleString()} cells.`);
-        return false;
-      }
+      // A big block is one engine job (with progress and Cancel).
+      if (cellCount(r) > MAX_CELLS_PER_CHANGE) return fillRect(r, value);
       return apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, value));
     }
     if (value === t.cache.get(row, col) && !t.cache.isTruncated(row, col)) return true;
@@ -1226,10 +1225,19 @@
     if (!t) return;
     const r = t.rect;
     if (cellCount(r) > MAX_CELLS_PER_CHANGE) {
-      say(`Clearing is limited to ${MAX_CELLS_PER_CHANGE.toLocaleString()} cells at once for now. To remove whole rows or columns, use Delete (Ctrl+-).`);
+      await fillRect(r, "");
       return;
     }
     await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, ""));
+  }
+
+  /** One value into every cell of a big block (clearing it when ""), as an
+   *  engine job: whole columns clear at once, however many rows. */
+  async function fillRect(r: Rect, value: string): Promise<boolean> {
+    const n = cellCount(r);
+    const rep = await runOp({ op: "fill_rect", spec: { row: r.row, rows: r.rows, col: r.col, cols: r.cols, value } }, value ? "Filling" : "Clearing");
+    if (rep) say(`${value ? "Filled" : "Cleared"} ${plural(n, "cell")}. Undo (Ctrl+Z) takes it back.`);
+    return !!rep;
   }
 
   async function copy(cut: boolean): Promise<void> {
@@ -1370,7 +1378,7 @@
     if (rows.length === 0) return;
     const r = t.rect;
     const width = Math.max(...rows.map((x) => x.length));
-    if (rows.length === 1 && width === 1 && cellCount(r) > 1 && cellCount(r) <= MAX_CELLS_PER_CHANGE) {
+    if (rows.length === 1 && width === 1 && cellCount(r) > 1) {
       await commitCell(r.row, r.col, rows[0]![0] ?? "", true);
       if (afterPaste) say(afterPaste);
       afterPaste = null;
@@ -1841,15 +1849,36 @@
   }
 
   /** Excel's Ctrl++ / Ctrl+-: whole columns selected act on columns, otherwise rows. */
+  /** Ctrl+Plus: whole columns or rows go in at once; part of a row asks
+   *  how (shift cells right or down, or entire rows or columns), as in Excel. */
   async function insertSmart(): Promise<void> {
     const t = tab;
-    if (t && wholeCols(t.rect, t) && !wholeRows(t.rect, t)) await insertCols(false);
-    else await insertRows(false);
+    if (!t) return;
+    if (wholeCols(t.rect, t) && !wholeRows(t.rect, t)) await insertCols(false);
+    else if (wholeRows(t.rect, t)) await insertRows(false);
+    else shiftAsk = { insert: true };
   }
+  /** Ctrl+Minus: the same for deleting (shift cells left or up). */
   async function deleteSmart(): Promise<void> {
     const t = tab;
-    if (t && wholeCols(t.rect, t) && !wholeRows(t.rect, t)) await deleteCols();
-    else await deleteRows();
+    if (!t) return;
+    if (wholeCols(t.rect, t) && !wholeRows(t.rect, t)) await deleteCols();
+    else if (wholeRows(t.rect, t)) await deleteRows();
+    else shiftAsk = { insert: false };
+  }
+  let shiftAsk = $state<{ insert: boolean } | null>(null);
+
+  /** What the Insert or Delete box chose. */
+  async function runShift(insert: boolean, choice: ShiftChoice): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const r = t.rect;
+    if (choice === "rows") return insert ? insertRows(false) : deleteRows();
+    if (choice === "cols") return insert ? insertCols(false) : deleteCols();
+    const rep = await runOp({ op: "shift_cells", spec: { row: r.row, rows: r.rows, col: r.col, cols: r.cols, shift: choice } }, insert ? "Inserting cells" : "Deleting cells");
+    if (!rep) return;
+    const how = { left: "the cells to the right moved left", up: "the cells below moved up", right: "the cells moved right", down: "the cells moved down" }[choice];
+    say(`${insert ? "Inserted" : "Deleted"} ${plural(cellCount(r), "cell")}; ${how}. Undo (Ctrl+Z) takes it back.`);
   }
 
   async function moveRows(dir: -1 | 1): Promise<void> {
@@ -3365,6 +3394,7 @@
       enabled: hasTab,
     },
     { id: "edit.deleteSmart", label: "&Delete…", keys: ["Ctrl+-"], run: deleteSmart, enabled: ready, repeatable: true },
+    { id: "edit.deleteCellsAsk", label: "Delete cells…", run: () => { shiftAsk = { insert: false }; }, enabled: ready },
     { id: "edit.deleteRows", label: "Delete &rows", run: deleteRows, enabled: ready, repeatable: true },
     { id: "edit.deleteCols", label: "Delete co&lumns", run: deleteCols, enabled: ready, repeatable: true },
     { id: "edit.moveRowsUp", label: "Move rows up", keys: ["Alt+Shift+ArrowUp"], run: () => moveRows(-1), enabled: ready, repeatable: true },
@@ -3373,6 +3403,7 @@
     { id: "edit.moveColsRight", label: "Move columns right", keys: ["Alt+Shift+ArrowRight"], run: () => moveCols(1), enabled: ready, repeatable: true },
 
     { id: "insert.smart", label: "&Cells…", keys: ["Ctrl+Shift++", "Ctrl+Shift+=", "Ctrl++"], run: insertSmart, enabled: ready, repeatable: true },
+    { id: "insert.cellsAsk", label: "Insert cells…", run: () => { shiftAsk = { insert: true }; }, enabled: ready },
     { id: "insert.rowsAbove", label: "&Rows above", run: () => insertRows(false), enabled: ready, repeatable: true },
     { id: "insert.rowsBelow", label: "Rows &below", run: () => insertRows(true), enabled: ready, repeatable: true },
     { id: "insert.colsLeft", label: "Columns &left", run: () => insertCols(false), enabled: ready, repeatable: true },
@@ -3600,7 +3631,7 @@
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
-    cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "edit.fillDown", "edit.fillRight"],
+    cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "edit.fillDown", "edit.fillRight"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.hideCols", "format.showCols", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showCols"],
@@ -3813,11 +3844,11 @@
         return;
       case "Enter":
         e.preventDefault();
-        grid.move(e.shiftKey ? -1 : 1, 0, false);
+        grid.advance(e.shiftKey ? -1 : 1, 0);
         return;
       case "Tab":
         e.preventDefault();
-        grid.move(0, e.shiftKey ? -1 : 1, false);
+        grid.advance(0, e.shiftKey ? -1 : 1);
         return;
       case "Backspace":
         e.preventDefault();
@@ -5181,6 +5212,17 @@
     count={kind === "rows" ? tab.rect.rows : tab.rect.cols}
     onRun={(n, after) => { const rows = kind === "rows"; insertAsk = null; void (rows ? insertRows(after, n) : insertCols(after, n)).then(() => grid?.focus()); }}
     onClose={() => { insertAsk = null; void tick().then(() => grid?.focus()); }}
+  />
+{/if}
+
+{#if shiftAsk && tab}
+  {@const s = shiftAsk}
+  <ShiftCellsDialog
+    insert={s.insert}
+    rows={tab.rect.rows}
+    cols={tab.rect.cols}
+    onRun={(choice) => { const insert = s.insert; shiftAsk = null; void runShift(insert, choice).then(() => grid?.focus()); }}
+    onClose={() => { shiftAsk = null; void tick().then(() => grid?.focus()); }}
   />
 {/if}
 

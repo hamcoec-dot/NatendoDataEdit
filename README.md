@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.3.4_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.3.5_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -252,6 +252,27 @@ everything is also in command search.
   was cut here and Cancel cut.
 - Edit in the cell or in a larger, multi-line edit box; a cell bar with a
   "Go to" box.
+- **Typing moves like Excel:** after typing in a cell, an arrow key keeps
+  what you typed and moves on (F2, or a double-click, edits inside the text
+  instead, and F2 switches between the two). Enter and Tab move through a
+  selected block without losing it, wrapping at its edges, and Tab, Tab,
+  Enter goes to the next row in the column you started from.
+
+![A block of cells selected; Enter moved the active cell down inside it](docs/screenshots/enter-in-block.png)
+*Typing into a selected block: Enter moves to the next cell of the block, which stays selected.*
+
+- **Insert and delete cells** as in Excel: Ctrl+Plus or Ctrl+Minus on part
+  of a row asks whether to shift the other cells (right or down when
+  inserting, left or up when deleting) or take the entire rows or columns;
+  whole rows or columns selected go straight away. The cell right-click menu
+  has Insert cells… and Delete cells… too.
+
+![The Delete box offering Shift cells left, Shift cells up, Entire rows and Entire columns](docs/screenshots/delete-cells.png)
+*Ctrl+Minus on two rows of two columns: shift the cells, or take the entire rows or columns.*
+
+- **Clear or fill any number of cells:** Delete clears and Ctrl+Enter fills
+  a selection of any size, as one undo step with a progress bar; a whole
+  column of millions of rows clears at once.
 - Fill handle, fill series, Ctrl+Enter to fill a whole selection, Paste
   Special (values only, swap rows and columns), special characters.
 - **Type-ahead suggestions** from the column's own values, **pick-from-list

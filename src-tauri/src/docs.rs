@@ -694,6 +694,15 @@ pub enum DataOp {
     Extract {
         spec: Extract,
     },
+    /// One value into every cell of a block (clearing it, or Ctrl+Enter),
+    /// any number of cells.
+    FillRect {
+        spec: natendo_engine::shift::RectFill,
+    },
+    /// Insert or delete cells, moving the others up, left, down or right.
+    ShiftCells {
+        spec: natendo_engine::shift::ShiftCells,
+    },
 }
 
 /// Check a cleaner run from the webview: the moment (years 1900 to 9999,
@@ -833,6 +842,10 @@ fn recipe_step(op: &DataOp) -> Logged {
         DataOp::Extract { spec } => RecipeOp::Extract { spec: spec.clone() },
         DataOp::Paste { .. } => return Logged::LeftOut("a paste".into()),
         DataOp::Fill { .. } => return Logged::LeftOut("a fill of the selection".into()),
+        DataOp::FillRect { .. } => {
+            return Logged::LeftOut("clearing or filling the selection".into())
+        }
+        DataOp::ShiftCells { .. } => return Logged::LeftOut("inserting or deleting cells".into()),
         DataOp::SortProblems { spec } => RecipeOp::SortProblems { spec: spec.clone() },
         DataOp::CheckColumn { spec, title } => RecipeOp::CheckColumn {
             spec: spec.clone(),
@@ -3219,6 +3232,9 @@ impl Docs {
             DataOp::GroupCalc { .. } => "Working out group figures",
             DataOp::Arrange { .. } => "Arranging columns",
             DataOp::Extract { .. } => "Extracting",
+            DataOp::FillRect { spec } if spec.value.is_empty() => "Clearing",
+            DataOp::FillRect { .. } => "Filling",
+            DataOp::ShiftCells { .. } => "Moving cells",
         };
         if let DataOp::Clean { spec, now } = &op {
             check_clean(spec, *now)?;
@@ -3378,6 +3394,11 @@ impl Docs {
                 }
                 DataOp::Arrange { spec } => Planned::Cols(d.plan_arrange_columns(spec)?),
                 DataOp::Extract { spec } => Planned::Cols(d.plan_extract(spec, p)?),
+                DataOp::FillRect { spec } => match d.plan_clear_columns(spec)? {
+                    Some(c) => Planned::Cols(c),
+                    None => Planned::Cells(d.plan_fill_rect(spec, p)?),
+                },
+                DataOp::ShiftCells { spec } => Planned::Cells(d.plan_shift_cells(spec, p)?),
             };
             let mut r = report.borrow_mut();
             *r = OpReport::default();
@@ -3416,6 +3437,8 @@ impl Docs {
             DataOp::Fill { spec } if spec.dir == Dir::Right => {
                 spec.col as u64 + spec.cols as u64 + spec.count
             }
+            // Shifting right can widen rows by the block's width.
+            DataOp::ShiftCells { .. } => u64::MAX,
             // The plan itself is capped at 16,384 new columns; the width
             // check below sees the real count once it is planned.
             DataOp::Join { .. } | DataOp::Append { .. } => u64::MAX,
@@ -5065,6 +5088,54 @@ mod tests {
         assert_eq!(docs.first_row_cell(id2, 1).unwrap(), "years");
         // An undone rename is not part of the recipe.
         docs.undo(id).unwrap();
+        assert!(docs.recipe_of(id, true, "r").unwrap().steps.is_empty());
+    }
+
+    /// Clearing a whole column (any number of rows) and shifting cells are
+    /// data operations of their own, one undo step each.
+    #[test]
+    fn fill_rect_and_shift_cells() {
+        use natendo_engine::shift::{RectFill, Shift, ShiftCells};
+        let p = tmp("fill-rect.csv", b"a,b\r\n1,2\r\n3,4\r\n5,6\r\n");
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let cell = |r: u64, c: u32| docs.cell_text(id, r, c).unwrap().0;
+        let r = docs
+            .data_op(
+                id,
+                DataOp::FillRect {
+                    spec: RectFill {
+                        row: 1,
+                        rows: 3,
+                        col: 1,
+                        cols: 1,
+                        value: String::new(),
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(r.cells, 3);
+        assert_eq!((cell(0, 1), cell(3, 1)), ("b".into(), String::new()));
+        docs.undo(id).unwrap();
+        assert_eq!(cell(3, 1), "6");
+        docs.data_op(
+            id,
+            DataOp::ShiftCells {
+                spec: ShiftCells {
+                    row: 1,
+                    rows: 1,
+                    col: 0,
+                    cols: 1,
+                    shift: Shift::Up,
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!((cell(1, 0), cell(3, 0)), ("3".into(), String::new()));
+        docs.undo(id).unwrap();
+        assert_eq!(cell(1, 0), "1");
+        // Neither goes into a recipe.
         assert!(docs.recipe_of(id, true, "r").unwrap().steps.is_empty());
     }
 

@@ -654,10 +654,19 @@ export class MockBackend implements Backend {
   }
 
   async setCells(doc: number, cells: [number, number, string][]): Promise<DocInfo> {
-    const d = this.get(doc);
     if (cells.length > 100_000) throw err("too_large", "one change is limited to 100,000 cells");
-    for (const [r] of cells) if (r >= this.rowCount(d)) throw err("out_of_range", "row or column out of range");
-    const widest = Math.max(0, ...cells.map((c) => c[1] + 1));
+    return this.writeCells(doc, cells);
+  }
+
+  /** Set cells as one undo step, any number (the engine's jobs). */
+  private writeCells(doc: number, cells: [number, number, string][]): DocInfo {
+    const d = this.get(doc);
+    const n = this.rowCount(d);
+    let widest = 0;
+    for (const [r, c] of cells) {
+      if (r >= n) throw err("out_of_range", "row or column out of range");
+      if (c + 1 > widest) widest = c + 1;
+    }
     return this.push(d, () => {
       const grew = this.grow(d, widest);
       const old = cells.map(([r, c, v]) => {
@@ -1542,6 +1551,44 @@ export class MockBackend implements Backend {
         for (const [r, v] of out) if (v) cells.push([r, at, v]);
         const info = await this.setCells(doc, cells);
         return this.report(info, { cols: 1, cells: cells.length, groups: groups.size });
+      }
+      case "fill_rect": {
+        const s = op.spec;
+        // No size limit here (as the engine): one undo step, any size.
+        const cells: [number, number, string][] = [];
+        for (let r = s.row; r < s.row + s.rows; r++) for (let c = s.col; c < s.col + s.cols; c++) cells.push([r, c, s.value]);
+        const info = this.writeCells(doc, cells);
+        return this.report(info, { cells: s.rows * s.cols });
+      }
+      case "shift_cells": {
+        // The stub moves cells inside the table only (the desktop app adds
+        // rows or columns for what is pushed past the end).
+        const s = op.spec;
+        if (d.shown !== null || d.hidden !== null) throw err("invalid", "cells can't be shifted while a filter is on or rows are hidden; show every row first");
+        const nc = this.colCount(d);
+        const cells: [number, number, string][] = [];
+        const last = Math.min(rows, s.row + 100_000);
+        if (s.shift === "up" || s.shift === "down") {
+          for (let c = s.col; c < s.col + s.cols; c++) {
+            const old = Array.from({ length: last - s.row }, (_, i) => this.value(d, s.row + i, c));
+            for (let i = 0; i < old.length; i++) {
+              const from = s.shift === "up" ? i + s.rows : i - s.rows;
+              const v = from >= 0 && from < old.length ? old[from]! : "";
+              if (v !== old[i]) cells.push([s.row + i, c, v]);
+            }
+          }
+        } else {
+          for (let r = s.row; r < s.row + s.rows; r++) {
+            const old = Array.from({ length: nc - s.col }, (_, i) => this.value(d, r, s.col + i));
+            for (let i = 0; i < old.length; i++) {
+              const from = s.shift === "left" ? i + s.cols : i - s.cols;
+              const v = from >= 0 && from < old.length ? old[from]! : "";
+              if (v !== old[i]) cells.push([r, s.col + i, v]);
+            }
+          }
+        }
+        const info = cells.length ? this.writeCells(doc, cells) : this.refresh(d);
+        return this.report(info, { cells: cells.length });
       }
       case "extract": {
         const s = op.spec;
