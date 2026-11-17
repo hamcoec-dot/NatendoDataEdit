@@ -132,6 +132,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "quick filter a filter builder": ["data.filter", "data.filterMenu", "data.filterBySel", "data.clearFilter"],
   "saved views": ["view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile"],
   "find duplicate rows and remove": ["data.removeDuplicates", "data.showDuplicates"],
+  "column lists start empty": ["data.removeDuplicates", "data.showDuplicates", "data.mergeRows", "data.subtotals", "data.group", "tools.fillBlanks"],
   // Seeing what is in the data
   "summary of each column": ["view.panelSummary"],
   "quick totals": ["view.panel"],

@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.3.3_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.3.4_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -279,6 +279,14 @@ everything is also in command search.
   not found is offered from the same place, and the view asks first).
 - Find duplicate rows, and remove them keeping the first, last, newest,
   oldest or most complete copy, filling blanks from the other copies.
+- **Column lists start empty:** wherever you tick columns (duplicates, merge
+  rows, subtotals, joins, group figures, charts and the rest), nothing is
+  ticked until you choose, and Select all / Unselect all tick or clear them
+  all at once.
+
+![Remove duplicates with Select all and Unselect all above the column list](docs/screenshots/select-all-columns.png)
+*Select all ticks every column; Unselect all clears them.*
+
 
 ### Seeing what is in the data
 

@@ -2,6 +2,7 @@
   // Subtotals: a new table with a total row after each run of equal values
   // in one column (sort by it first) and a grand total. The file is not
   // changed.
+  import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import type { TableOp } from "./backend";
   import FormShell from "./FormShell.svelte";
@@ -18,7 +19,7 @@
 
   let by = $state(untrack(() => col));
   let total = $state<Total>("sum");
-  let cols = $state<number[]>(untrack(() => (titles.length > 1 ? [col === titles.length - 1 ? 0 : titles.length - 1] : [])));
+  let cols = $state<number[]>([]);
   let myHeader = $state(untrack(() => header));
   let problem = $state("");
 
@@ -45,6 +46,7 @@
   </label>
   <fieldset>
     <legend>Of the columns</legend>
+    <AllNone count={titles.length} picked={cols} onChange={(v) => (cols = v)} skip={(c) => c === by} />
     <div class="list">
       {#each titles as t, c (c)}
         {#if c !== by}<label><input type="checkbox" checked={cols.includes(c)} onchange={() => (cols = cols.includes(c) ? cols.filter((x) => x !== c) : [...cols, c])} /> {t}</label>{/if}

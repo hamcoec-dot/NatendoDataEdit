@@ -2,6 +2,7 @@
   // Changes from a newer file (Milestone 15): pair rows with a newer copy
   // by key columns, list every changed cell, new row and missing row, tick
   // the ones to take, and apply them as one undo step.
+  import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import { backend, errorText, type DocInfo } from "./backend";
   import FormShell from "./FormShell.svelte";
@@ -22,7 +23,7 @@
 
   let list = $state<OtherTable[]>(untrack(() => others.filter((o) => o.id !== doc)));
   let other = $state<number>(untrack(() => list[list.length - 1]?.id ?? -1));
-  let keys = $state<number[]>(untrack(() => [col]));
+  let keys = $state<number[]>([]);
   let keepFirst = $state(untrack(() => header));
   let trim = $state(true);
   let matchCase = $state(false);
@@ -106,6 +107,7 @@
     </label>
     <fieldset>
       <legend>Columns that identify a row</legend>
+      <AllNone count={titles.length} picked={keys} onChange={(v) => (keys = v)} max={16} />
       <div class="keys">
         {#each titles as t, c (c)}
           <label><input type="checkbox" checked={keys.includes(c)} onchange={(e) => { keys = (e.currentTarget as HTMLInputElement).checked ? [...keys, c].slice(0, 16) : keys.filter((k) => k !== c); }} /> {t}</label>

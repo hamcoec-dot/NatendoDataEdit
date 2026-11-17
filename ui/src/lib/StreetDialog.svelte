@@ -2,6 +2,7 @@
   // Street range lookup (Milestone 15): the precinct, district or other
   // value for each address, from a street index (street, from and to house
   // numbers, odd/even side) open in another tab.
+  import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import FormShell from "./FormShell.svelte";
   import type { OtherTable } from "./transfer";
@@ -68,6 +69,7 @@
     </div>
     <fieldset>
       <legend>Bring in</legend>
+      <AllNone count={theirs.length} picked={cols.bring} onChange={(v) => (cols.bring = v)} max={32} />
       <div class="bring">
         {#each theirs as t, c (c)}
           <label><input type="checkbox" checked={cols.bring.includes(c)} onchange={(e) => { cols.bring = (e.currentTarget as HTMLInputElement).checked ? [...cols.bring, c].slice(0, 32) : cols.bring.filter((x) => x !== c); }} /> {t}</label>

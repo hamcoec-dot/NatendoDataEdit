@@ -4,6 +4,7 @@
   // back, random samples, comparing two files, splitting into files and
   // combining files. Each asks for its few choices and hands back what to
   // run; the engine does the work.
+  import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import type { Combine, DataOp, SplitParts, TableOp } from "./backend";
   import FormShell from "./FormShell.svelte";
@@ -43,7 +44,7 @@
     combine: "Combine files",
   };
 
-  let picked = $state<number[]>(untrack(() => (cols.length ? [...cols] : [col])));
+  let picked = $state<number[]>([]);
   let one = $state(untrack(() => col));
   let myHeader = $state(untrack(() => header));
   let from = $state<"above" | "below" | "value">("above");
@@ -125,6 +126,7 @@
   {#if many}
     <fieldset>
       <legend>{kind === "compare" ? "Key columns (what identifies a row)" : kind === "stack" ? "Columns, in this order" : "Columns"}</legend>
+      <AllNone count={titles.length} picked={picked} onChange={(v) => (picked = v)} />
       <div class="list">
         {#each titles as t, c (c)}<label><input type="checkbox" checked={picked.includes(c)} onchange={() => toggle(c)} /> {t}</label>{/each}
       </div>

@@ -3,6 +3,7 @@
   // choosing and ordering columns, pulling a piece of text into its own
   // column, and building a column without typing a formula (a template
   // like "{First} {Last}", or if-then rules). Each is one undo step.
+  import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import { backend, errorText, type ComputePreview, type ComputeSpec, type DataOp, type ExtractWhat, type GroupFunc } from "./backend";
   import { EXTRACTS, GROUP_FUNCS, RULE_OPS, rulesExpr, templateExpr, type Rule } from "./editing";
@@ -29,7 +30,7 @@
   let problem = $state("");
 
   // Group figures.
-  let keys = $state<number[]>(untrack(() => [col]));
+  let keys = $state<number[]>([]);
   let func = $state<GroupFunc>("count");
   let valueCol = $state(untrack(() => Math.min(col + 1, Math.max(0, titles.length - 1))));
   let groupTitle = $state("");
@@ -174,6 +175,7 @@
   {#if kind === "group"}
     <fieldset>
       <legend>Rows are in the same group when these match</legend>
+      <AllNone count={titles.length} picked={keys} onChange={(v) => (keys = v)} />
       <div class="list">
         {#each titles as t, c (c)}
           <label><input type="checkbox" checked={keys.includes(c)} onchange={() => (keys = keys.includes(c) ? keys.filter((k) => k !== c) : [...keys, c].sort((a, b) => a - b))} /> {t}</label>

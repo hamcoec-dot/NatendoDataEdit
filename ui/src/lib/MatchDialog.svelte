@@ -4,6 +4,7 @@
   // look like the same person; accept or reject them, then add a "Match
   // row" and "Match score" column (and columns brought in) for the
   // accepted ones.
+  import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import { backend, errorText } from "./backend";
   import FormShell from "./FormShell.svelte";
@@ -158,6 +159,7 @@
     {#if other !== SAME && theirs.length}
       <details>
         <summary>Bring in columns from the other list for accepted pairs ({bring.length} chosen)</summary>
+        <AllNone count={theirs.length} picked={bring} onChange={(v) => (bring = v)} max={64} />
         <div class="bring">
           {#each theirs as t, c (c)}
             <label><input type="checkbox" checked={bring.includes(c)} onchange={(e) => { bring = (e.currentTarget as HTMLInputElement).checked ? [...bring, c].slice(0, 64) : bring.filter((x) => x !== c); }} /> {t}</label>

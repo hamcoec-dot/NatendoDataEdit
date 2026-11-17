@@ -2,6 +2,7 @@
   // The side panel: a summary of the current column, a chart, the files
   // next to the open file, and recent activity. Everything is computed by
   // the engine in bounded passes; text is shown as text (no HTML).
+  import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import { backend, type Opened, type ReadOptions } from "./backend";
   import type { Tab } from "./tab.svelte";
@@ -63,11 +64,17 @@
   // ---- chart ----
   let kind = $state<ChartKind>("bar");
   let label = $state<number | null>(null);
-  let values = $state<number[]>(untrack(() => [col]));
+  let values = $state<number[]>([]);
   let chart = $state<ChartData | null>(null);
   let canvas = $state<HTMLCanvasElement>();
   async function drawChart(): Promise<void> {
     if (!tab) return;
+    // Nothing ticked yet: no chart (the list says to tick columns).
+    if (kind !== "count" && !values.length) {
+      chart = null;
+      problem = "";
+      return;
+    }
     try {
       chart = await backend().chartData(tab.id, {
         kind,
@@ -259,6 +266,8 @@
         </select>
       </label>
       {#if kind !== "count"}
+        <AllNone count={Math.min(titles.length, 200)} picked={values} onChange={(v) => (values = v)} max={kind === "pie" ? 1 : 8} />
+        {#if !values.length}<p class="note">Tick the columns to chart.</p>{/if}
         <div class="values">
           {#each titles.slice(0, 200) as t, c (c)}
             <label><input type="checkbox" checked={values.includes(c)} onchange={() => (values = values.includes(c) ? values.filter((x) => x !== c) : [...values, c].slice(0, kind === "pie" ? 1 : 8))} /> {t}</label>

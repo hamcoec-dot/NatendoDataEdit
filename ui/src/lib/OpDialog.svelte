@@ -16,6 +16,7 @@
   // One dialog for the Data menu's operations, Paste Special and Fill
   // Series. Each kind shows only its own options and hands back the request
   // for the engine; nothing changes until the user presses the main button.
+  import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import type { Aggregate, DataOp, DateUnit, Duplicates, FillMode, PasteOp, SplitColumn, TableOp } from "./backend";
   import { KEEP_COPIES, parsePositions, SPLIT_MODES } from "./editing";
@@ -43,7 +44,8 @@
 
   // Shared options.
   let picked = $state<number[]>(
-    untrack(() => (kind === "remove_duplicates" || kind === "show_duplicates" ? (selCols.length > 1 ? selCols : []) : [focusCol])),
+    // Nothing ticked to start (Select all ticks every column).
+    [],
   );
   let matchCase = $state(false);
   let trim = $state(true);
@@ -225,6 +227,7 @@
 {#snippet columnList(list: number[], set: (v: number[]) => void, label: string)}
   <fieldset class="cols">
     <legend>{label}</legend>
+    <AllNone count={titles.length} picked={list} onChange={set} />
     <div class="list">
       {#each titles as t, c (c)}
         <label><input type="checkbox" checked={list.includes(c)} onchange={() => set(toggle(list, c))} /> {t}</label>

@@ -3,6 +3,7 @@
   // current row, kept in a small file beside the table; the list of every
   // noted row; show only noted or flagged rows; and the columns that
   // identify a row (so notes follow their rows).
+  import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import { backend, errorText } from "./backend";
   import FormShell from "./FormShell.svelte";
@@ -111,6 +112,7 @@
   <details bind:open={editKeys}>
     <summary>Columns that identify a row</summary>
     <p class="note">Changing them leaves notes made with the old columns without a row.</p>
+    <AllNone count={titles.length} picked={keys} onChange={(v) => (keys = v)} max={8} />
     <div class="keys">
       {#each titles as t, c (c)}
         <label><input type="checkbox" checked={keys.includes(c)} onchange={(e) => { keys = (e.currentTarget as HTMLInputElement).checked ? [...keys, c].slice(0, 8) : keys.filter((k) => k !== c); }} /> {t}</label>

@@ -4,6 +4,7 @@
   // from another open tab or, for a join, a pasted list of keys. "Open a
   // file…" opens one first. Either is one undo step. A join shows the
   // first rows as they would look, with counts for the whole table.
+  import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import { backend, errorText, type DataOp, type JoinPreview, type JoinSpec } from "./backend";
   import FormShell from "./FormShell.svelte";
@@ -48,7 +49,8 @@
   let fromList = $state(false);
   let pasted = $state("");
   let pairs = $state<[number, number][]>([[0, 0]]);
-  let bring = $state<number[] | null>(null); // null: every non-key column
+  // Columns to bring in: none ticked to start (null: every non-key column).
+  let bring = $state<number[] | null>([]);
   let matchCase = $state(false);
   let trim = $state(true);
   let compare = $state<Compare>("exact");
@@ -354,6 +356,7 @@
     {#if writes && !fromList && repeats !== "count"}
       <fieldset>
         <legend>{update ? "Columns to bring in, and where they go" : "Columns to bring in"}</legend>
+        <AllNone count={otherTitles.length} picked={bringList} onChange={(v) => (bring = v)} skip={(c) => keyCols.includes(c)} />
         <div class="list" class:single={update}>
           {#each otherTitles as t, c (c)}
             <div class="row">
