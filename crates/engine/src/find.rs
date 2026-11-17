@@ -757,6 +757,42 @@ pub struct ReplacePlan {
     pub preview: Vec<Change>,
 }
 
+impl ReplacePlan {
+    /// Leave these cells (shown row, logical column) out of the plan: the
+    /// changes the user unticked in the preview.
+    pub fn exclude(&mut self, cells: &[(u64, u32)]) {
+        if cells.is_empty() {
+            return;
+        }
+        let skip: std::collections::HashSet<(u64, u32)> = cells.iter().copied().collect();
+        let mut removed = 0u64;
+        for ((_, row), (r, cols)) in self.changes.iter_mut().zip(self.at.iter_mut()) {
+            let mut k = 0;
+            while k < cols.len() {
+                if skip.contains(&(*r, cols[k])) {
+                    cols.remove(k);
+                    row.remove(k);
+                    removed += 1;
+                } else {
+                    k += 1;
+                }
+            }
+        }
+        let keep: Vec<bool> = self.changes.iter().map(|(_, c)| !c.is_empty()).collect();
+        let mut i = 0;
+        self.changes.retain(|_| {
+            i += 1;
+            keep[i - 1]
+        });
+        let mut i = 0;
+        self.at.retain(|_| {
+            i += 1;
+            keep[i - 1]
+        });
+        self.cells = self.cells.saturating_sub(removed);
+    }
+}
+
 /// At most this many pairs in one batch replace, and this much text.
 pub const MAX_BATCH_PAIRS: usize = 100_000;
 pub const MAX_BATCH_BYTES: usize = 16 << 20;
@@ -1336,6 +1372,130 @@ impl Document {
         })
     }
 
+    /// Shown rows with at least one match (in order).
+    pub fn matching_rows(&self, spec: &FindSpec, progress: &Progress) -> Result<Vec<u64>, Error> {
+        let m = Matcher::new(&spec.pattern)?;
+        let area = self.area(spec)?;
+        let (r0, r1) = (area.rows.start, area.rows.end);
+        progress.start(r1.saturating_sub(r0));
+        let blocks = r1.saturating_sub(r0).div_ceil(BLOCK);
+        let parts: Vec<Vec<u64>> = (0..blocks)
+            .into_par_iter()
+            .map(|b| -> Result<Vec<u64>, Error> {
+                let s = r0 + b * BLOCK;
+                let e = (s + BLOCK).min(r1);
+                let mut out = Vec::new();
+                let mut buf = Vec::new();
+                for r in s..e {
+                    if self
+                        .each_cell(&area, r, false, &mut buf, |_, t| {
+                            m.is_match(t).then_some(())
+                        })
+                        .is_some()
+                    {
+                        out.push(r);
+                    }
+                }
+                progress.step(e - s)?;
+                Ok(out)
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(parts.concat())
+    }
+
+    /// Show only the rows with a match (a view, undoable); the first row
+    /// stays when it holds titles.
+    pub fn plan_show_matching(
+        &self,
+        spec: &FindSpec,
+        progress: &Progress,
+    ) -> Result<crate::reshape::RowPlan, Error> {
+        let rows = self.matching_rows(spec, progress)?;
+        let base = self.next_row_id();
+        let mut bits = vec![0u64; (base as usize).div_ceil(64)];
+        let mut set = |id: u32| bits[(id >> 6) as usize] |= 1 << (id & 63);
+        if spec.skip_first && self.row_count() > 0 {
+            set(self.id_at(0).expect("a first row"));
+        }
+        for &r in &rows {
+            if let Some(id) = self.id_at(r) {
+                set(id);
+            }
+        }
+        let mut plan = crate::reshape::RowPlan::new(self);
+        plan.rows = rows.len() as u64;
+        plan.view = Some(crate::document::View::new(
+            crate::filter::FilterSpec {
+                keep_first: spec.skip_first,
+                ..Default::default()
+            },
+            bits,
+            base,
+        ));
+        Ok(plan)
+    }
+
+    /// Delete the rows with a match (one undo step).
+    pub fn plan_delete_matching(
+        &self,
+        spec: &FindSpec,
+        progress: &Progress,
+    ) -> Result<crate::reshape::RowPlan, Error> {
+        self.ready_for_bulk()?;
+        let rows = self.matching_rows(spec, progress)?;
+        let mut plan = crate::reshape::RowPlan::new(self);
+        plan.remove = rows.iter().filter_map(|&r| self.id_at(r)).collect();
+        plan.rows = plan.remove.len() as u64;
+        Ok(plan)
+    }
+
+    /// The rows with a match as a new table (with the title row first when
+    /// there is one).
+    pub fn matching_table(
+        &self,
+        spec: &FindSpec,
+        progress: &Progress,
+    ) -> Result<crate::reshape::Table, Error> {
+        let rows = self.matching_rows(spec, progress)?;
+        let cols = self.col_count();
+        let all: Vec<u32> = (0..cols).collect();
+        let mut out = Vec::new();
+        let mut line: Vec<String> = Vec::with_capacity(cols as usize);
+        let mut buf = Vec::new();
+        let mut write = |id: u32, out: &mut Vec<u8>| -> Result<(), Error> {
+            let phys: Vec<u32> = all.iter().filter_map(|&c| self.phys(c)).collect();
+            let mut sorted = phys.clone();
+            sorted.sort_unstable();
+            self.read_cells(id, &sorted, &mut buf);
+            line.clear();
+            for &c in &all {
+                line.push(match self.phys(c) {
+                    Some(p) => buf[sorted.binary_search(&p).expect("read")].to_string(),
+                    None => String::new(),
+                });
+            }
+            crate::reshape::push_line(out, &line);
+            if out.len() > crate::reshape::MAX_TABLE_BYTES {
+                return Err(Error::Invalid(
+                    "the rows are too large for a new tab".into(),
+                ));
+            }
+            Ok(())
+        };
+        let first = u64::from(spec.skip_first && self.row_count() > 0);
+        if first == 1 {
+            write(self.id_at(0).expect("a first row"), &mut out)?;
+        }
+        for &r in &rows {
+            write(self.id_at(r).ok_or(Error::OutOfRange)?, &mut out)?;
+        }
+        Ok(crate::reshape::Table {
+            bytes: out,
+            rows: rows.len() as u64 + first,
+            cols,
+        })
+    }
+
     /// Work out a replace over `area` with `f` giving each cell's new text
     /// and its number of matches (`None`: no match).
     fn plan_cells_with(
@@ -1370,7 +1530,7 @@ impl Document {
                     let Some(id) = self.id_at(r) else { continue };
                     let mut row: Vec<(u32, String, u32)> = Vec::new();
                     let mut err = None;
-                    self.each_cell(&area, r, false, &mut buf, |k, t| {
+                    self.each_cell(area, r, false, &mut buf, |k, t| {
                         let phys = self.phys(area.cols[k])?;
                         match f(t) {
                             Ok(Some((new, n))) if new != t => {
@@ -1699,6 +1859,45 @@ mod tests {
         let m = with(" ", PatternKind::Plain, |_| {});
         assert_eq!(m.replace("a b", r"\n").unwrap().unwrap().0, r"a\nb");
         assert_eq!(unescape(r"a\\b\q\u{zz}"), r"a\b\q\u{zz}");
+    }
+
+    #[test]
+    fn unticked_changes_are_left_out() {
+        let mut d = doc("a,b\nx,x\nx,q\n");
+        let p = Progress::new();
+        let mut plan = d
+            .plan_replace(&spec(pat("x", PatternKind::Plain)), "y", 0, &p)
+            .unwrap();
+        plan.exclude(&[(1, 1), (2, 0)]);
+        assert_eq!(plan.cells, 1);
+        d.apply_replace(plan).unwrap();
+        assert_eq!(
+            all(&d),
+            vec![vec!["a", "b"], vec!["y", "x"], vec!["x", "q"]]
+        );
+    }
+
+    #[test]
+    fn act_on_matching_rows() {
+        let mut d = doc("k,v\nx1,a\nb,c\nd,x2\n");
+        let mut s = spec(pat("x", PatternKind::Plain));
+        s.skip_first = true;
+        let p = Progress::new();
+        assert_eq!(d.matching_rows(&s, &p).unwrap(), vec![1, 3]);
+        let t = d.matching_table(&s, &p).unwrap();
+        assert_eq!(
+            String::from_utf8(t.bytes).unwrap().replace("\r\n", "\n"),
+            "k,v\nx1,a\nd,x2\n"
+        );
+        let plan = d.plan_show_matching(&s, &p).unwrap();
+        d.apply_rows(plan).unwrap();
+        assert_eq!(d.row_count(), 3);
+        d.clear_filter();
+        let plan = d.plan_delete_matching(&s, &p).unwrap();
+        d.apply_rows(plan).unwrap();
+        assert_eq!(d.row_count(), 2);
+        assert!(d.undo());
+        assert_eq!(d.row_count(), 4);
     }
 
     #[test]

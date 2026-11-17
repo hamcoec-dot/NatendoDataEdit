@@ -2276,6 +2276,38 @@ async fn replace_page(
 }
 
 #[tauri::command]
+async fn find_rows(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: FindSpec,
+    action: docs::FindRowsAction,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.find_rows(doc, spec, action)).await
+}
+
+#[tauri::command]
+async fn find_notes(
+    docs: DocsState<'_>,
+    doc: u32,
+    pattern: natendo_engine::find::Pattern,
+) -> CmdResult<Vec<natendo_engine::notes::NoteMark>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.find_notes(doc, pattern)).await
+}
+
+#[tauri::command]
+async fn replace_titles(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: FindSpec,
+    replacement: String,
+) -> CmdResult<Vec<(u32, String)>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.replace_titles(doc, spec, replacement)).await
+}
+
+#[tauri::command]
 async fn batch_preview(
     docs: DocsState<'_>,
     doc: u32,
@@ -2312,9 +2344,11 @@ async fn replace_confirm(
     doc: u32,
     spec: FindSpec,
     replacement: String,
+    exclude: Option<Vec<(u64, u32)>>,
 ) -> CmdResult<ReplaceReport> {
     let docs = docs.inner().clone();
-    blocking(move || docs.replace_confirm(doc, spec, replacement)).await
+    let exclude = exclude.unwrap_or_default();
+    blocking(move || docs.replace_confirm_except(doc, spec, replacement, exclude)).await
 }
 
 #[tauri::command]
@@ -2992,6 +3026,9 @@ pub fn run() {
             find_count_cancel,
             replace_confirm,
             batch_preview,
+            find_rows,
+            find_notes,
+            replace_titles,
             batch_confirm,
             replace_cell,
             replace_page,

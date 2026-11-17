@@ -778,6 +778,19 @@ pub enum TableOp {
     },
 }
 
+/// What to do with the rows Find all found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FindRowsAction {
+    Show,
+    Delete,
+    Copy,
+    Flag { flag: u8 },
+}
+
+/// At most this many rows flagged at once from Find.
+pub const MAX_FLAG_ROWS: usize = 100_000;
+
 /// A new table and, for comparisons, what was found.
 #[derive(Debug, Serialize, Clone, PartialEq)]
 pub struct TableReport {
@@ -2704,6 +2717,135 @@ impl Docs {
         })
     }
 
+    /// Act on the rows with a match: show only them, delete them (one undo
+    /// step), copy them to a new tab, or flag them (a row note flag).
+    pub fn find_rows(&self, id: u32, spec: FindSpec, action: FindRowsAction) -> CmdResult<DocInfo> {
+        match action {
+            FindRowsAction::Show => self.compute_apply(
+                id,
+                "Filtering",
+                |d, p| d.plan_show_matching(&spec, p),
+                |d, plan| d.apply_rows(plan),
+            ),
+            FindRowsAction::Delete => self.compute_apply(
+                id,
+                "Deleting rows",
+                |d, p| d.plan_delete_matching(&spec, p),
+                |d, plan| d.apply_rows(plan),
+            ),
+            FindRowsAction::Copy => {
+                let entry = self.get(id)?;
+                let table = {
+                    let job = entry.start("Copying rows")?;
+                    let d = entry.read();
+                    d.matching_table(&spec, &job.progress)?
+                };
+                drop(entry);
+                let doc = table.into_document()?;
+                let (nid, _) = self.insert(doc, false)?;
+                self.inherit_private(nid, &[id], &[]);
+                self.set_title_of(nid, format!("Matches ({})", self.stem(id)));
+                self.info(nid)
+            }
+            FindRowsAction::Flag { flag } => {
+                use natendo_engine::notes::{Note, FLAGS};
+                if flag == 0 || flag > FLAGS {
+                    return Err(CmdError::new("invalid", "that flag is unknown"));
+                }
+                let rows = {
+                    let entry = self.get(id)?;
+                    let d = entry.read();
+                    d.matching_rows(&spec, &Progress::new())?
+                };
+                if rows.len() > MAX_FLAG_ROWS {
+                    return Err(CmdError::new(
+                        "too_large",
+                        format!(
+                            "at most {} rows can be flagged at once",
+                            group(MAX_FLAG_ROWS as u64)
+                        ),
+                    ));
+                }
+                self.with_notes(id, |d, b, sidecar| {
+                    if b.key_cols.is_empty() {
+                        return Err(CmdError::new(
+                            "no_keys",
+                            "choose the columns that identify rows first (Notes › Columns that identify rows)",
+                        ));
+                    }
+                    let before = b.notes.clone();
+                    for &r in &rows {
+                        let key = d.note_key(b, r)?;
+                        if key.is_empty() {
+                            continue;
+                        }
+                        let text = b.notes.get(&key).map(|n| n.text.clone()).unwrap_or_default();
+                        b.notes.insert(key, Note { flag, text });
+                    }
+                    if let Err(e) = b.save(sidecar) {
+                        b.notes = before;
+                        return Err(e.into());
+                    }
+                    Ok(())
+                })?;
+                self.info(id)
+            }
+        }
+    }
+
+    /// Row notes that match a search (Find's "Look in: Notes").
+    pub fn find_notes(
+        &self,
+        id: u32,
+        pattern: Pattern,
+    ) -> CmdResult<Vec<natendo_engine::notes::NoteMark>> {
+        let m = Matcher::new(&pattern)?;
+        let (all, _) = self.note_list(id, 100_000)?;
+        Ok(all
+            .into_iter()
+            .filter(|n| m.is_match(&n.text))
+            .take(MAX_FIND_HITS)
+            .collect())
+    }
+
+    /// Column titles a replace would change (Find with "Include column
+    /// titles"): (column, new title), applied as renames by the caller.
+    pub fn replace_titles(
+        &self,
+        id: u32,
+        spec: FindSpec,
+        replacement: String,
+    ) -> CmdResult<Vec<(u32, String)>> {
+        let m = Matcher::new(&spec.pattern)?;
+        m.check_replacement(&replacement)?;
+        let entry = self.get(id)?;
+        let d = entry.read();
+        if d.row_count() == 0 {
+            return Ok(Vec::new());
+        }
+        let cols: Vec<u32> = match &spec.scope {
+            natendo_engine::find::Scope::Columns { cols } => cols.clone(),
+            natendo_engine::find::Scope::Range { col, cols, row, .. } if *row == 0 => {
+                (*col..col + cols).collect()
+            }
+            natendo_engine::find::Scope::Range { .. } => Vec::new(),
+            natendo_engine::find::Scope::All => (0..d.col_count()).collect(),
+        };
+        let mut out = Vec::new();
+        for c in cols
+            .into_iter()
+            .filter(|c| !spec.skip_cols.contains(c) && *c < d.col_count())
+        {
+            let t = d.cell(0, c).unwrap_or_default();
+            if let Some((new, _)) = m.replace(&t, &replacement)? {
+                if new != t {
+                    out.push((c, new));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// What a batch replace (many pairs) would change; the plan is kept for
     /// [`Docs::batch_confirm`].
     pub fn batch_preview(
@@ -2803,12 +2945,32 @@ impl Docs {
     /// showed, or nothing. If the search, the replacement or the file
     /// changed since, it fails ("changed") instead of working out a new,
     /// unseen plan.
+    #[cfg(test)]
     pub fn replace_confirm(
         &self,
         id: u32,
         spec: FindSpec,
         replacement: String,
     ) -> CmdResult<ReplaceReport> {
+        self.replace_confirm_except(id, spec, replacement, Vec::new())
+    }
+
+    /// [`Docs::replace_confirm`] leaving out the changes the user unticked
+    /// (shown row, column).
+    pub fn replace_confirm_except(
+        &self,
+        id: u32,
+        spec: FindSpec,
+        replacement: String,
+        exclude: Vec<(u64, u32)>,
+    ) -> CmdResult<ReplaceReport> {
+        if !exclude.is_empty() {
+            let entry = self.get(id)?;
+            let mut kept = entry.replace.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((_, plan)) = kept.as_mut() {
+                plan.exclude(&exclude);
+            }
+        }
         let step = RecipeOp::ReplaceAll {
             spec: spec.clone(),
             with: replacement.clone(),
@@ -6988,6 +7150,42 @@ ca,California
         docs.save(id, Some(p.clone()), false, false, None).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"x\r\n");
         assert_eq!(docs.info(id).unwrap().name, "new.csv");
+    }
+
+    #[test]
+    fn find_acts_on_rows_and_titles() {
+        let docs = Docs::default();
+        let p = tmp("fr.csv", b"name,x city\nx1,a\nb,c\n");
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let spec = FindSpec {
+            pattern: Pattern {
+                text: "x".into(),
+                ..Default::default()
+            },
+            scope: natendo_engine::find::Scope::All,
+            skip_first: true,
+            skip_cols: Vec::new(),
+        };
+        let t = docs
+            .find_rows(id, spec.clone(), FindRowsAction::Copy)
+            .unwrap();
+        assert_eq!(t.rows, 2);
+        assert!(t.name.starts_with("Matches (fr"));
+        assert_eq!(
+            docs.find_rows(id, spec.clone(), FindRowsAction::Show)
+                .unwrap()
+                .rows,
+            2
+        );
+        assert_eq!(
+            docs.replace_titles(id, spec.clone(), "y".into()).unwrap(),
+            vec![(1, "y city".to_string())]
+        );
+        docs.find_rows(id, spec.clone(), FindRowsAction::Flag { flag: 1 })
+            .unwrap();
+        let (noted, _) = docs.note_list(id, 10).unwrap();
+        assert_eq!(noted.iter().filter(|n| n.flag == 1).count(), 1);
     }
 
     #[test]
