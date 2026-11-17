@@ -216,6 +216,29 @@ const url = process.argv[3] || "http://localhost:5194";
   await p.waitForTimeout(1200);
   ok(await p.evaluate(() => window.__nde.tab.cache.get(42, 1) !== "a1"), "a selection the block does not fit evenly gets it once");
 
+  // ---- 7. Status bar: Sum and Count together; others can be ticked ----
+  await start(2, 4, 6, 4);
+  await p.waitForTimeout(800);
+  let bar = (await p.textContent("button.totals")) || "";
+  ok(/Sum: .*Count: 5/.test(bar), `the status bar shows Sum and Count (${bar.trim()})`);
+  await p.click("button.totals");
+  await p.click(".pop button:has-text('Average')");
+  await p.keyboard.press("Escape");
+  await p.mouse.click(5, 5);
+  await p.waitForTimeout(300);
+  bar = (await p.textContent("button.totals")) || "";
+  ok(/Sum: .*Average: .*Count: 5/.test(bar), `ticking Average adds it (${bar.trim()})`);
+  if (out) await p.screenshot({ path: path.join(out, "status-totals.png"), clip: { x: 560, y: 820, width: 800, height: 40 } });
+  await start(2, 2, 6, 2);
+  await p.waitForTimeout(800);
+  bar = (await p.textContent("button.totals")) || "";
+  ok(/^\s*Count: \d+\s*$/.test(bar), `text only: just the count (${bar.trim()})`);
+  await start(2, 4, 6, 4);
+  await p.waitForTimeout(800);
+  await p.click("button.totals");
+  await p.click(".pop button:has-text('Average')");
+  await p.mouse.click(5, 5);
+
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   await b.close();
   console.log(failed ? `${failed} FAILED` : "ALL PASS");

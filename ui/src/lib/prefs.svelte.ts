@@ -30,6 +30,9 @@ export interface PrefsData {
   panel: "summary" | "chart" | "files" | "activity" | null;
   /** Which quick total the status bar shows for a selection. */
   totals: TotalKind;
+  /** The totals the status bar shows side by side (Sum and Count unless
+   *  others are ticked), in the order of TOTAL_KINDS. */
+  totalsShown: TotalKind[];
   /** Alternating row colours for new tabs (each tab and view can differ). */
   banded: boolean;
   /** Suggest the rest of a value from the column while typing. */
@@ -51,6 +54,14 @@ export interface PrefsData {
 
 export type TotalKind = "sum" | "average" | "count" | "numbers" | "min" | "max" | "distinct" | "chars";
 export const TOTAL_KINDS: TotalKind[] = ["sum", "average", "count", "numbers", "min", "max", "distinct", "chars"];
+
+/** The saved list of status-bar totals, cleaned (unknown kinds dropped,
+ *  in the usual order); Sum and Count when missing or empty. */
+export function shownTotals(raw: unknown): TotalKind[] {
+  if (!Array.isArray(raw)) return ["sum", "count"];
+  const out = TOTAL_KINDS.filter((k) => raw.includes(k));
+  return out.length ? out : ["sum", "count"];
+}
 
 /** The style value for a font family typed by name (checked). */
 export function customFont(name: string): string | null {
@@ -102,6 +113,7 @@ const DEFAULTS: PrefsData = {
   views: [],
   panel: null,
   totals: "sum",
+  totalsShown: ["sum", "count"],
   banded: false,
   typeahead: true,
   sortLists: [],
@@ -140,6 +152,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       views: Array.isArray(p.views) ? p.views.filter((v) => v && typeof v === "object" && Array.isArray(v.columns)).slice(0, MAX_VIEWS) : [],
       panel: p.panel === "summary" || p.panel === "chart" || p.panel === "files" || p.panel === "activity" ? p.panel : null,
       totals: TOTAL_KINDS.includes(p.totals as TotalKind) ? p.totals! : "sum",
+      totalsShown: shownTotals(p.totalsShown),
       banded: p.banded === true,
       typeahead: p.typeahead !== false,
       sortLists: Array.isArray(p.sortLists) ? p.sortLists.filter((l) => l && typeof l.name === "string" && Array.isArray(l.items)).slice(0, 60).map((l) => ({ name: String(l.name).slice(0, 200), items: l.items.filter((i): i is string => typeof i === "string").slice(0, 10_000).map((i) => i.slice(0, 1000)) })) : [],

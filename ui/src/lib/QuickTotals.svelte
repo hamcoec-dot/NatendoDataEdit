@@ -1,6 +1,7 @@
 <script lang="ts">
-  // Quick totals of the selection in the status bar (Sum, Average, Count,
-  // ...). The engine works them out off the UI thread; a newer selection or
+  // Quick totals of the selection in the status bar: Sum and Count side by
+  // side unless others are ticked in its list (Average, Min, Max ...), as in
+  // Excel. The engine works them out off the UI thread; a newer selection or
   // any change cancels older requests, so a huge selection never blocks.
   import type { Tab } from "./tab.svelte";
   import { backend, type Totals } from "./backend";
@@ -23,7 +24,7 @@
     const r = t.rect;
     void t.version;
     void t.info;
-    const distinct = prefs.data.totals === "distinct";
+    const distinct = prefs.data.totalsShown.includes("distinct");
     clearTimeout(timer);
     const n = ++asked;
     // Never show the last selection's totals for this one.
@@ -77,24 +78,29 @@
     return () => window.removeEventListener("mousedown", close);
   });
 
-  /** With no numbers selected, a sum or average says nothing: show the count. */
-  function shownKind(t: Totals, k: TotalKind): TotalKind {
-    return t.numbers === 0 && k !== "count" && k !== "numbers" && k !== "distinct" && k !== "chars" ? "count" : k;
+  /** The totals shown: with no numbers selected a sum, average, min or max
+   *  says nothing, so those drop out (and the count shows instead). */
+  function shownKinds(t: Totals): TotalKind[] {
+    const numeric = (k: TotalKind) => k === "sum" || k === "average" || k === "min" || k === "max";
+    const ks = prefs.data.totalsShown.filter((k) => t.numbers > 0 || !numeric(k));
+    return ks.length ? ks : ["count"];
   }
 
-  /** Put the shown total on the clipboard. */
-  function copy(): void {
+  /** Put one total on the clipboard. */
+  function copy(k: TotalKind): void {
     if (!totals) return;
-    const k = shownKind(totals, prefs.data.totals);
     const v = totalValue(totals, k);
     void navigator.clipboard?.writeText(v === null ? "" : String(v)).catch(() => {});
     open = false;
   }
 
+  /** Tick or untick a total (at least one stays). */
   function pick(k: TotalKind): void {
-    prefs.data.totals = k;
+    const on = prefs.data.totalsShown.includes(k);
+    const next = on ? prefs.data.totalsShown.filter((x) => x !== k) : TOTAL_KINDS.filter((x) => x === k || prefs.data.totalsShown.includes(x));
+    if (!next.length) return;
+    prefs.data.totalsShown = next;
     prefs.save();
-    open = false;
   }
 </script>
 
@@ -104,21 +110,25 @@
       bind:this={button}
       type="button"
       class="small totals"
-      title="Totals of the selected cells. Click to choose which one shows."
+      title="Totals of the selected cells. Click to choose which ones show, or to copy one."
       aria-haspopup="menu"
       aria-expanded={open}
       onclick={toggle}
     >
-      {#if totals}{@const k = shownKind(totals, prefs.data.totals)}{totalLabel(k)}: {totalText(totals, k, fmt)}{:else}Adding up…{/if}
+      {#if totals}{#each shownKinds(totals) as k, i (k)}{#if i > 0}<span class="gap"></span>{/if}{totalLabel(k)}: {totalText(totals, k, fmt)}{/each}{:else}Adding up…{/if}
     </button>
     {#if open && totals}
       <div class="pop" role="menu" style:right="{at.right}px" style:bottom="{at.bottom}px">
         {#each TOTAL_KINDS as k (k)}
-          <button type="button" role="menuitemradio" aria-checked={prefs.data.totals === k} class:on={prefs.data.totals === k} onclick={() => pick(k)}>
-            <span>{totalLabel(k)}</span><span class="v">{totalText(totals, k, fmt)}</span>
+          {@const on = prefs.data.totalsShown.includes(k)}
+          <button type="button" role="menuitemcheckbox" aria-checked={on} class:on onclick={() => pick(k)}>
+            <span class="tick" aria-hidden="true">{on ? "✓" : ""}</span><span>{totalLabel(k)}</span><span class="v">{totalText(totals, k, fmt)}</span>
           </button>
         {/each}
-        <button type="button" role="menuitem" onclick={copy}><span>Copy the total</span></button>
+        <div class="sep"></div>
+        {#each shownKinds(totals) as k (k)}
+          <button type="button" role="menuitem" onclick={() => copy(k)}><span class="tick"></span><span>Copy the {totalLabel(k).toLowerCase()}</span></button>
+        {/each}
       </div>
     {/if}
   </span>
@@ -154,9 +164,24 @@
     text-align: left;
     font-variant-numeric: tabular-nums;
   }
-  .pop button:hover,
-  .pop button.on {
+  .pop button:hover {
     background: color-mix(in srgb, var(--accent) 15%, transparent);
+  }
+  .pop button > span:nth-child(2) {
+    flex: 1;
+  }
+  .tick {
+    width: 1em;
+    flex: none;
+  }
+  .gap {
+    display: inline-block;
+    width: 14px;
+  }
+  .sep {
+    height: 1px;
+    margin: 4px 0;
+    background: var(--border);
   }
   .v {
     color: var(--muted);
