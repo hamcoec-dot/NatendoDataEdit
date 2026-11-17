@@ -4466,6 +4466,14 @@ impl Docs {
         String::from_utf8(out.buf).map_err(|_| CmdError::new("error", "export was not text"))
     }
 
+    /// The shown row for a row number of the whole file (Go To while a
+    /// filter is on), and whether that exact row is shown.
+    pub fn shown_row_of(&self, id: u32, number: u64) -> CmdResult<Option<(u64, bool)>> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.shown_row_of(number))
+    }
+
     /// Where Ctrl+arrow lands from a cell.
     pub fn data_edge(&self, id: u32, row: u64, col: u32, dir: Dir) -> CmdResult<(u64, u32)> {
         let entry = self.get(id)?;

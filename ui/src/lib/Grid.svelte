@@ -14,6 +14,7 @@
   import { localDays } from "./m8";
   import { formatCell, linkOf, MAX_ROW_LINES, pickMatches, readNumber, tickOf, toggled, wrapLines } from "./m9";
   import { barSpan, completion, scaleColour, scalePos, valueType } from "./m10";
+  import { colLetters } from "./goto";
   /** Mark value for a data-check problem (drawn red). */
   const PROBLEM = 255;
   const PROBLEM_COLOR = "#e5484d";
@@ -166,6 +167,7 @@
     void font;
     void prefs.data.gridLines;
     void prefs.data.alignNumbers;
+    void prefs.data.colLetters;
     void width;
     void height;
     untrack(redraw);
@@ -325,7 +327,16 @@
         ctx.beginPath();
         ctx.rect(x + 4, 0, cw - 8 - btn - (trailing ? MARK_W + 4 : 0), headH);
         ctx.clip();
-        ctx.fillText(colTitle(c), x + 6 + (mark ? MARK_W : 0), headH / 2);
+        let tx = x + 6 + (mark ? MARK_W : 0);
+        if (prefs.data.colLetters) {
+          // The column's letters first, in a quieter colour (View › Column letters).
+          const letters = colLetters(c);
+          ctx.fillStyle = colors.muted;
+          ctx.fillText(letters, tx, headH / 2);
+          tx += ctx.measureText(letters).width + 6;
+          ctx.fillStyle = inSel ? colors.text : colors.muted;
+        }
+        ctx.fillText(colTitle(c), tx, headH / 2);
         ctx.restore();
         if (btn) drawFilterButton(ctx, x + cw - btn - 2, filtered.has(c));
         if (mark) drawHiddenMark(ctx, x + 5, true);

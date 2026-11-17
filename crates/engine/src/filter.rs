@@ -1051,6 +1051,16 @@ mod tests {
         .unwrap();
         assert_eq!(d.row_count(), 3);
         assert_eq!(d.row_number(2), Some(3));
+        // Go To by the whole file's numbers: shown rows map back, and a
+        // hidden one gives the next row shown (or the last one).
+        let shown: Vec<u64> = (0..3).map(|r| d.row_number(r).unwrap()).collect();
+        for (i, &n) in shown.iter().enumerate() {
+            assert_eq!(d.shown_row_of(n), Some((i as u64, true)));
+        }
+        if shown[0] > 0 {
+            assert_eq!(d.shown_row_of(0), Some((0, false)));
+        }
+        assert_eq!(d.shown_row_of(10_000), Some((2, false)));
         // Edit a shown row so it no longer matches: it stays shown.
         d.set_cell(1, 2, "Lyon".into()).unwrap();
         assert_eq!(d.row_count(), 3);

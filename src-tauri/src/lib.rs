@@ -2438,6 +2438,13 @@ async fn pivot_open(
     .await
 }
 
+/// The shown row for a row number of the whole file.
+#[tauri::command]
+async fn shown_row_of(docs: DocsState<'_>, doc: u32, number: u64) -> CmdResult<Option<(u64, bool)>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.shown_row_of(doc, number)).await
+}
+
 /// Where Ctrl+arrow lands.
 #[tauri::command]
 async fn data_edge(
@@ -2891,6 +2898,7 @@ pub fn run() {
             combine_files,
             show_in_folder,
             data_edge,
+            shown_row_of,
             import_file,
             import_text,
             import_inspect,

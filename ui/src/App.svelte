@@ -5,6 +5,7 @@
   import { prefs, customFont, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
+  import { parseGoto } from "./lib/goto";
   import { cellCount, type Rect } from "./lib/selection";
   import { dropIndex, MOUSE_MOVES } from "./lib/dragmove";
   import { looksLikeHeader } from "./lib/header";
@@ -3082,18 +3083,42 @@
     t.bump();
   }
 
-  function goTo(text: string): void {
+  /** Go To / the name box: a row as numbered on screen (the whole file's
+   *  numbers while filtered), "R12 C3", Excel's "F200", or a column title
+   *  with or without a row ("Last name 200"). */
+  async function goTo(text: string): Promise<void> {
     const t = tab;
     if (!t) return;
-    const nums = (text.match(/\d+/g) ?? []).map(Number);
-    if (nums.length === 0) {
-      say('Type a row number, or "row, column" (for example 250, 3).');
+    const titles = Array.from({ length: t.info.cols }, (_, c) => grid?.title(c) ?? String(c + 1));
+    const g = parseGoto(text, titles);
+    if (!g || (g.col !== null && (g.col < 0 || g.col >= t.info.cols))) {
+      say('Type a row number ("250"), a row and column ("R250 C3" or "250, 3"), Excel\'s "F250", or a column title ("Last name 250").');
       return;
     }
-    const row = Math.min(t.info.rows, Math.max(1, nums[0]!)) - 1;
-    const col = nums.length > 1 ? Math.min(t.info.cols, Math.max(1, nums[1]!)) - 1 : t.cell.col;
+    const col = g.col ?? t.cell.col;
+    let row = t.cell.row;
+    let note = "";
+    if (g.row !== null) {
+      const n = Math.max(1, g.row) - 1;
+      if (t.info.filtered) {
+        // The numbers on screen are the whole file's: find that row among
+        // those the filter shows.
+        const r = await backend().shownRowOf(t.id, n).catch(() => null);
+        if (!r) {
+          say("The filter shows no rows.");
+          return;
+        }
+        row = r[0];
+        if (!r[1]) note = `Row ${g.row.toLocaleString()} is hidden by the filter, so this is the next row shown.`;
+      } else row = Math.min(t.info.rows - 1, n);
+    }
+    if (t !== tab) return;
     grid?.select({ row, col });
     grid?.focus();
+    // The name box shows where it went, even when that is the same cell.
+    const no = t.info.filtered ? t.cache.rowNumber(row) : row;
+    gotoText = `R${(no ?? row) + 1} C${col + 1}`;
+    if (note) say(note);
   }
 
   async function undoRedo(op: "undo" | "redo"): Promise<void> {
@@ -3420,7 +3445,10 @@
     const key = `${t.id}:${f.row}:${f.col}:${t.version}`;
     if (key === cellBarFor || cellBarDirty) return;
     cellBarFor = key;
-    gotoText = `R${f.row + 1} C${f.col + 1}`;
+    // While filtered, the row's number in the whole file (as the row
+    // headings show it).
+    const shownNo = t.info.filtered ? t.cache.rowNumber(f.row) : f.row;
+    gotoText = `R${(shownNo ?? f.row) + 1} C${f.col + 1}`;
     const cached = t.cache.get(f.row, f.col);
     if (cached !== undefined && !t.cache.isTruncated(f.row, f.col)) {
       cellBarText = cached;
@@ -3690,6 +3718,7 @@
     { id: "format.alignRight", label: "Align &right", run: () => setAlign("right"), enabled: hasTab, checked: () => alignIs("right") },
     { id: "format.alignAuto", label: "Align a&utomatically", run: () => setAlign(null), enabled: hasTab, checked: () => alignIs(null) },
     { id: "format.clip", label: "Cut off long te&xt", run: toggleClip, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.clips.has(c)) },
+    { id: "view.colLetters", label: "Column &letters (A, B, C)", run: () => { prefs.data.colLetters = !prefs.data.colLetters; prefs.save(); }, checked: () => prefs.data.colLetters },
     { id: "view.alignNumbers", label: "&Numbers on the right", run: () => { prefs.data.alignNumbers = !prefs.data.alignNumbers; prefs.save(); }, checked: () => prefs.data.alignNumbers },
     { id: "format.wrap", label: "&Wrap text", run: toggleWrap, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.wraps.has(c)) },
     { id: "format.rowHeight", label: "Row &height (lines)…", run: askRowLines, enabled: hasTab },
@@ -3814,7 +3843,7 @@
         "view.panel", "view.panelSummary", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.alignNumbers", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.colLetters", "view.alignNumbers", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
@@ -4709,7 +4738,12 @@
         bind:value={gotoText}
         onkeydown={(e) => {
           e.stopPropagation();
-          if (e.key === "Enter") goTo(gotoText);
+          if (e.key === "Enter") {
+            // Kept from reaching the grid once it has the focus (it would
+            // start editing the cell gone to).
+            e.preventDefault();
+            void goTo(gotoText);
+          }
           if (e.key === "Escape") grid?.focus();
         }}
       />

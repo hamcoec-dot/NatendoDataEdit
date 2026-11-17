@@ -2135,6 +2135,24 @@ export class MockBackend implements Backend {
     return ["by city", spec, now === "city" ? [] : [{ was: "city", col: 3, now }]];
   }
 
+  async shownRowOf(doc: number, number: number): Promise<[number, boolean] | null> {
+    const d = this.get(doc);
+    const vis = this.visible(d);
+    if (!vis) {
+      const n = this.totalRows(d);
+      return n > 0 ? [Math.min(number, n - 1), number < n] : null;
+    }
+    if (vis.length === 0) return null;
+    let lo = 0;
+    let hi = vis.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (vis[mid]! < number) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo < vis.length && vis[lo] === number ? [lo, true] : [Math.min(lo, vis.length - 1), false];
+  }
+
   async dataEdge(doc: number, row: number, col: number, dir: Dir): Promise<[number, number]> {
     const d = this.get(doc);
     const rows = this.rowCount(d);

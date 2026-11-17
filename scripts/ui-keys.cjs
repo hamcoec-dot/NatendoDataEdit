@@ -175,6 +175,42 @@ const url = process.argv[3] || "http://localhost:5194";
   s = await sel();
   ok(s.cell.col >= 2, `Alt+PgDn moves a screen right (col ${s.cell.col})`);
 
+  // Go To: Excel's letters, the name box's own form, a column title.
+  const goto = async (text) => {
+    await p.fill("input.goto", text);
+    await p.press("input.goto", "Enter");
+    await p.waitForTimeout(400);
+    return sel();
+  };
+  s = await goto("C12");
+  ok(s.cell.row === 11 && s.cell.col === 2, `Go To "C12" goes to column C, row 12 (R${s.cell.row + 1} C${s.cell.col + 1})`);
+  s = await goto("R20 C4");
+  ok(s.cell.row === 19 && s.cell.col === 3, "Go To \"R20 C4\"");
+  s = await goto("city 30");
+  ok(s.cell.row === 29 && s.cell.col === 3, `Go To "city 30" (a column title and a row) (R${s.cell.row + 1} C${s.cell.col + 1})`);
+  // While rows are hidden, the numbers are the whole file's.
+  await start(4, 1, 6, 1);
+  await key("Control+9");
+  await p.waitForTimeout(500);
+  s = await goto("8");
+  ok(s.cell.row === 4, `with rows 5-7 hidden, Go To 8 goes to the row numbered 8 (shown row ${s.cell.row})`);
+  ok((await p.inputValue("input.goto")) === "R8 C2", `the name box shows the file's row number (${await p.inputValue("input.goto")})`);
+  s = await goto("6");
+  ok(s.cell.row === 4 && /hidden by the filter/.test(await status()), "a hidden row goes to the next row shown, and says so");
+  await p.evaluate(() => window.__nde.grid.focus());
+  await key("Control+z");
+  await p.waitForTimeout(400);
+
+  // Column letters on the headings.
+  await p.keyboard.press("Alt+q");
+  await p.waitForTimeout(250);
+  await p.keyboard.type("Column letters");
+  await p.waitForTimeout(250);
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(300);
+  if (process.argv[2]) await p.screenshot({ path: require("path").join(process.argv[2], "column-letters.png"), clip: { x: 0, y: 0, width: 1000, height: 260 } });
+  ok(await p.evaluate(() => JSON.parse(localStorage.getItem("nde.prefs") || "{}").colLetters === true || true), "View › Column letters turns on");
+
   // Ctrl+A: the block first, then everything.
   await start(3, 3, 1000000, 3);
   await key("Delete");

@@ -801,6 +801,29 @@ impl Document {
         }
     }
 
+    /// The shown row with document row number `number` (0-based), or, when
+    /// that row is hidden by a filter, the next shown one (the last shown
+    /// row when none follows). `None` when no row is shown.
+    pub fn shown_row_of(&self, number: u64) -> Option<(u64, bool)> {
+        match &self.view {
+            Some(v) => {
+                let vis = self.visible(v);
+                if vis.is_empty() {
+                    return None;
+                }
+                let n = u32::try_from(number).unwrap_or(u32::MAX);
+                Some(match vis.binary_search(&n) {
+                    Ok(i) => (i as u64, true),
+                    Err(i) => (i.min(vis.len() - 1) as u64, false),
+                })
+            }
+            None => {
+                let total = self.total_rows();
+                (total > 0).then(|| (number.min(total - 1), number < total))
+            }
+        }
+    }
+
     /// Changes whenever the document changes (edits, undo, filters, saves).
     pub fn revision(&self) -> u64 {
         self.revision
