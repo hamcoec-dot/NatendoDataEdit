@@ -97,7 +97,7 @@ pub struct CellPlan {
 
 impl Document {
     /// Rows hidden (by a filter or by hand) between shown rows `rows`.
-    pub(crate) fn hidden_between(&self, rows: std::ops::Range<u64>) -> u64 {
+    pub fn hidden_between(&self, rows: std::ops::Range<u64>) -> u64 {
         if !self.is_filtered() || rows.end <= rows.start + 1 {
             return 0;
         }
@@ -114,10 +114,14 @@ impl CellPlan {
         if skip.is_empty() {
             return self;
         }
+        // Sorted once: a wide file can have hundreds of hidden columns.
+        let mut skip = skip.to_vec();
+        skip.sort_unstable();
+        skip.dedup();
         let mut removed = 0u64;
         for (_, cells) in &mut self.changes {
             let before = cells.len();
-            cells.retain(|(c, _)| !skip.contains(c));
+            cells.retain(|(c, _)| skip.binary_search(c).is_err());
             removed += (before - cells.len()) as u64;
         }
         self.changes.retain(|(_, c)| !c.is_empty());
@@ -778,12 +782,26 @@ impl Document {
                         .collect(),
                 ))
             })?;
+        // Across, a series counts only the shown columns (as down counts
+        // only the shown rows): hidden ones neither start nor take a number.
+        let mut hid = spec.skip_cols.clone();
+        hid.sort_unstable();
+        hid.dedup();
+        let hidden = |c: u32| hid.binary_search(&c).is_ok();
+        if !vertical && cols.iter().all(|&c| hidden(c)) {
+            return Ok(plan);
+        }
         let series: Vec<Series> = (0..lines as usize)
             .map(|l| {
                 let start: Vec<String> = if vertical {
                     block.iter().map(|r| r[l].clone()).collect()
                 } else {
-                    block[l].clone()
+                    block[l]
+                        .iter()
+                        .zip(&cols)
+                        .filter(|(_, &c)| !hidden(c))
+                        .map(|(v, _)| v.clone())
+                        .collect()
                 };
                 Series::new(&start, spec.mode, spec.read)
             })
@@ -794,7 +812,7 @@ impl Document {
         let len = if vertical {
             spec.rows
         } else {
-            spec.cols as u64
+            cols.iter().filter(|&&c| !hidden(c)).count() as u64
         } as i64;
         let index = |k: u64| match spec.dir {
             Dir::Down | Dir::Right => len + k as i64,
@@ -831,17 +849,22 @@ impl Document {
             for (l, s) in series.iter().enumerate() {
                 let id = self.id_at(spec.row + l as u64).ok_or(Error::OutOfRange)?;
                 let mut cells = Vec::new();
+                let mut step = 0u64;
                 for k in 0..count {
-                    let Some(v) = s.at(index(k)) else { break };
+                    let c = match spec.dir {
+                        Dir::Right => cols_end + k as u32,
+                        _ => spec.col - 1 - k as u32,
+                    };
+                    if hidden(c) {
+                        continue;
+                    }
+                    let Some(v) = s.at(index(step)) else { break };
+                    step += 1;
                     if made.fetch_add(v.len(), std::sync::atomic::Ordering::Relaxed) + v.len()
                         > MAX_BLOCK_BYTES
                     {
                         return Err(too_much());
                     }
-                    let c = match spec.dir {
-                        Dir::Right => cols_end + k as u32,
-                        _ => spec.col - 1 - k as u32,
-                    };
                     cells.push((c, v));
                 }
                 plan.cells += cells.len() as u64;
@@ -1831,6 +1854,29 @@ a,5
             )
             .unwrap();
         assert_eq!(plan.hidden_rows, 2);
+    }
+
+    #[test]
+    fn fill_right_numbers_shown_columns_only() {
+        let p = Progress::new();
+        // 1, 2 then a hidden column inside the block and one in the way.
+        let mut d = doc("a,b,h,c,h2,e,f
+1,2,9,,,,
+");
+        let spec = FillSpec {
+            row: 1,
+            col: 0,
+            rows: 1,
+            cols: 3,
+            dir: Dir::Right,
+            count: 4,
+            skip_cols: vec![2, 4],
+            ..Default::default()
+        };
+        let plan = d.plan_fill(&spec, &p).unwrap();
+        d.apply_cells(plan).unwrap();
+        // Shown cells read 1, 2, 3, 4, 5; the hidden ones keep 9 and "".
+        assert_eq!(all(&d)[1], ["1", "2", "9", "3", "", "4", "5"]);
     }
 
     #[test]

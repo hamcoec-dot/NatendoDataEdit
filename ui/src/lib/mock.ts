@@ -589,7 +589,7 @@ export class MockBackend implements Backend {
   }
   /** Position in the whole document of shown row `row`. */
   /** Hidden rows between shown rows r0..r1 (exclusive). */
-  private hiddenBetween(d: MockDoc, r0: number, r1: number): number {
+  private hiddenBetween_(d: MockDoc, r0: number, r1: number): number {
     if (r1 - r0 < 2 || (d.shown === null && d.hidden === null)) return 0;
     return Math.max(0, this.pos(d, r1 - 1) - this.pos(d, r0) + 1 - (r1 - r0));
   }
@@ -749,9 +749,15 @@ export class MockBackend implements Backend {
 
   async fillCells(doc: number, row: number, rows: number, col: number, cols: number, value: string, skip: number[] = []) {
     if (rows * cols > 100_000) throw err("too_large", "one change is limited to 100,000 cells");
+    const hide = new Set(skip);
     const cells: [number, number, string][] = [];
-    for (let r = row; r < row + rows; r++) for (let c = col; c < col + cols; c++) if (!skip.includes(c)) cells.push([r, c, value]);
+    for (let r = row; r < row + rows; r++) for (let c = col; c < col + cols; c++) if (!hide.has(c)) cells.push([r, c, value]);
     return this.setCells(doc, cells);
+  }
+
+  async hiddenBetween(doc: number, row: number, rows: number): Promise<number> {
+    const d = this.get(doc);
+    return this.hiddenBetween_(d, row, Math.min(row + rows, this.rowCount(d)));
   }
 
   async moveCells(doc: number, row: number, rows: number, col: number, cols: number, toRow: number, toCol: number, copy: boolean) {
@@ -770,10 +776,11 @@ export class MockBackend implements Backend {
   async copyCells(doc: number, row: number, rows: number, col: number, cols: number, skip: number[] = []) {
     const d = this.get(doc);
     if (rows * cols > 1_000_000) throw err("too_large", "copying is limited to 1,000,000 cells at once");
+    const hide = new Set(skip);
     const out: string[][] = [];
     for (let r = row; r < Math.min(row + rows, this.rowCount(d)); r++) {
       const line: string[] = [];
-      for (let c = col; c < col + cols; c++) if (!skip.includes(c)) line.push(this.value(d, r, c));
+      for (let c = col; c < col + cols; c++) if (!hide.has(c)) line.push(this.value(d, r, c));
       out.push(line);
     }
     return toTsv(out);
@@ -1667,10 +1674,10 @@ export class MockBackend implements Backend {
         const s = op.spec;
         // No size limit here (as the engine): one undo step, any size.
         const cells: [number, number, string][] = [];
-        const skip = s.skip_cols ?? [];
-        for (let r = s.row; r < s.row + s.rows; r++) for (let c = s.col; c < s.col + s.cols; c++) if (!skip.includes(c)) cells.push([r, c, s.value]);
+        const skip = new Set(s.skip_cols ?? []);
+        for (let r = s.row; r < s.row + s.rows; r++) for (let c = s.col; c < s.col + s.cols; c++) if (!skip.has(c)) cells.push([r, c, s.value]);
         const info = this.writeCells(doc, cells);
-        return this.report(info, { cells: cells.length, hidden_rows: this.hiddenBetween(d, s.row, s.row + s.rows) });
+        return this.report(info, { cells: cells.length, hidden_rows: this.hiddenBetween_(d, s.row, s.row + s.rows) });
       }
       case "shift_cells": {
         // The stub moves cells inside the table only (the desktop app adds
@@ -1874,7 +1881,7 @@ export class MockBackend implements Backend {
           }),
         );
         const info = cells.length ? await this.setCells(doc, cells) : this.refresh(d);
-        return this.report(info, { cells: cells.length, skipped, hidden_rows: this.hiddenBetween(d, op.spec.row, Math.min(op.spec.row + g.length, rows)) });
+        return this.report(info, { cells: cells.length, skipped, hidden_rows: this.hiddenBetween_(d, op.spec.row, Math.min(op.spec.row + g.length, rows)) });
       }
       case "fill": {
         const f = op.spec;

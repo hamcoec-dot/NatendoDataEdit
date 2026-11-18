@@ -98,6 +98,43 @@ const url = process.argv[3] || "http://localhost:5197";
   ok((await cell(1, 1)) === "P0" && (await cell(1, 2)) === "", "clear leaves the hidden column alone");
   await p.keyboard.press("Control+z");
   await p.waitForTimeout(400);
+  // A block repeated over a selection with a hidden column fills only the
+  // shown columns and never writes past the selection.
+  await sel(1, 0, 2, 2);
+  await clip("X\r\nY\r\n");
+  await p.keyboard.press("Control+v");
+  await p.waitForTimeout(700);
+  const rep = [await cell(1, 0), await cell(1, 1), await cell(1, 2), await cell(2, 0), await cell(2, 2)];
+  ok(rep.join(",") === "X,P0,X,Y,Y" && (await p.evaluate(() => window.__nde.tab.info.cols)) === 3, `a repeated block stays in the selection's shown columns (${rep.join(",")})`);
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(400);
+  // Selection to a new tab leaves the hidden column out too.
+  await sel(1, 0, 1, 2);
+  await cmd("Selection to a new tab");
+  await p.waitForTimeout(600);
+  const nt = await p.evaluate(() => [window.__nde.tab.info.cols, window.__nde.tab.cache.get(0, 0), window.__nde.tab.cache.get(0, 1)]);
+  ok(nt[0] === 2 && nt[1] === "a" && nt[2] === "Q", `selection to a new tab leaves the hidden column out (${nt.join(",")})`);
+  ok(/1 hidden column left out/.test(await status()), "and says so");
+  await p.keyboard.press("Control+w");
+  await p.waitForTimeout(400);
+  const dlgW = await p.$("[role=dialog] button:has-text(\"Don't save\"), [role=alertdialog] button:has-text(\"Don't save\")");
+  if (dlgW) await dlgW.click();
+  await p.waitForTimeout(400);
+  // Ctrl+Enter over rows with hidden rows between says they were left alone.
+  await sel(1, 2, 3, 2);
+  await p.keyboard.type("Z");
+  await p.keyboard.press("Control+Enter");
+  await p.waitForTimeout(700);
+  ok((await cell(3, 2)) === "Z" && /2 hidden rows between them were left as they were/.test(await status()), `Ctrl+Enter says hidden rows were left alone (${(await status()).slice(0, 100)})`);
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(400);
+  // A small clear says it too, and counts only the shown cells.
+  await sel(1, 0, 3, 2);
+  await p.keyboard.press("Delete");
+  await p.waitForTimeout(600);
+  ok(/Cleared 6 cells\. 2 hidden rows between/.test(await status()), `a clear counts shown cells and notes hidden rows (${(await status()).slice(0, 100)})`);
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(400);
   await p.evaluate(() => {
     window.__nde.tab.columns.showAll();
     window.__nde.tab.bump();

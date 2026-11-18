@@ -22,7 +22,7 @@ use natendo_engine::import;
 use natendo_engine::join::{
     AppendSource, AppendSpec, JoinSource, JoinSpec, JoinWrite, KeepRows, KeyMatch,
 };
-use natendo_engine::ops::{Dir, FillSpec, SplitColumn};
+use natendo_engine::ops::{Dir, FillSpec, PasteSpec, SplitColumn};
 use natendo_engine::reshape::{Aggregate, Blanks, Duplicates, Pivot, Unpivot};
 use natendo_engine::sort::{SortKey, SortKind, SortSpec};
 use natendo_engine::stats::{ChartKind, ChartSpec, SubtotalSpec, Total};
@@ -199,7 +199,38 @@ fn main() {
     doc.apply_filter(plan).unwrap();
     println!("     filter shows {} rows", doc.row_count());
     check.budget("filter one column", t.elapsed(), budget(1.0));
+    // A paste into filtered rows, passing over a hidden column, costs about
+    // what a paste with nothing hidden does.
+    let block: Vec<Vec<String>> = (0..100_000)
+        .map(|i| vec![format!("p{i}"), "x".into(), "y".into()])
+        .collect();
+    let paste = |skip: Vec<u32>| PasteSpec {
+        row: 1,
+        col: 1,
+        skip_cols: skip,
+        stop_at_end: true,
+        ..Default::default()
+    };
+    let t = Instant::now();
+    let plan = doc.plan_paste(&paste(vec![2]), block.clone(), &p).unwrap();
+    println!(
+        "     filtered paste: {} cells, {} hidden rows between",
+        plan.cells, plan.hidden_rows
+    );
+    doc.apply_cells(plan).unwrap();
+    let filtered = t.elapsed();
+    check.budget("paste 100k x 3 into filtered rows", filtered, budget(1.0));
+    doc.undo();
     doc.clear_filter();
+    let t = Instant::now();
+    let plan = doc.plan_paste(&paste(Vec::new()), block, &p).unwrap();
+    doc.apply_cells(plan).unwrap();
+    println!(
+        "     unfiltered paste: {:.1} ms (filtered {:.1} ms)",
+        t.elapsed().as_secs_f64() * 1e3,
+        filtered.as_secs_f64() * 1e3
+    );
+    doc.undo();
     let find = |text: &str, kind, col| FindSpec {
         pattern: Pattern {
             text: text.into(),

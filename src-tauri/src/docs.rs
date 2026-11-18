@@ -1969,6 +1969,14 @@ impl Docs {
         self.fill_skipping(id, row, rows, col, cols, value, &[])
     }
 
+    /// Rows hidden between shown rows `row` and `row + rows - 1` (left as
+    /// they were by a fill or clear of that block).
+    pub fn hidden_between(&self, id: u32, row: u64, rows: u64) -> CmdResult<u64> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.hidden_between(row..row.saturating_add(rows).min(d.row_count())))
+    }
+
     /// [`Docs::fill`] leaving columns `skip` (hidden ones) as they are.
     #[allow(clippy::too_many_arguments)]
     pub fn fill_skipping(
@@ -1992,9 +2000,10 @@ impl Docs {
             if rows > 0 {
                 check_width(d, c1 as u64)?;
             }
+            let keep: Vec<u32> = (col..c1).filter(|c| !skip.contains(c)).collect();
             let mut cells = Vec::with_capacity(n as usize);
             for r in row..r1 {
-                for c in (col..c1).filter(|c| !skip.contains(c)) {
+                for &c in &keep {
                     cells.push((r, c, value.clone()));
                 }
             }
@@ -2046,6 +2055,8 @@ impl Docs {
                 "too many columns to copy at once",
             ));
         }
+        // Which columns to leave out, worked out once (not per cell).
+        let hidden: Vec<bool> = (0..cols).map(|c| skip.contains(&(col + c))).collect();
         let mut r = row;
         while r < r1 {
             let end = (r + band).min(r1);
@@ -2053,7 +2064,7 @@ impl Docs {
             for i in 0..v.rows {
                 let mut first = true;
                 for c in 0..v.cols {
-                    if skip.contains(&(col + c)) {
+                    if hidden[c as usize] {
                         continue;
                     }
                     let k = (i * v.cols + c) as usize;

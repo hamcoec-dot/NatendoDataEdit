@@ -1228,7 +1228,12 @@
       // A big block is one engine job (with progress and Cancel).
       if (cellCount(r) > MAX_CELLS_PER_CHANGE) return fillRect(r, value);
       t.whatNext = what;
-      return apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, value, hiddenColsOf(x)));
+      const ok = await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, value, hiddenColsOf(x)));
+      if (ok) {
+        const note = await hiddenRowsNote(t, r);
+        if (note) say(`Filled ${plural(r.rows * shownColsIn(t, r), "cell")}.${note} Undo (Ctrl+Z) takes it back.`);
+      }
+      return ok;
     }
     if (value === t.cache.get(row, col) && !t.cache.isTruncated(row, col)) return true;
     const no = shownRowNo(t, row);
@@ -1247,7 +1252,7 @@
     t.whatNext = "clearing cells";
     if (await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, "", hiddenColsOf(x)))) {
       t.noteStepSel({ anchor: { row: r.row, col: r.col }, focus: { row: r.row + r.rows - 1, col: r.col + r.cols - 1 } });
-      say(`Cleared ${plural(cellCount(r), "cell")}. Ctrl+Z undoes it.`);
+      say(`Cleared ${plural(r.rows * shownColsIn(t, r), "cell")}.${await hiddenRowsNote(t, r)} Ctrl+Z undoes it.`);
     }
   }
 
@@ -1260,7 +1265,10 @@
       return;
     }
     t.whatNext = "clearing cells";
-    await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, "", hiddenColsOf(x)));
+    if (await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, "", hiddenColsOf(x)))) {
+      const note = await hiddenRowsNote(t, r);
+      if (note) say(`Cleared ${plural(r.rows * shownColsIn(t, r), "cell")}.${note} Ctrl+Z undoes it.`);
+    }
   }
 
   /** One value into every cell of a big block (clearing it when ""), as an
@@ -1421,7 +1429,9 @@
     let width = Math.max(...rows.map((x) => x.length));
     // A block pasted into a bigger selection that it fits a whole number of
     // times repeats to fill it (as in Excel and Google Sheets).
-    const across = r.cols % width === 0 ? r.cols / width : 1;
+    // Hidden columns are passed over, so only the shown ones count.
+    const shownCols = shownColsIn(t, r);
+    const across = shownCols % width === 0 ? shownCols / width : 1;
     const down = r.rows % rows.length === 0 ? r.rows / rows.length : 1;
     if ((across > 1 || down > 1) && (rows.length > 1 || width > 1) && cellCount(r) <= MAX_CELLS_PER_CHANGE) {
       const line = (x: string[]): string[] => Array.from({ length: width }, (_, i) => x[i] ?? "");
@@ -1553,6 +1563,28 @@
   /** The hidden columns of a tab (paste, fill, clear and copy pass over them). */
   function hiddenColsOf(t: Tab): number[] {
     return t.columns.hiddenList();
+  }
+
+  /** How many columns of a block are shown (not hidden). */
+  function shownColsIn(t: Tab, r: Rect): number {
+    const hidden = hiddenColsOf(t);
+    if (!hidden.length) return r.cols;
+    const h = new Set(hidden);
+    let n = 0;
+    for (let c = r.col; c < r.col + r.cols; c++) if (!h.has(c)) n++;
+    return n;
+  }
+
+  /** The status note for a small fill or clear of a block that hidden rows
+   *  run through ("" when none do). */
+  async function hiddenRowsNote(t: Tab, r: Rect): Promise<string> {
+    if (!rowsHidden(t) || r.rows < 2) return "";
+    try {
+      const n = await backend().hiddenBetween(t.id, r.row, r.rows);
+      return hiddenNote({ hidden_rows: n } as OpReport);
+    } catch {
+      return "";
+    }
   }
 
   /** Rows are hidden (a filter, or by hand). */
@@ -2848,14 +2880,21 @@
     if (!t) return;
     const r = t.rect;
     try {
-      const text = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols);
+      const hidden = hiddenColsOf(t);
+      const shown = shownColsIn(t, r);
+      if (shown === 0) {
+        say("Every selected column is hidden, so there is nothing to copy.");
+        return;
+      }
+      const text = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols, hidden);
       const d = await backend().newDocument();
       addTab(d, false);
       const nt = tabs[tabs.length - 1];
       if (!nt) return;
       const rep = await backend().dataOp(nt.id, { op: "paste", spec: { row: 0, col: 0, op: "none", skip_blanks: false, transpose: false }, text });
       if (rep.info) nt.update(rep.info, true);
-      say(`Copied ${plural(r.rows, "row")} × ${plural(r.cols, "column")} into a new tab. It is not saved yet (Ctrl+S).`);
+      const left = r.cols - shown;
+      say(`Copied ${plural(r.rows, "row")} × ${plural(shown, "column")} into a new tab${left ? ` (${plural(left, "hidden column")} left out)` : ""}. It is not saved yet (Ctrl+S).`);
     } catch (e) {
       say(errorText(e));
     }
