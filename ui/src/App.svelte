@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { recallHeader, rememberHeader } from "./lib/headerMemory";
+  import { forgetHeaders, recallHeader, rememberedHeaders, rememberHeader } from "./lib/headerMemory";
   import { onMount, tick } from "svelte";
   import { backend, errorText, isCmdError, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
   import { Tab } from "./lib/tab.svelte";
@@ -452,6 +452,7 @@
     try {
       t.private = await backend().setPrivate(t.id, folder, on);
       void loadRecent();
+      if (on && t.info.path) void rememberHeader(t.info.path, false, true);
       say(
         on
           ? `Private file mode is on for ${folder ? "this folder" : "this file"}: no recovery copies, no earlier saves, not in the recent files, and the clipboard is cleared when the tab closes.`
@@ -481,27 +482,59 @@
   }
 
   /** Remember this file's "first row holds the column names" for the next
-   *  time it opens: when the user chose it (or saved), never for a file in
-   *  private mode (whose earlier choice is forgotten instead). */
+   *  time it opens: from the switch, a save, or a close or quit with nothing
+   *  unsaved (a title row added and then not saved is not kept); never for
+   *  a file in private mode (whose earlier choice is forgotten instead). */
   async function rememberTab(t: Tab, saved = false): Promise<void> {
     const path = t.info.path;
-    if (!path || !(t.headerTouched || saved)) return;
+    if (!path) return;
     try {
       const p = await backend().privateState(t.id);
-      await rememberHeader(path, t.header, p.file || p.folder);
+      if (p.file || p.folder) await rememberHeader(path, false, true);
+      else if (t.headerTouched || saved) await rememberHeader(path, t.header);
     } catch {
       // Not remembered this time.
     }
   }
 
+  /** Format › Forget this file's title-row choice: the next open guesses. */
+  async function forgetHeaderOf(): Promise<void> {
+    const t = tab;
+    const path = t?.info.path;
+    if (!t || !path) return;
+    await rememberHeader(path, false, true);
+    // Closing it now does not remember it again.
+    t.headerTouched = false;
+    say("Forgot this file's title-row choice; the next time it opens, the app guesses again.");
+  }
+  /** Format › Forget remembered title rows: every file's choice. */
+  async function forgetAllHeaders(): Promise<void> {
+    const n = rememberedHeaders();
+    if (!n) {
+      say("No title-row choices are remembered.");
+      return;
+    }
+    const a = await ask("Forget remembered title rows?", `The app remembers whether the first row holds the column names for ${plural(n, "file")}. Forget them all? Files opened later are guessed again.`, [
+      { id: "forget", label: "Forget them", primary: true },
+      { id: "cancel", label: "Cancel" },
+    ], "cancel");
+    if (a !== "forget") return;
+    forgetHeaders();
+    for (const t of tabs) t.headerTouched = false;
+    say(`Forgot the title-row choices of ${plural(n, "file")}.`);
+  }
+
   /** Set "First row is header" from a look at the first rows (the file is
    *  not changed; the user can flip the switch any time). */
-  async function guessHeader(t: Tab): Promise<void> {
-    // The choice made for this file before wins over a guess.
+  async function guessHeader(t: Tab, fresh = false): Promise<void> {
+    // The choice made for this file before wins over a guess (not when it
+    // was opened again with another layout: other columns).
     if (t.info.path && !t.headerTouched) {
       try {
         const p = await backend().privateState(t.id);
-        const kept = p.file || p.folder ? null : await recallHeader(t.info.path);
+        // A private file keeps no choice: forget one made before.
+        if (p.file || p.folder) await rememberHeader(t.info.path, false, true);
+        const kept = p.file || p.folder || fresh ? null : await recallHeader(t.info.path);
         if (kept !== null && !t.headerTouched) {
           t.header = kept;
           t.headerTouched = true;
@@ -1289,7 +1322,7 @@
   async function closeTab(i = active): Promise<boolean> {
     const t = tabs[i];
     if (!t) return false;
-    await rememberTab(t);
+    if (!t.info.modified) await rememberTab(t);
     if (t.info.modified) {
       active = i;
       const a = await ask(
@@ -1427,7 +1460,7 @@
       );
       if (a !== "quit") return;
     }
-    await Promise.all(tabs.map((t) => rememberTab(t)));
+    await Promise.all(tabs.filter((t) => !t.info.modified).map((t) => rememberTab(t)));
     await saveSession();
     await backend().quitApp();
   }
@@ -1486,7 +1519,7 @@
       nt.headerTouched = !fresh;
       tabs[i] = nt;
       active = i;
-      if (fresh) void tick().then(() => guessHeader(nt));
+      if (fresh) void tick().then(() => guessHeader(nt, true));
       // The same columns: they stay protected.
       else if (t.info.protected?.length) {
         void backend()
@@ -4816,6 +4849,8 @@
     { id: "format.colWidth", label: "Set column &width…", run: () => askColWidth(), enabled: hasTab },
     { id: "format.showAllCols", label: "Unhide all columns", run: () => { tab!.columns.showAll(); tab!.bump(); }, enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
     { id: "format.header", label: "First row is &header", run: toggleHeader, enabled: hasTab, checked: () => !!tab?.header },
+    { id: "format.forgetHeader", label: "Forget this file's title-row choice", run: () => void forgetHeaderOf(), enabled: () => !!tab?.info.path },
+    { id: "format.forgetHeaders", label: "Forget remembered title rows…", run: () => void forgetAllHeaders() },
     { id: "format.makeHeader", label: "&Make this row the header", run: makeHeader, enabled: ready },
     { id: "format.renameCol", label: "Re&name column…", run: () => void askRename(menuCol ?? undefined), enabled: () => ready() && !tab?.info.read_only && (tab?.info.cols ?? 0) > 0 },
 
@@ -5024,7 +5059,7 @@
       ],
     },
     { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.symbol"] },
-    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
+    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "format.forgetHeader", "format.forgetHeaders", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
     {
       label: "&Data",
       items: [
@@ -5068,11 +5103,11 @@
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
-    tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
+    tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "format.tidyTitles", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
-    corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showAllCols"],
+    corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.forgetHeader", "format.showAllCols"],
   };
 
   const toolbar: (string | "-")[] = [

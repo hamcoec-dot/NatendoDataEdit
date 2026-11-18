@@ -2,8 +2,29 @@
 // file opened again keeps the choice. Only a fingerprint of the path (a
 // SHA-256, never the path itself) and the choice are kept, on this PC, for
 // the 1,000 files used last. Nothing is kept for files in private mode.
+// The fingerprint is salted with a random value made once on this PC, so a
+// guessed path can't be checked against it.
 
 const KEY = "nde.headers.v1";
+const SALT_KEY = "nde.headers.salt";
+let memSalt = "";
+
+function salt(): string {
+  try {
+    let v = localStorage.getItem(SALT_KEY);
+    if (!v || !/^[0-9a-f]{32}$/.test(v)) {
+      v = randomHex();
+      localStorage.setItem(SALT_KEY, v);
+    }
+    return v;
+  } catch {
+    return (memSalt ||= randomHex());
+  }
+}
+
+function randomHex(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
 /** Files remembered; the oldest are forgotten first. */
 export const HEADER_MEMORY_MAX = 1000;
 
@@ -29,7 +50,7 @@ function store(s: Store): void {
 /** The fingerprint of a path: Windows paths ignore case and slash style. */
 export async function pathKey(path: string): Promise<string> {
   const norm = path.replace(/\//g, "\\").toLowerCase();
-  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(norm));
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${salt()}\n${norm}`));
   return Array.from(new Uint8Array(d).slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
@@ -61,10 +82,17 @@ export async function rememberHeader(path: string, header: boolean, isPrivate = 
   store(s);
 }
 
-/** Forget every file's choice. */
+/** How many files' choices are remembered. */
+export function rememberedHeaders(): number {
+  return Object.keys(load()).length;
+}
+
+/** Forget every file's choice (and the salt: new fingerprints from now). */
 export function forgetHeaders(): void {
+  memSalt = "";
   try {
     localStorage.removeItem(KEY);
+    localStorage.removeItem(SALT_KEY);
   } catch {
     // Nothing kept.
   }

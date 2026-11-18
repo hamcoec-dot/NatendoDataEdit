@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { HEADER_MEMORY_MAX, forgetHeaders, pathKey, recallHeader, rememberHeader } from "./headerMemory";
+import { HEADER_MEMORY_MAX, forgetHeaders, pathKey, recallHeader, rememberedHeaders, rememberHeader } from "./headerMemory";
 
 describe("first row is headers, remembered per file", () => {
   const store = new Map<string, string>();
@@ -44,6 +44,7 @@ describe("first row is headers, remembered per file", () => {
     for (let i = 0; i <= HEADER_MEMORY_MAX; i++) await rememberHeader(`C:\\f${i}.csv`, true);
     expect(await recallHeader("C:\\f0.csv")).toBeNull();
     expect(await recallHeader(`C:\\f${HEADER_MEMORY_MAX}.csv`)).toBe(true);
+    expect(rememberedHeaders()).toBe(HEADER_MEMORY_MAX);
     // Speed: with the store full, a save or an open adds well under a frame.
     const t0 = performance.now();
     for (let i = 0; i < 20; i++) {
@@ -53,6 +54,13 @@ describe("first row is headers, remembered per file", () => {
     expect((performance.now() - t0) / 20).toBeLessThan(15);
     forgetHeaders();
     expect(await recallHeader(`C:\\f${HEADER_MEMORY_MAX}.csv`)).toBeNull();
+  });
+
+  it("salts the fingerprint, so a guessed path can't be checked", async () => {
+    const k1 = await pathKey("C:\\x.csv");
+    expect(store.get("nde.headers.salt")).toMatch(/^[0-9a-f]{32}$/);
+    forgetHeaders();
+    expect(await pathKey("C:\\x.csv")).not.toBe(k1);
   });
 
   it("survives a damaged store", async () => {

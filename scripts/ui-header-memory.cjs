@@ -50,6 +50,44 @@ const url = process.argv[3] || "http://localhost:5206";
   const kept = await p.evaluate(() => localStorage.getItem("nde.headers.v1") ?? "");
   ok(kept.length > 0 && !/sample|samples|csv/i.test(kept), `only a fingerprint is kept (${kept.slice(0, 60)})`);
 
+  // A title row added, then the tab closed with Don't save: not kept.
+  await command("First row is header");
+  ok((await header()) === !guessed, "the switch is recorded at once");
+  if (!(await header())) {
+    await p.evaluate(() => {
+      window.__nde.grid.select({ row: 5, col: 0 });
+    });
+    await command("Make this row the header");
+    ok((await header()) === true && (await p.evaluate(() => window.__nde.tab.info.modified)), "a title row was made (unsaved)");
+  }
+  const before = await header();
+  await p.keyboard.press("Control+w");
+  await wait(500);
+  const dont = p.getByRole("button", { name: "Don't save" });
+  ok((await dont.count()) === 1, "closing asks to save");
+  await dont.click();
+  await wait(500);
+  await open();
+  ok(before === true && (await header()) === false, `closed with Don't save: the choice from before is kept (${await header()})`);
+
+  // Opened again with another layout: guessed afresh. Forget: guessed again.
+  await command("Forget this file's title-row choice");
+  ok(/Forgot this file's title-row choice/.test(await p.locator("footer").textContent()), "forget this file's choice");
+  await p.keyboard.press("Control+w");
+  await wait(500);
+  await open();
+  ok((await header()) === guessed, "after forgetting, the file is guessed again");
+  await command("First row is header");
+  await wait(500);
+  await command("remembered title rows");
+  await p.getByRole("button", { name: "Forget them" }).click();
+  await wait(400);
+  ok((await p.evaluate(() => localStorage.getItem("nde.headers.v1"))) === null, "forget them all empties the store");
+  await p.locator(".tab.active").click({ button: "right" });
+  await wait(300);
+  ok(await p.locator("[role=menu] >> text=Forget this file's title-row choice").isVisible(), "right-click on the tab offers it");
+  await p.keyboard.press("Escape");
+
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   console.log(failed ? `${failed} FAILED` : "ALL PASS");
   await b.close();

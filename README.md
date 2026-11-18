@@ -164,9 +164,12 @@ everything is also in command search.
 - **Title row or not:** the app guesses whether the first row holds titles;
   one switch changes it, and files without titles get column numbers.
   A file opened again keeps the choice you made for it (or had when you
-  saved it). Only a fingerprint of the file's path and the choice are
-  kept, on this PC, for the 1,000 files used last; nothing is kept for
-  files in private mode.
+  saved it); a title row added and then closed with Don't save is not
+  kept, and a file opened again with another layout is guessed afresh.
+  Only a salted fingerprint of the file's path and the choice are kept, on
+  this PC, for the 1,000 files used last; nothing is kept for files in
+  private mode. Format > Forget this file's title-row choice (also on the
+  tab's right-click menu) or Forget remembered title rows clears them.
   Rename a column by double-clicking its heading, right-clicking it, or
   Format > Rename column (a file without titles gets a title row). Data
   check rules that name the column ([first_name]) follow the new name (or
