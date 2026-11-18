@@ -4750,7 +4750,7 @@
     { id: "format.renameCol", label: "Re&name column…", run: () => void askRename(menuCol ?? undefined), enabled: () => ready() && !tab?.info.read_only && (tab?.info.cols ?? 0) > 0 },
 
     { id: "view.freeze", label: "&Freeze panes at cursor", run: freezeAtCursor, enabled: hasTab },
-    { id: "view.splitRows", label: "Split top and &bottom", keys: ["Ctrl+Alt+S"], run: () => toggleSplit("rows"), enabled: hasTab, checked: () => tab?.split?.dir === "rows" },
+    { id: "view.splitRows", label: "Split top and &bottom", keys: ["Alt+Shift+W"], run: () => toggleSplit("rows"), enabled: hasTab, checked: () => tab?.split?.dir === "rows" },
     { id: "view.splitCols", label: "Split si&de by side", run: () => toggleSplit("cols"), enabled: hasTab, checked: () => tab?.split?.dir === "cols" },
     { id: "view.freezeRow", label: "Freeze top &row", run: () => { tab!.frozenRows = 1; tab!.frozenCols = 0; }, enabled: hasTab },
     { id: "view.freezeCol", label: "Freeze first &column", run: () => { tab!.frozenCols = 1; tab!.frozenRows = 0; }, enabled: hasTab },

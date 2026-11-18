@@ -499,7 +499,7 @@ impl Document {
             drop(reader);
             let _ = names;
             let parts = match limit {
-                Some(_) => vec![first..end],
+                Some(_) => std::iter::once(first..end).collect(),
                 None => self.xlsx_parts(opts),
             };
             let n = parts.len();
@@ -1180,9 +1180,14 @@ mod tests {
         let styles = z.read_string("xl/styles.xml", 1 << 20).unwrap();
         let book = z.read_string("xl/workbook.xml", 1 << 20).unwrap();
         // Frozen bold titles with filter buttons, and widths.
-        assert!(sheet.contains("state=\"frozen\"") && sheet.contains("<autoFilter ref=\"A1:F3\"/>"));
+        assert!(
+            sheet.contains("state=\"frozen\"") && sheet.contains("<autoFilter ref=\"A1:F3\"/>")
+        );
         assert!(sheet.contains("<cols>") && sheet.contains("numberStoredAsText"));
-        assert!(book.contains("_xlnm._FilterDatabase") && book.contains("&apos;voters&apos;!$A$1:$F$3") || book.contains("'voters'!$A$1:$F$3"));
+        assert!(
+            book.contains("_xlnm._FilterDatabase") && book.contains("&apos;voters&apos;!$A$1:$F$3")
+                || book.contains("'voters'!$A$1:$F$3")
+        );
         // IDs and ZIP codes as text, the rest as Excel values.
         assert!(sheet.contains("<c r=\"A2\" s=\""), "{sheet}");
         assert!(sheet.contains("<c r=\"B2\" s=\"") && sheet.contains("02134"));
@@ -1190,7 +1195,10 @@ mod tests {
         assert!(sheet.contains("<v>45322</v>"), "2024-01-31 is day 45322");
         assert!(styles.contains("numFmtId=\"49\"") && styles.contains("numFmtId=\"14\""));
         assert!(styles.contains("&quot;$&quot;#,##0.00"));
-        assert!(z.read_string("docProps/app.xml", 4096).unwrap().contains("Natendo Data Edit"));
+        assert!(z
+            .read_string("docProps/app.xml", 4096)
+            .unwrap()
+            .contains("Natendo Data Edit"));
         // Parts: two rows a part, each with the title row.
         let mut out = Vec::new();
         let r = d
@@ -1232,7 +1240,11 @@ mod tests {
             .unwrap()
             .into_document()
             .unwrap();
-        assert_eq!(t.row_values(0).unwrap()[0], "Voter ID", "each part has the titles");
+        assert_eq!(
+            t.row_values(0).unwrap()[0],
+            "Voter ID",
+            "each part has the titles"
+        );
         assert_eq!(t.row_values(1).unwrap()[0], "2002");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -5190,15 +5190,21 @@ impl Docs {
                         Some(p) if !d.is_modified() => {
                             natendo_engine::tools::file_sha256(p, &job.progress)?
                         }
-                        Some(_) => "(the tab has changes not saved; save it first for a fingerprint)".into(),
+                        Some(_) => {
+                            "(the tab has changes not saved; save it first for a fingerprint)"
+                                .into()
+                        }
                         None => "(not saved to a file)".into(),
                     };
                     let source = d
                         .path()
                         .map_or_else(|| self.stem(id), |p| p.display().to_string());
-                    let column = spec
-                        .per
-                        .map(|c| d.expr_names(spec.keep_first).get(c as usize).cloned().unwrap_or_default());
+                    let column = spec.per.map(|c| {
+                        d.expr_names(spec.keep_first)
+                            .get(c as usize)
+                            .cloned()
+                            .unwrap_or_default()
+                    });
                     sample_record = Some(natendo_engine::tools::sample_record(
                         &r,
                         &source,
@@ -8497,6 +8503,69 @@ by party ",
         let f = docs.open_path(&p, false).unwrap().id;
         wait(&docs, f);
         assert_eq!(docs.set_title(f, "x").unwrap_err().kind, "has_path");
+    }
+
+    #[test]
+    fn audit_sample_opens_its_record_and_tabs_go_to_one_workbook() {
+        use natendo_engine::tools::{Sample, SampleSize};
+        let p = tmp(
+            "audit.csv",
+            b"id,precinct
+1,A
+2,B
+3,A
+4,B
+5,A
+6,B
+",
+        );
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let rep = docs
+            .new_table_report(
+                id,
+                TableOp::Sample {
+                    spec: Sample {
+                        size: SampleSize::Rows { n: 2 },
+                        seed: 7,
+                        keep_first: true,
+                        per: Some(1),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        assert!(rep.info.name.contains("seed 7"), "{}", rep.info.name);
+        assert_eq!(rep.info.rows, 5);
+        let rec = rep.record.expect("a record tab");
+        assert!(rec.name.starts_with("Sample record"));
+        let cell = |r: u64, c: u32| docs.cell_text(rec.id, r, c).unwrap().0;
+        assert_eq!(cell(3, 1), "7", "the seed");
+        // The file's own SHA-256 (the tab is unchanged).
+        let want = natendo_engine::tools::file_sha256(&p, &Progress::new()).unwrap();
+        assert_eq!(want.len(), 64);
+        assert_eq!(cell(2, 1), want);
+        assert_eq!(cell(4, 1), "precinct");
+        // Two tabs as the sheets of one workbook.
+        let out = p.with_file_name("audit-book.xlsx");
+        let r = docs
+            .export_book(
+                &[id, rep.info.id],
+                &out,
+                &ExportOptions {
+                    format: ExportFormat::Xlsx,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!((r.sheets, r.rows), (2, 10));
+        let bytes = std::fs::read(&out).unwrap();
+        let book = natendo_engine::sheet::Book::open(&bytes).unwrap();
+        let names: Vec<String> = book.sheets().iter().map(|s| s.name.clone()).collect();
+        assert_eq!(names[0], "audit");
+        assert!(names[1].starts_with("Sample (audit"), "{names:?}");
+        let _ = std::fs::remove_file(&out);
     }
 
     #[test]

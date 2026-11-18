@@ -224,20 +224,39 @@ pub fn sample_record(
     let mut out = Vec::new();
     let line = |out: &mut Vec<u8>, cells: &[String]| crate::reshape::push_line(out, cells);
     line(&mut out, &["What".into(), "Value".into(), "Rows".into()]);
-    line(&mut out, &["Drawn from".into(), source.into(), r.rows.to_string()]);
-    line(&mut out, &["File SHA-256".into(), fingerprint.into(), String::new()]);
-    line(&mut out, &["Seed".into(), r.seed.to_string(), String::new()]);
+    line(
+        &mut out,
+        &["Drawn from".into(), source.into(), r.rows.to_string()],
+    );
+    line(
+        &mut out,
+        &["File SHA-256".into(), fingerprint.into(), String::new()],
+    );
+    line(
+        &mut out,
+        &["Seed".into(), r.seed.to_string(), String::new()],
+    );
     if let Some(c) = column {
         line(&mut out, &["Per group of".into(), c.into(), String::new()]);
     }
-    line(&mut out, &["Method".into(), r.method.clone(), String::new()]);
-    line(&mut out, &["Rows taken".into(), String::new(), r.taken.to_string()]);
+    line(
+        &mut out,
+        &["Method".into(), r.method.clone(), String::new()],
+    );
+    line(
+        &mut out,
+        &["Rows taken".into(), String::new(), r.taken.to_string()],
+    );
     for (v, n, k) in &r.groups {
         line(
             &mut out,
             &[
                 "Group".into(),
-                if v.is_empty() { "(blank)".into() } else { v.clone() },
+                if v.is_empty() {
+                    "(blank)".into()
+                } else {
+                    v.clone()
+                },
                 format!("{k} of {n}"),
             ],
         );
@@ -912,7 +931,9 @@ impl Document {
                     .collect()
             }
             (SampleSize::Every { .. }, Some(_)) => {
-                return Err(bad("a sample per group takes a number or a percent of rows"))
+                return Err(bad(
+                    "a sample per group takes a number or a percent of rows",
+                ))
             }
             (_, None) => {
                 let mut idx: Vec<u32> = (0..n as u32).collect();
@@ -2009,12 +2030,28 @@ mod tests {
     }
 
     #[test]
+    fn file_fingerprint_is_sha256() {
+        let p = std::env::temp_dir().join(format!("nde-sha-{}.txt", std::process::id()));
+        std::fs::write(&p, b"abc").unwrap();
+        assert_eq!(
+            file_sha256(&p, &Progress::new()).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
     fn audit_samples_per_group() {
-        let mut csv = String::from("id,precinct
-");
+        let mut csv = String::from(
+            "id,precinct
+",
+        );
         for i in 0..300 {
-            csv.push_str(&format!("{i},P{}
-", i % 3));
+            csv.push_str(&format!(
+                "{i},P{}
+",
+                i % 3
+            ));
         }
         let d = doc(&csv);
         let spec = Sample {
@@ -2027,7 +2064,14 @@ mod tests {
         };
         let (t, r) = d.sample_report(&spec, &Progress::new()).unwrap();
         assert_eq!((r.rows, r.taken, r.seed), (300, 30, 2024));
-        assert_eq!(r.groups, [("P0".into(), 100, 10), ("P1".into(), 100, 10), ("P2".into(), 100, 10)]);
+        assert_eq!(
+            r.groups,
+            [
+                ("P0".into(), 100, 10),
+                ("P1".into(), 100, 10),
+                ("P2".into(), 100, 10)
+            ]
+        );
         assert!(r.method.contains("FNV-1a") && r.method.contains("seed 2024"));
         let s = t.into_document().unwrap();
         assert_eq!(s.row_values(0).unwrap(), ["Row", "id", "precinct"]);
@@ -2037,27 +2081,53 @@ mod tests {
         for p in ["P0", "P1", "P2"] {
             assert_eq!(rows.iter().filter(|r| r[2] == p).count(), 10);
         }
-        assert!(rows.windows(2).all(|w| w[0][1].parse::<u32>().unwrap() < w[1][1].parse::<u32>().unwrap()));
-        assert!(rows.iter().all(|r| r[0].parse::<u32>().unwrap() == r[1].parse::<u32>().unwrap() + 2));
+        assert!(rows
+            .windows(2)
+            .all(|w| w[0][1].parse::<u32>().unwrap() < w[1][1].parse::<u32>().unwrap()));
+        assert!(rows
+            .iter()
+            .all(|r| r[0].parse::<u32>().unwrap() == r[1].parse::<u32>().unwrap() + 2));
         // The same seed draws the same rows; another seed others.
         let (t2, _) = d.sample_report(&spec, &Progress::new()).unwrap();
         assert_eq!(t2.into_document().unwrap().row_values(5).unwrap(), rows[4]);
-        let other = Sample { seed: 2025, ..spec.clone() };
+        let other = Sample {
+            seed: 2025,
+            ..spec.clone()
+        };
         let (t3, _) = d.sample_report(&other, &Progress::new()).unwrap();
         let t3 = t3.into_document().unwrap();
         assert!((1..31).any(|r| t3.row_values(r).unwrap() != rows[r as usize - 1]));
         // A group's draw depends on its own value, not on the other groups.
-        let few = doc(&csv.lines().filter(|l| !l.ends_with("P2")).collect::<Vec<_>>().join("
-"));
+        let few = doc(&csv
+            .lines()
+            .filter(|l| !l.ends_with("P2"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            ));
         let (t4, _) = few.sample_report(&spec, &Progress::new()).unwrap();
         let t4 = t4.into_document().unwrap();
-        let p0: Vec<String> = (1..t4.row_count()).map(|r| t4.row_values(r).unwrap()[1].clone()).filter(|v| v.parse::<u32>().unwrap() % 3 == 0).collect();
-        let p0_all: Vec<String> = rows.iter().filter(|r| r[2] == "P0").map(|r| r[1].clone()).collect();
+        let p0: Vec<String> = (1..t4.row_count())
+            .map(|r| t4.row_values(r).unwrap()[1].clone())
+            .filter(|v| v.parse::<u32>().unwrap() % 3 == 0)
+            .collect();
+        let p0_all: Vec<String> = rows
+            .iter()
+            .filter(|r| r[2] == "P0")
+            .map(|r| r[1].clone())
+            .collect();
         assert_eq!(p0, p0_all);
         // Percent per group; every nth per group is refused.
-        let pct = Sample { size: SampleSize::Percent { p: 5.0 }, ..spec.clone() };
+        let pct = Sample {
+            size: SampleSize::Percent { p: 5.0 },
+            ..spec.clone()
+        };
         assert_eq!(d.sample_report(&pct, &Progress::new()).unwrap().1.taken, 15);
-        let every = Sample { size: SampleSize::Every { n: 2 }, ..spec };
+        let every = Sample {
+            size: SampleSize::Every { n: 2 },
+            ..spec
+        };
         assert!(d.sample_report(&every, &Progress::new()).is_err());
     }
 

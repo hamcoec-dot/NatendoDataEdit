@@ -312,7 +312,9 @@ mod tests {
     fn blocks_compressed_apart_join() {
         let mut z = ZipWriter::new(Vec::new());
         let mut p = z.raw_part("x.txt").unwrap();
-        let parts: Vec<String> = (0..20).map(|i| format!("block {i} ").repeat(1000 + i)).collect();
+        let parts: Vec<String> = (0..20)
+            .map(|i| format!("block {i} ").repeat(1000 + i))
+            .collect();
         for t in &parts {
             p.write_block(Block::new(t.as_bytes()).unwrap()).unwrap();
         }

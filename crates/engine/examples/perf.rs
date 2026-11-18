@@ -840,7 +840,7 @@ fn main() {
         r.rows,
         r.bytes as f64 / 1e6
     );
-    check.budget("export .xlsx (1M rows)", took, budget(20.0));
+    check.budget("export .xlsx (1M rows)", took, budget(3.0));
     let data = fs::read(&xlsx).unwrap();
     let t = Instant::now();
     let table = import::import(&data, Some("xlsx"), &Default::default(), None, &p).unwrap();
@@ -1738,6 +1738,56 @@ fn main() {
     check.budget("random sample of 100,000 rows", t.elapsed(), budget(3.0));
     assert_eq!(s.rows, 100_001);
     drop(s);
+    // An audit sample: 10 rows from each of the 311 cities, with row numbers.
+    let t = Instant::now();
+    let (s, r) = big
+        .sample_report(
+            &Sample {
+                size: SampleSize::Rows { n: 10 },
+                seed: 2024,
+                keep_first: true,
+                per: Some(4),
+                row_numbers: true,
+                ..Default::default()
+            },
+            &p,
+        )
+        .unwrap();
+    check.budget(
+        "audit sample: 10 rows from each city",
+        t.elapsed(),
+        budget(4.0),
+    );
+    assert_eq!((s.rows, r.groups.len()), (3_111, 311));
+    drop(s);
+    // Excel export of the whole table: parts as files of their own, each
+    // with the title row.
+    let xdir = dir.join("xlsx-parts");
+    let _ = fs::create_dir_all(&xdir);
+    let t = Instant::now();
+    let r = big
+        .export_file(
+            &xdir.join("big.xlsx"),
+            &ExportOptions {
+                format: ExportFormat::Xlsx,
+                split_files: true,
+                ..Default::default()
+            },
+            &p,
+        )
+        .unwrap();
+    println!(
+        "     export .xlsx parts: {} rows in {} files, {:.0} MB",
+        r.rows,
+        r.files.len(),
+        r.bytes as f64 / 1e6
+    );
+    check.budget(
+        "export .xlsx of every row, in parts (files)",
+        t.elapsed(),
+        budget(15.0),
+    );
+    let _ = fs::remove_dir_all(&xdir);
     let t = Instant::now();
     let custom = SortSpec {
         keys: vec![SortKey {

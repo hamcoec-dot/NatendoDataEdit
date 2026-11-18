@@ -65,7 +65,6 @@ pub mod suggest;
 pub mod sysmem;
 pub mod table;
 pub mod tidy;
-pub mod xlsxbook;
 pub mod titles;
 pub mod tools;
 pub mod ttf;
@@ -73,6 +72,7 @@ pub mod updates;
 pub mod validate;
 pub mod value;
 pub mod viewport;
+pub mod xlsxbook;
 pub mod zipread;
 pub mod zipwrite;
 

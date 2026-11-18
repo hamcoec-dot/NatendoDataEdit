@@ -29,9 +29,17 @@ use crate::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Fmt {
     /// Fixed decimals, with or without thousands separators.
-    Fixed { dec: u8, group: bool },
-    Currency { sym: char, dec: u8 },
-    Percent { dec: u8 },
+    Fixed {
+        dec: u8,
+        group: bool,
+    },
+    Currency {
+        sym: char,
+        dec: u8,
+    },
+    Percent {
+        dec: u8,
+    },
 }
 
 /// How a column's cells are written.
@@ -44,7 +52,11 @@ enum Kind {
     /// Every value a number shown as Excel would show it as written.
     Number(Option<Fmt>),
     /// Every value a date, a date and time, or a time of day.
-    Date { time: bool, day: bool, seconds: bool },
+    Date {
+        time: bool,
+        day: bool,
+        seconds: bool,
+    },
 }
 
 /// What a column holds, counted over every row.
@@ -121,8 +133,7 @@ impl Stat {
                 ('.', ',')
             };
             let sig = t.bytes().filter(u8::is_ascii_digit).count()
-                - t
-                    .bytes()
+                - t.bytes()
                     .skip_while(|c| !c.is_ascii_digit())
                     .take_while(|&c| c == b'0')
                     .count();
@@ -138,15 +149,16 @@ impl Stat {
             if t.contains(group_c) {
                 self.group = true;
             }
-            let dec = t
-                .split_once(dec_c)
-                .map_or(0, |(_, f)| f.chars().take_while(char::is_ascii_digit).count());
+            let dec = t.split_once(dec_c).map_or(0, |(_, f)| {
+                f.chars().take_while(char::is_ascii_digit).count()
+            });
             self.dec = self.dec.max(dec.min(10) as u8);
             if !excel_number(t) {
                 self.reshaped += 1;
             }
         } else if let Some(d) = value::parse_date(t, read) {
-            let time_only = !t.contains(['-', '/', '.']) && t.contains(':') && (0.0..1.0).contains(&d);
+            let time_only =
+                !t.contains(['-', '/', '.']) && t.contains(':') && (0.0..1.0).contains(&d);
             if time_only {
                 self.times += 1;
             } else {
@@ -217,8 +229,27 @@ fn id_title(title: &str) -> bool {
         .filter(|w| !w.is_empty())
         .collect();
     const WORDS: &[&str] = &[
-        "id", "ids", "zip", "zipcode", "postal", "postcode", "phone", "tel", "telephone", "mobile",
-        "cell", "fax", "ssn", "acct", "account", "code", "pin", "upc", "isbn", "ein", "npi",
+        "id",
+        "ids",
+        "zip",
+        "zipcode",
+        "postal",
+        "postcode",
+        "phone",
+        "tel",
+        "telephone",
+        "mobile",
+        "cell",
+        "fax",
+        "ssn",
+        "acct",
+        "account",
+        "code",
+        "pin",
+        "upc",
+        "isbn",
+        "ein",
+        "npi",
     ];
     words.iter().any(|w| WORDS.contains(w))
         || words
@@ -239,10 +270,22 @@ fn number_format(k: Kind) -> Option<(u32, Option<String>)> {
         Kind::General => return None,
         Kind::Text => (49, None),
         Kind::Number(None) => return None,
-        Kind::Number(Some(Fmt::Fixed { dec: 0, group: true })) => (3, None),
-        Kind::Number(Some(Fmt::Fixed { dec: 2, group: true })) => (4, None),
-        Kind::Number(Some(Fmt::Fixed { dec: 2, group: false })) => (2, None),
-        Kind::Number(Some(Fmt::Fixed { dec: 0, group: false })) => (1, None),
+        Kind::Number(Some(Fmt::Fixed {
+            dec: 0,
+            group: true,
+        })) => (3, None),
+        Kind::Number(Some(Fmt::Fixed {
+            dec: 2,
+            group: true,
+        })) => (4, None),
+        Kind::Number(Some(Fmt::Fixed {
+            dec: 2,
+            group: false,
+        })) => (2, None),
+        Kind::Number(Some(Fmt::Fixed {
+            dec: 0,
+            group: false,
+        })) => (1, None),
         Kind::Number(Some(Fmt::Fixed { dec: d, group })) => (
             0,
             Some(format!("{}0{}", if group { "#,##" } else { "" }, dec(d))),
@@ -254,12 +297,26 @@ fn number_format(k: Kind) -> Option<(u32, Option<String>)> {
             let body = format!("\"{sym}\"#,##0{}", dec(d));
             (0, Some(format!("{body};-{body}")))
         }
-        Kind::Date { day: true, time: false, .. } => (14, None),
-        Kind::Date { day: true, time: true, seconds: false } => (22, None),
-        Kind::Date { day: true, time: true, seconds: true } => {
-            (0, Some("m/d/yyyy h:mm:ss".into()))
-        }
-        Kind::Date { day: false, seconds, .. } => (if seconds { 21 } else { 20 }, None),
+        Kind::Date {
+            day: true,
+            time: false,
+            ..
+        } => (14, None),
+        Kind::Date {
+            day: true,
+            time: true,
+            seconds: false,
+        } => (22, None),
+        Kind::Date {
+            day: true,
+            time: true,
+            seconds: true,
+        } => (0, Some("m/d/yyyy h:mm:ss".into())),
+        Kind::Date {
+            day: false,
+            seconds,
+            ..
+        } => (if seconds { 21 } else { 20 }, None),
     })
 }
 
@@ -331,7 +388,9 @@ impl Document {
                     }
                 }
                 let chars = match kinds[k] {
-                    Kind::Date { day: true, time, .. } => {
+                    Kind::Date {
+                        day: true, time, ..
+                    } => {
                         if time {
                             16
                         } else {
@@ -342,7 +401,10 @@ impl Document {
                 } as f64;
                 // The title is bold and has a filter button beside it.
                 let title = names.get(k).map_or(0, |t| t.chars().count()) as f64 * 1.1 + 3.0;
-                chars.max(if opts.header { title } else { 0.0 }).clamp(6.0, 60.0) + 1.0
+                chars
+                    .max(if opts.header { title } else { 0.0 })
+                    .clamp(6.0, 60.0)
+                    + 1.0
             })
             .collect();
         Ok(Plan { kinds, widths })
@@ -386,10 +448,7 @@ pub fn part_sheet_name(base: &str, i: usize, n: usize) -> String {
     } else {
         String::new()
     };
-    let head: String = clean
-        .chars()
-        .take(31 - tail.chars().count())
-        .collect();
+    let head: String = clean.chars().take(31 - tail.chars().count()).collect();
     format!("{}{tail}", head.trim_end())
 }
 
@@ -448,10 +507,12 @@ pub(crate) fn write_book_on(
     // Styles: 0 plain, 1 title, then one per number format used.
     let mut formats: Vec<(u32, Option<String>)> = Vec::new();
     let mut style_of: HashMap<Kind, u32> = HashMap::new();
-    for (plan, _) in plans.values() {
+    // In sheet order, so the same table always gives the same file.
+    for sh in sheets {
+        let (plan, _) = &plans[&(sh.doc as *const Document)];
         for &k in &plan.kinds {
             if let Some(f) = number_format(k) {
-                if !style_of.contains_key(&k) {
+                if let std::collections::hash_map::Entry::Vacant(e) = style_of.entry(k) {
                     let i = match formats.iter().position(|x| *x == f) {
                         Some(i) => i,
                         None => {
@@ -459,7 +520,7 @@ pub(crate) fn write_book_on(
                             formats.len() - 1
                         }
                     };
-                    style_of.insert(k, 2 + i as u32);
+                    e.insert(2 + i as u32);
                 }
             }
         }
@@ -475,7 +536,11 @@ pub(crate) fn write_book_on(
         let d = sh.doc;
         let n = d.col_count() as usize;
         let letters: Vec<String> = (0..n.max(1) as u32).map(col_letters).collect();
-        let styles: Vec<Option<u32>> = plan.kinds.iter().map(|k| style_of.get(k).copied()).collect();
+        let styles: Vec<Option<u32>> = plan
+            .kinds
+            .iter()
+            .map(|k| style_of.get(k).copied())
+            .collect();
         let fancy = opts.look && opts.header;
         let mut part = zip.raw_part(&format!("xl/worksheets/sheet{}.xml", i + 1))?;
         s.clear();
@@ -493,7 +558,12 @@ pub(crate) fn write_book_on(
         if opts.look && n > 0 {
             s.push_str("<cols>");
             for (k, w) in plan.widths.iter().enumerate() {
-                let _ = write!(s, "<col min=\"{0}\" max=\"{0}\" width=\"{1:.2}\" customWidth=\"1\"", k + 1, w);
+                let _ = write!(
+                    s,
+                    "<col min=\"{0}\" max=\"{0}\" width=\"{1:.2}\" customWidth=\"1\"",
+                    k + 1,
+                    w
+                );
                 if let Some(st) = styles[k] {
                     let _ = write!(s, " style=\"{st}\"");
                 }
@@ -512,7 +582,11 @@ pub(crate) fn write_book_on(
                 if v.is_empty() {
                     continue;
                 }
-                let _ = write!(s, "<c r=\"{}{row_no}\" t=\"inlineStr\" s=\"1\"><is><t xml:space=\"preserve\">", letters[k]);
+                let _ = write!(
+                    s,
+                    "<c r=\"{}{row_no}\" t=\"inlineStr\" s=\"1\"><is><t xml:space=\"preserve\">",
+                    letters[k]
+                );
                 xlsx_escape(v, &mut s);
                 s.push_str("</t></is></c>");
             }
@@ -614,9 +688,7 @@ pub(crate) fn write_book_on(
         report.rows += total;
         s.clear();
         s.push_str("</sheetData>");
-        let filter = (fancy && n > 0).then(|| {
-            format!("A1:{}{}", letters[n - 1], row_no.max(1))
-        });
+        let filter = (fancy && n > 0).then(|| format!("A1:{}{}", letters[n - 1], row_no.max(1)));
         if let Some(f) = &filter {
             let _ = write!(s, "<autoFilter ref=\"{f}\"/>");
         }
@@ -648,7 +720,10 @@ pub(crate) fn write_book_on(
                 let split = c.find(|ch: char| ch.is_ascii_digit()).unwrap_or(c.len());
                 format!("${}${}", &c[..split], &c[split..])
             };
-            let _ = write!(defined, "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"{i}\" hidden=\"1\">");
+            let _ = write!(
+                defined,
+                "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"{i}\" hidden=\"1\">"
+            );
             let mut q = String::from("'");
             q.push_str(&name.replace('\'', "''"));
             q.push('\'');
@@ -729,7 +804,11 @@ mod tests {
     #[test]
     fn columns_are_read_as_excel_users_expect() {
         assert_eq!(kind_of("zip", &["37421", "02134"]), Kind::Text);
-        assert_eq!(kind_of("zip", &["37421", "37402"]), Kind::Text, "by its title");
+        assert_eq!(
+            kind_of("zip", &["37421", "37402"]),
+            Kind::Text,
+            "by its title"
+        );
         assert_eq!(kind_of("VoterID", &["2001", "2002"]), Kind::Text);
         assert_eq!(kind_of("votes", &["2001", "2002"]), Kind::Number(None));
         assert_eq!(kind_of("card", &["4111111111111111"]), Kind::Text);
@@ -747,7 +826,10 @@ mod tests {
         assert_eq!(kind_of("mix", &["12%", "0.5"]), Kind::General);
         assert_eq!(
             kind_of("price", &["1.50", "2.25"]),
-            Kind::Number(Some(Fmt::Fixed { dec: 2, group: false }))
+            Kind::Number(Some(Fmt::Fixed {
+                dec: 2,
+                group: false
+            }))
         );
         assert_eq!(
             kind_of("born", &["2024-01-31", "1/2/2023"]),

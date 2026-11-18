@@ -272,6 +272,10 @@ everything is also in command search.
   Ctrl+Alt+Shift+PageUp/PageDown moves the shown tab from the keyboard). Each move is one undo step, and colour
   scales, highlight rules and checks move with their columns. Help > Mouse
   and drag moves lists them all.
+- **Split view** (View > Split top and bottom, Alt+Shift+W, or Split side by
+  side): two panes of the same tab, each scrolling on its own, to copy from
+  row 3 to row 1,800,000 or compare rows far apart. Drag the bar to resize
+  it, or to the edge to close it.
 - **Name your tabs.** Tabs made by a tool are named after what made them,
   for example "Pivot – city by party (voters)", "Subtotals (voters)" or
   "Compare voters with voters-2024" (a drill-down tab is named after the
@@ -647,7 +651,14 @@ everything is also in command search.
 
 ![Compare two columns: the mailing and residence addresses with a result column](docs/screenshots/compare-columns.png)
 *Comparing mail_address with res_address: the added column says which rows differ.*
-- Random sample into a new tab.
+- **Random and audit samples** (Tools > Random sample): a number or a
+  percent of the rows, or every nth row, into a new tab. For an audit, draw
+  from each group of a column ("10 ballots per precinct"), with a seed
+  number shown and kept: the same seed draws the same rows of the same table
+  again, so anyone can check the sample. A record opens beside it with the
+  seed, the method (a published one, so others can reproduce it), the file's
+  SHA-256 fingerprint and the rows in and taken per group. A Row column gives
+  each row's number in the table.
 - **Value editor:** every value in a column with its count; rename or merge
   values, group look-alikes ("Main St" / "Main Street"), or apply a
   translation list.
@@ -679,6 +690,17 @@ everything is also in command search.
 - **Export:** Excel, JSON, JSON Lines, XML, HTML, Markdown, fixed width, PDF, SQL
   statements (standard SQL, MySQL, or SQL Server/Access style) or a template
   of your own; to a file or the clipboard, with a preview.
+- **Excel files made for Excel users:** a bold title row that stays in view,
+  with filter buttons; columns as wide as their values (or as you set them on
+  screen); dates, money and percents as real Excel values with their formats;
+  IDs, ZIP codes and phone numbers kept as text, so leading zeros stay and
+  Excel shows no "number stored as text" warnings. No author or other
+  personal details go in the file.
+- **More rows than Excel holds:** a table longer than an Excel sheet
+  (1,048,575 rows under the titles) is cut into parts, each with the title
+  row, as separate files ("voters (1 of 10).xlsx") or as sheets of one
+  workbook; the choice is remembered. Choose your own rows per part too.
+- **All open tabs as one workbook:** each tab on a sheet named after it.
 - **Split one file into many** (by a column's value or a row count) and
   **combine many files into one**.
 - **Append** the rows of another file.
@@ -783,6 +805,9 @@ preview:
   item, rank or index; decimals, 1,000 separators, currency signs.
 - **Expand, collapse and drill down:** open or shut any group, or all of them;
   double-click a number to get the rows behind it in a new tab.
+- **Refresh** (Data > Refresh pivot table, Alt+F5, or right-click the pivot's
+  tab): build the pivot again from its source after edits there, in the same
+  tab.
 - **Use the result:** open it as a new tab (save or export it like any file)
   or copy it; save the layout and reuse it on next month's file (columns are
   found by their titles; a title not found, after a rename say, is offered

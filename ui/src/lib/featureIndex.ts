@@ -137,6 +137,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "go to and the name box": ["edit.goto"],
   "more excel and google sheets keys": ["edit.contextMenu", "format.display", "format.asNumber", "format.asDate", "format.asCurrency", "format.asPercent", "format.clearDisplay", "edit.copyAbove", "edit.today", "edit.now", "edit.selectAll", "edit.selectRegion", "view.toActive", "edit.shrinkSel", "edit.nextCorner", "edit.extendMode"],
   "right click menus say how many": ["edit.contextMenu"],
+  "split view": ["view.splitRows", "view.splitCols"],
   "name your tabs": ["file.rename"],
   "paste into filtered rows": ["edit.paste", "edit.pasteSpecial", "data.filterBySel"],
   "file tabs": ["file.closeOthers", "file.closeRight", "file.reopenClosed", "file.closeUnchanged", "window.next", "window.prev"],
@@ -180,7 +181,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "charts line bar pie counts": ["view.panelChart", "data.subtotals", "view.highlights"],
   "compare two open files": ["tools.compare"],
   "compare two columns": ["data.compareCols"],
-  "random sample into a new": ["tools.sample"],
+  "random and audit samples": ["tools.sample"],
   "value editor": ["data.values"],
   // Checking data
   "data checks": ["data.checks", "data.unmarkChecks", "data.clearChecks"],
@@ -192,6 +193,9 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "export": ["file.export"],
   "json lines": ["file.import", "file.export"],
   "split one file into many": ["tools.split", "tools.combine"],
+  "excel files made for excel users": ["file.export"],
+  "more rows than excel holds": ["file.export", "tools.split"],
+  "all open tabs as one workbook": ["file.export"],
   "append": ["data.append"],
   "encrypted copies": ["file.saveEncrypted", "file.openEncrypted"],
   // Joining two lists
@@ -220,6 +224,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "fill blank cells from above": ["tools.fillBlanks", "tools.countRepeats", "tools.blankRepeats"],
   // Pivot tables
   "pivot table builder": ["data.pivot"],
+  "refresh": ["data.pivotRefresh"],
   "count or add up any combination": ["data.pivot"],
   "group dates and numbers": ["data.pivot"],
   "filter and sort items": ["data.pivot"],
