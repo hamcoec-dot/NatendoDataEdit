@@ -1148,6 +1148,103 @@
     return true;
   }
 
+  // ---- pick up where you left off ----
+  /** Tabs are remembered only once the start-up offer is settled (so the
+   *  empty start does not overwrite last time's list). */
+  let sessionReady = false;
+  let sessionKey = "";
+
+  async function saveSession(): Promise<void> {
+    if (!sessionReady || prefs.data.reopenLast === "never") return;
+    const list = tabs
+      .filter((t) => t.info.path && !t.private?.file && !t.private?.folder)
+      .map((t) => ({
+        doc: t.id,
+        // Sorting changed the rows (a change of the file), so it is not
+        // replayed; the rest of the view is.
+        view: { ...currentView(t, t.info.name), sort: null },
+        row: t.cell.row,
+        col: t.cell.col,
+        active: t === tab,
+      }));
+    const key = JSON.stringify(list);
+    if (key === sessionKey) return;
+    sessionKey = key;
+    try {
+      await backend().sessionSave(list);
+    } catch {
+      sessionKey = "";
+    }
+  }
+
+  /** At start: offer (or just do) reopening last time's tabs. */
+  async function startSession(): Promise<void> {
+    try {
+      if (prefs.data.reopenLast === "never") {
+        await backend().sessionClear();
+        return;
+      }
+      const items = (await backend().sessionList()).filter((i) => !i.missing);
+      if (!items.length) return;
+      if (prefs.data.reopenLast === "ask") {
+        const names = items.slice(0, 6).map((i) => i.name).join(", ") + (items.length > 6 ? `, and ${items.length - 6} more` : "");
+        const a = await ask(
+          `Reopen ${items.length === 1 ? "the file" : `${items.length} files`} from last time?`,
+          `${names}. Each opens at the same cell with its filter, hidden columns and widths${items.some((i) => i.changed) ? "; a file changed since opens fresh" : ""}.`,
+          [
+            { id: "open", label: "Reopen", primary: true },
+            { id: "no", label: "Not now" },
+          ],
+          "open",
+        );
+        if (a !== "open") return;
+      }
+      await reopenSession(items);
+    } catch {
+      // Nothing remembered (or unreadable): start empty.
+    } finally {
+      sessionReady = true;
+    }
+  }
+
+  async function reopenSession(items: { index: number; name: string; active: boolean }[]): Promise<void> {
+    let activeTab: Tab | null = null;
+    const fresh: string[] = [];
+    for (const it of items) {
+      try {
+        const { opened: o, place } = await backend().sessionOpen(it.index);
+        if (!o.doc) {
+          opened(o);
+          // An import screen waits for the user: the rest stay unopened.
+          break;
+        }
+        const known = tabs.find((x) => x.id === o.doc!.id);
+        if (!known) opened(o);
+        const t = tabs.find((x) => x.id === o.doc!.id);
+        if (!t) continue;
+        if (it.active) activeTab = t;
+        if (place.changed) fresh.push(it.name);
+        // The view and the cell need the file read first.
+        for (let k = 0; k < 600 && !t.info.indexed && !t.info.error; k++) await new Promise((r) => setTimeout(r, 100));
+        if (!t.info.indexed) continue;
+        if (place.view && !known) {
+          active = tabs.indexOf(t);
+          await tick();
+          await applyViewSteps(place.view as View, t);
+        }
+        active = tabs.indexOf(t);
+        await tick();
+        const row = Math.min(place.row, Math.max(0, t.info.rows - 1));
+        const col = Math.min(place.col, Math.max(0, t.info.cols - 1));
+        grid?.select({ row, col }, { row, col });
+      } catch (e) {
+        say(`${it.name}: ${errorText(e)}`);
+      }
+    }
+    if (activeTab && tabs.includes(activeTab)) active = tabs.indexOf(activeTab);
+    if (fresh.length) say(`${fresh.join(", ")} changed since last time, so ${fresh.length === 1 ? "it was" : "they were"} opened fresh (the view was not put back).`);
+  }
+
   async function quit(): Promise<void> {
     const unsaved = tabs.filter((t) => t.info.modified);
     if (unsaved.length) {
@@ -1162,6 +1259,7 @@
       );
       if (a !== "quit") return;
     }
+    await saveSession();
     await backend().quitApp();
   }
 
@@ -5030,8 +5128,13 @@
       .then((i) => (info = i));
     void loadRecent();
     backend().onCloseRequested(() => void quit());
-    // Work left unsaved by a run that stopped is offered back once, at start.
-    void showRecovery(true);
+    // Work left unsaved by a run that stopped is offered back once, at
+    // start; otherwise the files open last time are.
+    void showRecovery(true).then(() => {
+      if (recovery) sessionReady = true;
+      else void startSession();
+    });
+    const sessionSaver = window.setInterval(() => void saveSession(), 10_000);
     void backend().versionsKeep(prefs.data.keepEarlierSaves).catch(() => {});
     const autosaver = window.setInterval(() => void autosaveTick(), 15_000);
     const timer = window.setInterval(async () => {
@@ -5056,6 +5159,7 @@
     return () => {
       clearInterval(timer);
       clearInterval(autosaver);
+      clearInterval(sessionSaver);
       window.removeEventListener("mousedown", close);
       unwatchAlt();
     };

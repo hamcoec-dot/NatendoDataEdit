@@ -45,7 +45,7 @@ import { runCleaner, type Cleaner, type CleanPreview, type CleanSpec } from "./c
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, Summary, View } from "./views";
 import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, TableReport, Totals } from "./backend";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
-import type { SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
+import type { SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
 import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
 import { mockEval } from "./mockexpr";
 import { previewOf, simulateJoin } from "./joins";
@@ -1580,6 +1580,35 @@ export class MockBackend implements Backend {
   private openAt(path: string): number | null {
     for (const d of this.docs.values()) if (d.info.path === path) return d.info.id;
     return null;
+  }
+
+  // Pick up where you left off: kept in the stub's memory (by path).
+  private lastTabs: { path: string; view: unknown; row: number; col: number; active: boolean }[] = [];
+  async sessionSave(tabs: SessionTab[]): Promise<number> {
+    this.lastTabs = tabs.flatMap((t) => {
+      const p = this.docs.get(t.doc)?.info.path;
+      return p ? [{ path: p, view: t.view, row: t.row, col: t.col, active: t.active }] : [];
+    });
+    return this.lastTabs.length;
+  }
+  async sessionList(): Promise<SessionItem[]> {
+    return this.lastTabs.map((s, index) => ({ index, name: s.path.split("/").at(-1)!, folder: "C:", changed: false, missing: false, active: s.active }));
+  }
+  async sessionOpen(index: number): Promise<{ opened: Opened; place: SessionPlace }> {
+    const s = this.lastTabs[index];
+    if (!s) throw err("invalid", "that file is no longer in the list");
+    const open = this.openAt(s.path);
+    let opened: Opened;
+    if (open !== null) opened = { doc: { ...this.get(open).info }, import: null };
+    else {
+      const info = this.make(s.path.split("/").at(-1)!, 2_001, 6);
+      this.get(info.id).info.path = s.path;
+      opened = { doc: { ...this.get(info.id).info }, import: null };
+    }
+    return { opened, place: { view: s.view, row: s.row, col: s.col, changed: false } };
+  }
+  async sessionClear(): Promise<void> {
+    this.lastTabs = [];
   }
 
   async recentFiles(): Promise<RecentItem[]> {

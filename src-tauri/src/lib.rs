@@ -12,6 +12,7 @@ mod extras;
 mod imports;
 mod links;
 mod recovery;
+mod session;
 mod watch;
 
 use std::path::PathBuf;
@@ -52,6 +53,7 @@ struct Quit(AtomicBool);
 type DocsState<'a> = State<'a, Arc<Docs>>;
 type ImportsState<'a> = State<'a, Arc<Imports>>;
 type RecentState<'a> = State<'a, Arc<Recent>>;
+type SessionState<'a> = State<'a, Arc<session::Session>>;
 type FoldersState<'a> = State<'a, Arc<Folders>>;
 
 #[tauri::command]
@@ -346,6 +348,80 @@ async fn open_recent(
         r
     })
     .await
+}
+
+/// Remember the open tabs for next time (paths and views only; private,
+/// encrypted and unsaved tabs are left out).
+#[tauri::command]
+async fn session_save(
+    docs: DocsState<'_>,
+    recent: RecentState<'_>,
+    session: SessionState<'_>,
+    tabs: Vec<session::SessionTab>,
+) -> CmdResult<usize> {
+    let (docs, recent, session) = (docs.inner().clone(), recent.inner().clone(), session.inner().clone());
+    blocking(move || {
+        session.save(tabs, |doc| {
+            if docs.encrypted_from(doc).ok().flatten().is_some() {
+                return None;
+            }
+            let path = docs.paths_of(&[doc]).pop().flatten()?;
+            (!recent.is_private(&path)).then_some(path)
+        })
+    })
+    .await
+}
+
+/// The tabs open when the app last closed (names only).
+#[tauri::command]
+async fn session_list(recent: RecentState<'_>, session: SessionState<'_>) -> CmdResult<Vec<session::SessionItem>> {
+    let (recent, session) = (recent.inner().clone(), session.inner().clone());
+    blocking(move || Ok(session.items(|p| recent.is_private(p)))).await
+}
+
+/// A remembered tab reopened, and where it was.
+#[derive(Serialize)]
+struct SessionOpened {
+    opened: Opened,
+    place: session::SessionPlace,
+}
+
+/// Reopen remembered tab `index`.
+#[tauri::command]
+async fn session_open(
+    docs: DocsState<'_>,
+    imports: ImportsState<'_>,
+    recent: RecentState<'_>,
+    session: SessionState<'_>,
+    index: usize,
+) -> CmdResult<SessionOpened> {
+    let (docs, imports, recent, session) = (
+        docs.inner().clone(),
+        imports.inner().clone(),
+        recent.inner().clone(),
+        session.inner().clone(),
+    );
+    blocking(move || {
+        let (path, place) = session.place(index)?;
+        if recent.is_private(&path) {
+            return Err(CmdError::new("invalid", "that file is in private file mode, so it is not reopened"));
+        }
+        let opened = match docs.find_open(&path) {
+            Some(doc) => Opened {
+                doc: Some(docs.info(doc)?),
+                import: None,
+            },
+            None => open_any(&docs, &imports, &recent, &path)?,
+        };
+        Ok(SessionOpened { opened, place })
+    })
+    .await
+}
+
+/// Forget the remembered tabs.
+#[tauri::command]
+fn session_clear(session: SessionState<'_>) {
+    session.clear();
 }
 
 /// The files next to a document's file, for the Files panel.
@@ -2963,6 +3039,7 @@ pub fn run() {
         .manage(Pending::default())
         .manage(Arc::new(Imports::default()))
         .manage(Arc::new(Recent::default()))
+        .manage(Arc::new(session::Session::default()))
         .manage(Arc::new(Folders::default()))
         .setup(|app| {
             if let Ok(dir) = app.path().app_log_dir() {
@@ -2977,6 +3054,7 @@ pub fn run() {
             ));
             if let Ok(dir) = app.path().app_data_dir() {
                 app.state::<Arc<Recent>>().load(&dir);
+                app.state::<Arc<session::Session>>().load(&dir);
             }
             {
                 let recent = app.state::<Arc<Recent>>().inner().clone();
@@ -3107,6 +3185,10 @@ pub fn run() {
             import_close,
             export_preview,
             recent_files,
+            session_save,
+            session_list,
+            session_open,
+            session_clear,
             open_recent,
             first_row_cell,
             first_row_names,

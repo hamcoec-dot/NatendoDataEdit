@@ -142,6 +142,15 @@
     <p class="note">
       Copies go to a private folder of yours, never over your files, and are removed when you save or close. If the app stops before you save, they are offered back the next time it starts (File › Recover unsaved work). Files over 200 MB get no copy.
     </p>
+    <label class="row"
+      >At start, the files open last time:
+      <select bind:value={prefs.data.reopenLast} onchange={() => { prefs.save(); if (prefs.data.reopenLast === "never") void backend().sessionClear().catch(() => {}); }}>
+        <option value="ask">Offer to reopen them</option>
+        <option value="always">Reopen them</option>
+        <option value="never">Don't remember them</option>
+      </select></label
+    >
+    <p class="note">Only each file's place on disk, its view (widths, hidden columns, filter, highlights) and the active cell are kept, never what is in the cells. Files in private file mode, encrypted files and tabs never saved are not remembered. A file changed since opens fresh.</p>
     <label class="row"><input type="checkbox" bind:checked={prefs.data.keepEarlierSaves} onchange={keepVersionsChanged} /> Keep earlier saves of each file</label>
     <p class="note">
       Before each save, the file as it was is kept in the same private folder (files up to 64 MB, the last 20 saves, for 30 days; File › Earlier saves of this file). Off unless you switch it on, as these are extra copies of your data; delete them below at any time. Uninstalling the app removes them too.

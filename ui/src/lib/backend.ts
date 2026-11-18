@@ -225,6 +225,30 @@ export interface ReadOptions {
   decimal_comma: boolean;
   date_order: DateOrder;
 }
+/** A tab to remember for next time. */
+export interface SessionTab {
+  doc: number;
+  view: unknown;
+  row: number;
+  col: number;
+  active: boolean;
+}
+/** A tab open when the app last closed. */
+export interface SessionItem {
+  index: number;
+  name: string;
+  folder: string;
+  /** The file changed since: it opens with the plain view. */
+  changed: boolean;
+  missing: boolean;
+  active: boolean;
+}
+export interface SessionPlace {
+  view: unknown | null;
+  row: number;
+  col: number;
+  changed: boolean;
+}
 /** Go To Special: which cells to pick. */
 export type SpecialKind =
   | { kind: "blanks" }
@@ -1014,6 +1038,13 @@ export interface Backend {
   /** Shows the Open dialog; null when cancelled. */
   cleanerOpen(): Promise<Cleaner | null>;
   recentFiles(): Promise<RecentItem[]>;
+  /** Remember the open tabs for next time (paths stay in the backend). */
+  sessionSave(tabs: SessionTab[]): Promise<number>;
+  /** The tabs open when the app last closed. */
+  sessionList(): Promise<SessionItem[]>;
+  /** Reopen a remembered tab, with where it was. */
+  sessionOpen(index: number): Promise<{ opened: Opened; place: SessionPlace }>;
+  sessionClear(): Promise<void>;
   openRecent(id: string): Promise<Opened>;
   /** Per tab: the folder telling same-named files apart ("" for the rest). */
   tabFolders(ids: number[]): Promise<string[]>;
@@ -1424,6 +1455,18 @@ class TauriBackend implements Backend {
   }
   cleanerOpen() {
     return call<Cleaner | null>("cleaner_open");
+  }
+  sessionSave(tabs: SessionTab[]) {
+    return call<number>("session_save", { tabs });
+  }
+  sessionList() {
+    return call<SessionItem[]>("session_list");
+  }
+  sessionOpen(index: number) {
+    return call<{ opened: Opened; place: SessionPlace }>("session_open", { index });
+  }
+  sessionClear() {
+    return call<void>("session_clear");
   }
   recentFiles() {
     return call<RecentItem[]>("recent_files");

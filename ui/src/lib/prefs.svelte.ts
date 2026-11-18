@@ -54,6 +54,9 @@ export interface PrefsData {
    *  test builds that stored `keepVersions` with the old default of on
    *  start off too.) */
   keepEarlierSaves: boolean;
+  /** Pick up where you left off: offer the last tabs at start ("ask"),
+   *  reopen them without asking, or never remember them. */
+  reopenLast: "ask" | "always" | "never";
   /** Warn before private-looking data leaves the app (export, print, Save
    *  As, large copies). */
   privacyWarnings: boolean;
@@ -141,6 +144,7 @@ const DEFAULTS: PrefsData = {
   autosave: true,
   autosaveMinutes: 2,
   keepEarlierSaves: false,
+  reopenLast: "ask",
   privacyWarnings: true,
   savedSearches: [],
 };
@@ -183,6 +187,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       sortLists: Array.isArray(p.sortLists) ? p.sortLists.filter((l) => l && typeof l.name === "string" && Array.isArray(l.items)).slice(0, 60).map((l) => ({ name: String(l.name).slice(0, 200), items: l.items.filter((i): i is string => typeof i === "string").slice(0, 10_000).map((i) => i.slice(0, 1000)) })) : [],
       autosave: p.autosave !== false,
       keepEarlierSaves: p.keepEarlierSaves === true,
+      reopenLast: p.reopenLast === "always" || p.reopenLast === "never" ? p.reopenLast : "ask",
       privacyWarnings: p.privacyWarnings !== false,
       savedSearches: savedSearches(p.savedSearches),
       autosaveMinutes: typeof p.autosaveMinutes === "number" && Number.isFinite(p.autosaveMinutes) ? Math.min(60, Math.max(1, Math.round(p.autosaveMinutes))) : 2,
