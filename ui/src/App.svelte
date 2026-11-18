@@ -482,8 +482,9 @@
   }
 
   /** Remember this file's "first row holds the column names" for the next
-   *  time it opens: from the switch, a save, or a close or quit with nothing
-   *  unsaved (a title row added and then not saved is not kept); never for
+   *  time it opens: from the switch or a close or quit with nothing unsaved,
+   *  or from a save
+   *  (a title row added and then not saved is not kept); never for
    *  a file in private mode (whose earlier choice is forgotten instead). */
   async function rememberTab(t: Tab, saved = false): Promise<void> {
     const path = t.info.path;
@@ -505,7 +506,7 @@
     await rememberHeader(path, false, true);
     // Closing it now does not remember it again.
     t.headerTouched = false;
-    say("Forgot this file's title-row choice; the next time it opens, the app guesses again.");
+    say("Forgot this file's title-row choice; the next time it opens, the app guesses again. Using the switch or saving the file remembers it again.");
   }
   /** Format › Forget remembered title rows: every file's choice. */
   async function forgetAllHeaders(): Promise<void> {
@@ -4077,7 +4078,9 @@
     t.headerOffByUndo = false;
     t.header = !t.header;
     t.headerTouched = true;
-    void rememberTab(t);
+    // With unsaved changes (a title row added, say), the choice is kept
+    // only when they are saved; Don't save keeps the one from before.
+    if (!t.info.modified) void rememberTab(t);
     grid?.select(t.sel.anchor, t.sel.focus, true, t.sel.active);
   }
 

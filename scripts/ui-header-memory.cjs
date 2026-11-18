@@ -60,6 +60,10 @@ const url = process.argv[3] || "http://localhost:5206";
     await command("Make this row the header");
     ok((await header()) === true && (await p.evaluate(() => window.__nde.tab.info.modified)), "a title row was made (unsaved)");
   }
+  // Flip the switch with the change unsaved, twice (back to on): still
+  // nothing kept until a save.
+  await command("First row is header");
+  await command("First row is header");
   const before = await header();
   await p.keyboard.press("Control+w");
   await wait(500);
