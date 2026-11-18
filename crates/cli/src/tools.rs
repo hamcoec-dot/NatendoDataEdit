@@ -828,7 +828,8 @@ mod tests {
         let long = "x".repeat(90);
         std::fs::write(
             &a,
-            format!("k,n
+            format!(
+                "k,n
 a/b,1
 a_b,2
 a/b,3
@@ -836,7 +837,8 @@ a/b,3
 {long}2,5
 end.,6
 end,7
-"),
+"
+            ),
         )
         .unwrap();
         let out = d.join("parts");
@@ -852,7 +854,13 @@ end,7
         assert!(names.contains(&"p a_b (2).csv".to_string()));
         let rows: usize = names
             .iter()
-            .map(|n| std::fs::read_to_string(out.join(n)).unwrap().lines().count() - 1)
+            .map(|n| {
+                std::fs::read_to_string(out.join(n))
+                    .unwrap()
+                    .lines()
+                    .count()
+                    - 1
+            })
             .sum();
         assert_eq!(rows, 7, "every row is in a file");
         let first = std::fs::read_to_string(out.join("p a_b.csv")).unwrap();

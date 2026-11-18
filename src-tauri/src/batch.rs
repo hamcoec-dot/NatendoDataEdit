@@ -123,7 +123,7 @@ impl Batch {
                 }
                 _ => {
                     return Err(bad(
-                        "choose the files, the recipe and the output folder".into(),
+                        "choose the files, the recipe and the output folder".into()
                     ))
                 }
             }
@@ -339,7 +339,8 @@ mod tests {
             "the first results are kept"
         );
         std::fs::write(out.join("a.csv"), "old").unwrap();
-        b.start(&[], false, Some(Existing::Replace), recent).unwrap();
+        b.start(&[], false, Some(Existing::Replace), recent)
+            .unwrap();
         while b.status().running {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }

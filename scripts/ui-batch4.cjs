@@ -54,10 +54,30 @@ const url = process.argv[3] || "http://localhost:5203";
   ok(/after step 1/.test(await p.locator(".peek").textContent()), "clicking a step shows the table as it was then");
   ok(await p.evaluate(() => window.__nde.tab.peeking), "the table can't be edited while looking back");
   if (out) await p.locator("aside.panel").screenshot({ path: path.join(out, "steps-panel.png") });
+  // Nothing changes or saves while looking back (the later steps stay).
+  const cols = await p.evaluate(() => window.__nde.tab.info.cols);
+  await sel(1, 0);
+  await command("Delete columns");
+  ok((await p.evaluate(() => window.__nde.tab.info.cols)) === cols, "Delete columns is off while looking back");
+  await p.keyboard.press("Escape");
+  await wait(200);
+  await p.keyboard.press("Control+s");
+  await wait(500);
+  const dlg = await p.locator("[role=dialog]").allTextContents();
+  ok(!dlg.length, `Ctrl+S is off while looking back ${dlg.join(" | ").slice(0, 120)}`);
+  ok((await list.locator("li").count()) === 5, "the later steps stay");
   await p.locator(".peek button").click();
   await wait(600);
   ok(!(await p.evaluate(() => window.__nde.tab.peeking)), "Back to the latest step");
-  // Turning a step off would undo a paste: it asks first.
+  // Right-click a step: its menu.
+  await list.locator("li").nth(2).click({ button: "right" });
+  await wait(300);
+  const sm = p.locator(".step-menu");
+  ok(await sm.isVisible(), "right-click on a step opens its menu");
+  ok(await sm.locator("button:has-text('Turn off')").isVisible(), "the menu turns a step off");
+  await p.keyboard.press("Escape");
+  await wait(200);
+  ok(!(await sm.count()), "Escape closes it");
   await p.locator("button[aria-label='Turn off step 1']").click();
   await wait(600);
   const confirm = p.locator("[role=alertdialog]");
@@ -92,6 +112,13 @@ const url = process.argv[3] || "http://localhost:5203";
   ok(/2 files done; 1 file not done/.test(await d.textContent()), "a summary by file: done and not done");
   ok((await d.locator("[role=row]").count()) === 3, "each file has a line");
   if (out) await d.screenshot({ path: path.join(out, "recipe-files.png") });
+  // Again: the results are there now, so it asks before replacing them.
+  await d.locator("button:has-text('Run')").click();
+  await wait(500);
+  ok(/already have these names/.test(await d.locator(".clash").textContent()), "running again asks before replacing results");
+  await d.locator(".clash button:has-text('Keep them')").click();
+  await wait(500);
+  ok(!(await d.locator(".clash").count()), "keeping them runs with new names");
   await d.locator("button:has-text('Close')").click();
 
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
