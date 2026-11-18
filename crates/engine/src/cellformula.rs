@@ -387,13 +387,14 @@ fn moved(r: Ref, dr: i64, dc: i64) -> Ref {
 /// SUM, AVERAGE, COUNT and COUNTA cost the same at any size (plus each
 /// cell's number where MIN or MAX scan it).
 struct Sheet {
-    /// Document position of the first row kept.
-    lo: i64,
     cols: std::collections::HashMap<i64, ColData>,
 }
 
 #[derive(Default)]
 struct ColData {
+    /// Document position of the column's first row kept (each column keeps
+    /// only the rows the formula reads in it).
+    lo: i64,
     /// Cell text (single references only; else empty).
     text: Vec<String>,
     /// The number in each cell, NaN when it is not one (MIN and MAX only).
@@ -405,28 +406,45 @@ struct ColData {
     filled: Vec<u32>,
 }
 
-/// What a formula needs of each column it reads.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// What a formula needs of each column it reads, over rows `lo..=hi`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Need {
     text: bool,
     totals: bool,
     numbers: bool,
+    lo: i64,
+    hi: i64,
+}
+
+impl Default for Need {
+    fn default() -> Self {
+        Need {
+            text: false,
+            totals: false,
+            numbers: false,
+            lo: i64::MAX,
+            hi: i64::MIN,
+        }
+    }
+}
+
+impl Need {
+    fn span(&mut self, lo: i64, hi: i64) {
+        self.lo = self.lo.min(lo);
+        self.hi = self.hi.max(hi);
+    }
 }
 
 impl Sheet {
     fn text(&self, row: i64, col: i64) -> Option<&str> {
         let c = self.cols.get(&col)?;
         c.text
-            .get(usize::try_from(row - self.lo).ok()?)
+            .get(usize::try_from(row - c.lo).ok()?)
             .map(String::as_str)
     }
 
     /// Rows `r1..=r2` of columns `c1..=c2` worked out.
     fn agg(&self, r1: i64, r2: i64, c1: i64, c2: i64, min_max: bool) -> Option<RangeAgg> {
-        let (a, b) = (
-            usize::try_from(r1 - self.lo).ok()?,
-            usize::try_from(r2 - self.lo).ok()? + 1,
-        );
         let mut g = RangeAgg {
             sum: 0.0,
             nums: 0,
@@ -436,6 +454,10 @@ impl Sheet {
         };
         for c in c1..=c2 {
             let d = self.cols.get(&c)?;
+            let (a, b) = (
+                usize::try_from(r1 - d.lo).ok()?,
+                usize::try_from(r2 - d.lo).ok()? + 1,
+            );
             if b >= d.sum.len() || (min_max && b > d.num.len()) {
                 return None;
             }
@@ -599,7 +621,9 @@ impl Document {
             for &(rr, cc) in cells.iter().flatten() {
                 lo = lo.min(rr);
                 hi = hi.max(rr);
-                want_cols.entry(cc).or_default().text = true;
+                let n = want_cols.entry(cc).or_default();
+                n.text = true;
+                n.span(rr, rr);
             }
             for (j, (r1, r2, c1, c2)) in ranges
                 .iter()
@@ -611,6 +635,7 @@ impl Document {
                 for cc in c1..=c2 {
                     let n = want_cols.entry(cc).or_default();
                     n.totals = true;
+                    n.span(r1, r2);
                     n.numbers |= min_max_ranges[j];
                 }
             }
@@ -626,7 +651,10 @@ impl Document {
         }
         // The cost is known before anything is read: refuse at once.
         let kept = if lo <= hi {
-            (hi - lo + 1) as u64 * want_cols.len() as u64
+            want_cols
+                .values()
+                .map(|n| (n.hi - n.lo + 1) as u64)
+                .sum::<u64>()
         } else {
             0
         };
@@ -777,7 +805,6 @@ impl Document {
         progress: &Progress,
     ) -> Result<Sheet, Error> {
         let mut sheet = Sheet {
-            lo,
             cols: std::collections::HashMap::new(),
         };
         if lo > hi || cols.is_empty() {
@@ -789,31 +816,41 @@ impl Document {
         let n = (hi - lo + 1) as usize;
         let chunk = 1 << 15;
         // Each part: per column, its text and numbers as needed, and running
-        // totals from the part's start.
+        // totals from the part's start, over the rows that column needs.
         let parts: Vec<Vec<ColData>> = (0..n.div_ceil(chunk))
             .into_par_iter()
             .map(|k| -> Result<Vec<ColData>, Error> {
                 let s = k * chunk;
                 let e = (s + chunk).min(n);
+                let (ps, pe) = (lo + s as i64, lo + e as i64 - 1);
                 let mut out: Vec<ColData> = needs
                     .iter()
-                    .map(|nd| ColData {
-                        text: Vec::with_capacity(if nd.text { e - s } else { 0 }),
-                        num: Vec::with_capacity(if nd.numbers { e - s } else { 0 }),
-                        sum: Vec::with_capacity(if nd.totals { e - s } else { 0 }),
-                        nums: Vec::with_capacity(if nd.totals { e - s } else { 0 }),
-                        filled: Vec::with_capacity(if nd.totals { e - s } else { 0 }),
+                    .map(|nd| {
+                        let rows = (pe.min(nd.hi) - ps.max(nd.lo) + 1).max(0) as usize;
+                        ColData {
+                            lo: 0,
+                            text: Vec::with_capacity(if nd.text { rows } else { 0 }),
+                            num: Vec::with_capacity(if nd.numbers { rows } else { 0 }),
+                            sum: Vec::with_capacity(if nd.totals { rows } else { 0 }),
+                            nums: Vec::with_capacity(if nd.totals { rows } else { 0 }),
+                            filled: Vec::with_capacity(if nd.totals { rows } else { 0 }),
+                        }
                     })
                     .collect();
                 let mut buf = Vec::new();
                 for p in s..e {
-                    let id = self
-                        .doc_id_at(lo as u64 + p as u64)
-                        .ok_or(Error::OutOfRange)?;
+                    let at = lo + p as i64;
+                    if !needs.iter().any(|nd| at >= nd.lo && at <= nd.hi) {
+                        continue;
+                    }
+                    let id = self.doc_id_at(at as u64).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
                     for (i, o) in out.iter_mut().enumerate() {
-                        let t = reader.get(&buf, i);
                         let nd = needs[i];
+                        if at < nd.lo || at > nd.hi {
+                            continue;
+                        }
+                        let t = reader.get(&buf, i);
                         if nd.text {
                             o.text.push(t.to_string());
                         }
@@ -837,26 +874,34 @@ impl Document {
                 Ok(out)
             })
             .collect::<Result<_, _>>()?;
-        for (i, &c) in list.iter().enumerate() {
-            let nd = needs[i];
-            let mut d = ColData::default();
-            if nd.totals {
-                d.sum.reserve(n + 1);
-                d.nums.reserve(n + 1);
-                d.filled.reserve(n + 1);
-                d.sum.push(0.0);
-                d.nums.push(0);
-                d.filled.push(0);
-            }
-            for p in &parts {
-                let pc = &p[i];
-                if nd.text {
-                    d.text.extend(pc.text.iter().cloned());
-                }
-                if nd.numbers {
-                    d.num.extend_from_slice(&pc.num);
-                }
+        // Join the parts, moving their contents (each part is let go as it
+        // is used).
+        let mut joined: Vec<ColData> = needs
+            .iter()
+            .map(|nd| {
+                let rows = (nd.hi - nd.lo + 1).max(0) as usize;
+                let mut d = ColData {
+                    lo: nd.lo,
+                    text: Vec::with_capacity(if nd.text { rows } else { 0 }),
+                    num: Vec::with_capacity(if nd.numbers { rows } else { 0 }),
+                    ..Default::default()
+                };
                 if nd.totals {
+                    d.sum = Vec::with_capacity(rows + 1);
+                    d.nums = Vec::with_capacity(rows + 1);
+                    d.filled = Vec::with_capacity(rows + 1);
+                    d.sum.push(0.0);
+                    d.nums.push(0);
+                    d.filled.push(0);
+                }
+                d
+            })
+            .collect();
+        for part in parts {
+            for (d, mut pc) in joined.iter_mut().zip(part) {
+                d.text.append(&mut pc.text);
+                d.num.append(&mut pc.num);
+                if !d.sum.is_empty() {
                     let (bs, bn, bf) = (
                         *d.sum.last().unwrap_or(&0.0),
                         *d.nums.last().unwrap_or(&0),
@@ -867,6 +912,8 @@ impl Document {
                     d.filled.extend(pc.filled.iter().map(|x| bf + x));
                 }
             }
+        }
+        for (&c, d) in list.iter().zip(joined) {
             sheet.cols.insert(i64::from(c), d);
         }
         Ok(sheet)
