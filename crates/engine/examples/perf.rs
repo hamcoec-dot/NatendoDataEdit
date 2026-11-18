@@ -1176,6 +1176,26 @@ fn main() {
             t.elapsed(),
             Duration::from_millis(400),
         );
+        // Two whole columns of 5M rows: running totals only, no text kept.
+        let t = Instant::now();
+        let res = big
+            .run_cell_formula(
+                &CellFormula {
+                    formula: "=SUM(C2:D5000001)".into(),
+                    row: 1,
+                    col: 0,
+                    keep_first: true,
+                    ..Default::default()
+                },
+                &Progress::new(),
+            )
+            .unwrap();
+        assert_eq!(res.cells.len(), 1);
+        check.budget(
+            "cell formula summing 10M cells (2 columns of 5M rows)",
+            t.elapsed(),
+            Duration::from_secs(1),
+        );
         // A 200-cell range filled down 100k cells, and a running total down
         // 100k rows: each range is worked out from running totals.
         let fill = |f: &str| CellFormula {
