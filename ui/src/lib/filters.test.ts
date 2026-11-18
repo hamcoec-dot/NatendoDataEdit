@@ -40,6 +40,11 @@ describe("filter rules", () => {
       skip_cols: [4],
     });
     expect(findSpecOf({ ...o, includeHidden: true }, sel, true, [4]).skip_cols).toEqual([]);
+    // Include hidden: hidden rows too, and the hidden columns are named so a
+    // replace can say how many hidden cells it changes.
+    const h = findSpecOf({ ...o, includeHidden: true, byColumns: true, preserveCase: true }, sel, true, [4]);
+    expect([h.hidden_rows, h.hidden_cols, h.by_columns, h.pattern.preserve_case]).toEqual([true, [4], true, true]);
+    expect(findSpecOf({ ...o, kind: "number", text: "5" }, sel, true).pattern.kind).toBe("number");
     expect(findSpecOf({ ...o, scope: "selection" }, sel, false).scope).toEqual({ kind: "range", ...sel });
   });
 });

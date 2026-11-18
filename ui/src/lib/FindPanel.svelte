@@ -6,6 +6,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import AllNone from "./AllNone.svelte";
   import { FLAG_NAMES, type NoteMark } from "./notes";
+  import { MAX_SAVED_SEARCHES, prefs, type SavedSearch } from "./prefs.svelte";
   import { cellDiff } from "./textDiff";
   import { clearFindHistory, findHistory, rememberFind, rememberReplace, stepHistory } from "./findHistory.svelte";
   import type { Tab } from "./tab.svelte";
@@ -36,9 +37,20 @@
     onRenameColumns: (renames: [number, string][]) => Promise<void>;
     /** Open "Replace from a list…". */
     onBatch: () => void;
+    /** Copy the Find all list (after the privacy check); false if stopped. */
+    onCopy: (text: string) => Promise<boolean>;
     onClose: () => void;
   }
-  let { tab, tabs, replace = $bindable(), options = $bindable(), block = $bindable(), run, onSelect, onChanged, onGoTab, onNewTab, onRenameColumns, onBatch, onClose }: Props = $props();
+  let { tab, tabs, replace = $bindable(), options = $bindable(), block = $bindable(), run, onSelect, onChanged, onGoTab, onNewTab, onRenameColumns, onBatch, onCopy, onClose }: Props = $props();
+
+  /** Number, date and similar patterns test the whole cell; the text
+   *  options don't apply to them. */
+  const valueKind = $derived(!options.blank && (options.kind === "number" || options.kind === "date" || options.kind === "similar"));
+  const placeholders: Record<string, string> = {
+    number: "A number: 5, 10..20, >5, <=100",
+    date: "A date: 1/5/2024, 1/1/2024..3/31/2024, >1/5/2024",
+    similar: "A name or word: Jon Smyth finds John Smith",
+  };
 
   // Picking "Selection" or "Selected columns" while the box is open takes
   // the block selected then; "Whole file" lets it go.
@@ -391,6 +403,8 @@
     }
     results = groups;
     resultsAt = "";
+    // Going down columns: the list follows the same order.
+    if (options.byColumns) order = "cols";
     const n = groups.reduce((a, g) => a + g.r.cells, 0);
     status = (n === 0 ? "No matches." : "") + (skipped.length ? ` Not searched: ${skipped.join("; ")}.` : "");
   }
@@ -425,10 +439,77 @@
     }
   }
 
+  /** Find all listed matches in hidden rows: row actions act on shown rows. */
+  const hiddenListed = $derived(results?.some((g) => g.r.hits.some((h) => h.hidden)) ?? false);
+
+  /** The Find all list as tab-separated text (tab, row, column, text). */
+  async function copyList(): Promise<void> {
+    if (!results) return;
+    const many = results.length > 1;
+    const head = [...(many ? ["Tab"] : []), "Row", "Column", "Cell"].join("\t");
+    const lines = [head];
+    for (const { t, h } of shown) lines.push([...(many ? [t.info.name] : []), `${h.number + 1}${h.hidden ? " (hidden)" : ""}`, title(h.col, t), h.text].map((x) => x.replace(/[\t\r\n]+/g, " ")).join("\t"));
+    if (await onCopy(lines.join("\r\n") + "\r\n")) status = `Copied the list of ${plural(shown.length, "match", "matches")} (as listed, each cell around its match).`;
+  }
+
+  // ---- saved searches (kept in Options only when Save is pressed) ----
+  let savedOpen = $state(false);
+  let saveName = $state("");
+  function saveSearch(): void {
+    const name = saveName.trim().slice(0, 100);
+    if (!name) return;
+    const s: SavedSearch = {
+      name,
+      text: options.text,
+      replacement,
+      kind: options.kind,
+      blank: options.blank,
+      matchCase: options.matchCase,
+      wholeCell: options.wholeCell,
+      wholeWord: options.wholeWord,
+      ignoreAccents: options.ignoreAccents,
+      escapes: options.escapes,
+      preserveCase: options.preserveCase,
+    };
+    const list = prefs.data.savedSearches.filter((x) => x.name !== name);
+    if (list.length >= MAX_SAVED_SEARCHES) {
+      status = `At most ${MAX_SAVED_SEARCHES} searches can be saved: delete one first.`;
+      return;
+    }
+    prefs.data.savedSearches = [...list, s].sort((a, b) => a.name.localeCompare(b.name));
+    prefs.save();
+    saveName = "";
+    status = `Saved "${name}". It is kept on this computer until you delete it.`;
+  }
+  function useSearch(s: SavedSearch): void {
+    options.text = s.text;
+    options.kind = s.kind;
+    options.blank = s.blank;
+    options.matchCase = s.matchCase;
+    options.wholeCell = s.wholeCell;
+    options.wholeWord = s.wholeWord;
+    options.ignoreAccents = s.ignoreAccents;
+    options.escapes = s.escapes;
+    options.preserveCase = s.preserveCase;
+    if (s.replacement) {
+      replacement = s.replacement;
+      replace = true;
+    }
+    savedOpen = false;
+    results = null;
+    pending = null;
+    status = `Using "${s.name}".`;
+    focus();
+  }
+  function forgetSearch(s: SavedSearch): void {
+    prefs.data.savedSearches = prefs.data.savedSearches.filter((x) => x !== s);
+    prefs.save();
+  }
+
   /** How many rows Find all's list holds (when it lists every match). */
   const matchRows = $derived.by(() => {
     const g = results?.length === 1 && results[0]!.t === tab ? results[0]!.r : null;
-    if (!g || g.hits.length < g.cells) return null;
+    if (!g || g.hits.length < g.cells || g.hits.some((h) => h.hidden)) return null;
     return new Set(g.hits.map((h) => h.row)).size;
   });
 
@@ -679,6 +760,7 @@
     const { t, h } = shown[cursor]!;
     if (t === tab) onSelect(h.row, h.col);
     else onGoTab(t, h.row, h.col);
+    if (h.hidden) status = `Row ${(h.number + 1).toLocaleString()} is hidden, so the nearest shown row is selected. Show all rows to see it.`;
     const box = listBox;
     if (box) {
       const y = cursor * ROW_H;
@@ -727,7 +809,7 @@
 <div class="find" role="search" aria-label="Find and replace" onkeydown={onBarKey}>
   <div class="line">
     <button type="button" class="twist" aria-label={replace ? "Hide replace" : "Show replace"} title="Replace (Ctrl+H)" onclick={() => (replace = !replace)}>{replace ? "▾" : "▸"}</button>
-    <input bind:this={findInput} class="text" aria-label="Find" placeholder={options.blank ? "Empty cells (Blank cells is picked below)" : options.lookIn === "notes" ? "Find in row notes" : "Find"} disabled={options.blank && options.lookIn === "cells"} bind:value={options.text} onkeydown={(e) => onKey(e, false)} oninput={() => { results = null; notes = null; pending = null; status = ""; }} />
+    <input bind:this={findInput} class="text" aria-label="Find" placeholder={options.blank ? "Empty cells (Blank cells is picked below)" : options.lookIn === "notes" ? "Find in row notes" : (placeholders[options.kind] ?? "Find")} disabled={options.blank && options.lookIn === "cells"} bind:value={options.text} onkeydown={(e) => onKey(e, false)} oninput={() => { results = null; notes = null; pending = null; status = ""; }} />
     <span class="menuwrap">
       <button type="button" title="Insert a character that is hard to type or to see" aria-haspopup="menu" aria-expanded={special} onclick={() => (special = !special)}>Special…</button>
       {#if special}
@@ -751,6 +833,25 @@
     </select>
     {#if options.scope === "pick" && !picking}<button type="button" onclick={() => (picking = true)}>Change columns</button>{/if}
     <span class="spacer"></span>
+    <span class="menuwrap">
+      <button type="button" title="Searches saved by name" aria-haspopup="menu" aria-expanded={savedOpen} onclick={() => (savedOpen = !savedOpen)}>Saved ▾</button>
+      {#if savedOpen}
+        <div class="menu right" role="menu" aria-label="Saved searches">
+          {#each prefs.data.savedSearches as s (s.name)}
+            <div class="saved">
+              <button type="button" role="menuitem" title={`${s.blank ? "Blank cells" : s.text}${s.replacement ? ` → ${s.replacement}` : ""}`} onclick={() => useSearch(s)}>{s.name}</button>
+              <button type="button" class="x" aria-label={`Delete ${s.name}`} title="Delete this saved search" onclick={() => forgetSearch(s)}>✕</button>
+            </div>
+          {:else}
+            <span class="muted pad">No saved searches yet.</span>
+          {/each}
+          <div class="saveline">
+            <input aria-label="Name for this search" placeholder="Name this search" maxlength="100" bind:value={saveName} onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); saveSearch(); } }} />
+            <button type="button" disabled={!saveName.trim() || (!options.text && !options.blank)} onclick={saveSearch}>Save</button>
+          </div>
+        </div>
+      {/if}
+    </span>
     <button type="button" class="x" aria-label="Find tips" title="Wildcards, patterns and keys" aria-expanded={help} onclick={() => (help = !help)}>?</button>
     <button type="button" class="x" aria-label="Close find" title="Close (Esc)" onclick={onClose}>✕</button>
   </div>
@@ -761,6 +862,7 @@
       <button type="button" disabled={allTabs} title={allTabs ? "Replace one at a time works in the shown tab: pick Whole file" : ""} onclick={() => void replaceOne()}>Replace</button>
       <button type="button" title="Replace all (Ctrl+Alt+Enter)" onclick={() => void previewAll()}>Replace all…</button>
       <button type="button" title="Many find-and-replace pairs at once, from a pasted list or another tab" onclick={onBatch}>From a list…</button>
+      {#if !valueKind}<label title="SMITH becomes JONES, Smith becomes Jones"><input type="checkbox" bind:checked={options.preserveCase} /> Preserve case</label>{/if}
     </div>
   {/if}
   {#if picking}
@@ -780,20 +882,28 @@
       <option value="wildcard">Wildcards (* ? ~)</option>
       <option value="regex">Regular expression</option>
       <option value="blank">Blank cells</option>
+      <option value="number">Numbers by value</option>
+      <option value="date">Dates by value</option>
+      <option value="similar">Similar spelling</option>
     </select>
     <select aria-label="Look in" title="Search the cells or the notes on rows" bind:value={options.lookIn}>
       <option value="cells">In cells</option>
       <option value="notes">In row notes</option>
     </select>
     {#if tab.header}<label title="Search the first row (the column titles) too; replacing there renames the column"><input type="checkbox" bind:checked={options.titles} /> Column titles</label>{/if}
-    <label title="Alt+C"><input type="checkbox" bind:checked={options.matchCase} /> Match case</label>
-    <label title="Alt+W: &quot;Ann&quot; finds &quot;Ann Lee&quot;, not &quot;Annette&quot;"><input type="checkbox" bind:checked={options.wholeWord} /> Whole word</label>
-    <label><input type="checkbox" bind:checked={options.wholeCell} /> Whole cell</label>
-    <label title="&quot;Jose&quot; finds &quot;José&quot; too"><input type="checkbox" bind:checked={options.ignoreAccents} /> Ignore accents</label>
-    {#if options.kind !== "regex"}
-      <label title="\t tab, \n line break, \r return, \\ backslash, \u&#123;A0&#125; any character (in Replace with too)"><input type="checkbox" bind:checked={options.escapes} /> \t \n</label>
+    {#if !valueKind}
+      <label title="Alt+C"><input type="checkbox" bind:checked={options.matchCase} /> Match case</label>
+      <label title="Alt+W: &quot;Ann&quot; finds &quot;Ann Lee&quot;, not &quot;Annette&quot;"><input type="checkbox" bind:checked={options.wholeWord} /> Whole word</label>
+      <label><input type="checkbox" bind:checked={options.wholeCell} /> Whole cell</label>
+      <label title="&quot;Jose&quot; finds &quot;José&quot; too"><input type="checkbox" bind:checked={options.ignoreAccents} /> Ignore accents</label>
+      {#if options.kind !== "regex"}
+        <label title="\t tab, \n line break, \r return, \\ backslash, \u&#123;A0&#125; any character (in Replace with too)"><input type="checkbox" bind:checked={options.escapes} /> \t \n</label>
+      {/if}
+    {:else}
+      <span class="muted">{options.kind === "similar" ? "Whole cells, a letter or two different; case, accents and punctuation aside." : "Whole cells by value; Replace puts the replacement in the whole cell."}</span>
     {/if}
-    <label title="Hidden columns are skipped unless this is ticked"><input type="checkbox" bind:checked={options.includeHidden} /> Include hidden</label>
+    <label title="Hidden columns and hidden rows (filtered out or hidden by hand) are skipped unless this is ticked; Find next stays on shown rows"><input type="checkbox" bind:checked={options.includeHidden} /> Include hidden</label>
+    <label title="Find next goes down each column before moving right"><input type="checkbox" bind:checked={options.byColumns} /> By columns</label>
   </div>
   {#if help}
     <div class="help" role="note" aria-label="Find tips">
@@ -847,7 +957,7 @@
           Replace {plural(pending.hits, "match", "matches")} in {plural(pending.cells, "cell")} across {plural(tabParts.length, "tab")}? Each tab can undo its part in one step.
         {:else}
           Replace {plural(pending.hits, "match", "matches")} in {plural(pending.cells - unticked.size, "cell")}{titleChanges.length ? ` and rename ${plural(titleChanges.length, "column")}` : ""}?
-          {titleChanges.length ? `It takes ${plural((pending.cells - unticked.size > 0 ? 1 : 0) + titleChanges.length, "step")} to undo (one per renamed title).` : "It is one step to undo."}{unticked.size ? ` ${plural(unticked.size, "change")} unticked will be left as they are.` : ""}
+          {titleChanges.length ? `It takes ${plural((pending.cells - unticked.size > 0 ? 1 : 0) + titleChanges.length, "step")} to undo (one per renamed title).` : "It is one step to undo."}{pending.hidden_cells ? ` ${plural(pending.hidden_cells, "cell")} ${pending.hidden_cells === 1 ? "is" : "are"} in hidden rows or columns.` : ""}{unticked.size ? ` ${plural(unticked.size, "change")} unticked will be left as they are.` : ""}
         {/if}
       </div>
       {#if titleChanges.length}
@@ -886,7 +996,7 @@
           <tbody>
             {#each pageRows as c, i (page * PAGE + i)}
               {@const d = cellDiff(c.before, c.after)}
-              {@const key = `${c.row}:${c.col}`}
+              {@const key = `${c.number}:${c.col}`}
               <tr class:off={unticked.has(key)}>
                 <td><input type="checkbox" aria-label="Replace this one" title="Untick to leave this cell as it is" checked={!unticked.has(key)} onchange={() => (unticked.has(key) ? unticked.delete(key) : unticked.add(key))} /></td>
                 <td class="where"><button type="button" class="link" title="Go to this cell" onclick={() => onSelect(c.row, c.col)}>{title(c.col)}, row {c.number + 1}</button></td>
@@ -937,11 +1047,14 @@
     <div class="results">
       <div class="rhead">
         <span>{plural(totalCells, "cell")} match{totalCells === 1 ? "es" : ""}{results.length > 1 ? ` in ${plural(results.length, "tab")}` : ""}{listed < totalCells ? ` (first ${listed.toLocaleString()} listed)` : ""}</span>
-        <button type="button" class="x" aria-label="Close results" onclick={() => (results = null)}>✕</button>
+        <span class="rbtns">
+          <button type="button" title="Copy this list (row, column and cell) as tab-separated text" onclick={() => void copyList()}>Copy list</button>
+          <button type="button" class="x" aria-label="Close results" onclick={() => (results = null)}>✕</button>
+        </span>
       </div>
       {#if single && single.t === tab && !allTabs}
         <div class="acts" role="group" aria-label="Rows with a match">
-          <span class="muted">Rows with a match{matchRows !== null ? ` (${matchRows.toLocaleString()})` : ""}:</span>
+          <span class="muted">{hiddenListed ? "Shown rows with a match" : "Rows with a match"}{matchRows !== null ? ` (${matchRows.toLocaleString()})` : ""}:</span>
           <button type="button" title="Hide the other rows (undo, or Show all rows, brings them back)" onclick={() => void actOnRows({ kind: "show" })}>Show only these</button>
           <button type="button" title="Put these rows in a new tab; this file does not change" onclick={() => void actOnRows({ kind: "copy" })}>Copy to new tab</button>
           <span class="flagpick">
@@ -973,7 +1086,7 @@
             {@const i = first + j}
             {@const chars = [...h.text]}
             <div class="hit" class:cur={i === cursor} role="option" aria-selected={i === cursor} tabindex="-1" style:top="{i * ROW_H}px" onclick={() => go(i)} onkeydown={() => {}}>
-              <span class="where">{results.length > 1 ? `${t.info.name}: ` : ""}{title(h.col, t)}, row {h.number + 1}</span>
+              <span class="where">{results.length > 1 ? `${t.info.name}: ` : ""}{title(h.col, t)}, row {h.number + 1}{h.hidden ? " (hidden)" : ""}</span>
               <span class="snip">{chars.slice(0, h.start).join("")}<mark>{chars.slice(h.start, h.start + h.len).join("")}</mark>{chars.slice(h.start + h.len).join("")}</span>
             </div>
           {/each}
@@ -1208,6 +1321,41 @@
     border: none;
     background: none;
     text-align: left;
+  }
+  .menu.right {
+    left: auto;
+    right: 0;
+    min-width: 260px;
+  }
+  .saved {
+    display: flex;
+    justify-content: space-between;
+  }
+  .saved button:first-child {
+    flex: 1;
+  }
+  .saveline {
+    display: flex;
+    gap: 4px;
+    border-top: 1px solid var(--border);
+    padding-top: 4px;
+    margin-top: 2px;
+  }
+  .saveline input {
+    flex: 1;
+    min-width: 0;
+  }
+  .pad {
+    padding: 2px 8px;
+  }
+  .rbtns {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .rbtns button:not(.x) {
+    padding: 0 6px;
+    font-size: 12px;
   }
   .menu button:hover:not(:disabled) {
     background: var(--bg);

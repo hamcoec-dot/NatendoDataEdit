@@ -135,7 +135,121 @@ function accentClass(c: string, esc: (s: string) => string): string {
   return `(?:[${upper ? forms.toUpperCase() : forms}]\\p{M}*)`;
 }
 
+/** Number, date and similar patterns: a test on the whole cell, shaped as a
+ *  RegExp so the stub's searches and replaces work unchanged. */
+class CellTest extends RegExp {
+  constructor(private ok: (s: string) => boolean) {
+    super("[^\\s\\S]");
+  }
+  override test(s: string): boolean {
+    return this.ok(s);
+  }
+  override exec(s: string): RegExpExecArray | null {
+    if (!this.ok(s)) return null;
+    const m = [s] as unknown as RegExpExecArray;
+    m.index = 0;
+    m.input = s;
+    return m;
+  }
+  override [Symbol.replace](s: string, rep: unknown): string {
+    if (!this.ok(s)) return s;
+    return typeof rep === "function" ? String((rep as (m: string, i: number, s: string) => string)(s, 0, s)) : String(rep);
+  }
+  override *[Symbol.matchAll](s: string): RegExpStringIterator<RegExpExecArray> {
+    const m = this.exec(s);
+    if (m) yield m;
+  }
+}
+
+function mockNumber(s: string): number | null {
+  let t = s.trim().replace(/[$€£,]/g, "");
+  let neg = false;
+  if (/^\(.*\)$/.test(t)) {
+    neg = true;
+    t = t.slice(1, -1);
+  }
+  if (t === "" || !/^[-+]?(\d+\.?\d*|\.\d+)$/.test(t)) return null;
+  return neg ? -Number(t) : Number(t);
+}
+function mockDate(s: string): number | null {
+  const t = s.trim();
+  if (!/\d/.test(t)) return null;
+  const ms = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(t) ? `${t}T00:00` : t);
+  return Number.isNaN(ms) ? null : (ms - new Date(ms).getTimezoneOffset() * 60_000) / 86_400_000;
+}
+function similarKey(s: string): string {
+  return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+function editsWithin(a: string, b: string, max: number): boolean {
+  const x = [...a];
+  const y = [...b];
+  if (Math.abs(x.length - y.length) > max) return false;
+  let prev = Array.from({ length: y.length + 1 }, (_, j) => j);
+  for (let i = 0; i < x.length; i++) {
+    const cur = [i + 1];
+    for (let j = 0; j < y.length; j++) cur.push(Math.min(prev[j]! + (x[i] === y[j] ? 0 : 1), prev[j + 1]! + 1, cur[j]! + 1));
+    prev = cur;
+  }
+  return prev[y.length]! <= max;
+}
+function cellTestOf(p: Pattern): CellTest {
+  if (p.kind === "similar") {
+    const want = similarKey(p.text);
+    if (!want) throw err("bad_pattern", "the pattern is not valid: enter a name or word to look for");
+    const n = [...want].length;
+    const max = n <= 4 ? 1 : n <= 10 ? 2 : 3;
+    return new CellTest((s) => editsWithin(want, similarKey(s), max));
+  }
+  const date = p.kind === "date";
+  const read = date ? mockDate : mockNumber;
+  const val = (s: string): [number, boolean] => {
+    const v = read(s);
+    if (v === null) throw err("bad_pattern", `the pattern is not valid: "${s.trim()}" is not a ${date ? "date (try 1/5/2024 or 2024-01-05)" : "number"}`);
+    return [v, date && Number.isInteger(v)];
+  };
+  const t = p.text.trim();
+  let lo: [number, boolean] | null = null;
+  let hi: [number, boolean] | null = null;
+  if (t.startsWith(">=")) lo = [val(t.slice(2))[0], true];
+  else if (t.startsWith("<=")) {
+    const [v, day] = val(t.slice(2));
+    hi = day ? [v + 1, false] : [v, true];
+  } else if (t.startsWith(">")) {
+    const [v, day] = val(t.slice(1));
+    lo = day ? [v + 1, true] : [v, false];
+  } else if (t.startsWith("<")) hi = [val(t.slice(1))[0], false];
+  else if (t.includes("..")) {
+    const [a, b] = t.split("..", 2) as [string, string];
+    const [x] = val(a);
+    const [y, day] = val(b);
+    if (y < x) throw err("bad_pattern", "the pattern is not valid: the range ends before it starts");
+    lo = [x, true];
+    hi = day ? [y + 1, false] : [y, true];
+  } else {
+    const [v, day] = val(t);
+    lo = [v, true];
+    hi = day ? [v + 1, false] : [v, true];
+  }
+  return new CellTest((s) => {
+    const v = read(s);
+    if (v === null) return false;
+    return (!lo || (lo[1] ? v >= lo[0] : v > lo[0])) && (!hi || (hi[1] ? v <= hi[0] : v < hi[0]));
+  });
+}
+
+function keepCase(found: string, rep: string): string {
+  const letters = [...found].filter((c) => /\p{L}/u.test(c));
+  if (!letters.length || !rep) return rep;
+  const up = (c: string) => c === c.toUpperCase() && c !== c.toLowerCase();
+  const low = (c: string) => c === c.toLowerCase() && c !== c.toUpperCase();
+  if (letters.length > 1 && letters.every(up)) return rep.toUpperCase();
+  if (letters.every(low)) return rep.toLowerCase();
+  if (up(letters[0]!) && letters.slice(1).every(low)) return rep.charAt(0).toUpperCase() + rep.slice(1);
+  return rep;
+}
+
 function regexOf(p: Pattern, global = false): RegExp {
+  if (p.kind === "number" || p.kind === "date" || p.kind === "similar") return cellTestOf(p);
   let body: string;
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const lit = (s: string) => (p.ignore_accents ? [...s].map((c) => accentClass(c, esc)).join("") : esc(s));
@@ -1029,6 +1143,17 @@ export class MockBackend implements Backend {
     // Row-major list is too big for a million rows; walk instead.
     const total = (r1 - r0) * cols.length;
     if (total <= 0) return null;
+    if (spec.by_columns) {
+      // Down each column, then the next column.
+      const list: [number, number][] = [];
+      for (const c of cols) for (let r = r0; r < r1; r++) if (re.test(this.value(d, r, c))) list.push([r, c]);
+      if (!list.length) return null;
+      const key = (r: number, c: number) => cols.indexOf(c) * (r1 + 1) + r;
+      const here = from ? key(from[0], from[1]) : backward ? Infinity : -1;
+      const pick = backward ? [...list].reverse().find(([r, c]) => key(r, c) < here) : list.find(([r, c]) => key(r, c) > here);
+      const hit = pick ?? (backward ? list[list.length - 1]! : list[0]!);
+      return { row: hit[0], col: hit[1], wrapped: !pick };
+    }
     const startRow = from && from[0] >= r0 && from[0] < r1 ? from[0] : backward ? r1 - 1 : r0;
     const k0 = from ? cols.findIndex((c) => c >= from[1]) : 0;
     let i = (startRow - r0) * cols.length + Math.max(0, k0 === -1 ? cols.length - 1 : k0);
@@ -1057,9 +1182,26 @@ export class MockBackend implements Backend {
         const c = cols[k]!;
         if (!re.test(this.value(d, r, c))) continue;
         out.cells++;
-        if (at && (r < at[0] || (r === at[0] && c < at[1]))) out.before++;
+        const earlier = spec.by_columns ? c < (at?.[1] ?? 0) || (c === at?.[1] && r < at[0]) : at && (r < at[0] || (r === at[0] && c < at[1]));
+        if (at && earlier) out.before++;
         else if (at && r === at[0] && c === at[1]) out.here = true;
       }
+    // Hidden rows too: counted, and before the cell when above it.
+    for (const [pos, c] of this.hiddenMatches(d, spec, re)) {
+      out.cells++;
+      if (at && pos < this.pos(d, at[0])) out.before++;
+    }
+    return out;
+  }
+
+  /** Matches in hidden rows (document position, column), when asked for. */
+  private hiddenMatches(d: MockDoc, spec: FindSpec, re: RegExp): [number, number][] {
+    const vis = this.visible(d);
+    if (!spec.hidden_rows || !vis) return [];
+    const shown = new Set(vis);
+    const { cols } = this.area(d, spec);
+    const out: [number, number][] = [];
+    for (let p = spec.skip_first ? 1 : 0; p < this.totalRows(d); p++) if (!shown.has(p)) for (const c of cols) if (re.test(this.valueAt(d, p, c))) out.push([p, c]);
     return out;
   }
 
@@ -1088,6 +1230,18 @@ export class MockBackend implements Backend {
         cells++;
         if (hits.length < 10_000) hits.push({ row: r, number: this.pos(d, r), col: c, text: v.replace(/[\r\n\t]/g, " ").slice(0, 200), start: [...v.slice(0, m.index)].length, len: [...m[0]].length });
       }
+    const hidden = this.hiddenMatches(d, spec, re);
+    if (hidden.length) {
+      const vis = this.visible(d) ?? [];
+      for (const [pos, c] of hidden) {
+        const v = this.valueAt(d, pos, c);
+        const m = re.exec(v)!;
+        const near = Math.max(0, vis.findIndex((x) => x > pos));
+        hits.push({ row: near === 0 && vis[0]! > pos ? 0 : near > 0 ? near - 1 : vis.length - 1, number: pos, col: c, text: v.replace(/[\r\n\t]/g, " ").slice(0, 200), start: [...v.slice(0, m.index)].length, len: [...m[0]].length, hidden: true });
+      }
+      hits.sort((a, b) => a.number - b.number || a.col - b.col);
+      cells += hidden.length;
+    }
     const per = new Map<number, number>();
     for (const r of this.matchingCells(d, spec)) per.set(r[1], (per.get(r[1]) ?? 0) + 1);
     return { hits, cells, per_col: [...per].sort((a, b) => a[0] - b[0]) };
@@ -1105,7 +1259,9 @@ export class MockBackend implements Backend {
     const { r0, r1, cols } = this.area(d, spec);
     const changes: [number, number, string][] = [];
     const preview: ReplaceReport["preview"] = [];
+    const hiddenCols = new Set(spec.hidden_cols ?? []);
     let hits = 0;
+    let hiddenCells = 0;
     for (let r = r0; r < r1; r++)
       for (const c of cols) {
         const v = this.value(d, r, c);
@@ -1113,15 +1269,17 @@ export class MockBackend implements Backend {
         const out = v.replace(re, (m, ...rest) => {
           if (m === "" && v !== "") return m;
           n++;
-          return spec.pattern.kind === "regex" ? rep.replace(/\$(\d)/g, (_, g) => String(rest[Number(g) - 1] ?? "")) : rep;
+          const piece = spec.pattern.kind === "regex" ? rep.replace(/\$(\d)/g, (_, g) => String(rest[Number(g) - 1] ?? "")) : rep;
+          return spec.pattern.preserve_case ? keepCase(m, piece) : piece;
         });
         if (n && out !== v) {
           hits += n;
           changes.push([r, c, out]);
-          if (preview.length < 50) preview.push({ row: r, number: this.pos(d, r), col: c, before: v, after: out });
+          if (hiddenCols.has(c)) hiddenCells++;
+          if (preview.length < 50) preview.push({ row: r, number: this.pos(d, r), col: c, before: v, after: out, hidden: hiddenCols.has(c) });
         }
       }
-    return { changes, preview, hits };
+    return { changes, preview, hits, hiddenCells };
   }
 
   private previewKey = new Map<number, string>();
@@ -1131,8 +1289,9 @@ export class MockBackend implements Backend {
     this.previewKey.delete(doc);
     if (!ok) throw err("changed", "the search or the file changed since the preview; nothing was replaced. Look at the changes again (Replace all…)");
     const p = this.planReplace(this.get(doc), spec, replacement);
-    const skip = new Set(exclude.map(([r, c]) => `${r}:${c}`));
-    const changes = p.changes.filter(([r, c]) => !skip.has(`${r}:${c}`));
+    const d = this.get(doc);
+    const skip = new Set(exclude.map(([n, c]) => `${n}:${c}`));
+    const changes = p.changes.filter(([r, c]) => !skip.has(`${this.pos(d, r)}:${c}`));
     this.changedRows = [...new Set(changes.map(([r]) => this.rowId(this.get(doc), r)))];
     const info = changes.length ? await this.setCells(doc, changes) : this.refresh(this.get(doc));
     return { cells: changes.length, hits: p.hits, preview: [], info };
@@ -1293,8 +1452,8 @@ export class MockBackend implements Backend {
     const p = this.planReplace(this.get(doc), spec, replacement);
     const d = this.get(doc);
     this.previewKey.set(doc, JSON.stringify([spec, replacement]));
-    this.lastReplace = p.changes.slice(0, 100_000).map(([r, c, after]) => ({ row: r, number: this.pos(d, r), col: c, before: this.value(d, r, c), after }));
-    return { cells: p.changes.length, hits: p.hits, preview: p.preview, info: null };
+    this.lastReplace = p.changes.slice(0, 100_000).map(([r, c, after]) => ({ row: r, number: this.pos(d, r), col: c, before: this.value(d, r, c), after, hidden: (spec.hidden_cols ?? []).includes(c) }));
+    return { cells: p.changes.length, hits: p.hits, preview: p.preview, info: null, hidden_cells: p.hiddenCells };
   }
 
   async replaceAll(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport> {

@@ -5252,6 +5252,16 @@
           for (const [c, name] of list) await renameColumn(t.id, c, name, true, shownTitles(t));
         }}
         onBatch={() => { batchOpen = true; }}
+        onCopy={async (text) => {
+          if (!(await privacyGate("The list of matches goes to the clipboard, where other programs can read it."))) return false;
+          try {
+            await navigator.clipboard.writeText(text);
+            return true;
+          } catch {
+            say("The clipboard could not be used.");
+            return false;
+          }
+        }}
         onClose={() => { findOpen = false; findBlock = null; grid?.focus(); }}
       />
     {/if}

@@ -242,7 +242,9 @@ export interface SortSpec {
 
 export type CmpOp = "eq" | "ne" | "gt" | "ge" | "lt" | "le";
 export type TextOp = "equals" | "not_equals" | "contains" | "not_contains" | "begins_with" | "ends_with";
-export type PatternKind = "plain" | "wildcard" | "regex";
+/** "number" and "date" find cells by value (5, 10..20, >5); "similar"
+ *  finds whole cells spelled nearly the same. */
+export type PatternKind = "plain" | "wildcard" | "regex" | "number" | "date" | "similar";
 export interface Pattern {
   text: string;
   kind: PatternKind;
@@ -251,6 +253,8 @@ export interface Pattern {
   whole_word?: boolean;
   ignore_accents?: boolean;
   escapes?: boolean;
+  /** The replacement takes the case of what it replaces. */
+  preserve_case?: boolean;
 }
 export type Condition =
   | { type: "text"; op: TextOp; text: string; match_case?: boolean }
@@ -342,6 +346,12 @@ export interface FindSpec {
   skip_first: boolean;
   /** Columns left out (hidden ones, unless "Include hidden" is ticked). */
   skip_cols?: number[];
+  /** Count, list and replace in hidden rows too. */
+  hidden_rows?: boolean;
+  /** Hidden columns that are searched (counted as hidden in a replace). */
+  hidden_cols?: number[];
+  /** Find next goes down each column before moving right. */
+  by_columns?: boolean;
 }
 export interface Found {
   row: number;
@@ -356,6 +366,8 @@ export interface Hit {
   text: string;
   start: number;
   len: number;
+  /** In a hidden row (`row` is the nearest shown one). */
+  hidden?: boolean;
 }
 export interface FindAll {
   hits: Hit[];
@@ -392,8 +404,12 @@ export interface FindCount {
 export interface ReplaceReport {
   cells: number;
   hits: number;
-  preview: { row: number; number: number; col: number; before: string; after: string }[];
+  /** `number`: the row in the whole file (unticking goes by it); `hidden`:
+   *  in a hidden row or column. */
+  preview: { row: number; number: number; col: number; before: string; after: string; hidden?: boolean }[];
   info: DocInfo | null;
+  /** Of the cells, those in hidden rows or columns. */
+  hidden_cells?: number;
 }
 export interface JobInfo {
   label: string;

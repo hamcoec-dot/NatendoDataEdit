@@ -218,6 +218,10 @@ export interface FindOptions {
   lookIn: "cells" | "notes";
   /** The columns picked by name (scope "pick"). */
   cols: number[];
+  /** A replacement takes the case of what it replaces. */
+  preserveCase: boolean;
+  /** Find next goes down each column before moving right. */
+  byColumns: boolean;
 }
 
 export const FIND_DEFAULTS: FindOptions = {
@@ -234,6 +238,8 @@ export const FIND_DEFAULTS: FindOptions = {
   titles: false,
   lookIn: "cells",
   cols: [],
+  preserveCase: false,
+  byColumns: false,
 };
 
 /** The search the find bar describes, for a selection and header setting. */
@@ -259,5 +265,16 @@ export function findSpecOf(
   if (o.scope === "selection") scope = { kind: "range", ...sel };
   else if (o.scope === "column") scope = { kind: "columns", cols: Array.from({ length: sel.cols }, (_, i) => sel.col + i) };
   else if (o.scope === "pick") scope = { kind: "columns", cols: [...(o.cols ?? [])].sort((a, b) => a - b) };
-  return { pattern, scope, skip_first: header && !o.titles, skip_cols: o.includeHidden ? [] : hidden };
+  if (o.preserveCase && !o.blank) pattern.preserve_case = true;
+  // "Include hidden": hidden columns and hidden rows (filtered out or hidden
+  // by hand) are searched too, and a replace says how many of its cells
+  // are hidden.
+  return {
+    pattern,
+    scope,
+    skip_first: header && !o.titles,
+    skip_cols: o.includeHidden ? [] : hidden,
+    ...(o.includeHidden ? { hidden_rows: true, hidden_cols: hidden } : {}),
+    ...(o.byColumns ? { by_columns: true } : {}),
+  };
 }

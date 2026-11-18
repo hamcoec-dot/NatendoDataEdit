@@ -55,6 +55,8 @@ export interface PrefsData {
   /** Warn before private-looking data leaves the app (export, print, Save
    *  As, large copies). */
   privacyWarnings: boolean;
+  /** Searches saved by name in the find bar (only when Save is pressed). */
+  savedSearches: SavedSearch[];
 }
 
 export type TotalKind = "sum" | "average" | "count" | "numbers" | "min" | "max" | "distinct" | "chars";
@@ -137,6 +139,7 @@ const DEFAULTS: PrefsData = {
   autosaveMinutes: 2,
   keepEarlierSaves: false,
   privacyWarnings: true,
+  savedSearches: [],
 };
 
 function load(): PrefsData {
@@ -177,11 +180,51 @@ export function parsePrefs(raw: string | null): PrefsData {
       autosave: p.autosave !== false,
       keepEarlierSaves: p.keepEarlierSaves === true,
       privacyWarnings: p.privacyWarnings !== false,
+      savedSearches: savedSearches(p.savedSearches),
       autosaveMinutes: typeof p.autosaveMinutes === "number" && Number.isFinite(p.autosaveMinutes) ? Math.min(60, Math.max(1, Math.round(p.autosaveMinutes))) : 2,
     };
   } catch {
     return { ...DEFAULTS };
   }
+}
+
+/** A search saved by name: the text, the replacement and the options. */
+export interface SavedSearch {
+  name: string;
+  text: string;
+  replacement: string;
+  kind: "plain" | "wildcard" | "regex" | "number" | "date" | "similar";
+  blank: boolean;
+  matchCase: boolean;
+  wholeCell: boolean;
+  wholeWord: boolean;
+  ignoreAccents: boolean;
+  escapes: boolean;
+  preserveCase: boolean;
+}
+export const MAX_SAVED_SEARCHES = 100;
+const KINDS = ["plain", "wildcard", "regex", "number", "date", "similar"] as const;
+
+/** Saved searches (untrusted), checked and bounded. */
+export function savedSearches(v: unknown): SavedSearch[] {
+  if (!Array.isArray(v)) return [];
+  const str = (x: unknown, n: number) => (typeof x === "string" ? x.slice(0, n) : "");
+  return v
+    .filter((s): s is Record<string, unknown> => !!s && typeof s === "object" && typeof (s as { name?: unknown }).name === "string")
+    .slice(0, MAX_SAVED_SEARCHES)
+    .map((s) => ({
+      name: str(s.name, 100) || "Search",
+      text: str(s.text, 1000),
+      replacement: str(s.replacement, 1000),
+      kind: (KINDS as readonly string[]).includes(s.kind as string) ? (s.kind as SavedSearch["kind"]) : "plain",
+      blank: s.blank === true,
+      matchCase: s.matchCase === true,
+      wholeCell: s.wholeCell === true,
+      wholeWord: s.wholeWord === true,
+      ignoreAccents: s.ignoreAccents === true,
+      escapes: s.escapes === true,
+      preserveCase: s.preserveCase === true,
+    }));
 }
 
 class Prefs {
