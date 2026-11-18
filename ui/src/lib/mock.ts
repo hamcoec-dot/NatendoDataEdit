@@ -45,7 +45,8 @@ import { runCleaner, type Cleaner, type CleanPreview, type CleanSpec } from "./c
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, Summary, View } from "./views";
 import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, TableReport, Totals } from "./backend";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
-import type { SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
+import { tidyTitleList } from "./titles";
+import type { TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
 import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
 import { mockEval } from "./mockexpr";
 import { previewOf, simulateJoin } from "./joins";
@@ -1620,6 +1621,17 @@ export class MockBackend implements Backend {
       opened = { doc: { ...this.get(info.id).info }, import: null };
     }
     return { opened, place: { view: s.view, row: s.row, col: s.col, changed: false } };
+  }
+  async tidyTitlesPreview(doc: number, spec: TitleSpec): Promise<[number, string, string][]> {
+    const d = this.get(doc);
+    const titles = Array.from({ length: this.colCount(d) }, (_, c) => this.value(d, 0, c));
+    const after = tidyTitleList(titles, spec);
+    return titles.flatMap((t, c) => (t !== after[c] ? [[c, t, after[c]!] as [number, string, string]] : []));
+  }
+  async tidyTitles(doc: number, spec: TitleSpec): Promise<DocInfo> {
+    const plan = await this.tidyTitlesPreview(doc, spec);
+    if (!plan.length) return { ...this.get(doc).info };
+    return this.writeCells(doc, plan.map(([c, , v]) => [0, c, v]), false);
   }
   async setProtected(doc: number, cols: number[]): Promise<DocInfo> {
     const d = this.get(doc);

@@ -229,6 +229,13 @@ export interface ReadOptions {
   decimal_comma: boolean;
   date_order: DateOrder;
 }
+/** Format › Tidy column titles. */
+export interface TitleSpec {
+  spaces: boolean;
+  case: "keep" | "title" | "snake" | "upper" | "lower";
+  odd: boolean;
+  unique: boolean;
+}
 /** A tab to remember for next time. */
 export interface SessionTab {
   doc: number;
@@ -1060,6 +1067,10 @@ export interface Backend {
   zipOpen(token: number, names: string[]): Promise<DocInfo[]>;
   /** Protect these columns from changes (and no others). */
   setProtected(doc: number, cols: number[]): Promise<DocInfo>;
+  /** Tidy column titles: what would change, [column, now, after]. */
+  tidyTitlesPreview(doc: number, spec: TitleSpec): Promise<[number, string, string][]>;
+  /** Tidy every column title (one undo step). */
+  tidyTitles(doc: number, spec: TitleSpec): Promise<DocInfo>;
   openRecent(id: string): Promise<Opened>;
   /** Per tab: the folder telling same-named files apart ("" for the rest). */
   tabFolders(ids: number[]): Promise<string[]>;
@@ -1488,6 +1499,12 @@ class TauriBackend implements Backend {
   }
   setProtected(doc: number, cols: number[]) {
     return call<DocInfo>("set_protected", { doc, cols });
+  }
+  tidyTitlesPreview(doc: number, spec: TitleSpec) {
+    return call<[number, string, string][]>("tidy_titles_preview", { doc, spec });
+  }
+  tidyTitles(doc: number, spec: TitleSpec) {
+    return call<DocInfo>("tidy_titles", { doc, spec });
   }
   recentFiles() {
     return call<RecentItem[]>("recent_files");

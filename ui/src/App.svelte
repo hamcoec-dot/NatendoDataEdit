@@ -44,6 +44,8 @@
   import ShiftCellsDialog, { type ShiftChoice } from "./lib/ShiftCellsDialog.svelte";
   import GoToSpecialDialog, { type SpecialChoice } from "./lib/GoToSpecialDialog.svelte";
   import ZipPickDialog from "./lib/ZipPickDialog.svelte";
+  import TidyTitlesDialog from "./lib/TidyTitlesDialog.svelte";
+  import type { TitleSpec } from "./lib/backend";
   import type { ZipList } from "./lib/backend";
   import type { SpecialKind, SpecialSpec } from "./lib/backend";
   import { localDays } from "./lib/m8";
@@ -2351,6 +2353,55 @@
   }
   let shiftAsk = $state<{ insert: boolean } | null>(null);
 
+  // ---- tidy column titles ----
+  let tidyAsk = $state(false);
+  let lastTidy = $state<TitleSpec | null>(null);
+
+  function openTidyTitles(): void {
+    const t = tab;
+    if (!t) return;
+    if (!t.header || t.info.rows === 0) {
+      say("This table has no title row: switch on Format › First row holds titles (or Rename column adds one), then tidy the titles.");
+      return;
+    }
+    tidyAsk = true;
+  }
+
+  async function runTidyTitles(spec: TitleSpec): Promise<void> {
+    tidyAsk = false;
+    lastTidy = spec;
+    const t = tab;
+    if (!t) return;
+    let before: string[] = [];
+    try {
+      before = await backend().firstRowNames(t.id);
+    } catch {
+      before = [];
+    }
+    t.whatNext = "tidying column titles";
+    if (!(await apply((x) => backend().tidyTitles(x.id, spec)))) return;
+    let after: string[] = [];
+    try {
+      after = await backend().firstRowNames(t.id);
+    } catch {
+      after = [];
+    }
+    const changed = after.filter((s, i) => s !== before[i]).length;
+    // Row rules in data checks follow the new names (undone with them).
+    let followed = "";
+    if (before.length && after.length === before.length && t.checks.some((k) => k.kind.type === "expression")) {
+      const was = $state.snapshot(t.checks) as Check[];
+      const r = remapChecks(was, before, after, (k) => k);
+      if (r.changed) {
+        t.checks = r.checks;
+        t.checkVersion++;
+        t.refEdits = [...t.refEdits.filter((e) => e.applied), { at: t.info.history_pos, before: was, after: r.checks, applied: true }].slice(-50);
+        followed = ` ${r.changed === 1 ? "1 data check rule follows" : `${r.changed} data check rules follow`} the new names.`;
+      }
+    }
+    say(`Tidied ${plural(changed, "column title")}.${followed} Ctrl+Z undoes it.`);
+  }
+
   // ---- protected columns ----
   /** The columns Protect acts on: the right-clicked heading, or the
    *  selection's columns. */
@@ -4278,6 +4329,7 @@
 
     { id: "format.autofit", label: "&AutoFit column width", run: () => { const r = tab!.rect; void grid?.fitCols(r.col, r.cols); }, enabled: hasTab },
     { id: "format.hideCols", label: "&Hide columns", keys: ["Ctrl+0"], run: hideCols, enabled: hasTab },
+    { id: "format.tidyTitles", label: "&Tidy column titles…", run: openTidyTitles, enabled: ready },
     {
       id: "format.protectCols",
       label: "&Protect column (no changes)",
@@ -4486,7 +4538,7 @@
       ],
     },
     { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.symbol"] },
-    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
+    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
     {
       label: "&Data",
       items: [
@@ -6283,6 +6335,9 @@
   />
 {/if}
 
+{#if tidyAsk && tab}
+  <TidyTitlesDialog doc={tab.id} last={lastTidy} onApply={(s) => void runTidyTitles(s).then(() => grid?.focus())} onClose={() => { tidyAsk = false; grid?.focus(); }} />
+{/if}
 {#if zipPick}
   {@const z = zipPick}
   <ZipPickDialog list={z} onOpen={(names) => void openFromZip(z, names)} onClose={() => (zipPick = null)} />

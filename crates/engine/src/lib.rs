@@ -60,6 +60,7 @@ pub mod suggest;
 pub mod sysmem;
 pub mod table;
 pub mod tidy;
+pub mod titles;
 pub mod tools;
 pub mod ttf;
 pub mod updates;

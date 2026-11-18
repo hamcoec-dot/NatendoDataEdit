@@ -373,6 +373,24 @@ async fn open_recent(
     .await
 }
 
+/// Tidy column titles: what would change (column, now, after).
+#[tauri::command]
+async fn tidy_titles_preview(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::titles::TitleSpec,
+) -> CmdResult<Vec<(u32, String, String)>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.tidy_titles_preview(doc, &spec)).await
+}
+
+/// Tidy every column title (one undo step).
+#[tauri::command]
+async fn tidy_titles(docs: DocsState<'_>, doc: u32, spec: natendo_engine::titles::TitleSpec) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.tidy_titles(doc, spec)).await
+}
+
 /// Protect columns from changes (and no others).
 #[tauri::command]
 async fn set_protected(docs: DocsState<'_>, doc: u32, cols: Vec<u32>) -> CmdResult<DocInfo> {
@@ -3229,6 +3247,8 @@ pub fn run() {
             recent_files,
             zip_open,
             set_protected,
+            tidy_titles_preview,
+            tidy_titles,
             session_save,
             session_list,
             session_open,

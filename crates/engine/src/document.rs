@@ -1409,6 +1409,14 @@ impl Document {
         self.set_cells_guarded(cells, true)
     }
 
+    /// Set several cells of the table's first row (renaming columns) as one
+    /// undo step, shown or not; protected columns can be renamed.
+    pub fn set_first_row_cells(&mut self, cells: Vec<(u32, String)>) -> Result<(), Error> {
+        self.ready()?;
+        let id = self.doc_id_at(0).ok_or(Error::OutOfRange)?;
+        self.set_cells_guarded(cells.into_iter().map(|(c, v)| (id, c, v)).collect(), false)
+    }
+
     fn set_cells_guarded(&mut self, mut cells: Vec<(u32, u32, String)>, guard: bool) -> Result<(), Error> {
         self.protected_skipped.store(0, Ordering::Relaxed);
         if guard && !self.protected.is_empty() {

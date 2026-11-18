@@ -959,7 +959,8 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
         | RecipeOp::MoveCols { .. }
         | RecipeOp::ReplaceAll { .. }
         | RecipeOp::BatchReplace { .. }
-        | RecipeOp::RenameColumn { .. } => unreachable!("handled by its own command"),
+        | RecipeOp::RenameColumn { .. }
+        | RecipeOp::TidyTitles { .. } => unreachable!("handled by its own command"),
     }
 }
 
@@ -1995,6 +1996,25 @@ impl Docs {
                 check_width(d, col as u64 + 1)?;
                 d.set_first_row_cell(col, value)
             })
+        })
+    }
+
+    /// Tidy column titles: what would change (column, now, after).
+    pub fn tidy_titles_preview(
+        &self,
+        id: u32,
+        spec: &natendo_engine::titles::TitleSpec,
+    ) -> CmdResult<Vec<(u32, String, String)>> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.plan_tidy_titles(spec)?)
+    }
+
+    /// Tidy every column title, as one undo step (and a recipe step).
+    pub fn tidy_titles(&self, id: u32, spec: natendo_engine::titles::TitleSpec) -> CmdResult<DocInfo> {
+        let step = RecipeOp::TidyTitles { spec: spec.clone() };
+        self.recorded(id, Logged::Step(step), || {
+            self.edit(id, |d| d.tidy_titles(&spec).map(|_| ()))
         })
     }
 
@@ -3850,6 +3870,7 @@ impl Docs {
                 RecipeOp::RenameColumn { col, name } => {
                     self.set_first_row_cell(id, col, name).map(|_| ())
                 }
+                RecipeOp::TidyTitles { spec } => self.tidy_titles(id, spec).map(|_| ()),
                 other => self.data_op(id, recipe_data_op(other, now)).map(|_| ()),
             };
             r.map_err(|mut e| {

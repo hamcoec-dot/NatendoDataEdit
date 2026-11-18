@@ -133,6 +133,10 @@ pub enum RecipeOp {
         col: u32,
         name: String,
     },
+    /// Tidy every column title (spaces, case, odd characters, repeats).
+    TidyTitles {
+        spec: crate::titles::TitleSpec,
+    },
 }
 
 impl RecipeOp {
@@ -184,6 +188,7 @@ impl RecipeOp {
             RecipeOp::RenameColumn { col, name } => {
                 format!("Rename column {} to \"{}\"", col + 1, name)
             }
+            RecipeOp::TidyTitles { .. } => "Tidy column titles".into(),
             RecipeOp::MapValues { .. } => "Change values from a list".into(),
             RecipeOp::GroupCalc { .. } => "Group figures".into(),
             RecipeOp::Arrange { .. } => "Arrange columns".into(),
@@ -405,6 +410,7 @@ impl Document {
                 self.apply_rows(p)
             }
             RecipeOp::RenameColumn { col, name } => self.set_first_row_cell(*col, name.clone()),
+            RecipeOp::TidyTitles { spec } => self.tidy_titles(spec).map(|_| ()),
             RecipeOp::MapValues { spec } => {
                 let p = self.plan_map_values(spec, progress)?;
                 self.apply_cells(p)
