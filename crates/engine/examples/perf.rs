@@ -199,8 +199,9 @@ fn main() {
     doc.apply_filter(plan).unwrap();
     println!("     filter shows {} rows", doc.row_count());
     check.budget("filter one column", t.elapsed(), budget(1.0));
-    // A paste into filtered rows, passing over a hidden column, costs about
-    // what a paste with nothing hidden does.
+    // A 100k-row block pasted into filtered rows (it fills the shown rows and
+    // stops), passing over a hidden column, costs about what a paste with
+    // nothing hidden does.
     let block: Vec<Vec<String>> = (0..100_000)
         .map(|i| vec![format!("p{i}"), "x".into(), "y".into()])
         .collect();
@@ -219,7 +220,11 @@ fn main() {
     );
     doc.apply_cells(plan).unwrap();
     let filtered = t.elapsed();
-    check.budget("paste 100k x 3 into filtered rows", filtered, budget(1.0));
+    check.budget(
+        "paste a 100k-row block into the shown rows of a filter",
+        filtered,
+        budget(1.0),
+    );
     doc.undo();
     doc.clear_filter();
     let t = Instant::now();
