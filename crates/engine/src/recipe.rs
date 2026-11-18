@@ -22,6 +22,87 @@ use crate::Error;
 pub const RECIPE_VERSION: u32 = 1;
 /// Most steps in a recipe.
 pub const MAX_STEPS: usize = 500;
+/// Most questions a recipe asks.
+pub const MAX_QUESTIONS: usize = 50;
+/// Longest answer to a question.
+pub const MAX_ANSWER_CHARS: usize = 10_000;
+
+/// A value a recipe asks for each time it runs ("which county?"). Its
+/// steps hold `{{name}}` where the answer goes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Question {
+    /// Letters, digits, spaces, `-` and `_` (the command line's
+    /// `--set name=value`).
+    pub name: String,
+    /// The question as asked; the name when empty.
+    #[serde(default)]
+    pub prompt: String,
+    /// The answer filled in at first (the last one given).
+    #[serde(default)]
+    pub default: String,
+}
+
+/// Whether `name` can name a question.
+pub fn question_name_ok(name: &str) -> bool {
+    let n = name.trim();
+    !n.is_empty()
+        && n.chars().count() <= 40
+        && n.chars()
+            .all(|c| c.is_alphanumeric() || c == ' ' || c == '-' || c == '_')
+}
+
+/// The placeholder for question `name` in a step's text.
+pub fn placeholder(name: &str) -> String {
+    format!("{{{{{}}}}}", name.trim())
+}
+
+/// Every text in a JSON value, with its path (`spec.with`, `pairs.0.1`).
+fn texts_of(v: &serde_json::Value, path: &str, out: &mut Vec<(String, String)>) {
+    match v {
+        serde_json::Value::String(s) => out.push((path.to_string(), s.clone())),
+        serde_json::Value::Array(a) => {
+            for (i, x) in a.iter().enumerate() {
+                texts_of(x, &join_path(path, &i.to_string()), out);
+            }
+        }
+        serde_json::Value::Object(m) => {
+            for (k, x) in m {
+                // The step's kind is not a value.
+                if path.is_empty() && k == "op" {
+                    continue;
+                }
+                texts_of(x, &join_path(path, k), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn join_path(a: &str, b: &str) -> String {
+    if a.is_empty() {
+        b.to_string()
+    } else {
+        format!("{a}.{b}")
+    }
+}
+
+/// Replace every placeholder in the texts of `v`.
+fn fill_texts(v: &mut serde_json::Value, answers: &[(String, String)]) {
+    match v {
+        serde_json::Value::String(s) => {
+            if s.contains("{{") {
+                for (k, a) in answers {
+                    if s.contains(k.as_str()) {
+                        *s = s.replace(k.as_str(), a);
+                    }
+                }
+            }
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(|x| fill_texts(x, answers)),
+        serde_json::Value::Object(m) => m.values_mut().for_each(|x| fill_texts(x, answers)),
+        _ => {}
+    }
+}
 
 /// One step. The names match the app's own operations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -225,6 +306,9 @@ pub struct Recipe {
     /// a paste), in words, so the user knows they are missing.
     #[serde(default)]
     pub left_out: Vec<String>,
+    /// Values asked for each time the recipe runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<Question>,
 }
 
 impl RecipeOp {
@@ -267,10 +351,42 @@ impl Recipe {
                 "this recipe was saved by a newer version of the app".into(),
             ));
         }
+        r.check()?;
+        Ok(r)
+    }
+
+    /// The limits and settings every recipe must keep.
+    pub fn check(&self) -> Result<(), Error> {
+        let r = self;
         if r.steps.len() > MAX_STEPS {
             return Err(Error::Invalid(format!(
                 "a recipe has at most {MAX_STEPS} steps"
             )));
+        }
+        if r.questions.len() > MAX_QUESTIONS {
+            return Err(Error::Invalid(format!(
+                "a recipe asks at most {MAX_QUESTIONS} questions"
+            )));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for q in &r.questions {
+            if !question_name_ok(&q.name) {
+                return Err(Error::Invalid(format!(
+                    "\"{}\" cannot name a question: use letters, digits, spaces, - or _ (up to 40)",
+                    q.name.chars().take(60).collect::<String>()
+                )));
+            }
+            if !seen.insert(q.name.trim().to_lowercase()) {
+                return Err(Error::Invalid(format!(
+                    "the recipe asks \"{}\" twice",
+                    q.name.trim()
+                )));
+            }
+            if q.default.chars().count() > MAX_ANSWER_CHARS || q.prompt.chars().count() > 500 {
+                return Err(Error::Invalid(
+                    "a question or its answer is too long".into(),
+                ));
+            }
         }
         for s in &r.steps {
             if let RecipeOp::Clean { spec } = s {
@@ -280,7 +396,128 @@ impl Recipe {
                 crate::validate::check_spec(spec)?;
             }
         }
-        Ok(r)
+        Ok(())
+    }
+
+    /// The text values of step `i` (where a question can go), with their
+    /// place in the step's settings.
+    pub fn step_texts(&self, i: usize) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        if let Some(Ok(v)) = self.steps.get(i).map(serde_json::to_value) {
+            texts_of(&v, "", &mut out);
+        }
+        out
+    }
+
+    /// Turn the text at `path` in step `i` into question `name` (asked
+    /// with `prompt`; the text there now is its first answer).
+    pub fn ask(&mut self, i: usize, path: &str, name: &str, prompt: &str) -> Result<(), Error> {
+        if !question_name_ok(name) {
+            return Err(Error::Invalid(
+                "name the question with letters, digits, spaces, - or _ (up to 40)".into(),
+            ));
+        }
+        let name = name.trim();
+        let step = self.steps.get(i).ok_or(Error::OutOfRange)?;
+        let mut v = serde_json::to_value(step).map_err(|e| Error::Invalid(e.to_string()))?;
+        let mut at = &mut v;
+        for part in path.split('.') {
+            at = match at {
+                serde_json::Value::Object(m) => m.get_mut(part),
+                serde_json::Value::Array(a) => {
+                    part.parse::<usize>().ok().and_then(|k| a.get_mut(k))
+                }
+                _ => None,
+            }
+            .ok_or_else(|| Error::Invalid("that value is not in the step".into()))?;
+        }
+        let serde_json::Value::String(old) = at else {
+            return Err(Error::Invalid("only a text value can be a question".into()));
+        };
+        let first = std::mem::replace(old, placeholder(name));
+        let new: RecipeOp = serde_json::from_value(v).map_err(|e| Error::Invalid(e.to_string()))?;
+        let mut next = self.clone();
+        next.steps[i] = new;
+        match next
+            .questions
+            .iter_mut()
+            .find(|q| q.name.trim().eq_ignore_ascii_case(name))
+        {
+            Some(q) => {
+                if !prompt.trim().is_empty() {
+                    q.prompt = prompt.trim().to_string();
+                }
+            }
+            None => next.questions.push(Question {
+                name: name.to_string(),
+                prompt: prompt.trim().to_string(),
+                default: first,
+            }),
+        }
+        next.check()?;
+        *self = next;
+        Ok(())
+    }
+
+    /// The recipe with its questions answered: each `{{name}}` in its steps
+    /// becomes the answer given (by name, any case), else the question's
+    /// last answer. Answers to questions it does not ask are refused, so a
+    /// typo in `--set` is not silently ignored.
+    pub fn answered(&self, answers: &[(String, String)]) -> Result<Recipe, Error> {
+        for (k, a) in answers {
+            if !self
+                .questions
+                .iter()
+                .any(|q| q.name.trim().eq_ignore_ascii_case(k.trim()))
+            {
+                return Err(Error::Invalid(format!(
+                    "the recipe does not ask \"{}\"{}",
+                    k.trim(),
+                    if self.questions.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " (it asks: {})",
+                            self.questions
+                                .iter()
+                                .map(|q| q.name.trim())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    }
+                )));
+            }
+            if a.chars().count() > MAX_ANSWER_CHARS {
+                return Err(Error::Invalid("an answer is too long".into()));
+            }
+        }
+        if self.questions.is_empty() {
+            return Ok(self.clone());
+        }
+        let fill: Vec<(String, String)> = self
+            .questions
+            .iter()
+            .map(|q| {
+                let a = answers
+                    .iter()
+                    .rev()
+                    .find(|(k, _)| k.trim().eq_ignore_ascii_case(q.name.trim()))
+                    .map_or(q.default.clone(), |(_, a)| a.clone());
+                (placeholder(&q.name), a)
+            })
+            .collect();
+        let mut out = self.clone();
+        for s in &mut out.steps {
+            let mut v = serde_json::to_value(&*s).map_err(|e| Error::Invalid(e.to_string()))?;
+            fill_texts(&mut v, &fill);
+            *s = serde_json::from_value(v)
+                .map_err(|e| Error::Invalid(format!("an answer does not fit its step: {e}")))?;
+        }
+        for (q, (_, a)) in out.questions.iter_mut().zip(&fill) {
+            q.default = a.clone();
+        }
+        out.check()?;
+        Ok(out)
     }
 
     /// Column titles the table has that differ from the recipe's, in words;
@@ -470,6 +707,8 @@ impl Document {
         seed: u64,
         progress: &Progress,
     ) -> Result<usize, Error> {
+        // Questions not answered by the caller take their last answers.
+        let recipe = &recipe.answered(&[])?;
         for (i, s) in recipe.steps.iter().enumerate() {
             self.run_recipe_step(
                 s,
@@ -530,6 +769,7 @@ mod tests {
                 },
             ],
             left_out: vec![],
+            questions: vec![],
         }
     }
 
@@ -572,5 +812,44 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("step 1"), "{e}");
+    }
+
+    #[test]
+    fn questions_are_asked_and_answered() {
+        let mut r = recipe();
+        r.steps.push(RecipeOp::ReplaceAll {
+            spec: FindSpec {
+                pattern: crate::find::Pattern {
+                    text: "RENO".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            with: "Hamilton".into(),
+        });
+        let texts = r.step_texts(3);
+        let (path, _) = texts.iter().find(|(_, v)| v == "Hamilton").unwrap().clone();
+        assert_eq!(path, "with");
+        r.ask(3, &path, "county", "Which county?").unwrap();
+        assert_eq!(r.questions[0].default, "Hamilton");
+        assert!(matches!(&r.steps[3], RecipeOp::ReplaceAll { with, .. } if with == "{{county}}"));
+        // Saved and read back, then answered.
+        let back = Recipe::from_json(&r.to_json().unwrap()).unwrap();
+        let a = back.answered(&[("County".into(), "Knox".into())]).unwrap();
+        assert!(matches!(&a.steps[3], RecipeOp::ReplaceAll { with, .. } if with == "Knox"));
+        assert_eq!(a.questions[0].default, "Knox");
+        // Unanswered: the last answer.
+        let a = back.answered(&[]).unwrap();
+        assert!(matches!(&a.steps[3], RecipeOp::ReplaceAll { with, .. } if with == "Hamilton"));
+        // A question it does not ask, and a bad name, are refused.
+        assert!(back.answered(&[("state".into(), "TN".into())]).is_err());
+        assert!(r.clone().ask(3, "with", "a{b}", "").is_err());
+        assert!(r.clone().ask(0, "at", "n", "").is_err());
+        // Run with the answer.
+        let mut d = doc("name,city,junk
+bo,reno,x
+");
+        d.run_recipe(&a, 0.0, 1, &Progress::new()).unwrap();
+        assert_eq!(d.row_values(1).unwrap(), ["bo", "Hamilton"]);
     }
 }

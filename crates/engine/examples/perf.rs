@@ -2395,6 +2395,7 @@ fn main() {
                 },
             ],
             left_out: Vec::new(),
+            questions: Vec::new(),
         };
         let t = Instant::now();
         doc.run_recipe(&recipe, 20_000.0, 1, &p).unwrap();

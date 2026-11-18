@@ -137,7 +137,20 @@ impl Watcher {
     }
 }
 
-fn same_dir(a: &Path, b: &Path) -> bool {
+/// A table file this runs (by its name).
+pub(crate) fn is_table(p: &Path) -> bool {
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    !name.starts_with('.')
+        && !name.starts_with('~')
+        && p.extension()
+            .and_then(|x| x.to_str())
+            .is_some_and(|x| TYPES.iter().any(|t| t.eq_ignore_ascii_case(x)))
+}
+
+pub(crate) fn same_dir(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(x), Ok(y)) => x == y,
         _ => a == b,
@@ -152,15 +165,7 @@ fn listing(dir: &Path) -> HashMap<PathBuf, (u64, Option<SystemTime>)> {
     };
     for e in rd.flatten().take(20_000) {
         let p = e.path();
-        let name = e.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') || name.starts_with('~') {
-            continue;
-        }
-        let ok = p
-            .extension()
-            .and_then(|x| x.to_str())
-            .is_some_and(|x| TYPES.iter().any(|t| t.eq_ignore_ascii_case(x)));
-        if !ok {
+        if !is_table(&p) {
             continue;
         }
         if let Ok(m) = e.metadata() {
@@ -207,10 +212,14 @@ fn run(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             let line = match run_one(p, out, recipe, force, recent) {
-                Ok(msg) => {
+                Ok(r) => {
                     let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                     st.done += 1;
-                    format!("{name}: {msg}")
+                    format!(
+                        "{name}: {} rows written to {}",
+                        r.rows_out,
+                        r.target.display()
+                    )
                 }
                 Err(e) => {
                     let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -230,15 +239,23 @@ fn run(
     }
 }
 
-fn run_one(
+/// One file run through a recipe.
+pub(crate) struct RunDone {
+    pub rows_in: u64,
+    pub rows_out: u64,
+    pub target: PathBuf,
+}
+
+pub(crate) fn run_one(
     path: &Path,
     out: &Path,
     recipe: &Recipe,
     force: bool,
     recent: &Recent,
-) -> Result<String, String> {
+) -> Result<RunDone, String> {
     let mut d =
         Document::open_indexed(path, OpenOptions::default(), None).map_err(|e| e.to_string())?;
+    let rows_in = d.total_rows();
     let problems = recipe.column_problems(&d);
     if !problems.is_empty() && !force {
         return Err(format!(
@@ -266,7 +283,11 @@ fn run_one(
     if recent.is_private(path) && !recent.is_private(&target) {
         let _ = recent.set_private(&target, true);
     }
-    Ok(format!("{} rows written to {}", r.rows, target.display()))
+    Ok(RunDone {
+        rows_in,
+        rows_out: r.rows,
+        target,
+    })
 }
 
 #[cfg(test)]
@@ -289,11 +310,12 @@ mod tests {
             header: true,
             steps: vec![RecipeOp::DeleteCols { at: 1, count: 1 }],
             left_out: Vec::new(),
+            questions: Vec::new(),
         };
         let recent = Arc::new(Recent::default());
         // One file, then a file with other columns.
         let r = run_one(&inbox.join("old.csv"), &outbox, &recipe, false, &recent).unwrap();
-        assert!(r.contains("2 rows"), "{r}");
+        assert_eq!(r.rows_out, 2);
         assert_eq!(
             std::fs::read_to_string(outbox.join("old.csv")).unwrap(),
             "a,c\r\n1,3\r\n"

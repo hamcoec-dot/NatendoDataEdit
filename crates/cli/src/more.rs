@@ -263,6 +263,22 @@ fn parse<'a>(args: &[&'a str], allowed: &[&str]) -> Result<Args<'a>, String> {
 /// the file's columns are checked against the recipe's (`--force` runs it
 /// anyway), and the result is written to `-o` (`--dry-run` only lists).
 pub fn run(args: &[&str]) -> Result<(), String> {
+    // `--set name=value`: answers to the recipe's questions.
+    let mut answers: Vec<(String, String)> = Vec::new();
+    let mut rest: Vec<&str> = Vec::new();
+    let mut it = args.iter();
+    while let Some(&x) = it.next() {
+        if x == "--set" {
+            let v = it.next().ok_or("--set needs question=answer")?;
+            let (k, a) = v
+                .split_once('=')
+                .ok_or("--set takes question=answer, like --set county=Hamilton")?;
+            answers.push((k.trim().to_string(), a.to_string()));
+        } else {
+            rest.push(x);
+        }
+    }
+    let args = rest.as_slice();
     let a = parse(
         args,
         &[
@@ -288,6 +304,17 @@ pub fn run(args: &[&str]) -> Result<(), String> {
     let bytes = std::fs::read(recipe_path).map_err(|e| format!("{recipe_path}: {e}"))?;
     let recipe = natendo_engine::recipe::Recipe::from_json(&bytes)
         .map_err(|e| format!("{recipe_path}: {e}"))?;
+    let recipe = recipe
+        .answered(&answers)
+        .map_err(|e| format!("{recipe_path}: {e}"))?;
+    for q in &recipe.questions {
+        let ask = if q.prompt.is_empty() {
+            &q.name
+        } else {
+            &q.prompt
+        };
+        println!("{ask}: {}", q.default);
+    }
     println!(
         "Recipe{}: {} step(s)",
         if recipe.name.is_empty() {

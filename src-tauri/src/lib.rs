@@ -7,6 +7,7 @@
 mod agent;
 mod applog;
 mod assoc;
+mod batch;
 mod docs;
 mod extras;
 mod imports;
@@ -2003,11 +2004,137 @@ async fn recipe_run(
     docs: DocsState<'_>,
     doc: u32,
     recipe: natendo_engine::recipe::Recipe,
+    answers: Option<Vec<(String, String)>>,
     now: f64,
     force: bool,
 ) -> CmdResult<DocInfo> {
     let docs = docs.inner().clone();
-    blocking(move || docs.run_recipe(doc, &recipe, now, force)).await
+    let answers = answers.unwrap_or_default();
+    blocking(move || docs.run_recipe(doc, &recipe, &answers, now, force)).await
+}
+
+/// The steps panel: a tab's steps and where the table is among them.
+#[tauri::command]
+async fn steps_view(docs: DocsState<'_>, doc: u32) -> CmdResult<docs::StepsView> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.steps_view(doc)).await
+}
+
+/// Show the table as it was after step `k` (`None`: before the first).
+#[tauri::command]
+async fn steps_goto(docs: DocsState<'_>, doc: u32, k: Option<usize>) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.steps_goto(doc, k)).await
+}
+
+/// Change a step; the steps after it run again.
+#[tauri::command]
+async fn steps_change(
+    docs: DocsState<'_>,
+    doc: u32,
+    k: usize,
+    change: docs::StepChange,
+    now: f64,
+    force: bool,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.steps_change(doc, k, change, now, force)).await
+}
+
+/// Make a value in a step a question asked each time the recipe runs.
+#[tauri::command]
+async fn steps_ask(
+    docs: DocsState<'_>,
+    doc: u32,
+    k: usize,
+    path: String,
+    name: String,
+    prompt: String,
+) -> CmdResult<docs::StepsView> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.steps_ask(doc, k, &path, &name, &prompt)).await
+}
+
+static BATCH: std::sync::LazyLock<batch::Batch> = std::sync::LazyLock::new(batch::Batch::default);
+
+/// Run recipe on files: choose the files ("files" or a "folder"), the
+/// "recipe" or the "out" folder, in the app's own dialogs.
+#[tauri::command]
+async fn batch_pick(window: WebviewWindow, which: String) -> CmdResult<batch::BatchStatus> {
+    blocking(move || {
+        match which.as_str() {
+            "files" => {
+                if let Some(ps) = rfd::FileDialog::new()
+                    .set_title("Choose the files to run the recipe on")
+                    .add_filter("Tables", &["csv", "tsv", "txt", "psv", "tab"])
+                    .set_parent(&window)
+                    .pick_files()
+                {
+                    let mut ps = ps;
+                    ps.truncate(batch::MAX_FILES);
+                    BATCH.setup.lock().unwrap_or_else(|e| e.into_inner()).files = ps;
+                }
+            }
+            "folder" => {
+                if let Some(p) = rfd::FileDialog::new()
+                    .set_title("Choose a folder of files to run the recipe on")
+                    .set_parent(&window)
+                    .pick_folder()
+                {
+                    BATCH.setup.lock().unwrap_or_else(|e| e.into_inner()).files =
+                        batch::files_in(&p);
+                }
+            }
+            "out" => {
+                if let Some(p) = rfd::FileDialog::new()
+                    .set_title("Choose the folder for the results")
+                    .set_parent(&window)
+                    .pick_folder()
+                {
+                    BATCH.setup.lock().unwrap_or_else(|e| e.into_inner()).out = Some(p);
+                }
+            }
+            "recipe" => {
+                if let Some(p) = rfd::FileDialog::new()
+                    .set_title("Choose the recipe to run")
+                    .add_filter("Recipe", &["json"])
+                    .set_parent(&window)
+                    .pick_file()
+                {
+                    let r = docs::read_recipe(&p)?;
+                    BATCH.setup.lock().unwrap_or_else(|e| e.into_inner()).recipe = Some((p, r));
+                }
+            }
+            _ => return Err(CmdError::new("invalid", "unknown choice")),
+        }
+        Ok(BATCH.status())
+    })
+    .await
+}
+
+#[tauri::command]
+fn batch_status() -> batch::BatchStatus {
+    BATCH.status()
+}
+
+/// Run the recipe on every chosen file, with the answers to its questions
+/// (`force`: run even when a file's columns differ).
+#[tauri::command]
+fn batch_start(
+    recent: RecentState<'_>,
+    answers: Vec<(String, String)>,
+    force: bool,
+) -> CmdResult<batch::BatchStatus> {
+    BATCH
+        .start(&answers, force, recent.inner().clone())
+        .map_err(|e| CmdError::new("invalid", e))?;
+    Ok(BATCH.status())
+}
+
+#[tauri::command]
+fn batch_stop() -> batch::BatchStatus {
+    BATCH.stop_now();
+    BATCH.status()
 }
 
 /// Label sheets to choose from (name, sizes).
@@ -3403,6 +3530,14 @@ pub fn run() {
             watch_status,
             watch_start,
             watch_stop,
+            steps_view,
+            steps_goto,
+            steps_change,
+            steps_ask,
+            batch_pick,
+            batch_status,
+            batch_start,
+            batch_stop,
             notes_info,
             note_marks,
             note_set,

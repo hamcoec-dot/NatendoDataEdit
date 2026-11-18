@@ -645,6 +645,26 @@ impl Document {
         Ok(plan)
     }
 
+    /// Plan deleting every row not shown now (left out by a filter, or
+    /// hidden), e.g. to keep only a filter's rows.
+    pub fn plan_keep_shown(&self) -> Result<RowPlan, Error> {
+        self.ready_for_bulk()?;
+        let mut plan = RowPlan::new(self);
+        let base = self.next_row_id() as usize;
+        let mut shown = vec![0u64; base.div_ceil(64)];
+        for r in 0..self.row_count() {
+            if let Some(id) = self.id_at(r) {
+                shown[(id >> 6) as usize] |= 1 << (id & 63);
+            }
+        }
+        plan.remove = self
+            .ids()
+            .filter(|&id| (shown[(id >> 6) as usize] >> (id & 63)) & 1 == 0)
+            .collect();
+        plan.rows = plan.remove.len() as u64;
+        Ok(plan)
+    }
+
     /// Plan deleting these columns (any order) as one undo step. At least one
     /// column always stays.
     pub fn plan_delete_cols(&self, cols: &[u32]) -> Result<ColPlan, Error> {

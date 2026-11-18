@@ -999,6 +999,21 @@ impl Document {
         self.history_pos
     }
 
+    /// Let go of the changes that could be redone (a step taken out in
+    /// the steps panel stays out).
+    pub fn drop_redo(&mut self) {
+        if self.clean_depth.is_some_and(|d| d > self.undo.len()) {
+            self.clean_depth = None;
+        }
+        self.redo.clear();
+        self.redo_bytes = 0;
+    }
+
+    /// Changes that can be redone.
+    pub fn redo_count(&self) -> u64 {
+        self.redo.len() as u64
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

@@ -4,12 +4,15 @@
 //! `--version`, `sniff`, `info`, `view`, `clean` (run a saved cleaner),
 //! `convert` (any importable file to any export format or delimited text),
 //! `compute` (add a computed column), `join` (bring in values from another
-//! table by key, or keep or drop rows on a list), `validate` (run data checks) and `app`
-//! (talk to the running app's agent link).
+//! table by key, or keep or drop rows on a list), `validate` (run data checks), `app`
+//! (talk to the running app's agent link), and the toolkit: `headers`,
+//! `select`, `filter`, `sort`, `dedupe`, `stats`, `count`, `sample`,
+//! `slice`, `split` and `cat`.
 
 mod app;
 mod join;
 mod more;
+mod tools;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -24,7 +27,20 @@ const USAGE: &str = "usage: natendo-cli --version
        natendo-cli convert <in> -o <out> [--to csv|tsv|psv|json|xml|html|md|xlsx|pdf|fixed] [--sheet N] [--no-header] [--landscape] [--overwrite]
        natendo-cli compute <in> -o <out> --expr <expression> [--title <name>] [--no-header] [--overwrite]
        natendo-cli validate <in> --checks <checks.json> [--no-header] [--json]
-       natendo-cli run <recipe.json> <in> -o <out> [--to <format>] [--force] [--dry-run] [--no-header] [--overwrite]
+       natendo-cli run <recipe.json> <in> -o <out> [--set <question>=<answer> ...] [--to <format>] [--force] [--dry-run] [--no-header] [--overwrite]
+       natendo-cli headers <in> [--json]
+       natendo-cli select <in> -o <out> --columns <a,b,...>
+       natendo-cli filter <in> -o <out> --expr <formula>
+       natendo-cli sort <in> -o <out> --by <col>[:desc][,<col>...]
+       natendo-cli dedupe <in> -o <out> [--columns <a,b>] [--match-case]
+       natendo-cli stats <in> [--columns <a,b>] [--json]
+       natendo-cli count <in> --columns <a[,b]> [-o <out>] [--json]
+       natendo-cli sample <in> -o <out> (--rows N | --percent P | --every N) [--seed S]
+       natendo-cli slice <in> -o <out> --rows <first>-<last>
+       natendo-cli split <in> -o <folder> (--rows N | --by <col>) [--to csv|tsv]
+       natendo-cli cat <in> <in> ... -o <out> [--by-name]
+           (the toolkit also takes --no-header, --sheet N, --to <format>, --overwrite and --json;
+            columns go by title or by number from 1)
        natendo-cli pivot <layout.ndpivot> <in> -o <out> [--to <format>] [--no-header] [--overwrite]
        natendo-cli join <in> <other> -o <out> --key <col>[=<other col>] [--key ...] [--columns a,b]
            [--write new|overwrite|fill-blanks|none] [--into x,y] [--keep all|matched|unmatched]
@@ -82,6 +98,17 @@ fn main() -> ExitCode {
             Err(e) => Err(e),
         },
         ["app", rest @ ..] => app::run(rest),
+        ["headers", rest @ ..] => tools::headers(rest),
+        ["select", rest @ ..] => tools::select(rest),
+        ["filter", rest @ ..] => tools::filter(rest),
+        ["sort", rest @ ..] => tools::sort(rest),
+        ["dedupe", rest @ ..] => tools::dedupe(rest),
+        ["stats", rest @ ..] => tools::stats(rest),
+        ["count", rest @ ..] => tools::count(rest),
+        ["sample", rest @ ..] => tools::sample(rest),
+        ["slice", rest @ ..] => tools::slice(rest),
+        ["split", rest @ ..] => tools::split(rest),
+        ["cat", rest @ ..] => tools::cat(rest),
         _ => Err(USAGE.to_string()),
     };
     match result {

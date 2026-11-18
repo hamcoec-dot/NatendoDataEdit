@@ -866,18 +866,105 @@ struct MatchKept {
 }
 
 /// A step noted for a recipe.
+#[derive(Clone)]
 enum Logged {
     Step(RecipeOp),
     /// Done but cannot be repeated by a recipe (in words).
     LeftOut(String),
+    /// A step turned off in the steps panel (kept so it can be turned on).
+    Off(RecipeOp),
+}
+
+/// One noted step: the history position before and after it.
+#[derive(Clone)]
+struct LogEntry {
+    before: u64,
+    pos: u64,
+    item: Logged,
 }
 
 /// What a tab's recipe has so far: the first row before the first step
-/// (the column titles), and the steps with their place in the history.
+/// (the column titles), the steps with their place in the history, and
+/// the questions the steps ask (see `step_ask`).
 #[derive(Default)]
 struct RecipeLog {
     first_row: Option<Vec<String>>,
-    steps: Vec<(u64, Logged)>,
+    steps: Vec<LogEntry>,
+    questions: Vec<natendo_engine::recipe::Question>,
+}
+
+/// One row of the steps panel.
+#[derive(Debug, Clone, Serialize)]
+pub struct StepRow {
+    /// "step", "off" (turned off) or "left_out" (cannot be done again).
+    pub kind: &'static str,
+    pub text: String,
+    /// The table is now after this step (else it was undone or peeked past).
+    pub done: bool,
+    /// The step's settings (steps that can run again).
+    pub op: Option<RecipeOp>,
+    /// Its text values, where a question can go: (place, value).
+    pub texts: Vec<(String, String)>,
+}
+
+/// The steps panel: the tab's steps and where the table is among them.
+#[derive(Debug, Clone, Serialize)]
+pub struct StepsView {
+    pub steps: Vec<StepRow>,
+    /// The table is after this many steps (`steps.len()`: the latest).
+    pub at: usize,
+    /// Changes by hand after the last step (undone by a change in the
+    /// panel, which asks first).
+    pub hand_changes: bool,
+    pub questions: Vec<natendo_engine::recipe::Question>,
+}
+
+/// A change made in the steps panel to step `k`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StepChange {
+    Remove,
+    /// Turn off, or back on.
+    Toggle,
+    MoveUp,
+    MoveDown,
+    /// New settings.
+    Replace {
+        op: RecipeOp,
+    },
+}
+
+/// A recipe of one step (to check or answer it on its own).
+fn one_step_recipe(op: RecipeOp) -> Recipe {
+    Recipe {
+        version: natendo_engine::recipe::RECIPE_VERSION,
+        name: String::new(),
+        columns: Vec::new(),
+        header: false,
+        steps: vec![op],
+        left_out: Vec::new(),
+        questions: Vec::new(),
+    }
+}
+
+/// Undo or redo until the history is at `target`; refused (and put back)
+/// when the undo history no longer reaches it.
+fn history_to(d: &mut Document, target: u64) -> Result<(), Error> {
+    let start = d.history_pos();
+    while d.history_pos() > target {
+        if !d.undo() {
+            while d.history_pos() < start && d.redo() {}
+            return Err(Error::Invalid(
+                "the undo history no longer reaches that step (it keeps a limited amount)".into(),
+            ));
+        }
+    }
+    while d.history_pos() < target {
+        if !d.redo() {
+            return Err(Error::Invalid("that step was undone and replaced".into()));
+        }
+    }
+    Ok(())
 }
 
 /// The recipe step for a data operation, or why it cannot be one.
@@ -3805,14 +3892,279 @@ impl Docs {
         let mut log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
         // Steps past where this one started were undone and are now
         // replaced (filters are undo steps too, so this holds for them).
-        log.steps.retain(|(p, _)| *p <= before);
+        log.steps.retain(|e| e.pos <= before);
         if log.steps.is_empty() {
             log.first_row = first;
         }
         if log.steps.len() < natendo_engine::recipe::MAX_STEPS {
-            log.steps.push((pos, logged));
+            log.steps.push(LogEntry {
+                before,
+                pos,
+                item: logged,
+            });
         }
         Ok(out)
+    }
+
+    /// The noted steps the table can still reach (by undo or redo).
+    fn live_steps(&self, id: u32) -> CmdResult<(Vec<LogEntry>, u64, u64)> {
+        let entry = self.get(id)?;
+        let (at, reach) = {
+            let d = entry.read();
+            (d.history_pos(), d.history_pos() + d.redo_count())
+        };
+        let log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
+        let steps: Vec<LogEntry> = log
+            .steps
+            .iter()
+            .filter(|e| e.pos <= reach)
+            .cloned()
+            .collect();
+        Ok((steps, at, reach))
+    }
+
+    /// The steps panel's view of tab `id`.
+    pub fn steps_view(&self, id: u32) -> CmdResult<StepsView> {
+        let (steps, at, _) = self.live_steps(id)?;
+        let questions = {
+            let entry = self.get(id)?;
+            let log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
+            log.questions.clone()
+        };
+        let rows: Vec<StepRow> = steps
+            .iter()
+            .map(|e| {
+                let (kind, text, op) = match &e.item {
+                    Logged::Step(s) => ("step", s.describe(), Some(s.clone())),
+                    Logged::Off(s) => ("off", s.describe(), Some(s.clone())),
+                    Logged::LeftOut(w) => ("left_out", w.clone(), None),
+                };
+                let texts = op
+                    .as_ref()
+                    .map(|o| {
+                        Recipe {
+                            version: natendo_engine::recipe::RECIPE_VERSION,
+                            name: String::new(),
+                            columns: Vec::new(),
+                            header: false,
+                            steps: vec![o.clone()],
+                            left_out: Vec::new(),
+                            questions: Vec::new(),
+                        }
+                        .step_texts(0)
+                    })
+                    .unwrap_or_default();
+                StepRow {
+                    kind,
+                    text,
+                    done: e.pos <= at,
+                    op,
+                    texts,
+                }
+            })
+            .collect();
+        let done = steps.iter().filter(|e| e.pos <= at).count();
+        let last = steps.last().map_or(0, |e| e.pos);
+        Ok(StepsView {
+            at: done,
+            hand_changes: !steps.is_empty() && at > last,
+            steps: rows,
+            questions,
+        })
+    }
+
+    /// Move the table to just after step `k` (`None`: before the first
+    /// step), by undo or redo: a look at the table as it was then.
+    pub fn steps_goto(&self, id: u32, k: Option<usize>) -> CmdResult<DocInfo> {
+        let (steps, _, reach) = self.live_steps(id)?;
+        let target = match k {
+            None => steps.first().map(|e| e.before),
+            Some(k) => steps.get(k).map(|e| e.pos),
+        }
+        .ok_or_else(|| CmdError::new("invalid", "there is no such step"))?;
+        let target = target.min(reach);
+        self.edit(id, |d| {
+            history_to(d, target)?;
+            Ok(())
+        })
+    }
+
+    /// Change step `k` (remove it, turn it off or on, move it, or give it
+    /// new settings): the table goes back to before it and the steps from
+    /// there run again. Changes by hand after it, and steps that cannot run
+    /// again, would be lost: refused unless `force`.
+    pub fn steps_change(
+        &self,
+        id: u32,
+        k: usize,
+        change: StepChange,
+        now: f64,
+        force: bool,
+    ) -> CmdResult<DocInfo> {
+        let (_, _, reach) = self.live_steps(id)?;
+        // From the latest step.
+        self.edit(id, |d| history_to(d, reach))?;
+        let (steps, at, _) = self.live_steps(id)?;
+        if k >= steps.len() {
+            return Err(CmdError::new("invalid", "there is no such step"));
+        }
+        let start = match change {
+            StepChange::MoveUp if k == 0 => {
+                return Err(CmdError::new("invalid", "the first step cannot move up"))
+            }
+            StepChange::MoveUp => k - 1,
+            StepChange::MoveDown if k + 1 >= steps.len() => {
+                return Err(CmdError::new("invalid", "the last step cannot move down"))
+            }
+            _ => k,
+        };
+        // What would be lost by going back.
+        let mut lost = Vec::new();
+        for (j, e) in steps.iter().enumerate().skip(start) {
+            if let Logged::LeftOut(w) = &e.item {
+                lost.push(format!("step {} ({w}) cannot be done again", j + 1));
+            }
+            if j > start && e.before != steps[j - 1].pos {
+                lost.push(format!("changes made by hand after step {}", j));
+            }
+        }
+        if at > steps.last().map_or(at, |e| e.pos) {
+            lost.push("changes made by hand after the last step".into());
+        }
+        if !lost.is_empty() && !force {
+            return Err(CmdError::new(
+                "steps_lost",
+                format!("going back would undo {}", lost.join("; ")),
+            ));
+        }
+        let mut items: Vec<Logged> = steps[start..]
+            .iter()
+            .map(|e| e.item.clone())
+            .filter(|l| !matches!(l, Logged::LeftOut(_)))
+            .collect();
+        let rel = k - start;
+        match change {
+            StepChange::Remove => {
+                items.remove(rel);
+            }
+            StepChange::Toggle => {
+                items[rel] = match items[rel].clone() {
+                    Logged::Step(s) => Logged::Off(s),
+                    Logged::Off(s) => Logged::Step(s),
+                    l => l,
+                };
+            }
+            StepChange::MoveUp => items.swap(0, 1),
+            StepChange::MoveDown => items.swap(rel, rel + 1),
+            StepChange::Replace { op } => {
+                let r = one_step_recipe(op.clone());
+                r.check()?;
+                items[rel] = Logged::Step(op);
+            }
+        }
+        let questions = {
+            let entry = self.get(id)?;
+            let log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
+            log.questions.clone()
+        };
+        let back = steps[start].before;
+        self.edit(id, |d| {
+            history_to(d, back)?;
+            d.drop_redo();
+            Ok(())
+        })?;
+        // The steps from `start` on are noted again as they run.
+        {
+            let entry = self.get(id)?;
+            let mut log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
+            let first = &steps[start];
+            if let Some(i) = log
+                .steps
+                .iter()
+                .position(|e| e.before == first.before && e.pos == first.pos)
+            {
+                log.steps.truncate(i);
+            }
+        }
+        for (i, item) in items.into_iter().enumerate() {
+            match item {
+                Logged::Step(op) => {
+                    // Questions take their last answers; the step keeps
+                    // its question.
+                    let mut r = one_step_recipe(op.clone());
+                    r.questions = questions.clone();
+                    let run = r.answered(&[])?.steps.remove(0);
+                    self.run_recipe_op(id, run, now).map_err(|mut e| {
+                        e.message =
+                            format!("step {} ({}): {}", start + i + 1, op.describe(), e.message);
+                        e
+                    })?;
+                    let entry = self.get(id)?;
+                    let mut log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(last) = log.steps.last_mut() {
+                        last.item = Logged::Step(op);
+                    }
+                }
+                Logged::Off(op) => {
+                    let entry = self.get(id)?;
+                    let pos = entry.read().history_pos();
+                    let mut log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
+                    log.steps.retain(|e| e.pos <= pos);
+                    log.steps.push(LogEntry {
+                        before: pos,
+                        pos,
+                        item: Logged::Off(op),
+                    });
+                }
+                Logged::LeftOut(_) => {}
+            }
+        }
+        self.info(id)
+    }
+
+    /// Make the text at `path` in step `k` a question asked each time the
+    /// recipe runs (the text there now is its first answer).
+    pub fn steps_ask(
+        &self,
+        id: u32,
+        k: usize,
+        path: &str,
+        name: &str,
+        prompt: &str,
+    ) -> CmdResult<StepsView> {
+        let (steps, _, _) = self.live_steps(id)?;
+        let e = steps
+            .get(k)
+            .ok_or_else(|| CmdError::new("invalid", "there is no such step"))?;
+        let (op, off) = match &e.item {
+            Logged::Step(s) => (s.clone(), false),
+            Logged::Off(s) => (s.clone(), true),
+            Logged::LeftOut(_) => {
+                return Err(CmdError::new("invalid", "that step cannot be done again"))
+            }
+        };
+        {
+            let entry = self.get(id)?;
+            let mut log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
+            let mut r = one_step_recipe(op);
+            r.questions = log.questions.clone();
+            r.ask(0, path, name, prompt)?;
+            let new = r.steps.remove(0);
+            // The same entry in the full log (by position).
+            if let Some(le) = log
+                .steps
+                .iter_mut()
+                .find(|x| x.pos == e.pos && x.before == e.before)
+            {
+                le.item = if off {
+                    Logged::Off(new)
+                } else {
+                    Logged::Step(new)
+                };
+            }
+            log.questions = r.questions;
+        }
+        self.steps_view(id)
     }
 
     /// The tab's steps so far (those not undone) as a recipe.
@@ -3822,13 +4174,14 @@ impl Docs {
         let log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
         let mut steps = Vec::new();
         let mut left_out = Vec::new();
-        for (p, l) in &log.steps {
-            if *p > pos {
+        for e in &log.steps {
+            if e.pos > pos {
                 continue;
             }
-            match l {
+            match &e.item {
                 Logged::Step(s) => steps.push(s.clone()),
                 Logged::LeftOut(w) => left_out.push(w.clone()),
+                Logged::Off(_) => {}
             }
         }
         Ok(Recipe {
@@ -3842,6 +4195,7 @@ impl Docs {
             header,
             steps,
             left_out,
+            questions: log.questions.clone(),
         })
     }
 
@@ -3870,9 +4224,11 @@ impl Docs {
         &self,
         id: u32,
         recipe: &Recipe,
+        answers: &[(String, String)],
         now: f64,
         force: bool,
     ) -> CmdResult<DocInfo> {
+        let recipe = &recipe.answered(answers)?;
         if recipe.steps.len() > natendo_engine::recipe::MAX_STEPS {
             return Err(Error::Invalid("the recipe has too many steps".into()).into());
         }
@@ -3901,29 +4257,37 @@ impl Docs {
         // it plans under the read lock, keeps the grid live, is noted for
         // the tab's own recipe and is one undo step).
         for (i, s) in recipe.steps.iter().enumerate() {
-            let r = match s.clone() {
-                RecipeOp::Sort { spec } => self.sort(id, spec).map(|_| ()),
-                RecipeOp::Filter { spec } => self.filter(id, spec).map(|_| ()),
-                RecipeOp::ClearFilter => self.clear_filter(id).map(|_| ()),
-                RecipeOp::InsertCols { at, count } => self.insert_cols(id, at, count).map(|_| ()),
-                RecipeOp::DeleteCols { at, count } => self.delete_cols(id, at, count).map(|_| ()),
-                RecipeOp::MoveCols { at, count, to } => {
-                    self.move_cols(id, at, count, to).map(|_| ())
-                }
-                RecipeOp::ReplaceAll { spec, with } => self.replace_all(id, spec, with).map(|_| ()),
-                RecipeOp::BatchReplace { spec } => self.batch_apply(id, spec, false).map(|_| ()),
-                RecipeOp::RenameColumn { col, name } => {
-                    self.set_first_row_cell(id, col, name).map(|_| ())
-                }
-                RecipeOp::TidyTitles { spec } => self.tidy_titles(id, spec).map(|_| ()),
-                other => self.data_op(id, recipe_data_op(other, now)).map(|_| ()),
-            };
-            r.map_err(|mut e| {
+            self.run_recipe_op(id, s.clone(), now).map_err(|mut e| {
                 e.message = format!("step {} ({}): {}", i + 1, s.describe(), e.message);
                 e
             })?;
         }
         self.info(id)
+    }
+
+    /// One recipe step, through the same command as when done by hand.
+    fn run_recipe_op(&self, id: u32, s: RecipeOp, now: f64) -> CmdResult<()> {
+        if let RecipeOp::Clean { spec } = &s {
+            check_clean(spec, now)?;
+        }
+        if let RecipeOp::Filter { spec } = &s {
+            check_filter(spec)?;
+        }
+        match s {
+            RecipeOp::Sort { spec } => self.sort(id, spec).map(|_| ()),
+            RecipeOp::Filter { spec } => self.filter(id, spec).map(|_| ()),
+            RecipeOp::ClearFilter => self.clear_filter(id).map(|_| ()),
+            RecipeOp::InsertCols { at, count } => self.insert_cols(id, at, count).map(|_| ()),
+            RecipeOp::DeleteCols { at, count } => self.delete_cols(id, at, count).map(|_| ()),
+            RecipeOp::MoveCols { at, count, to } => self.move_cols(id, at, count, to).map(|_| ()),
+            RecipeOp::ReplaceAll { spec, with } => self.replace_all(id, spec, with).map(|_| ()),
+            RecipeOp::BatchReplace { spec } => self.batch_apply(id, spec, false).map(|_| ()),
+            RecipeOp::RenameColumn { col, name } => {
+                self.set_first_row_cell(id, col, name).map(|_| ())
+            }
+            RecipeOp::TidyTitles { spec } => self.tidy_titles(id, spec).map(|_| ()),
+            other => self.data_op(id, recipe_data_op(other, now)).map(|_| ()),
+        }
     }
 
     fn data_op_now(&self, id: u32, op: DataOp) -> CmdResult<OpReport> {
@@ -6121,11 +6485,90 @@ mod tests {
         let q = tmp("rename-recipe-2.csv", b"name,age\r\nBo,40\r\n");
         let id2 = docs.open_path(&q, false).unwrap().id;
         wait(&docs, id2);
-        docs.run_recipe(id2, &recipe, 0.0, true).unwrap();
+        docs.run_recipe(id2, &recipe, &[], 0.0, true).unwrap();
         assert_eq!(docs.first_row_cell(id2, 1).unwrap(), "years");
         // An undone rename is not part of the recipe.
         docs.undo(id).unwrap();
         assert!(docs.recipe_of(id, true, "r").unwrap().steps.is_empty());
+    }
+
+    /// The steps panel: look at the table after a step, then change a step
+    /// and the steps after it run again; a value can become a question.
+    #[test]
+    fn steps_panel_peeks_and_replays() {
+        let p = tmp(
+            "steps.csv",
+            b"name,city,junk\r\nbo,reno,x\r\nann,oslo,y\r\n",
+        );
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        docs.delete_cols(id, 2, 1).unwrap();
+        docs.set_first_row_cell(id, 1, "town".into()).unwrap();
+        docs.insert_cols(id, 0, 1).unwrap();
+        let v = docs.steps_view(id).unwrap();
+        assert_eq!((v.steps.len(), v.at), (3, 3));
+        assert!(!v.hand_changes);
+        // Peek after step 1, then back to the latest.
+        docs.steps_goto(id, Some(0)).unwrap();
+        assert_eq!(docs.first_row_cell(id, 1).unwrap(), "city");
+        assert_eq!(docs.steps_view(id).unwrap().at, 1);
+        docs.steps_goto(id, Some(2)).unwrap();
+        assert_eq!(docs.first_row_cell(id, 2).unwrap(), "town");
+        // Turn step 1 off: the junk column comes back, the later steps
+        // run again.
+        docs.steps_change(id, 0, StepChange::Toggle, 0.0, false)
+            .unwrap();
+        assert_eq!(docs.first_row_cell(id, 3).unwrap(), "junk");
+        assert_eq!(docs.first_row_cell(id, 2).unwrap(), "town");
+        let v = docs.steps_view(id).unwrap();
+        assert_eq!(
+            v.steps.iter().map(|s| s.kind).collect::<Vec<_>>(),
+            ["off", "step", "step"]
+        );
+        assert_eq!(docs.recipe_of(id, true, "").unwrap().steps.len(), 2);
+        // Back on, then remove the inserted column.
+        docs.steps_change(id, 0, StepChange::Toggle, 0.0, false)
+            .unwrap();
+        docs.steps_change(id, 2, StepChange::Remove, 0.0, false)
+            .unwrap();
+        assert_eq!(docs.first_row_cell(id, 0).unwrap(), "name");
+        assert_eq!(docs.steps_view(id).unwrap().steps.len(), 2);
+        // New settings for the rename.
+        docs.steps_change(
+            id,
+            1,
+            StepChange::Replace {
+                op: RecipeOp::RenameColumn {
+                    col: 1,
+                    name: "place".into(),
+                },
+            },
+            0.0,
+            false,
+        )
+        .unwrap();
+        assert_eq!(docs.first_row_cell(id, 1).unwrap(), "place");
+        // A change by hand after the last step is not lost without asking.
+        docs.set_cells(id, vec![(1, 0, "Bo".into())]).unwrap();
+        let e = docs
+            .steps_change(id, 0, StepChange::MoveDown, 0.0, false)
+            .unwrap_err();
+        assert_eq!(e.kind, "steps_lost");
+        // The rename's name becomes a question.
+        let v = docs
+            .steps_ask(id, 1, "name", "column", "Name the column?")
+            .unwrap();
+        assert_eq!(v.questions[0].default, "place");
+        let r = docs.recipe_of(id, true, "").unwrap();
+        assert_eq!(r.questions.len(), 1);
+        assert!(matches!(&r.steps[1], RecipeOp::RenameColumn { name, .. } if name == "{{column}}"));
+        let q = tmp("steps-2.csv", b"name,city,junk\r\ncy,rome,z\r\n");
+        let id2 = docs.open_path(&q, false).unwrap().id;
+        wait(&docs, id2);
+        docs.run_recipe(id2, &r, &[("column".into(), "where".into())], 0.0, false)
+            .unwrap();
+        assert_eq!(docs.first_row_cell(id2, 1).unwrap(), "where");
     }
 
     /// Clearing a whole column (any number of rows) and shifting cells are
@@ -6772,7 +7215,7 @@ mod tests {
         let ib = docs.open_path(&b, false).unwrap().id;
         wait(&docs, ib);
         assert!(docs.recipe_problems(ib, &r).unwrap().is_empty());
-        docs.run_recipe(ib, &r, 20_000.0, false).unwrap();
+        docs.run_recipe(ib, &r, &[], 20_000.0, false).unwrap();
         let cell = |r: u64, c: u32| docs.cell_text(ib, r, c).unwrap().0;
         assert_eq!(
             (cell(0, 0), cell(0, 1), cell(0, 2)),
@@ -6785,7 +7228,7 @@ mod tests {
         // Different columns are refused unless forced.
         let mut other = r.clone();
         other.columns = vec!["x".into()];
-        assert!(docs.run_recipe(ib, &other, 20_000.0, false).is_err());
+        assert!(docs.run_recipe(ib, &other, &[], 20_000.0, false).is_err());
         // Saved and read back; never over an open file.
         let path = std::env::temp_dir().join("m14r.recipe.json");
         assert!(docs.save_recipe(ia, &r, &a).is_err());
