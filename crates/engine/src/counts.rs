@@ -51,6 +51,18 @@ pub struct Counts {
     pub complete: bool,
 }
 
+/// Shards the counts are merged in.
+const SHARDS: usize = 64;
+
+/// A key's shard (FNV-1a).
+fn shard_of(v: &str) -> usize {
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in v.as_bytes() {
+        h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+    }
+    (h as usize) % SHARDS
+}
+
 impl Document {
     /// Count each value (or combination) over the shown data rows.
     pub fn value_counts(&self, spec: &CountsSpec, progress: &Progress) -> Result<Counts, Error> {
@@ -67,7 +79,11 @@ impl Document {
         let (r0, r1) = (rows.start, rows.end);
         progress.start(r1 - r0);
         let chunks = ((r1 - r0) as usize).div_ceil(CHUNK);
-        let merged: Mutex<HashMap<String, u64>> = Mutex::new(HashMap::new());
+        // The keys are split by hash into shards, each merged under its own
+        // lock, so the parts of a column with millions of different values
+        // merge in parallel.
+        let merged: Vec<Mutex<HashMap<String, u64>>> =
+            (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect();
         let over = AtomicBool::new(false);
         let bytes = AtomicU64::new(0);
         (0..chunks)
@@ -75,7 +91,7 @@ impl Document {
             .try_for_each(|c| -> Result<(), Error> {
                 let s = r0 + (c * CHUNK) as u64;
                 let e = (s + CHUNK as u64).min(r1);
-                let mut local: HashMap<String, u64> = HashMap::new();
+                let mut local: Vec<HashMap<String, u64>> = vec![HashMap::new(); SHARDS];
                 let mut buf = Vec::new();
                 let mut key = String::new();
                 for r in s..e {
@@ -93,33 +109,42 @@ impl Document {
                         }
                         &key
                     };
-                    match local.get_mut(v) {
+                    let m = &mut local[shard_of(v)];
+                    match m.get_mut(v) {
                         Some(n) => *n += 1,
                         None => {
-                            local.insert(v.to_string(), 1);
+                            m.insert(v.to_string(), 1);
                         }
                     }
                 }
                 progress.step(e - s)?;
-                let mut m = merged.lock().unwrap_or_else(|p| p.into_inner());
-                for (key, n) in local {
-                    if let Some(x) = m.get_mut(&key) {
-                        *x += n;
-                    } else if bytes.fetch_add(key.len() as u64 + 32, Ordering::Relaxed)
-                        < MAX_COUNT_BYTES
-                    {
-                        m.insert(key, n);
-                    } else {
-                        over.store(true, Ordering::Relaxed);
+                // Start at a different shard in each part, so parts finishing
+                // together seldom wait for the same lock.
+                for i in 0..SHARDS {
+                    let sh = (i + c) % SHARDS;
+                    let part = std::mem::take(&mut local[sh]);
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let mut m = merged[sh].lock().unwrap_or_else(|p| p.into_inner());
+                    for (key, n) in part {
+                        if let Some(x) = m.get_mut(&key) {
+                            *x += n;
+                        } else if bytes.fetch_add(key.len() as u64 + 32, Ordering::Relaxed)
+                            < MAX_COUNT_BYTES
+                        {
+                            m.insert(key, n);
+                        } else {
+                            over.store(true, Ordering::Relaxed);
+                        }
                     }
                 }
                 Ok(())
             })?;
-        let mut lines: Vec<(String, u64)> = merged
-            .into_inner()
-            .unwrap_or_else(|p| p.into_inner())
-            .into_iter()
-            .collect();
+        let mut lines: Vec<(String, u64)> = Vec::new();
+        for m in merged {
+            lines.extend(m.into_inner().unwrap_or_else(|p| p.into_inner()));
+        }
         lines.par_sort_unstable_by(|a, b| {
             b.1.cmp(&a.1)
                 .then_with(|| natural_cmp(a.0.as_bytes(), b.0.as_bytes()))

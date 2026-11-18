@@ -28,6 +28,8 @@ export interface DocInfo {
   filter_cols: number[];
   /** Looking at an earlier recipe step: changes and saving are refused. */
   peeking?: boolean;
+  /** Moves when what the rows hold changes (not with filters). */
+  data_revision?: number;
   /** A filter rule sits on a deleted column: rows stay hidden without a funnel. */
   filter_on_deleted: boolean;
   cols: number;
@@ -372,6 +374,8 @@ export interface Facet {
   values: { value: string; count: number }[];
   distinct: number;
   complete: boolean;
+  /** Too many different values to list: only a search is counted. */
+  many?: boolean;
   bins: number[];
   range: [number, number] | null;
   other: number;
@@ -1256,6 +1260,8 @@ export interface Backend {
   computePreview(doc: number, spec: ComputeSpec): Promise<ComputePreview>;
   /** The filter panel's counts (an older count still running is cancelled). */
   facetCounts(doc: number, cards: FacetCard[], spec: FilterSpec): Promise<Facets>;
+  /** Free the filter panel's counts for a tab. */
+  facetForget(doc: number): Promise<void>;
   /** A column's profile (shapes, histogram, odd values). */
   columnProfile(doc: number, spec: ProfileSpec): Promise<Profile>;
   /** The column insight strip, from a sample of the shown rows. */
@@ -1763,6 +1769,9 @@ class TauriBackend implements Backend {
   }
   facetCounts(doc: number, cards: FacetCard[], spec: FilterSpec) {
     return call<Facets>("facet_counts", { doc, cards, spec });
+  }
+  facetForget(doc: number) {
+    return call<void>("facet_forget", { doc });
   }
   columnProfile(doc: number, spec: ProfileSpec) {
     return call<Profile>("column_profile", { doc, spec });

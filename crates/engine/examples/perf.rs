@@ -1250,6 +1250,24 @@ fn main() {
             t.elapsed(),
             Duration::from_secs(3),
         );
+        // Every value different (an ID column): all of them counted.
+        let t = Instant::now();
+        let c = big
+            .value_counts(
+                &CountsSpec {
+                    cols: vec![0],
+                    keep_first: true,
+                },
+                &Progress::new(),
+            )
+            .unwrap();
+        println!("     counts of an ID column: {} lines", c.lines.len());
+        drop(c);
+        check.budget(
+            "counts tab of an all-different column",
+            t.elapsed(),
+            Duration::from_secs(8),
+        );
         let t = Instant::now();
         big.column_profile(
             &ProfileSpec {
@@ -1338,8 +1356,57 @@ fn main() {
             check.budget(
                 &format!("filter panel: {name} cards, each click"),
                 t.elapsed(),
-                Duration::from_millis(if name == "4" { 300 } else { 1000 }),
+                Duration::from_millis(300),
             );
+            if name == "8" {
+                // Three of the eight are ID-like (a number with 10M values
+                // and two 1M-value columns). A bar picked on the number
+                // column is worked out once; later clicks stay quick.
+                let mut bar = click.clone();
+                bar.columns.push(natendo_engine::filter::ColumnFilter {
+                    col: 2,
+                    rule: Rule::Conditions {
+                        first: natendo_engine::filter::Condition::Number {
+                            op: natendo_engine::filter::CmpOp::Lt,
+                            value: 5000.0,
+                        },
+                        second: None,
+                        or: false,
+                    },
+                });
+                let t = Instant::now();
+                big.facet_counts_cached(&mut cache, cards, &bar, &Progress::new())
+                    .unwrap();
+                check.budget(
+                    "filter panel: 8 cards, a bar picked on an ID-like column",
+                    t.elapsed(),
+                    Duration::from_secs(2),
+                );
+                bar.columns[0].rule = Rule::Values {
+                    values: vec!["City 9".into()],
+                    blanks: false,
+                };
+                let t = Instant::now();
+                big.facet_counts_cached(&mut cache, cards, &bar, &Progress::new())
+                    .unwrap();
+                check.budget(
+                    "filter panel: 8 cards, a click after it",
+                    t.elapsed(),
+                    Duration::from_millis(300),
+                );
+                // A typed cell: only that row is read again.
+                big.set_cell(5, 4, "City 9".into()).unwrap();
+                let t = Instant::now();
+                big.facet_counts_cached(&mut cache, cards, &bar, &Progress::new())
+                    .unwrap();
+                check.budget(
+                    "filter panel: 8 cards, count after an edit",
+                    t.elapsed(),
+                    Duration::from_millis(300),
+                );
+                big.undo();
+                println!("     filter panel cache: {} MB", cache.bytes() >> 20);
+            }
         }
         let t = Instant::now();
         let n = big.col_count();

@@ -6,8 +6,9 @@
 //! after which it is an explicit list of ids. Edited and inserted rows live in
 //! the overlay as parsed values; every other row costs only its offset.
 
+use rayon::prelude::*;
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -246,6 +247,10 @@ pub(crate) struct Step {
 /// `u32` per column).
 pub const MAX_MAPPED_COLS: u32 = MAX_EDIT_COL + 1;
 
+/// Changed rows remembered for [`Document::changed_since`] (more, and a
+/// cache reads its columns again).
+const MAX_TOUCHED: usize = 1 << 16;
+
 /// Where the table starts in a source, and the lines above it.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Start {
@@ -289,6 +294,11 @@ impl Progress {
     pub fn start(&self, total: u64) {
         self.done.store(0, Ordering::Relaxed);
         self.total.store(total, Ordering::Relaxed);
+    }
+
+    /// Add `n` to the work expected.
+    pub fn grow(&self, n: u64) {
+        self.total.fetch_add(n, Ordering::Relaxed);
     }
 
     /// Count `n` more rows done; `Err(Cancelled)` once cancel is set.
@@ -405,6 +415,14 @@ pub struct Document {
     /// Like `revision`, but not moved by filters or hidden rows (what
     /// the rows hold and their order).
     data_revision: u64,
+    /// The data revision when row positions last changed (a sort, rows put
+    /// in or taken out, indexing, a reload).
+    rows_revision: u64,
+    /// Rows whose cells changed since `touch_floor`, with the data revision
+    /// of each change (oldest first), so a cache of columns can patch just
+    /// those rows.
+    touched: Vec<(u64, u32)>,
+    touch_floor: u64,
     undo_bytes: usize,
     redo_bytes: usize,
     /// Memory budget for the history (MAX_UNDO_BYTES; smaller in tests).
@@ -554,6 +572,9 @@ impl Document {
             view: None,
             revision: 0,
             data_revision: 0,
+            rows_revision: 0,
+            touched: Vec::new(),
+            touch_floor: 0,
             undo_bytes: 0,
             redo_bytes: 0,
             undo_budget: MAX_UNDO_BYTES,
@@ -640,6 +661,7 @@ impl Document {
         let done = self.index.step(self.source.bytes(), budget)?;
         self.revision += 1;
         self.data_revision += 1;
+        self.rows_changed();
         if done {
             self.next_id = self.index.rows() as u32;
             if let Some(lb) = self.index.stats().dominant_line_break() {
@@ -921,6 +943,44 @@ impl Document {
     /// filters or hidden rows).
     pub fn data_revision(&self) -> u64 {
         self.data_revision
+    }
+
+    /// The positions of the rows whose cells changed after data revision
+    /// `rev`, when that is all that changed (no rows moved, put in or taken
+    /// out) and the record of it is complete; `None` otherwise.
+    pub fn changed_since(&self, rev: u64) -> Option<Vec<u64>> {
+        if rev > self.data_revision || self.rows_revision > rev || self.touch_floor > rev {
+            return None;
+        }
+        let start = self.touched.partition_point(|&(r, _)| r <= rev);
+        let ids: HashSet<u32> = self.touched[start..].iter().map(|&(_, id)| id).collect();
+        if ids.is_empty() {
+            return Some(Vec::new());
+        }
+        Some(match &self.order {
+            None => {
+                let rows = self.index.rows();
+                let mut v: Vec<u64> = ids
+                    .into_iter()
+                    .map(u64::from)
+                    .filter(|&p| p < rows)
+                    .collect();
+                v.sort_unstable();
+                v
+            }
+            Some(o) => o
+                .par_iter()
+                .enumerate()
+                .filter(|(_, id)| ids.contains(id))
+                .map(|(p, _)| p as u64)
+                .collect(),
+        })
+    }
+
+    fn rows_changed(&mut self) {
+        self.rows_revision = self.data_revision;
+        self.touched.clear();
+        self.touch_floor = self.data_revision;
     }
 
     pub(crate) fn view(&self) -> Option<&View> {
@@ -1833,6 +1893,7 @@ impl Document {
 
     /// The row order changed: a filter's list of shown positions is stale.
     fn rows_moved(&mut self) {
+        self.rows_changed();
         if let Some(v) = &mut self.view {
             v.visible = OnceLock::new();
             v.hidden_rows = OnceLock::new();
@@ -2034,12 +2095,21 @@ impl Document {
                 self.rows_moved();
                 Op::SetOrder(old)
             }
-            Op::Restore(states) => Op::Restore(
-                states
-                    .into_iter()
-                    .map(|(id, s)| (id, self.overlay.set(id, s)))
-                    .collect(),
-            ),
+            Op::Restore(states) => {
+                if self.touched.len() + states.len() > MAX_TOUCHED {
+                    self.touched.clear();
+                    self.touch_floor = self.data_revision;
+                } else {
+                    let rev = self.data_revision;
+                    self.touched.extend(states.iter().map(|(id, _)| (rev, *id)));
+                }
+                Op::Restore(
+                    states
+                        .into_iter()
+                        .map(|(id, s)| (id, self.overlay.set(id, s)))
+                        .collect(),
+                )
+            }
             Op::Insert { at, rows } => {
                 let count = rows.len();
                 let ids: Vec<u32> = rows.iter().map(|(id, _)| *id).collect();
@@ -2190,6 +2260,7 @@ impl Document {
         });
         self.revision += 1;
         self.data_revision += 1;
+        self.rows_changed();
         self.source = source;
         self.data_start = start.data;
         self.preamble_len = start.preamble_len;
