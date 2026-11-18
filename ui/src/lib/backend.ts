@@ -1333,7 +1333,20 @@ export interface Backend {
   /** Pick and read a recipe file (null: cancelled). */
   recipeOpen(doc: number): Promise<import("./recipe").RecipeOpened | null>;
   /** Run a recipe on a tab (each step one undo step). */
-  recipeRun(doc: number, recipe: import("./recipe").Recipe, now: number, force: boolean): Promise<DocInfo>;
+  recipeRun(doc: number, recipe: import("./recipe").Recipe, now: number, force: boolean, answers?: [string, string][]): Promise<DocInfo>;
+  /** The steps panel: the tab's steps and where the table is among them. */
+  stepsView(doc: number): Promise<import("./recipe").StepsView>;
+  /** Show the table as it was after step `k` (null: before the first). */
+  stepsGoto(doc: number, k: number | null): Promise<DocInfo>;
+  /** Change step `k`; the steps after it run again. */
+  stepsChange(doc: number, k: number, change: import("./recipe").StepChange, now: number, force: boolean): Promise<DocInfo>;
+  /** Make a text in step `k` a question asked each time the recipe runs. */
+  stepsAsk(doc: number, k: number, path: string, name: string, prompt: string): Promise<import("./recipe").StepsView>;
+  /** Run recipe on files: choose the files, a folder of them, the recipe or the results folder. */
+  batchPick(which: "files" | "folder" | "recipe" | "out"): Promise<import("./batch").BatchStatus>;
+  batchStatus(): Promise<import("./batch").BatchStatus>;
+  batchStart(answers: [string, string][], force: boolean): Promise<import("./batch").BatchStatus>;
+  batchStop(): Promise<import("./batch").BatchStatus>;
   /** Label sheets to choose from. */
   labelSheets(): Promise<[string, import("./mail").LabelSheet][]>;
   /** The first few labels or letters, as lines. */
@@ -1887,8 +1900,32 @@ class TauriBackend implements Backend {
   recipeOpen(doc: number) {
     return call<import("./recipe").RecipeOpened | null>("recipe_open", { doc });
   }
-  recipeRun(doc: number, recipe: import("./recipe").Recipe, now: number, force: boolean) {
-    return call<DocInfo>("recipe_run", { doc, recipe, now, force });
+  recipeRun(doc: number, recipe: import("./recipe").Recipe, now: number, force: boolean, answers?: [string, string][]) {
+    return call<DocInfo>("recipe_run", { doc, recipe, now, force, answers: answers ?? null });
+  }
+  stepsView(doc: number) {
+    return call<import("./recipe").StepsView>("steps_view", { doc });
+  }
+  stepsGoto(doc: number, k: number | null) {
+    return call<DocInfo>("steps_goto", { doc, k });
+  }
+  stepsChange(doc: number, k: number, change: import("./recipe").StepChange, now: number, force: boolean) {
+    return call<DocInfo>("steps_change", { doc, k, change, now, force });
+  }
+  stepsAsk(doc: number, k: number, path: string, name: string, prompt: string) {
+    return call<import("./recipe").StepsView>("steps_ask", { doc, k, path, name, prompt });
+  }
+  batchPick(which: "files" | "folder" | "recipe" | "out") {
+    return call<import("./batch").BatchStatus>("batch_pick", { which });
+  }
+  batchStatus() {
+    return call<import("./batch").BatchStatus>("batch_status");
+  }
+  batchStart(answers: [string, string][], force: boolean) {
+    return call<import("./batch").BatchStatus>("batch_start", { answers, force });
+  }
+  batchStop() {
+    return call<import("./batch").BatchStatus>("batch_stop");
   }
   labelSheets() {
     return call<[string, import("./mail").LabelSheet][]>("label_sheets");

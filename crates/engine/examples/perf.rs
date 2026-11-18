@@ -2404,6 +2404,80 @@ fn main() {
             t.elapsed(),
             budget(20.0),
         );
+        // v0.4.4: the steps panel looks back by undo and forward by redo,
+        // and a step changed runs the steps after it again.
+        let t = Instant::now();
+        for _ in 0..3 {
+            doc.undo();
+        }
+        for _ in 0..3 {
+            doc.redo();
+        }
+        check.budget(
+            "steps panel: back 3 steps and forward again, 10M rows",
+            t.elapsed(),
+            Duration::from_secs(2),
+        );
+        let t = Instant::now();
+        for _ in 0..3 {
+            doc.undo();
+        }
+        doc.drop_redo();
+        let changed = Recipe {
+            steps: vec![
+                RecipeOp::InsertCols { at: 0, count: 1 },
+                RecipeOp::MoveCols {
+                    at: 3,
+                    count: 2,
+                    to: 0,
+                },
+            ],
+            ..recipe.clone()
+        };
+        doc.run_recipe(&changed, 20_000.0, 1, &p).unwrap();
+        check.budget(
+            "steps panel: take out step 1 of 3 and run the rest again, 10M rows",
+            t.elapsed(),
+            budget(20.0),
+        );
+        // A recipe question answered (the steps' texts filled in).
+        let asked: Recipe = serde_json::from_value(serde_json::json!({
+            "version": RECIPE_VERSION,
+            "header": true,
+            "steps": [{"op": "rename_column", "col": 0, "name": "{{title}}"}],
+            "questions": [{"name": "title", "prompt": "Title?", "default": "id"}],
+        }))
+        .unwrap();
+        let t = Instant::now();
+        let answered = asked
+            .answered(&[("title".into(), "voter id".into())])
+            .unwrap();
+        doc.run_recipe(&answered, 20_000.0, 1, &p).unwrap();
+        check.budget(
+            "recipe question answered and run, 10M rows",
+            t.elapsed(),
+            Duration::from_millis(500),
+        );
+        // natendo-cli filter: keep a filter's rows only.
+        let (plan, _) = doc
+            .plan_formula_filter(
+                &ComputeSpec {
+                    expr: "MOD(ROW(), 2) = 0".into(),
+                    keep_first: true,
+                    ..Default::default()
+                },
+                &p,
+            )
+            .unwrap();
+        doc.apply_rows(plan).unwrap();
+        let t = Instant::now();
+        let keep = doc.plan_keep_shown().unwrap();
+        doc.apply_rows(keep).unwrap();
+        check.budget(
+            "command-line filter: drop the rows a filter leaves out, 10M rows",
+            t.elapsed(),
+            Duration::from_secs(3),
+        );
         drop(doc);
     }
     for f in [&xlsx, &json, &small_path, &other_path] {

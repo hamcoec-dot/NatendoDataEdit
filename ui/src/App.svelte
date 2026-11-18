@@ -33,7 +33,8 @@
   import MailDialog from "./lib/MailDialog.svelte";
   import ChangesDialog from "./lib/ChangesDialog.svelte";
   import RecipeDialog from "./lib/RecipeDialog.svelte";
-  import { withPhrase, type RecipeOpened, type RecipeView } from "./lib/recipe";
+  import { answerPairs, keepAnswers, withPhrase, type RecipeOpened, type RecipeView } from "./lib/recipe";
+  import BatchDialog from "./lib/BatchDialog.svelte";
   import FolderSearchDialog, { type FolderHit } from "./lib/FolderSearchDialog.svelte";
   import { copyTouches, findingsText, LARGE_COPY } from "./lib/privacy";
   import EditTools, { type ToolKind as EditKind } from "./lib/EditTools.svelte";
@@ -241,6 +242,7 @@
   let sqliteMode = $state<"save" | "open" | null>(null);
   let notesRow = $state<number | null>(null);
   let watchOpen = $state(false);
+  let recipeFilesOpen = $state(false);
   let optionsOpen = $state(false);
   /** The print screen: what would print, and whether PDF is the main button. */
   let printReq = $state<{ pdf: boolean; titles: string[] | null; sample: string[][]; cols: number[]; allRows: number; selRows: number; selFirst: number } | null>(null);
@@ -4728,6 +4730,7 @@
     { id: "tools.sample", label: "Random s&ample…", run: () => openTools("sample"), enabled: ready },
     { id: "tools.selectionTab", label: "Selection to a &new tab", run: () => void selectionToTab(), enabled: ready },
     { id: "tools.watch", label: "&Watch a folder (run a recipe on new files)…", run: () => { watchOpen = true; } },
+    { id: "tools.recipeFiles", label: "Run recipe on &files…", run: () => { recipeFilesOpen = true; } },
     { id: "tools.updates", label: "Take &changes from a newer file…", run: () => { updatesOpen = true; }, enabled: ready },
     { id: "tools.compare", label: "Co&mpare with another open file…", run: () => openTools("compare"), enabled: ready },
     { id: "tools.split", label: "S&plit into files…", run: () => openTools("split"), enabled: () => ready() },
@@ -4796,6 +4799,7 @@
     { id: "view.panel", label: "Side &panel", keys: ["Ctrl+F1"], run: () => showPanel(prefs.data.panel ? null : panelTab), checked: () => !!prefs.data.panel },
     { id: "view.panelSummary", label: "Column summary", run: () => showPanel("summary"), checked: () => prefs.data.panel === "summary" },
     { id: "view.panelFilters", label: "Filter panel", keys: ["Alt+Shift+L"], run: () => showPanel("filters"), checked: () => prefs.data.panel === "filters" },
+    { id: "view.panelSteps", label: "Recipe steps", keys: ["Alt+Shift+R"], run: () => showPanel("steps"), checked: () => prefs.data.panel === "steps" },
     { id: "view.panelChart", label: "Chart", run: () => showPanel("chart"), checked: () => prefs.data.panel === "chart" },
     { id: "view.panelFiles", label: "Files in this folder", run: () => showPanel("files"), checked: () => prefs.data.panel === "files" },
     { id: "view.panelActivity", label: "Activity", run: () => showPanel("activity"), checked: () => prefs.data.panel === "activity" },
@@ -4832,7 +4836,7 @@
       label: "&View",
       items: [
         "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze", "-", "view.zoomIn", "view.zoomOut", "view.zoomReset", "-",
-        "view.panel", "view.panelSummary", "view.panelFilters", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
+        "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
         "view.cellBar", "view.gridLines", "view.invisible", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
@@ -4870,7 +4874,7 @@
         "tools.fillBlanks", "tools.countRepeats", "tools.blankRepeats", "tools.breaks", "-",
         "tools.flip", "tools.deleteHidden", "tools.deleteHiddenCols", "-",
         "tools.reshape", "tools.stack", "tools.sample", "tools.selectionTab", "-",
-        "tools.compare", "tools.updates", "tools.split", "tools.combine", "tools.searchFolder", "tools.recipe", "tools.watch", "-",
+        "tools.compare", "tools.updates", "tools.split", "tools.combine", "tools.searchFolder", "tools.recipe", "tools.recipeFiles", "tools.watch", "-",
         "tools.nextChange", "tools.prevChange", "tools.largest", "tools.smallest", "-",
         "tools.findPrivate",
       ],
@@ -5416,13 +5420,15 @@
     }
   }
 
-  async function runRecipe(force: boolean, phrase: string): Promise<void> {
+  async function runRecipe(force: boolean, phrase: string, answers: Record<string, string>): Promise<void> {
     const t = tab;
     const r = recipeFile;
     if (!t || !r) return;
     recipeOpen = false;
+    const questions = r.recipe.questions ?? [];
+    if (questions.length) keepAnswers(r.path, answers);
     try {
-      const info = await runJob("Running the recipe", () => backend().recipeRun(t.id, withPhrase(r.recipe, phrase), localNow(), force));
+      const info = await runJob("Running the recipe", () => backend().recipeRun(t.id, withPhrase(r.recipe, phrase), localNow(), force, answerPairs(questions, answers)));
       if (info) t.update(info, true);
       say(`Ran the recipe: ${plural(r.recipe.steps.length, "step")}. Undo each with Ctrl+Z.`);
     } catch (e) {
@@ -5977,7 +5983,7 @@
         <Grid
           bind:this={grid}
           {tab}
-          readOnly={!tab.info.indexed}
+          readOnly={!tab.info.indexed || tab.peeking}
           locked={tab.info.read_only}
           onCommit={commitCell}
           onContext={openContext}
@@ -6032,6 +6038,20 @@
         read={READ}
         onOpened={opened}
         onSetRule={(col, rule) => setRule(col, rule)}
+        steps={{
+          onInfo: (info) => {
+            const t = tab;
+            if (t) t.update(info, true);
+          },
+          run: runJob,
+          confirmLoss: async (what) =>
+            (await ask("Run the steps again?", `${what[0]?.toUpperCase() ?? ""}${what.slice(1)}. Go ahead? Undo (Ctrl+Z) takes the new steps back one by one.`, [
+              { id: "go", label: "Go ahead", primary: true },
+              { id: "cancel", label: "Cancel" },
+            ], "cancel")) === "go",
+          onSave: () => void openRecipes(),
+          now: localNow,
+        }}
         onFilterValue={(col, value, cut) => void setRule(col, cut ? { type: "conditions", first: { type: "text", op: "begins_with", text: value.replace(/…$/, ""), match_case: true } } : value === "" ? { type: "values", values: [], blanks: true } : { type: "values", values: [value], blanks: false })}
         onClose={() => showPanel(null)}
       />
@@ -6304,7 +6324,7 @@
     opened={recipeFile}
     onSave={(n) => void saveRecipe(n)}
     onOpen={() => void openRecipeFile()}
-    onRun={(f, p) => void runRecipe(f, p)}
+    onRun={(f, p, a) => void runRecipe(f, p, a)}
     onClose={() => { recipeOpen = false; recipeFile = null; grid?.focus(); }}
   />
 {/if}
@@ -6425,6 +6445,10 @@
     onRun={(s) => void runCompute(s)}
     onClose={() => { computeOpen = false; grid?.focus(); }}
   />
+{/if}
+
+{#if recipeFilesOpen}
+  <BatchDialog onClose={() => { recipeFilesOpen = false; grid?.focus(); }} />
 {/if}
 
 {#if watchOpen}

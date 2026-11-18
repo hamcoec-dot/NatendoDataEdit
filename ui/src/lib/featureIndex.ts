@@ -244,6 +244,9 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   // Repeating your work
   "cleaners": ["clean.tools"],
   "recipes": ["tools.recipe"],
+  "recipe steps panel": ["view.panelSteps", "tools.recipe"],
+  "recipe questions": ["view.panelSteps", "tools.recipe", "tools.recipeFiles"],
+  "run recipe on files": ["tools.recipeFiles", "tools.watch"],
   "watched folder": ["tools.watch"],
   // Printing, PDF and labels
   "print with page setup and": ["file.print"],

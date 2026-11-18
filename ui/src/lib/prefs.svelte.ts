@@ -36,7 +36,7 @@ export interface PrefsData {
   /** Saved views, by name. */
   views: View[];
   /** The side panel is open, and on which tab. */
-  panel: "summary" | "chart" | "files" | "activity" | "filters" | null;
+  panel: "summary" | "chart" | "files" | "activity" | "filters" | "steps" | null;
   /** Which quick total the status bar shows for a selection. */
   totals: TotalKind;
   /** The totals the status bar shows side by side (Sum and Count unless
@@ -183,7 +183,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       agentLink: p.agentLink === true,
       shortcuts: p.shortcuts && typeof p.shortcuts === "object" ? p.shortcuts : {},
       views: Array.isArray(p.views) ? p.views.filter((v) => v && typeof v === "object" && Array.isArray(v.columns)).slice(0, MAX_VIEWS) : [],
-      panel: p.panel === "summary" || p.panel === "chart" || p.panel === "files" || p.panel === "activity" || p.panel === "filters" ? p.panel : null,
+      panel: p.panel === "summary" || p.panel === "chart" || p.panel === "files" || p.panel === "activity" || p.panel === "filters" || p.panel === "steps" ? p.panel : null,
       totals: TOTAL_KINDS.includes(p.totals as TotalKind) ? p.totals! : "sum",
       totalsShown: shownTotals(p.totalsShown),
       banded: p.banded === true,

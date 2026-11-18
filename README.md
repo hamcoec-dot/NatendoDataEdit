@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.4.3_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.4.4_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -826,6 +826,30 @@ selection, a column or the whole table:
   column changes, Replace All, cleaning, computed columns and more). Save them
   as a recipe and run it on next month's file in one go; it warns you if the
   columns are different. Also from the command line.
+- **Recipe steps panel** (View > Recipe steps, Alt+Shift+R): the steps you
+  have taken on a tab, listed as you work, as in Power Query's applied steps.
+  Click a step to see the table as it was after it (it can't be edited while
+  you look back), then go back to the latest. Turn a step off or on, move it
+  up or down, take it out or change its settings, and the steps after it run
+  again. If going back would undo something a recipe can't repeat (a paste,
+  changes typed by hand), it asks first. Save the steps as a recipe from the
+  panel.
+
+![The recipe steps panel looking at the table after step 1](docs/screenshots/steps-panel.png)
+*Looking back at the table after step 1; step 4, a paste, can't be part of a recipe.*
+- **Recipe questions:** in the steps panel, press ? on a step to have the
+  recipe ask for one of its values each time it runs ("Which county?",
+  "Election date?"), with the last answer filled in. One recipe then serves
+  every county or every election. On the command line, answer with
+  `--set county=Knox`.
+- **Run recipe on files** (Tools > Run recipe on files): pick files or a
+  folder, a recipe and a results folder, and every file is run through the
+  recipe now and written to the results folder under its own name, with a
+  line for each file (rows in, rows out, or why it was not done) and a total.
+  The files picked are never changed.
+
+![Running a recipe on three files: two done, one with other columns](docs/screenshots/recipe-files.png)
+*A monthly recipe run on three county files; the third has other columns, so it is listed as not done.*
 - **Watched folder:** while the app is open, files dropped into a folder are
   run through a recipe and written to a results folder. The files dropped in
   are never changed.
@@ -918,8 +942,26 @@ natendo-cli validate data.csv --checks checks.json --json
 natendo-cli join data.csv other.csv -o out.csv --key ID --columns Phone,Email
 natendo-cli clean cleaner.ndclean data.csv -o out.csv
 natendo-cli run monthly.recipe.json data.csv -o out.csv   # --dry-run lists the steps
+natendo-cli run monthly.recipe.json data.csv -o out.csv --set county=Knox   # answer its questions
 natendo-cli pivot by-city.ndpivot data.csv -o summary.csv # a layout saved in the pivot builder
 natendo-cli app tabs                              # needs the agent link
+```
+
+The toolkit, for scripts. Columns go by title or by number from 1, and each
+takes `--no-header`, `--sheet N`, `--to <format>`, `--overwrite` and `--json`:
+
+```
+natendo-cli headers data.csv                               # column numbers and titles
+natendo-cli select data.csv -o out.csv --columns name,3    # keep and order columns
+natendo-cli filter data.csv -o out.csv --expr "[Total] > 100"
+natendo-cli sort data.csv -o out.csv --by "last name,amount:desc"
+natendo-cli dedupe data.csv -o out.csv --columns email     # the first copy stays
+natendo-cli stats data.csv --columns zip                   # each column's profile
+natendo-cli count data.csv --columns party,precinct        # the counts, most common first
+natendo-cli sample data.csv -o out.csv --rows 500 --seed 7 # or --percent 5, --every 10
+natendo-cli slice data.csv -o out.csv --rows 1001-2000     # with the title row
+natendo-cli split data.csv -o parts --by county            # or --rows 50000
+natendo-cli cat jan.csv feb.csv mar.csv -o q1.csv --by-name
 ```
 
 A checks file is what Data > Data checks > Save writes, for example

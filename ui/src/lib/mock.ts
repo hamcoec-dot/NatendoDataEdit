@@ -3124,6 +3124,84 @@ export class MockBackend implements Backend {
   async recipeRun(doc: number): Promise<DocInfo> {
     return { ...this.get(doc).info };
   }
+  /** The browser preview's steps panel: a list only (no replay). */
+  private mockSteps = new Map<number, { rows: import("./recipe").StepRow[]; at: number; questions: import("./recipe").Question[] }>();
+  private stepsOf(doc: number) {
+    let s = this.mockSteps.get(doc);
+    if (!s) {
+      const row = (text: string, op: import("./recipe").RecipeStep, texts: [string, string][] = []): import("./recipe").StepRow => ({ kind: "step", text, done: true, op, texts });
+      s = {
+        rows: [
+          row("Delete 1 column(s) from column 3", { op: "delete_cols", at: 2, count: 1 }),
+          row('Rename column 2 to "county"', { op: "rename_column", col: 1, name: "county" }, [["name", "county"]]),
+          row("Sort by column 1", { op: "sort", spec: { keys: [{ col: 0 }], keep_first: true } }),
+          { kind: "left_out", text: "a paste", done: true, op: null, texts: [] },
+        ],
+        at: 4,
+        questions: [],
+      };
+      this.mockSteps.set(doc, s);
+    }
+    return s;
+  }
+  async stepsView(doc: number): Promise<import("./recipe").StepsView> {
+    this.get(doc);
+    const s = this.stepsOf(doc);
+    return { steps: s.rows.map((r, i) => ({ ...r, done: i < s.at })), at: s.at, hand_changes: false, questions: s.questions };
+  }
+  async stepsGoto(doc: number, k: number | null): Promise<DocInfo> {
+    this.stepsOf(doc).at = k === null ? 0 : k + 1;
+    return { ...this.get(doc).info };
+  }
+  async stepsChange(doc: number, k: number, change: import("./recipe").StepChange, _now: number, force: boolean): Promise<DocInfo> {
+    const s = this.stepsOf(doc);
+    const r = s.rows;
+    if (!force && r.slice(k).some((x) => x.kind === "left_out")) throw err("steps_lost", `going back would undo step ${r.findIndex((x) => x.kind === "left_out") + 1} (a paste) cannot be done again`);
+    if (change.kind === "remove") r.splice(k, 1);
+    else if (change.kind === "toggle") r[k]!.kind = r[k]!.kind === "off" ? "step" : "off";
+    else if (change.kind === "move_up" && k > 0) [r[k - 1], r[k]] = [r[k]!, r[k - 1]!];
+    else if (change.kind === "move_down" && k + 1 < r.length) [r[k + 1], r[k]] = [r[k]!, r[k + 1]!];
+    else if (change.kind === "replace") r[k]!.op = change.op;
+    s.at = r.length;
+    return { ...this.get(doc).info };
+  }
+  async stepsAsk(doc: number, k: number, path: string, name: string, prompt: string): Promise<import("./recipe").StepsView> {
+    const s = this.stepsOf(doc);
+    const row = s.rows[k]!;
+    const t = row.texts.find(([p]) => p === path);
+    if (!t) throw err("invalid", "that value is not in the step");
+    s.questions.push({ name, prompt, default: t[1] });
+    t[1] = `{{${name}}}`;
+    return this.stepsView(doc);
+  }
+  private mockBatch: import("./batch").BatchStatus = { files: [], recipe: null, steps: [], questions: [], out: null, running: false, done: 0, failed: 0, current: null, results: [] };
+  async batchPick(which: "files" | "folder" | "recipe" | "out"): Promise<import("./batch").BatchStatus> {
+    const b = this.mockBatch;
+    if (which === "files" || which === "folder") b.files = ["C:\\Data\\Hamilton.csv", "C:\\Data\\Knox.csv", "C:\\Data\\Bradley.csv"];
+    if (which === "recipe") {
+      b.recipe = "C:\\Data\\monthly.recipe.json";
+      b.steps = ["Delete 1 column(s) from column 3", 'Replace "TBD" with {{county}}'];
+      b.questions = [{ name: "county", prompt: "Which county?", default: "Hamilton" }];
+    }
+    if (which === "out") b.out = "C:\\Data\\Results";
+    return { ...b };
+  }
+  async batchStatus(): Promise<import("./batch").BatchStatus> {
+    return { ...this.mockBatch };
+  }
+  async batchStart(): Promise<import("./batch").BatchStatus> {
+    const b = this.mockBatch;
+    b.results = b.files.map((f, i) => {
+      const name = f.split("\\").pop() ?? f;
+      return i === 2 ? { name, ok: false, rows_in: 0, rows_out: 0, message: 'its columns differ from the recipe\'s (column 2 is "Town", not "county")' } : { name, ok: true, rows_in: 1200 + i * 310, rows_out: 1180 + i * 300, message: `written to ${b.out}\\${name}` };
+    });
+    b.done = b.results.filter((r) => r.ok).length;
+    b.failed = b.results.length - b.done;
+    return { ...b };
+  }
+  async batchStop(): Promise<import("./batch").BatchStatus> {
+    return { ...this.mockBatch };
+  }
   async labelSheets(): Promise<[string, import("./mail").LabelSheet][]> {
     const { DEFAULT_SHEET } = await import("./mail");
     return [

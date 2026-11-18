@@ -3,7 +3,7 @@
   // recipe file; or a recipe file opened and run on this tab, after its
   // steps are shown and its columns checked.
   import FormShell from "./FormShell.svelte";
-  import { needsPhrase, type RecipeOpened, type RecipeView } from "./recipe";
+  import { lastAnswers, needsPhrase, type RecipeOpened, type RecipeView } from "./recipe";
   import { MIN_PHRASE } from "./clean";
 
   interface Props {
@@ -13,7 +13,7 @@
     opened: RecipeOpened | null;
     onSave: (name: string) => void;
     onOpen: () => void;
-    onRun: (force: boolean, phrase: string) => void;
+    onRun: (force: boolean, phrase: string, answers: Record<string, string>) => void;
     onClose: () => void;
   }
   let { current, opened, onSave, onOpen, onRun, onClose }: Props = $props();
@@ -21,6 +21,16 @@
   let name = $state("");
   let force = $state(false);
   let phrase = $state("");
+  /** Answers to the recipe's questions (the last ones given at first). */
+  let answers = $state<Record<string, string>>({});
+  let answersFor = "";
+  $effect(() => {
+    const r = opened;
+    if (!r || answersFor === r.path) return;
+    answersFor = r.path;
+    const last = lastAnswers(r.path);
+    answers = Object.fromEntries((r.recipe.questions ?? []).map((q) => [q.name, last[q.name] ?? q.default]));
+  });
   const phraseNeeded = $derived(!!opened && needsPhrase(opened.recipe));
   const phraseOk = $derived(!phraseNeeded || [...phrase].length >= MIN_PHRASE);
   const canRun = $derived(!!opened && opened.recipe.steps.length > 0 && (opened.problems.length === 0 || force) && phraseOk);
@@ -34,6 +44,14 @@
     </ol>
     {#if opened.recipe.left_out.length}
       <p class="note">Not in the recipe (do these by hand): {opened.recipe.left_out.join("; ")}.</p>
+    {/if}
+    {#if opened.recipe.questions?.length}
+      <fieldset class="questions">
+        <legend>The recipe asks</legend>
+        {#each opened.recipe.questions as q (q.name)}
+          <label class="row">{q.prompt || q.name} <input type="text" bind:value={answers[q.name]} /></label>
+        {/each}
+      </fieldset>
     {/if}
     {#if opened.problems.length}
       <p class="warn">This tab's columns differ from the file the recipe was made on: {opened.problems.join("; ")}. Steps name columns by place, so they may change the wrong ones.</p>
@@ -64,7 +82,7 @@
   {/if}
   {#snippet buttons()}
     {#if opened}
-      <button type="button" class="primary" data-enter disabled={!canRun} onclick={() => onRun(force, phrase)}>Run on this tab</button>
+      <button type="button" class="primary" data-enter disabled={!canRun} onclick={() => onRun(force, phrase, $state.snapshot(answers))}>Run on this tab</button>
     {:else}
       <button type="button" class="primary" data-enter disabled={!current || current.recipe.steps.length === 0} onclick={() => onSave(name)}>Save recipe…</button>
       <button type="button" onclick={onOpen}>Open a recipe to run…</button>
@@ -86,5 +104,11 @@
   }
   .warn {
     color: var(--warn, #b45309);
+  }
+  .questions {
+    border: 1px solid var(--border, #8884);
+    border-radius: 4px;
+    padding: 4px 8px;
+    margin: 6px 0;
   }
 </style>

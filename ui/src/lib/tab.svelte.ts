@@ -140,6 +140,9 @@ export class Tab {
   picked = new Set<string>();
   /** The column insight strip's figures by column (View › Column insights). */
   insights = $state<{ byCol: Map<number, import("./backend").Insight>; sampled: number; rows: number } | null>(null);
+  /** The steps panel shows the table as it was after an earlier step
+   *  (it cannot be edited until it goes back to the latest). */
+  peeking = $state(false);
   /** The filter panel's cards (kept with views). */
   facetCards = $state<{ col: number; kind: "values" | "numbers" | "dates"; range: [number, number] | null }[]>([]);
   /** A counts tab: the tab and columns it counts (a line can show its

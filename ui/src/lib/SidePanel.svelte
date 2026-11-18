@@ -4,12 +4,13 @@
   // the engine in bounded passes; text is shown as text (no HTML).
   import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
-  import { backend, type Opened, type ReadOptions, type Rule } from "./backend";
+  import { backend, type DocInfo, type Opened, type ReadOptions, type Rule } from "./backend";
   import FilterPanel from "./FilterPanel.svelte";
+  import StepsPanel from "./StepsPanel.svelte";
   import type { Tab } from "./tab.svelte";
   import { TYPE_NAMES, fmt, type ColType, type ChartData, type ChartKind, type Listing, type Summary } from "./views";
 
-  export type PanelTab = "summary" | "chart" | "files" | "activity" | "filters";
+  export type PanelTab = "summary" | "chart" | "files" | "activity" | "filters" | "steps";
 
   interface Props {
     tab: Tab | undefined;
@@ -22,9 +23,17 @@
     onFilterValue: (col: number, value: string, cut: boolean) => void;
     /** The filter panel sets one column's rule (null: none). */
     onSetRule: (col: number, rule: Rule | null) => Promise<void>;
+    /** The steps panel's hooks (see StepsPanel). */
+    steps: {
+      onInfo: (info: DocInfo) => void;
+      run: (label: string, f: () => Promise<DocInfo>) => Promise<DocInfo | null>;
+      confirmLoss: (what: string) => Promise<boolean>;
+      onSave: () => void;
+      now: () => number;
+    };
     onClose: () => void;
   }
-  let { tab, which = $bindable(), titles, activity, read, onOpened, onFilterValue, onSetRule, onClose }: Props = $props();
+  let { tab, which = $bindable(), titles, activity, read, onOpened, onFilterValue, onSetRule, steps, onClose }: Props = $props();
 
   // ---- summary ----
   let summary = $state<Summary | null>(null);
@@ -199,7 +208,7 @@
 
 <aside class="panel" aria-label="Side panel">
   <div class="tabs" role="tablist">
-    {#each [["summary", "Summary"], ["filters", "Filters"], ["chart", "Chart"], ["files", "Files"], ["activity", "Activity"]] as [id, name] (id)}
+    {#each [["summary", "Summary"], ["filters", "Filters"], ["steps", "Steps"], ["chart", "Chart"], ["files", "Files"], ["activity", "Activity"]] as [id, name] (id)}
       <button type="button" role="tab" aria-selected={which === id} class:on={which === id} onclick={() => (which = id as PanelTab)}>{name}</button>
     {/each}
     <span class="spacer"></span>
@@ -208,6 +217,8 @@
   <div class="content">
     {#if !tab}
       <p class="note">Open a file to see its summary and charts.</p>
+    {:else if which === "steps"}
+      <StepsPanel {tab} {...steps} />
     {:else if which === "filters"}
       <FilterPanel {tab} {titles} {read} {onSetRule} />
     {:else if which === "summary"}
