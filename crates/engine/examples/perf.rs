@@ -1266,7 +1266,7 @@ fn main() {
         check.budget(
             "counts tab of an all-different column",
             t.elapsed(),
-            Duration::from_secs(8),
+            Duration::from_secs(6),
         );
         let t = Instant::now();
         big.column_profile(
