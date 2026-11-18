@@ -141,22 +141,25 @@ pub fn tidy_titles(titles: &[String], spec: &TitleSpec) -> Vec<String> {
     }
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let all: std::collections::HashSet<String> = out.iter().map(|t| t.to_lowercase()).collect();
+    // Per title, the number to try next (each repeat costs one step, even
+    // with thousands of the same title).
+    let mut next: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for t in out.iter_mut() {
         let key = t.to_lowercase();
         if seen.insert(key.clone()) {
             continue;
         }
         // The next number free among every title.
-        let mut n = 2;
+        let n = next.entry(key).or_insert(2);
         loop {
-            let cand = format!("{t}{sep}{n}");
+            let cand = format!("{t}{sep}{}", *n);
             let k = cand.to_lowercase();
+            *n += 1;
             if !all.contains(&k) && !seen.contains(&k) {
                 seen.insert(k);
                 *t = cand;
                 break;
             }
-            n += 1;
         }
     }
     out
@@ -229,6 +232,18 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(tidy_title(" a  b ", &keep), " a  b ");
+    }
+
+    #[test]
+    fn many_repeats_stay_quick() {
+        let titles = vec!["Phone".to_string(); 20_000];
+        let t = std::time::Instant::now();
+        let out = tidy_titles(&titles, &TitleSpec::default());
+        assert!(t.elapsed().as_millis() < 1_000);
+        assert_eq!(out[1], "Phone 2");
+        assert_eq!(out[19_999], "Phone 20000");
+        let set: std::collections::HashSet<&String> = out.iter().collect();
+        assert_eq!(set.len(), 20_000);
     }
 
     #[test]

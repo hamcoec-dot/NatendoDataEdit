@@ -15,7 +15,7 @@ use crate::value::{self, ReadOptions};
 use crate::Error;
 
 /// Most rows listed for marking.
-pub const MAX_COMPARE_ROWS: usize = 5_000_000;
+pub const MAX_COMPARE_ROWS: usize = 50_000;
 
 /// The two columns and how values are compared.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,6 +89,19 @@ fn norm(s: &str, spec: &CompareCols) -> String {
 }
 
 /// Compare two cells.
+/// Whether a number may be compared by value: not an ID or ZIP code with
+/// leading zeros (01234 is not 1234 here: a lost zero is what a comparison
+/// should catch), and not written with an exponent (1e3).
+fn plain_number(s: &str) -> bool {
+    let t = s.trim();
+    let digits = t.trim_start_matches(['-', '+', '$', '(']);
+    let zero_led = digits.len() > 1
+        && digits.starts_with('0')
+        && !digits[1..].starts_with(['.', ','])
+        && !digits.contains('.');
+    !zero_led && !t.contains(['e', 'E'])
+}
+
 pub fn compare_cells(a: &str, b: &str, spec: &CompareCols) -> Cmp {
     let blank = |s: &str| {
         if spec.spaces {
@@ -106,7 +119,7 @@ pub fn compare_cells(a: &str, b: &str, spec: &CompareCols) -> Cmp {
     if a == b {
         return Cmp::Same;
     }
-    if spec.numbers {
+    if spec.numbers && plain_number(a) && plain_number(b) {
         if let (Some(x), Some(y)) = (
             value::parse_number(a, spec.read),
             value::parse_number(b, spec.read),
@@ -307,6 +320,12 @@ mod tests {
         assert_eq!(compare_cells("x", "", &s), Cmp::OnlyFirst);
         assert_eq!(compare_cells(" ", "y", &s), Cmp::OnlySecond);
         assert_eq!(compare_cells("", "  ", &s), Cmp::Same);
+        // A lost leading zero, or an exponent, is a difference.
+        assert_eq!(compare_cells("01234", "1234", &s), Cmp::Different);
+        assert_eq!(compare_cells("000123", "123", &s), Cmp::Different);
+        assert_eq!(compare_cells("1e3", "1000", &s), Cmp::Different);
+        assert_eq!(compare_cells("0.50", "0.5", &s), Cmp::Same);
+        assert_eq!(compare_cells("0", "0.00", &s), Cmp::Same);
         let strict = CompareCols {
             case: true,
             spaces: true,

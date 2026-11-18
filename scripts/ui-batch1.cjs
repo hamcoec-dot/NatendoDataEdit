@@ -171,6 +171,14 @@ const url = process.argv[3] || "http://localhost:5196";
   ok((await cell(2, 0)) === "1002", "typing in a protected column changes nothing");
   ok(/is protected, so nothing in it changes/.test(await status()), "and says why");
   ok(!(await p.evaluate(() => document.activeElement?.classList.contains("editor"))), "the cell editor closes (it is not left open)");
+  // Deleting a protected column asks first; Keep leaves it.
+  await sel(1, 0);
+  await command("Delete columns");
+  const ask = p.locator("[role=alertdialog]:has-text('protected')");
+  ok(await ask.isVisible(), "deleting a protected column asks first");
+  await ask.locator("button:has-text('Keep')").click();
+  await wait(400);
+  ok((await cell(0, 0)) === "voter_id", "Keep leaves the column");
   await sel(1, 0);
   await command("Protect column");
   ok(!(await p.evaluate(() => window.__nde.tab.info.protected?.length)), "Protect again switches it off");

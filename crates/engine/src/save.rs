@@ -663,7 +663,7 @@ impl Document {
         let written = (|| -> Result<Counts, Error> {
             let mut bw = BufWriter::with_capacity(1 << 20, &file);
             let c = if gzip {
-                let mut gz = flate2::write::GzEncoder::new(&mut bw, flate2::Compression::default());
+                let mut gz = ParGz::new(&mut bw);
                 let mut cw = CountingWriter {
                     inner: &mut gz,
                     n: 0,
@@ -1099,6 +1099,76 @@ pub fn sweep_temps(dir: &Path, older_than: std::time::Duration) -> usize {
         }
     }
     n
+}
+
+/// Gzip in parallel: the output is cut into blocks of a few MB, each
+/// compressed on its own core (fast level) as a gzip member of its own and
+/// written in order. Every gzip reader reads such a file (members one after
+/// another make one stream); the app's own reader does too.
+struct ParGz<W: Write> {
+    out: W,
+    blocks: Vec<Vec<u8>>,
+    cur: Vec<u8>,
+}
+
+const GZ_BLOCK: usize = 4 << 20;
+
+impl<W: Write> ParGz<W> {
+    fn new(out: W) -> Self {
+        ParGz {
+            out,
+            blocks: Vec::new(),
+            cur: Vec::with_capacity(GZ_BLOCK),
+        }
+    }
+
+    /// Compress the full blocks held (in parallel) and write them in order.
+    fn drain(&mut self) -> std::io::Result<()> {
+        use rayon::prelude::*;
+        let packed: Vec<std::io::Result<Vec<u8>>> = std::mem::take(&mut self.blocks)
+            .into_par_iter()
+            .map(|b| {
+                let mut e = flate2::write::GzEncoder::new(
+                    Vec::with_capacity(b.len() / 3),
+                    flate2::Compression::fast(),
+                );
+                e.write_all(&b)?;
+                e.finish()
+            })
+            .collect();
+        for p in packed {
+            self.out.write_all(&p?)?;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> std::io::Result<()> {
+        if !self.cur.is_empty() || self.blocks.is_empty() {
+            let b = std::mem::take(&mut self.cur);
+            self.blocks.push(b);
+        }
+        self.drain()?;
+        self.out.flush()
+    }
+}
+
+impl<W: Write> Write for ParGz<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(GZ_BLOCK - self.cur.len());
+        self.cur.extend_from_slice(&buf[..n]);
+        if self.cur.len() >= GZ_BLOCK {
+            let full = std::mem::replace(&mut self.cur, Vec::with_capacity(GZ_BLOCK));
+            self.blocks.push(full);
+            if self.blocks.len() >= rayon::current_num_threads().max(1) * 2 {
+                self.drain()?;
+            }
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
