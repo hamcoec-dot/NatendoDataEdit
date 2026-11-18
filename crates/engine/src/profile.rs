@@ -118,8 +118,10 @@ struct Acc {
     shapes_over: bool,
     numbers: u64,
     dates: u64,
-    sum: f64,
-    sq: f64,
+    /// The numbers' running mean and sum of squared distances from it
+    /// (Welford's method: steady for big numbers that vary little).
+    mean: f64,
+    m2: f64,
     nmin: f64,
     nmax: f64,
     dmin: f64,
@@ -170,8 +172,9 @@ impl Acc {
         }
         if let Some(x) = parse_number(v, read) {
             self.numbers += 1;
-            self.sum += x;
-            self.sq += x * x;
+            let delta = x - self.mean;
+            self.mean += delta / self.numbers as f64;
+            self.m2 += delta * (x - self.mean);
             self.nmin = self.nmin.min(x);
             self.nmax = self.nmax.max(x);
             if self.sample.len() < SAMPLE_CHUNK {
@@ -198,12 +201,23 @@ impl Acc {
                 None => self.shapes_over = true,
             }
         }
+        // Two parts' means and spreads joined (Chan et al.).
+        if o.numbers > 0 {
+            if self.numbers == 0 {
+                self.mean = o.mean;
+                self.m2 = o.m2;
+            } else {
+                let (na, nb) = (self.numbers as f64, o.numbers as f64);
+                let n = na + nb;
+                let delta = o.mean - self.mean;
+                self.mean += delta * nb / n;
+                self.m2 += o.m2 + delta * delta * na * nb / n;
+            }
+        }
         self.numbers += o.numbers;
         self.dates += o.dates;
         let room = SAMPLE_ALL.saturating_sub(self.sample.len());
         self.sample.extend(o.sample.into_iter().take(room));
-        self.sum += o.sum;
-        self.sq += o.sq;
         self.nmin = self.nmin.min(o.nmin);
         self.nmax = self.nmax.max(o.nmax);
         self.dmin = self.dmin.min(o.dmin);
@@ -302,9 +316,8 @@ impl Document {
             (HistKind::Lengths, lo, hi)
         };
         let (mean, sd) = if acc.numbers > 1 {
-            let m = acc.sum / acc.numbers as f64;
-            let var = (acc.sq / acc.numbers as f64 - m * m).max(0.0);
-            (Some(m), Some(var.sqrt()))
+            let var = (acc.m2 / acc.numbers as f64).max(0.0);
+            (Some(acc.mean), Some(var.sqrt()))
         } else {
             (None, None)
         };
@@ -427,6 +440,31 @@ mod tests {
             Some("csv"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn spread_of_big_numbers_that_vary_little() {
+        // 13-digit numbers 1,000,000,000,000 to ...009, many times over,
+        // across chunks: the spread is about 2.87.
+        let mut csv = String::from("n\r\n");
+        for i in 0..200_000u64 {
+            csv.push_str(&format!("{}\r\n", 1_000_000_000_000u64 + i % 10));
+        }
+        let d = doc(&csv);
+        let p = d
+            .column_profile(
+                &ProfileSpec {
+                    col: 0,
+                    keep_first: true,
+                    ..Default::default()
+                },
+                &Progress::new(),
+            )
+            .unwrap();
+        let sd = p.sd.unwrap();
+        assert!((sd - 2.8723).abs() < 1e-3, "{sd}");
+        assert!((p.mean.unwrap() - 1_000_000_000_004.5).abs() < 1e-3);
+        assert_eq!(p.outliers, 0);
     }
 
     #[test]

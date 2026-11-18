@@ -736,17 +736,6 @@ pub struct Facets {
     pub shown: u64,
 }
 
-/// One card's running counts.
-#[derive(Default)]
-struct FacetAcc {
-    map: HashMap<String, u64>,
-    over: bool,
-    bins: Vec<u64>,
-    other: u64,
-    blanks: u64,
-    rows: u64,
-}
-
 impl Document {
     /// Cards for numbers or dates without a range get the column's smallest
     /// and largest over every data row (one parallel pass for all of them).
@@ -815,20 +804,6 @@ impl Document {
     }
 }
 
-fn facet_accs(cards: &[FacetCard]) -> Vec<FacetAcc> {
-    cards
-        .iter()
-        .map(|c| FacetAcc {
-            bins: if c.kind == FacetKind::Values {
-                Vec::new()
-            } else {
-                vec![0; FACET_BINS]
-            },
-            ..Default::default()
-        })
-        .collect()
-}
-
 impl Document {
     /// Counts for every card of the filter panel in one pass over the rows
     /// (in parallel): a row counts for a card when it passes every rule, or
@@ -839,17 +814,224 @@ impl Document {
         spec: &FilterSpec,
         progress: &Progress,
     ) -> Result<Facets, Error> {
+        self.facet_counts_cached(&mut FacetCache::new(), cards, spec, progress)
+    }
+}
+
+// ---- the filter panel's quick recount ----
+
+/// Different values a column may hold for its codes to be kept (more, and
+/// the column is read again on each count, as an ID column would be).
+pub const FACET_CODE_VALUES: usize = 1 << 16;
+
+/// A column's values as numbers: the value number at each document
+/// position (the title row is [`NO_CODE`]).
+struct ColCodes {
+    codes: Vec<u32>,
+    values: Vec<String>,
+}
+
+const NO_CODE: u32 = u32::MAX;
+
+/// What the filter panel has worked out about a table's columns, kept
+/// between counts while the table is unchanged: each column's values as
+/// codes, so a recount after a click is whole-number work over arrays
+/// instead of reading the file again.
+#[derive(Default)]
+pub struct FacetCache {
+    key: Option<(u64, bool)>,
+    /// By physical column; `None`: too many different values.
+    cols: HashMap<u32, Option<std::sync::Arc<ColCodes>>>,
+}
+
+impl FacetCache {
+    pub fn new() -> FacetCache {
+        FacetCache::default()
+    }
+}
+
+/// One card's running counts (by value number when its column has codes).
+#[derive(Clone, Default)]
+struct CardAcc {
+    by_value: Vec<u32>,
+    map: HashMap<String, u64>,
+    over: bool,
+    bins: Vec<u64>,
+    other: u64,
+    blanks: u64,
+    rows: u64,
+}
+
+impl CardAcc {
+    fn merge(mut self, b: CardAcc) -> CardAcc {
+        if self.by_value.len() < b.by_value.len() {
+            self.by_value.resize(b.by_value.len(), 0);
+        }
+        self.by_value
+            .iter_mut()
+            .zip(&b.by_value)
+            .for_each(|(x, y)| *x += y);
+        if self.bins.len() < b.bins.len() {
+            self.bins.resize(b.bins.len(), 0);
+        }
+        self.bins.iter_mut().zip(&b.bins).for_each(|(x, y)| *x += y);
+        self.other += b.other;
+        self.blanks += b.blanks;
+        self.rows += b.rows;
+        self.over |= b.over;
+        for (k, n) in b.map {
+            if let Some(x) = self.map.get_mut(&k) {
+                *x += n;
+            } else if self.map.len() < MAX_LIST_VALUES {
+                self.map.insert(k, n);
+            } else {
+                self.over = true;
+            }
+        }
+        self
+    }
+}
+
+/// What one value of a card's column comes to.
+#[derive(Clone, Copy)]
+enum Lands {
+    Blank,
+    /// Left out by the card's search.
+    Hidden,
+    Value,
+    Bin(usize),
+    Other,
+}
+
+impl Document {
+    /// Column `phys`'s values as codes over every data row (in parallel);
+    /// `None` when it has more than [`FACET_CODE_VALUES`] different values.
+    fn col_codes(
+        &self,
+        phys: u32,
+        keep_first: bool,
+        progress: &Progress,
+    ) -> Result<Option<ColCodes>, Error> {
+        let total = self.total_rows() as usize;
+        let first = usize::from(keep_first && total > 0);
+        let chunks = total.div_ceil(CHUNK);
+        let want = [phys];
+        // A quick look first: a column whose sample (start, middle and end)
+        // already holds half the values allowed is ID-like; reading all of
+        // it would be wasted.
+        {
+            let n = total - first;
+            let part = 33_000.min(n);
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut buf = Vec::new();
+            for start in [first, first + n / 2 - part.min(n / 2) / 2, total - part] {
+                for pos in start..(start + part).min(total) {
+                    let id = self.doc_id_at(pos as u64).ok_or(Error::OutOfRange)?;
+                    self.read_cells(id, &want, &mut buf);
+                    if !seen.contains(buf[0].as_ref()) {
+                        seen.insert(buf[0].to_string());
+                    }
+                }
+                if seen.len() > FACET_CODE_VALUES / 2 {
+                    return Ok(None);
+                }
+            }
+        }
+        type Part = Option<(Vec<String>, Vec<u32>)>;
+        let parts: Vec<Part> = (0..chunks)
+            .into_par_iter()
+            .map(|c| -> Result<Part, Error> {
+                let s = c * CHUNK;
+                let e = (s + CHUNK).min(total);
+                let mut map: HashMap<String, u32> = HashMap::new();
+                let mut values: Vec<String> = Vec::new();
+                let mut codes = Vec::with_capacity(e - s);
+                let mut buf = Vec::new();
+                for pos in s..e {
+                    if pos < first {
+                        codes.push(NO_CODE);
+                        continue;
+                    }
+                    let id = self.doc_id_at(pos as u64).ok_or(Error::OutOfRange)?;
+                    self.read_cells(id, &want, &mut buf);
+                    let v: &str = &buf[0];
+                    let code = match map.get(v) {
+                        Some(&k) => k,
+                        None => {
+                            if values.len() >= FACET_CODE_VALUES {
+                                progress.step((e - s) as u64)?;
+                                return Ok(None);
+                            }
+                            let k = values.len() as u32;
+                            values.push(v.to_string());
+                            map.insert(v.to_string(), k);
+                            k
+                        }
+                    };
+                    codes.push(code);
+                }
+                progress.step((e - s) as u64)?;
+                Ok(Some((values, codes)))
+            })
+            .collect::<Result<_, _>>()?;
+        let mut index: HashMap<String, u32> = HashMap::new();
+        let mut values: Vec<String> = Vec::new();
+        let mut codes = Vec::with_capacity(total);
+        for part in parts {
+            let Some((vals, part_codes)) = part else {
+                return Ok(None);
+            };
+            let mut remap = Vec::with_capacity(vals.len());
+            for v in vals {
+                let k = match index.get(&v) {
+                    Some(&k) => k,
+                    None => {
+                        if values.len() >= FACET_CODE_VALUES {
+                            return Ok(None);
+                        }
+                        let k = values.len() as u32;
+                        index.insert(v.clone(), k);
+                        values.push(v);
+                        k
+                    }
+                };
+                remap.push(k);
+            }
+            codes.extend(part_codes.into_iter().map(|c| {
+                if c == NO_CODE {
+                    NO_CODE
+                } else {
+                    remap[c as usize]
+                }
+            }));
+        }
+        Ok(Some(ColCodes { codes, values }))
+    }
+
+    /// The filter panel's counts, as [`Document::facet_counts`], using and
+    /// filling `cache`: the first count of a column reads it once; later
+    /// counts (each click) work from its codes.
+    pub fn facet_counts_cached(
+        &self,
+        cache: &mut FacetCache,
+        cards: &[FacetCard],
+        spec: &FilterSpec,
+        progress: &Progress,
+    ) -> Result<Facets, Error> {
         self.ready_for_bulk()?;
         if cards.len() > 32 {
             return Err(Error::Invalid(
                 "a filter panel holds at most 32 cards".into(),
             ));
         }
-        let cards = &self.facet_ranges(cards, spec.keep_first, spec.read)?;
-        let spec = self.to_physical_spec(spec)?;
-        let compiled = Compiled::new(&spec.columns, spec.read)?;
+        let key = (self.data_revision(), spec.keep_first);
+        if cache.key != Some(key) {
+            cache.cols.clear();
+            cache.key = Some(key);
+        }
         let read = spec.read;
-        // Each card's physical column (None: past the map, all blank).
+        let pspec = self.to_physical_spec(spec)?;
+        let compiled = Compiled::new(&pspec.columns, read)?;
         let card_phys: Vec<Option<u32>> = cards
             .iter()
             .map(|c| {
@@ -858,39 +1040,57 @@ impl Document {
                     .flatten()
             })
             .collect();
-        let mut wanted = compiled.wanted.clone();
-        for p in card_phys.iter().flatten() {
-            if let Err(i) = wanted.binary_search(p) {
-                wanted.insert(i, *p);
-            }
-        }
-        let remap: Vec<usize> = compiled
-            .wanted
+        // Columns read: every rule's and every card's.
+        let mut needed: Vec<u32> = compiled.wanted.clone();
+        needed.extend(card_phys.iter().flatten());
+        needed.sort_unstable();
+        needed.dedup();
+        let missing: Vec<u32> = needed
             .iter()
-            .map(|p| wanted.binary_search(p).expect("listed"))
-            .collect();
-        let rule_col: Vec<u32> = compiled
-            .tests
-            .iter()
-            .map(|(slot, _)| compiled.wanted[*slot])
-            .collect();
-        let card_slot: Vec<Option<usize>> = card_phys
-            .iter()
-            .map(|p| p.map(|p| wanted.binary_search(&p).expect("listed")))
-            .collect();
-        let needles: Vec<Option<String>> = cards
-            .iter()
-            .map(|c| {
-                c.search
-                    .as_deref()
-                    .map(str::to_lowercase)
-                    .filter(|s| !s.is_empty())
-            })
+            .copied()
+            .filter(|p| !cache.cols.contains_key(p))
             .collect();
         let total = self.total_rows();
-        progress.start(total);
-        let first = usize::from(spec.keep_first && total > 0);
-        let chunks = (total as usize).div_ceil(CHUNK);
+        progress.start(total * (missing.len() as u64 + 1));
+        for p in missing {
+            let c = self.col_codes(p, spec.keep_first, progress)?;
+            cache.cols.insert(p, c.map(std::sync::Arc::new));
+        }
+        let codes_of = |p: u32| cache.cols.get(&p).and_then(|c| c.clone());
+        // Ranges for numbers and dates cards without one: from the codes'
+        // values when the column has them, else one pass as before.
+        let mut cards = cards.to_vec();
+        let mut slow_range = Vec::new();
+        for (k, c) in cards.iter_mut().enumerate() {
+            if c.kind == FacetKind::Values || c.range.is_some() {
+                continue;
+            }
+            match card_phys[k].and_then(codes_of) {
+                Some(cc) => {
+                    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                    for v in &cc.values {
+                        let x = if c.kind == FacetKind::Numbers {
+                            value::parse_number(v, read)
+                        } else {
+                            value::parse_date(v, read).map(f64::floor)
+                        };
+                        if let Some(x) = x {
+                            lo = lo.min(x);
+                            hi = hi.max(x);
+                        }
+                    }
+                    c.range = (lo <= hi).then_some((lo, hi));
+                }
+                None => slow_range.push(k),
+            }
+        }
+        if !slow_range.is_empty() {
+            let some: Vec<FacetCard> = slow_range.iter().map(|&k| cards[k].clone()).collect();
+            let got = self.facet_ranges(&some, spec.keep_first, read)?;
+            for (&k, c) in slow_range.iter().zip(got) {
+                cards[k].range = c.range;
+            }
+        }
         let bin_of = |c: &FacetCard, x: f64| -> Option<usize> {
             let (lo, hi) = c.range?;
             if !(x >= lo && x <= hi) {
@@ -902,113 +1102,232 @@ impl Document {
                 0
             })
         };
-        let parts: Vec<(Vec<FacetAcc>, u64)> = (0..chunks)
-            .into_par_iter()
-            .map(|c| -> Result<(Vec<FacetAcc>, u64), Error> {
-                let s = c * CHUNK;
-                let e = (s + CHUNK).min(total as usize);
-                let mut acc = facet_accs(cards);
-                let mut shown = 0u64;
-                let mut buf = Vec::new();
-                for pos in s.max(first)..e {
-                    let id = self.doc_id_at(pos as u64).expect("in range");
-                    self.read_cells(id, &wanted, &mut buf);
-                    // The rules this row fails: none, one (on which column),
-                    // or more.
-                    let mut fails = 0u32;
-                    let mut failed_col = u32::MAX;
-                    for (k, (slot, t)) in compiled.tests.iter().enumerate() {
-                        if !t.test(&buf[remap[*slot]], compiled.read) {
-                            fails += 1;
-                            failed_col = rule_col[k];
-                            if fails > 1 {
-                                break;
-                            }
-                        }
-                    }
-                    if fails == 0 {
-                        shown += 1;
-                    }
-                    if fails > 1 {
-                        continue;
-                    }
-                    for (k, card) in cards.iter().enumerate() {
-                        if fails == 1 && card_phys[k] != Some(failed_col) {
-                            continue;
-                        }
-                        let a = &mut acc[k];
-                        a.rows += 1;
-                        let v: &str = card_slot[k].map_or("", |sl| buf[sl].as_ref());
-                        if v.trim().is_empty() {
-                            a.blanks += 1;
-                            continue;
-                        }
-                        match card.kind {
-                            FacetKind::Values => {
-                                if let Some(n) = &needles[k] {
-                                    if !v.to_lowercase().contains(n.as_str()) {
-                                        continue;
-                                    }
-                                }
-                                if let Some(n) = a.map.get_mut(v) {
-                                    *n += 1;
-                                } else if a.map.len() < MAX_LIST_VALUES
-                                    && v.len() <= MAX_LIST_VALUE_BYTES
-                                {
-                                    a.map.insert(v.to_string(), 1);
-                                } else {
-                                    a.over = true;
-                                }
-                            }
-                            FacetKind::Numbers | FacetKind::Dates => {
-                                let x = if card.kind == FacetKind::Numbers {
-                                    value::parse_number(v, read)
-                                } else {
-                                    value::parse_date(v, read).map(f64::floor)
-                                };
-                                match x.and_then(|x| bin_of(card, x)) {
-                                    Some(b) => a.bins[b] += 1,
-                                    None => a.other += 1,
-                                }
-                            }
-                        }
-                    }
-                }
-                progress.step((e - s) as u64)?;
-                Ok((acc, shown))
+        let needles: Vec<Option<String>> = cards
+            .iter()
+            .map(|c| {
+                c.search
+                    .as_deref()
+                    .map(str::to_lowercase)
+                    .filter(|s| !s.is_empty())
             })
-            .collect::<Result<_, _>>()?;
-        let mut all = facet_accs(cards);
-        let mut shown = 0;
-        for (accs, n) in parts {
-            shown += n;
-            for (a, b) in all.iter_mut().zip(accs) {
-                a.rows += b.rows;
-                a.blanks += b.blanks;
-                a.other += b.other;
-                a.over |= b.over;
-                a.bins.iter_mut().zip(b.bins).for_each(|(x, y)| *x += y);
-                for (k, n) in b.map {
-                    if let Some(x) = a.map.get_mut(&k) {
-                        *x += n;
-                    } else if a.map.len() < MAX_LIST_VALUES {
-                        a.map.insert(k, n);
+            .collect();
+        let lands = |k: usize, v: &str| -> Lands {
+            if v.trim().is_empty() {
+                return Lands::Blank;
+            }
+            let card = &cards[k];
+            match card.kind {
+                FacetKind::Values => match &needles[k] {
+                    Some(n) if !v.to_lowercase().contains(n.as_str()) => Lands::Hidden,
+                    _ => Lands::Value,
+                },
+                FacetKind::Numbers | FacetKind::Dates => {
+                    let x = if card.kind == FacetKind::Numbers {
+                        value::parse_number(v, read)
                     } else {
-                        a.over = true;
+                        value::parse_date(v, read).map(f64::floor)
+                    };
+                    match x.and_then(|x| bin_of(card, x)) {
+                        Some(b) => Lands::Bin(b),
+                        None => Lands::Other,
                     }
                 }
             }
+        };
+        // Each rule: its column, and with codes, whether each value passes.
+        struct RuleAt {
+            phys: u32,
+            slot: usize,
+            pass: Option<Vec<bool>>,
+            codes: Option<std::sync::Arc<ColCodes>>,
         }
+        let rules: Vec<RuleAt> = compiled
+            .tests
+            .iter()
+            .map(|(slot, t)| {
+                let phys = compiled.wanted[*slot];
+                let codes = codes_of(phys);
+                let pass = codes
+                    .as_ref()
+                    .map(|cc| cc.values.iter().map(|v| t.test(v, read)).collect());
+                RuleAt {
+                    phys,
+                    slot: *slot,
+                    pass,
+                    codes,
+                }
+            })
+            .collect();
+        // Each card: with codes, where each value lands.
+        let card_codes: Vec<Option<std::sync::Arc<ColCodes>>> =
+            card_phys.iter().map(|p| p.and_then(codes_of)).collect();
+        let card_lands: Vec<Option<Vec<Lands>>> = card_codes
+            .iter()
+            .enumerate()
+            .map(|(k, cc)| {
+                cc.as_ref()
+                    .map(|cc| cc.values.iter().map(|v| lands(k, v)).collect())
+            })
+            .collect();
+        // Columns read from the file on each count (no codes).
+        let mut slow_cols: Vec<u32> = rules
+            .iter()
+            .filter(|r| r.codes.is_none())
+            .map(|r| r.phys)
+            .chain(
+                card_phys
+                    .iter()
+                    .zip(&card_codes)
+                    .filter(|(_, c)| c.is_none())
+                    .filter_map(|(p, _)| *p),
+            )
+            .collect();
+        slow_cols.sort_unstable();
+        slow_cols.dedup();
+        let slow_slot = |p: u32| slow_cols.binary_search(&p).ok();
+        let first = usize::from(spec.keep_first && total > 0);
+        let blank_acc = || -> Vec<CardAcc> {
+            cards
+                .iter()
+                .zip(&card_codes)
+                .map(|(c, cc)| CardAcc {
+                    by_value: match (c.kind, cc) {
+                        (FacetKind::Values, Some(cc)) => vec![0; cc.values.len()],
+                        _ => Vec::new(),
+                    },
+                    bins: if c.kind == FacetKind::Values {
+                        Vec::new()
+                    } else {
+                        vec![0; FACET_BINS]
+                    },
+                    ..Default::default()
+                })
+                .collect()
+        };
+        let chunks = (total as usize).div_ceil(CHUNK);
+        let (accs, shown) = (0..chunks)
+            .into_par_iter()
+            .try_fold(
+                || (blank_acc(), 0u64),
+                |(mut acc, mut shown), c| -> Result<(Vec<CardAcc>, u64), Error> {
+                    let s = c * CHUNK;
+                    let e = (s + CHUNK).min(total as usize);
+                    let mut buf: Vec<Cow<'_, str>> = Vec::new();
+                    for pos in s.max(first)..e {
+                        if !slow_cols.is_empty() {
+                            let id = self.doc_id_at(pos as u64).ok_or(Error::OutOfRange)?;
+                            self.read_cells(id, &slow_cols, &mut buf);
+                        }
+                        let mut fails = 0u32;
+                        let mut failed_col = u32::MAX;
+                        for (k, r) in rules.iter().enumerate() {
+                            let ok = match (&r.pass, &r.codes) {
+                                (Some(pass), Some(cc)) => {
+                                    let code = cc.codes[pos];
+                                    code != NO_CODE && pass[code as usize]
+                                }
+                                _ => {
+                                    let sl = slow_slot(r.phys).expect("listed");
+                                    compiled.tests[k].1.test(&buf[sl], read)
+                                }
+                            };
+                            let _ = r.slot;
+                            if !ok {
+                                fails += 1;
+                                failed_col = r.phys;
+                                if fails > 1 {
+                                    break;
+                                }
+                            }
+                        }
+                        if fails == 0 {
+                            shown += 1;
+                        }
+                        if fails > 1 {
+                            continue;
+                        }
+                        for (k, a) in acc.iter_mut().enumerate() {
+                            if fails == 1 && card_phys[k] != Some(failed_col) {
+                                continue;
+                            }
+                            a.rows += 1;
+                            match (&card_codes[k], &card_lands[k]) {
+                                (Some(cc), Some(lands)) => {
+                                    let code = cc.codes[pos];
+                                    if code == NO_CODE {
+                                        a.blanks += 1;
+                                        continue;
+                                    }
+                                    match lands[code as usize] {
+                                        Lands::Blank => a.blanks += 1,
+                                        Lands::Hidden => {}
+                                        Lands::Value => a.by_value[code as usize] += 1,
+                                        Lands::Bin(b) => a.bins[b] += 1,
+                                        Lands::Other => a.other += 1,
+                                    }
+                                }
+                                _ => {
+                                    let v: &str = match card_phys[k] {
+                                        Some(p) => &buf[slow_slot(p).expect("listed")],
+                                        None => "",
+                                    };
+                                    match lands(k, v) {
+                                        Lands::Blank => a.blanks += 1,
+                                        Lands::Hidden => {}
+                                        Lands::Value => {
+                                            if let Some(n) = a.map.get_mut(v) {
+                                                *n += 1;
+                                            } else if a.map.len() < MAX_LIST_VALUES
+                                                && v.len() <= MAX_LIST_VALUE_BYTES
+                                            {
+                                                a.map.insert(v.to_string(), 1);
+                                            } else {
+                                                a.over = true;
+                                            }
+                                        }
+                                        Lands::Bin(b) => a.bins[b] += 1,
+                                        Lands::Other => a.other += 1,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    progress.step((e - s) as u64)?;
+                    Ok((acc, shown))
+                },
+            )
+            .try_reduce(
+                || (blank_acc(), 0u64),
+                |(a, n), (b, m)| {
+                    Ok((
+                        a.into_iter().zip(b).map(|(x, y)| x.merge(y)).collect(),
+                        n + m,
+                    ))
+                },
+            )?;
         let cards = cards
             .iter()
-            .zip(all)
-            .map(|(c, a)| {
-                let distinct = a.map.len() as u64;
-                let mut values: Vec<ValueCount> = a
-                    .map
-                    .into_iter()
-                    .map(|(value, count)| ValueCount { value, count })
-                    .collect();
+            .zip(accs)
+            .zip(&card_codes)
+            .map(|((c, a), cc)| {
+                let mut values: Vec<ValueCount> = match cc {
+                    Some(cc) if c.kind == FacetKind::Values => a
+                        .by_value
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, &n)| n > 0)
+                        .map(|(i, &n)| ValueCount {
+                            value: cc.values[i].clone(),
+                            count: u64::from(n),
+                        })
+                        .collect(),
+                    _ => a
+                        .map
+                        .into_iter()
+                        .map(|(value, count)| ValueCount { value, count })
+                        .collect(),
+                };
+                let distinct = values.len() as u64;
                 values.sort_unstable_by(|x, y| {
                     y.count
                         .cmp(&x.count)
@@ -1558,6 +1877,90 @@ mod tests {
             .unwrap();
         assert_eq!(f.cards[0].values.len(), 1);
         assert_eq!(f.shown, 5);
+    }
+
+    #[test]
+    fn facet_cache_recounts_from_codes() {
+        // An ID column with more different values than codes are kept for
+        // (it is read each time), beside coded columns.
+        let n = FACET_CODE_VALUES + 500;
+        let mut csv = String::from("id,party,age\r\n");
+        for i in 0..n {
+            csv.push_str(&format!(
+                "{i},{},{}\r\n",
+                ["D", "R", "I"][i % 3],
+                20 + i % 50
+            ));
+        }
+        let d = Document::from_bytes(csv.into_bytes(), crate::OpenOptions::default(), Some("csv"))
+            .unwrap();
+        let cards = vec![
+            FacetCard {
+                col: 0,
+                ..Default::default()
+            },
+            FacetCard {
+                col: 1,
+                ..Default::default()
+            },
+            FacetCard {
+                col: 2,
+                kind: FacetKind::Numbers,
+                ..Default::default()
+            },
+        ];
+        let mut cache = FacetCache::new();
+        let all = FilterSpec {
+            keep_first: true,
+            ..Default::default()
+        };
+        let f = d
+            .facet_counts_cached(&mut cache, &cards, &all, &Progress::new())
+            .unwrap();
+        assert!(
+            cache.cols.get(&0).is_some_and(Option::is_none),
+            "the ID column has no codes"
+        );
+        assert!(cache.cols.get(&1).is_some_and(Option::is_some));
+        assert_eq!(f.shown as usize, n);
+        assert_eq!(f.cards[0].distinct as usize, MAX_LIST_VALUES);
+        assert!(!f.cards[0].complete);
+        assert_eq!(f.cards[1].values[0].count as usize, n.div_ceil(3));
+        assert_eq!(f.cards[2].range, Some((20.0, 69.0)));
+        // A click (party R): counted again from the codes, the same as a
+        // fresh count.
+        let spec = rule(
+            1,
+            Rule::Values {
+                values: vec!["R".into()],
+                blanks: false,
+            },
+        );
+        let again = d
+            .facet_counts_cached(&mut cache, &cards, &spec, &Progress::new())
+            .unwrap();
+        let fresh = d.facet_counts(&cards, &spec, &Progress::new()).unwrap();
+        assert_eq!(again, fresh);
+        assert_eq!(again.shown as usize, n / 3);
+        assert_eq!(
+            again.cards[1].values.len(),
+            3,
+            "the party card keeps every party"
+        );
+        assert_eq!(again.cards[2].bins.iter().sum::<u64>() as usize, n / 3);
+        // A rule on the ID column (no codes) works too.
+        let spec = rule(
+            0,
+            cond(Condition::Number {
+                op: CmpOp::Lt,
+                value: 30.0,
+            }),
+        );
+        let f = d
+            .facet_counts_cached(&mut cache, &cards, &spec, &Progress::new())
+            .unwrap();
+        assert_eq!(f.shown, 30);
+        assert_eq!(f.cards[1].values.iter().map(|v| v.count).sum::<u64>(), 30);
     }
 
     #[test]

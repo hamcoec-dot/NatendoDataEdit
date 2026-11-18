@@ -25,8 +25,10 @@
   let tos = $state<Record<number, string>>({});
 
   // Count again whenever the cards, the filter or the data change (a newer
-  // count cancels an older one in the engine).
+  // count cancels an older one in the engine, and so does an edit). After
+  // an edit alone the count waits a second, so typing never waits for it.
   let seq = 0;
+  let lastAsk = "";
   $effect(() => {
     const t = tab;
     void t.version;
@@ -36,6 +38,9 @@
       facets = null;
       return;
     }
+    const ask = JSON.stringify([t.id, cards, spec]);
+    const editOnly = ask === lastAsk;
+    lastAsk = ask;
     const mine = ++seq;
     const timer = setTimeout(() => {
       backend()
@@ -51,9 +56,10 @@
           });
         })
         .catch((e: unknown) => {
-          if (mine === seq && !/still working/.test(errorText(e))) problem = errorText(e);
+          const kind = (e as { kind?: string }).kind;
+          if (mine === seq && kind !== "cancelled" && !/still working/.test(errorText(e))) problem = errorText(e);
         });
-    }, 120);
+    }, editOnly ? 1000 : 120);
     return () => clearTimeout(timer);
   });
 
@@ -114,6 +120,9 @@
       {#each titles as t, i (i)}{#if !tab.facetCards.some((c) => c.col === i)}<option value={String(i)}>{t || `Column ${i + 1}`}</option>{/if}{/each}
     </select>
   </label>
+  {#if tab.info.filtered && !(tab.info.filter_cols?.length)}
+    <p class="note formula" role="status">Rows are picked by a formula (Filter by formula, or Show these rows) that the panel does not count; a pick here replaces it.</p>
+  {/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#each tab.facetCards as card (card.col)}
     {@const f = facetOf(card.col)}

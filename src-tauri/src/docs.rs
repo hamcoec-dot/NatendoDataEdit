@@ -414,6 +414,8 @@ pub struct Entry {
     encrypted_from: Mutex<Option<PathBuf>>,
     /// The steps done, for a recipe (see `Docs::recorded`).
     recipe: Mutex<RecipeLog>,
+    /// The filter panel's column codes (see `FacetCache`).
+    facets: Mutex<natendo_engine::filter::FacetCache>,
     /// The other list of the last "match people" run (for accepting).
     matched: Mutex<Option<MatchKept>>,
     /// The last comparison with a newer file (for accepting).
@@ -1330,6 +1332,7 @@ impl Docs {
             private_origin: AtomicBool::new(false),
             encrypted_from: Mutex::new(None),
             recipe: Mutex::new(RecipeLog::default()),
+            facets: Mutex::new(natendo_engine::filter::FacetCache::new()),
             matched: Mutex::new(None),
             updates: Mutex::new(None),
             notes: Mutex::new(None),
@@ -4798,7 +4801,8 @@ impl Docs {
         let entry = self.get(id)?;
         let job = self.start_replacing(&entry, FACET_JOB)?;
         let d = entry.read();
-        Ok(d.facet_counts(cards, spec, &job.progress)?)
+        let mut cache = entry.facets.lock().unwrap_or_else(|p| p.into_inner());
+        Ok(d.facet_counts_cached(&mut cache, cards, spec, &job.progress)?)
     }
 
     /// The cube for `spec` (read again only when the file or the fields
@@ -5488,6 +5492,13 @@ impl Docs {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
+        // A filter-panel count still running gives way to the edit (the
+        // panel counts again after it).
+        if let Some(j) = entry.jobs().as_ref() {
+            if j.label == FACET_JOB {
+                j.progress.cancel.store(true, Ordering::Relaxed);
+            }
+        }
         let mut d = entry.write();
         f(&mut d)?;
         entry.note_path(&d);

@@ -60,7 +60,7 @@ export function binExpr(ref: string, h: Histogram, i: number): string {
  *  deviations from the mean). */
 export function outlierExpr(ref: string, p: Profile): string | null {
   if (p.mean === null || p.sd === null || p.sd <= 0) return null;
-  return `ABS(VALUE(${ref}) - ${p.mean}) > ${4 * p.sd}`;
+  return `ABS(VALUE(${ref}) - (${p.mean})) > ${4 * p.sd}`;
 }
 
 /** The browser stub's profile of a list of cells. */
