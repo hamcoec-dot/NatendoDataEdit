@@ -2028,6 +2028,12 @@ async fn set_cells(
 }
 
 #[tauri::command]
+async fn hidden_between(docs: DocsState<'_>, doc: u32, row: u64, rows: u64) -> CmdResult<u64> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.hidden_between(doc, row, rows)).await
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn fill_cells(
     docs: DocsState<'_>,
@@ -3025,6 +3031,7 @@ pub fn run() {
             cell_text,
             set_cells,
             fill_cells,
+            hidden_between,
             move_cells,
             copy_cells,
             change,

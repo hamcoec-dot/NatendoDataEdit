@@ -863,6 +863,8 @@ export interface Backend {
   setCells(doc: number, cells: [number, number, string][]): Promise<DocInfo>;
   /** `skip`: columns left as they are (hidden ones). */
   fillCells(doc: number, row: number, rows: number, col: number, cols: number, value: string, skip?: number[]): Promise<DocInfo>;
+  /** Rows hidden between shown rows `row` and `row + rows - 1`. */
+  hiddenBetween(doc: number, row: number, rows: number): Promise<number>;
   /** `skip`: columns left out (hidden ones). */
   copyCells(doc: number, row: number, rows: number, col: number, cols: number, skip?: number[]): Promise<string>;
   /** Move (or with `copy`, copy) a block of cells so its top-left lands on (toRow, toCol), one undo step. */
@@ -1203,6 +1205,9 @@ class TauriBackend implements Backend {
   }
   fillCells(doc: number, row: number, rows: number, col: number, cols: number, value: string, skip?: number[]) {
     return call<DocInfo>("fill_cells", { doc, row, rows, col, cols, value, skip: skip ?? null });
+  }
+  hiddenBetween(doc: number, row: number, rows: number) {
+    return call<number>("hidden_between", { doc, row, rows });
   }
   copyCells(doc: number, row: number, rows: number, col: number, cols: number, skip?: number[]) {
     return call<string>("copy_cells", { doc, row, rows, col, cols, skip: skip ?? null });
