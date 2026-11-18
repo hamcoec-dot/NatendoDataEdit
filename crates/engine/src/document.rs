@@ -402,6 +402,9 @@ pub struct Document {
     /// Bumped by every change, so a long operation computed under a read
     /// lock can tell whether the document changed before it applies.
     revision: u64,
+    /// Like `revision`, but not moved by filters or hidden rows (what
+    /// the rows hold and their order).
+    data_revision: u64,
     undo_bytes: usize,
     redo_bytes: usize,
     /// Memory budget for the history (MAX_UNDO_BYTES; smaller in tests).
@@ -550,6 +553,7 @@ impl Document {
             map_identity: AtomicU8::new(0),
             view: None,
             revision: 0,
+            data_revision: 0,
             undo_bytes: 0,
             redo_bytes: 0,
             undo_budget: MAX_UNDO_BYTES,
@@ -635,6 +639,7 @@ impl Document {
         }
         let done = self.index.step(self.source.bytes(), budget)?;
         self.revision += 1;
+        self.data_revision += 1;
         if done {
             self.next_id = self.index.rows() as u32;
             if let Some(lb) = self.index.stats().dominant_line_break() {
@@ -910,6 +915,12 @@ impl Document {
     /// Changes whenever the document changes (edits, undo, filters, saves).
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Changes when what the rows hold or their order changes (not with
+    /// filters or hidden rows).
+    pub fn data_revision(&self) -> u64 {
+        self.data_revision
     }
 
     pub(crate) fn view(&self) -> Option<&View> {
@@ -2013,6 +2024,9 @@ impl Document {
         // Any change can change whether the column map is the identity.
         self.map_identity.store(0, Ordering::Relaxed);
         self.revision += 1;
+        if !op.view_only() {
+            self.data_revision += 1;
+        }
         match op {
             Op::SetMap(m) => Op::SetMap(std::mem::replace(&mut self.cols, m)),
             Op::SetOrder(o) => {
@@ -2175,6 +2189,7 @@ impl Document {
             (v.filters(), spec, passing, hidden)
         });
         self.revision += 1;
+        self.data_revision += 1;
         self.source = source;
         self.data_start = start.data;
         self.preamble_len = start.preamble_len;

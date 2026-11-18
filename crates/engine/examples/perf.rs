@@ -1291,6 +1291,56 @@ fn main() {
             t.elapsed(),
             Duration::from_secs(3),
         );
+        // A few cards, then each click counts again from the cached codes.
+        let card = |col: u32, kind: FacetKind| FacetCard {
+            col,
+            kind,
+            range: None,
+            search: None,
+        };
+        let four = vec![
+            card(4, FacetKind::Values),
+            card(5, FacetKind::Dates),
+            card(6, FacetKind::Values),
+            card(3, FacetKind::Values),
+        ];
+        let mut eight = four.clone();
+        eight.extend([
+            card(1, FacetKind::Values),
+            card(2, FacetKind::Numbers),
+            card(7, FacetKind::Values),
+            card(8, FacetKind::Values),
+        ]);
+        let click = FilterSpec {
+            keep_first: true,
+            columns: vec![natendo_engine::filter::ColumnFilter {
+                col: 4,
+                rule: Rule::Values {
+                    values: vec!["City 7".into(), "City 8".into()],
+                    blanks: false,
+                },
+            }],
+            ..Default::default()
+        };
+        for (name, cards) in [("4", &four), ("8", &eight)] {
+            let mut cache = natendo_engine::filter::FacetCache::new();
+            let t = Instant::now();
+            big.facet_counts_cached(&mut cache, cards, &spec, &Progress::new())
+                .unwrap();
+            check.budget(
+                &format!("filter panel: {name} cards, first count (columns read once)"),
+                t.elapsed(),
+                Duration::from_secs(6),
+            );
+            let t = Instant::now();
+            big.facet_counts_cached(&mut cache, cards, &click, &Progress::new())
+                .unwrap();
+            check.budget(
+                &format!("filter panel: {name} cards, each click"),
+                t.elapsed(),
+                Duration::from_millis(if name == "4" { 300 } else { 1000 }),
+            );
+        }
         let t = Instant::now();
         let n = big.col_count();
         let r = big

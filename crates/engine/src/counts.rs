@@ -18,7 +18,7 @@ use crate::Error;
 
 /// Columns counted together at most.
 pub const MAX_COUNT_COLS: usize = 3;
-/// Different values (or combinations) listed at most.
+/// Different values (or combinations) listed at most (the most common).
 pub const MAX_COUNT_GROUPS: usize = 1_000_000;
 /// Text held for the values at most.
 const MAX_COUNT_BYTES: u64 = 512 << 20;
@@ -105,9 +105,8 @@ impl Document {
                 for (key, n) in local {
                     if let Some(x) = m.get_mut(&key) {
                         *x += n;
-                    } else if m.len() < MAX_COUNT_GROUPS
-                        && bytes.fetch_add(key.len() as u64 + 32, Ordering::Relaxed)
-                            < MAX_COUNT_BYTES
+                    } else if bytes.fetch_add(key.len() as u64 + 32, Ordering::Relaxed)
+                        < MAX_COUNT_BYTES
                     {
                         m.insert(key, n);
                     } else {
@@ -125,6 +124,12 @@ impl Document {
             b.1.cmp(&a.1)
                 .then_with(|| natural_cmp(a.0.as_bytes(), b.0.as_bytes()))
         });
+        // Every value is counted (up to the text cap); the most common
+        // ones are listed.
+        if lines.len() > MAX_COUNT_GROUPS {
+            lines.truncate(MAX_COUNT_GROUPS);
+            over.store(true, Ordering::Relaxed);
+        }
         Ok(Counts {
             lines: lines
                 .into_iter()

@@ -117,7 +117,7 @@ Bigger jobs
 | Pivot drill-down to one city's 32,000 rows | 0.26 s |
 | Counts tab of a 311-value column, 10M rows | 0.12 s |
 | Column profile of a number column, 10M rows | 0.35 s |
-| Filter panel: two cards counted over 10M rows | 0.16 s |
+| Filter panel, 4 cards on 10M rows: first count / each click after | 0.80 s / 0.006 s |
 | Column insight strip, every column (100,000-row sample) | 0.33 s |
 | Computed column on every one of 10M rows | 6.2 s |
 | Share-safe copy of 10M rows (mask, scramble, age band) | 2.5 s |
@@ -614,8 +614,8 @@ everything is also in command search.
 ![The column profile of a ZIP column: two shapes, one of them rare](docs/screenshots/column-profile.png)
 *The zip column's profile: almost every value is five digits; the odd ones are a click away.*
 - **Filter panel** (View > Filter panel, Alt+Shift+L): a card per column with
-  each value and its count, or a chart of the numbers or dates you can drag
-  across. Counts update as you pick: each card shows what picking in it
+  each value and its count, or a chart of the numbers or dates (click a bar,
+  or type a From and To range). Counts update as you pick: each card shows what picking in it
   would leave, given the picks on the other cards, as in a shop's search
   filters. Every pick is a normal filter, so Undo and Data > Clear filter
   work as usual.

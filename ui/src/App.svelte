@@ -206,6 +206,7 @@
   // a bigger one, whenever the tab's data or filter changes. Display only:
   // a busy or failed read leaves the strip as it was.
   let insightSeq = 0;
+  let insightKey = "";
   $effect(() => {
     const t = tab;
     if (!t || !prefs.data.insights) return;
@@ -213,6 +214,11 @@
     void t.header;
     const cols = Array.from({ length: Math.min(t.info.cols, MAX_INSIGHT_COLS) }, (_, c) => c);
     if (!t.info.indexed || !cols.length) return;
+    // After an edit alone (same tab, rows, columns and filter) the strip
+    // waits a second, so typing never waits for it.
+    const key = JSON.stringify([t.id, t.header, t.info.rows, t.info.cols, t.info.filtered, t.info.filter_cols ?? []]);
+    const editOnly = key === insightKey;
+    insightKey = key;
     const mine = ++insightSeq;
     const ask = (sample: number) =>
       backend()
@@ -226,7 +232,7 @@
       void ask(QUICK_SAMPLE)
         .then((more) => (more && mine === insightSeq ? ask(FULL_SAMPLE) : false))
         .catch(() => {});
-    }, 150);
+    }, editOnly ? 1000 : 150);
     return () => clearTimeout(timer);
   });
   /** What the expression screen is for while open. */
@@ -1546,6 +1552,10 @@
       void loadRanges(nt);
       nt.bump();
       const lines = Math.max(0, d.rows - 1);
+      if (lines >= 1_000_000) {
+        say(`Over 1,000,000 different values in ${plural(Math.max(0, t.info.rows - (t.header ? 1 : 0)), "shown row")}: the 1,000,000 most common are listed. For one line per value, Data › Remove duplicates; for the column's shape, Data › Column profile.`);
+        return;
+      }
       say(`${plural(lines, "different value")} in ${plural(Math.max(0, t.info.rows - (t.header ? 1 : 0)), "shown row")}. Select lines and press Enter (or right-click › Show these rows) to see their rows in ${t.info.name}.`);
     } catch (e) {
       say(errorText(e));
