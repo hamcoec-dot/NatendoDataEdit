@@ -2800,6 +2800,17 @@ async fn data_edge(
     blocking(move || docs.data_edge(doc, row, col, dir)).await
 }
 
+/// A column's profile: shapes, histogram, odd values.
+#[tauri::command]
+async fn column_profile(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::profile::ProfileSpec,
+) -> CmdResult<natendo_engine::profile::Profile> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.column_profile(doc, &spec)).await
+}
+
 /// Run a formula typed in a cell (or filled with Ctrl+Enter).
 #[tauri::command]
 async fn cell_formula(
@@ -3336,6 +3347,7 @@ pub fn run() {
             compute_preview,
             cell_formula,
             cell_formula_of,
+            column_profile,
             join_preview,
             value_tally,
             join_list,

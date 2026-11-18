@@ -794,6 +794,10 @@ pub enum TableOp {
     Sample {
         spec: Sample,
     },
+    /// Each value of one to three columns with its count (the counts tab).
+    Counts {
+        spec: natendo_engine::counts::CountsSpec,
+    },
     /// This document compared with another open one.
     Compare {
         other: u32,
@@ -4428,6 +4432,17 @@ impl Docs {
 
     /// Each distinct value of a column with its count (a job: progress and
     /// Cancel).
+    pub fn column_profile(
+        &self,
+        id: u32,
+        spec: &natendo_engine::profile::ProfileSpec,
+    ) -> CmdResult<natendo_engine::profile::Profile> {
+        let entry = self.get(id)?;
+        let job = entry.start("Profiling the column")?;
+        let d = entry.read();
+        Ok(d.column_profile(spec, &job.progress)?)
+    }
+
     pub fn value_tally(&self, id: u32, spec: &TallySpec) -> CmdResult<ValueTally> {
         let entry = self.get(id)?;
         let job = entry.start("Counting values")?;
@@ -4687,6 +4702,7 @@ impl Docs {
                 TableOp::Reshape { spec } => d.reshape_column(spec, &job.progress)?,
                 TableOp::Stack { spec } => d.stack_columns(spec, &job.progress)?,
                 TableOp::Sample { spec } => d.sample(spec, &job.progress)?,
+                TableOp::Counts { spec } => d.counts_table(spec, &job.progress)?.0,
                 TableOp::Compare { .. } => unreachable!("handled above"),
             }
         };
@@ -4706,6 +4722,7 @@ impl Docs {
             TableOp::Reshape { .. } => format!("Reshaped ({stem})"),
             TableOp::Stack { .. } => format!("Stacked ({stem})"),
             TableOp::Sample { .. } => format!("Sample ({stem})"),
+            TableOp::Counts { .. } => format!("Counts ({stem})"),
             TableOp::Compare { other, .. } => format!("Compare {stem} with {}", self.stem(*other)),
         };
         self.set_title_of(nid, title);

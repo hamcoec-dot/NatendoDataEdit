@@ -858,7 +858,46 @@ export type TableOp =
   | { op: "reshape"; spec: Reshape }
   | { op: "stack"; spec: Stack }
   | { op: "sample"; spec: Sample }
+  | { op: "counts"; spec: CountsSpec }
   | { op: "compare"; other: number; spec: CompareSpec };
+export interface ProfileSpec {
+  col: number;
+  keep_first: boolean;
+  read: ReadOptions;
+}
+export interface ShapeCount {
+  shape: string;
+  count: number;
+  example: string;
+}
+export interface Histogram {
+  kind: "numbers" | "dates" | "lengths";
+  low: number;
+  high: number;
+  counts: number[];
+}
+export interface Profile {
+  col: number;
+  rows: number;
+  blanks: number;
+  shapes: ShapeCount[];
+  shape_kinds: number;
+  histogram: Histogram | null;
+  shortest: string | null;
+  longest: string | null;
+  min_len: number;
+  max_len: number;
+  rare_shapes: ShapeCount[];
+  outliers: number;
+  outlier_examples: string[];
+  mean: number | null;
+  sd: number | null;
+}
+/** The counts tab: each value of one to three columns with its count. */
+export interface CountsSpec {
+  cols: number[];
+  keep_first: boolean;
+}
 export interface OpReport {
   /** Paste, fill, clear: hidden rows between the rows written, left alone. */
   hidden_rows?: number;
@@ -1167,6 +1206,8 @@ export interface Backend {
   quitApp(): Promise<void>;
   onCloseRequested(handler: () => void): void;
   computePreview(doc: number, spec: ComputeSpec): Promise<ComputePreview>;
+  /** A column's profile (shapes, histogram, odd values). */
+  columnProfile(doc: number, spec: ProfileSpec): Promise<Profile>;
   /** Run a formula typed in a cell; its results are one undo step. */
   cellFormula(doc: number, spec: CellFormula): Promise<FormulaReport>;
   /** The formula a cell's value came from (while the value is unchanged). */
@@ -1651,6 +1692,9 @@ class TauriBackend implements Backend {
   }
   onCloseRequested(handler: () => void) {
     void import("@tauri-apps/api/event").then(({ listen }) => listen("close-requested", handler));
+  }
+  columnProfile(doc: number, spec: ProfileSpec) {
+    return call<Profile>("column_profile", { doc, spec });
   }
   cellFormula(doc: number, spec: CellFormula) {
     return call<FormulaReport>("cell_formula", { doc, spec });

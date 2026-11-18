@@ -187,6 +187,7 @@ export const FUNCTIONS: { name: string; hint: string }[] = [
   { name: "SPLITPART", hint: "SPLITPART(text, separator, part): -1 is the last" },
   { name: "PADLEFT", hint: "PADLEFT(text, length, [with]): zeros unless given" },
   { name: "CLEAN", hint: "CLEAN(text): no hidden or control characters" },
+  { name: "SHAPE", hint: "SHAPE(text): digits as 9 and letters as A, like 99999-9999" },
   { name: "COUNTCHAR", hint: "COUNTCHAR(text, what): how many times it appears" },
   { name: "TEXT", hint: 'TEXT(value, "pattern"): like "0.00", "#,##0", "yyyy-mm-dd"' },
   { name: "VALUE", hint: "VALUE(text): the number in it" },

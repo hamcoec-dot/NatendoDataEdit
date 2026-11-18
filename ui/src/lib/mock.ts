@@ -47,11 +47,12 @@ import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, Spli
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
-import type { CellFormula, FormulaReport } from "./backend";
+import type { CellFormula, FormulaReport, Profile, ProfileSpec } from "./backend";
 import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
 import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
 import { mockEval } from "./mockexpr";
 import { rewriteA1 } from "./cellformula";
+import { stubProfile } from "./profile";
 import { previewOf, simulateJoin } from "./joins";
 
 const FIRST = ["Ada", "Bo", "Cy", "Dee", "Eli", "Fay", "Gus", "Hal", "Ivy", "Jo"];
@@ -2611,6 +2612,25 @@ export class MockBackend implements Backend {
 
   async newTable(doc: number, op: TableOp): Promise<DocInfo> {
     if (op.op === "subtotals") throw err("invalid", "the browser preview does not make subtotals; the desktop app does");
+    if (op.op === "counts") {
+      const d = this.get(doc);
+      const s = op.spec;
+      const tally = new Map<string, number>();
+      let n = 0;
+      for (let r = s.keep_first ? 1 : 0; r < this.rowCount(d); r++) {
+        const k = JSON.stringify(s.cols.map((c) => this.value(d, r, c)));
+        tally.set(k, (tally.get(k) ?? 0) + 1);
+        n++;
+      }
+      const names = s.cols.map((c) => (s.keep_first ? this.value(d, 0, c) : "") || `Column ${c + 1}`);
+      const lines = [...tally].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      const out = [[...names, "Count", "Percent"], ...lines.map(([k, c]) => [...(JSON.parse(k) as string[]), String(c), `${((c * 100) / Math.max(1, n)).toFixed(1)}%`])];
+      const info = this.make("Untitled", out.length, out[0]!.length);
+      const nd = this.get(info.id);
+      out.forEach((line, r) => line.forEach((v, c) => nd.edits.set(`${r}:${c}`, v)));
+      nd.clean = -1;
+      return this.refresh(nd);
+    }
     if (op.op !== "pivot" && op.op !== "unpivot") throw err("invalid", "the browser preview does not do this; the desktop app does");
     const d = this.get(doc);
     const rows = this.rowCount(d);
@@ -3157,6 +3177,13 @@ export class MockBackend implements Backend {
   private table(d: MockDoc): string[][] {
     const cols = this.colCount(d);
     return Array.from({ length: Math.min(this.rowCount(d), 5000) }, (_, r) => Array.from({ length: cols }, (_, c) => this.value(d, r, c)));
+  }
+
+  async columnProfile(doc: number, spec: ProfileSpec): Promise<Profile> {
+    const d = this.get(doc);
+    const cells: string[] = [];
+    for (let r = spec.keep_first ? 1 : 0; r < this.rowCount(d); r++) cells.push(this.value(d, r, spec.col));
+    return stubProfile(spec.col, cells);
   }
 
   private formulas = new Map<string, [string, string]>();

@@ -51,7 +51,7 @@
   import type { TitleSpec } from "./lib/backend";
   import type { ZipList } from "./lib/backend";
   import type { SpecialKind, SpecialSpec } from "./lib/backend";
-  import { localDays } from "./lib/m8";
+  import { columnRef, localDays } from "./lib/m8";
   import { remapChecks, renameInChecks } from "./lib/rename";
   import { TOOLS, localNow, type Cleaner, type CleanSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
@@ -68,6 +68,7 @@
   import type { PivotSpec } from "./lib/pivot";
   import PromptDialog from "./lib/PromptDialog.svelte";
   import ComputeDialog from "./lib/ComputeDialog.svelte";
+  import ProfileDialog from "./lib/ProfileDialog.svelte";
   import ChecksDialog from "./lib/ChecksDialog.svelte";
   import FieldCheckDialog from "./lib/FieldCheckDialog.svelte";
   import MatchDialog from "./lib/MatchDialog.svelte";
@@ -196,6 +197,8 @@
   let recentOpen = $state(false);
   let panelTab = $state<PanelTab>(prefs.data.panel ?? "summary");
   let computeOpen = $state(false);
+  /** The column whose profile is open. */
+  let profileCol = $state<number | null>(null);
   /** What the expression screen is for while open. */
   let computeMode = $state<"compute" | "change" | "filter">("compute");
   let checksOpen = $state(false);
@@ -1477,6 +1480,85 @@
     if (errors) say(`Filled ${plural(written, "cell")}; ${plural(errors, "cell")} gave ${firstError ?? "an error"} and kept ${errors === 1 ? "its" : "their"} value. Undo (Ctrl+Z) takes it back.`);
     else if (targets.length > 1) say(`Filled ${plural(written, "cell")} with the formula. Undo (Ctrl+Z) takes it back.`);
     return true;
+  }
+
+  // ---- counts tab ---------------------------------------------------------------
+  /** Each value of the column (or of two or three selected columns
+   *  together) with its count, percent and a bar, in a tab of its own. */
+  async function openCounts(): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const r = t.rect;
+    const hidden = new Set(hiddenColsOf(t));
+    const picked = r.cols > 1 && r.cols <= 3 ? Array.from({ length: r.cols }, (_, i) => r.col + i).filter((c) => !hidden.has(c)) : [t.cell.col];
+    const cols = picked.length ? picked : [t.cell.col];
+    try {
+      const d = await runJob("Counting values", () => backend().newTable(t.id, { op: "counts", spec: { cols, keep_first: t.header } }));
+      if (!d) return;
+      addTab(d, false);
+      const nt = tabs[tabs.length - 1];
+      if (!nt) return;
+      nt.header = true;
+      nt.headerTouched = true;
+      nt.countsOf = { source: t.id, cols };
+      // A bar in the Count column.
+      nt.scales = [{ col: cols.length, kind: "bar" }];
+      void loadRanges(nt);
+      nt.bump();
+      const lines = Math.max(0, d.rows - 1);
+      say(`${plural(lines, "different value")} in ${plural(Math.max(0, t.info.rows - (t.header ? 1 : 0)), "shown row")}. Select lines and press Enter (or right-click › Show these rows) to see their rows in ${t.info.name}.`);
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  /** From a counts tab: show (or hide) the rows of the selected lines in
+   *  the tab it counts. */
+  async function countsShow(hide: boolean): Promise<void> {
+    const ct = tab;
+    const link = ct?.countsOf;
+    if (!ct || !link) return;
+    const src = tabs.find((x) => x.id === link.source);
+    if (!src) {
+      say("The tab these counts came from is closed.");
+      return;
+    }
+    const r = ct.rect;
+    const first = Math.max(1, r.row);
+    const last = r.row + r.rows - 1;
+    if (last < 1) {
+      say("Pick one or more lines (not the titles).");
+      return;
+    }
+    if (last - first + 1 > 200) {
+      say("Pick at most 200 lines at once.");
+      return;
+    }
+    const lines: string[][] = [];
+    for (let row = first; row <= last; row++) {
+      const vals: string[] = [];
+      for (let k = 0; k < link.cols.length; k++) vals.push((await backend().cellText(ct.id, row, k)).text);
+      lines.push(vals);
+    }
+    active = tabs.indexOf(src);
+    await tick();
+    if (link.cols.length === 1 && !hide) {
+      const vals = lines.map((l) => l[0]!);
+      const blanks = vals.includes("");
+      await setRule(link.cols[0]!, { type: "values", values: vals.filter((v) => v !== ""), blanks });
+      return;
+    }
+    // Several columns, or hiding: a formula over the shown rows.
+    const ref = (c: number) => columnRef(src.header ? columnTitle(src, c) : "", c);
+    const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
+    const one = (l: string[]) => {
+      const parts = l.map((v, k) => `${ref(link.cols[k]!)} = ${q(v)}`);
+      return parts.length === 1 ? parts[0]! : `AND(${parts.join(", ")})`;
+    };
+    const any = lines.length === 1 ? one(lines[0]!) : `OR(${lines.map(one).join(", ")})`;
+    const expr = hide ? `NOT(${any})` : any;
+    computeMode = "filter";
+    await runCompute({ expr, title: "", target: null, at: null, keep_first: src.header, read: { decimal_comma: false, date_order: "mdy" }, now: localDays() });
   }
 
   /** Clear a block of cells (the fill handle dragged back over it). */
@@ -4367,6 +4449,10 @@
     { id: "tools.searchFolder", label: "Search a &folder of files…", keys: ["Ctrl+Shift+F"], run: () => { folderSearchOpen = true; } },
     { id: "view.showEdits", label: "Show my &edits", run: () => setShowEdits(!tab?.showEdits), enabled: hasTab, checked: () => !!tab?.showEdits },
     { id: "file.options", label: "Op&tions…", run: () => { optionsOpen = true; } },
+    { id: "data.profile", label: "Column &profile…", run: () => { profileCol = tab?.cell.col ?? null; }, enabled: ready },
+    { id: "data.counts", label: "Cou&nt values in a new tab", keys: ["Alt+Shift+F"], run: () => void openCounts(), enabled: ready },
+    { id: "data.countsShow", label: "Show these rows", run: () => void countsShow(false), enabled: () => ready() && !!tab?.countsOf },
+    { id: "data.countsHide", label: "Hide these rows", run: () => void countsShow(true), enabled: () => ready() && !!tab?.countsOf },
     { id: "data.compute", label: "Compu&ted column…", run: () => { computeMode = "compute"; computeOpen = true; }, enabled: ready },
     { id: "data.changeFormula", label: "Change column with a formula…", run: () => { computeMode = "change"; computeOpen = true; }, enabled: ready },
     { id: "data.filterFormula", label: "Filter by formula…", run: () => { computeMode = "filter"; computeOpen = true; }, enabled: ready },
@@ -4714,7 +4800,7 @@
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.unpivot", "data.subtotals", "data.form", "-",
-        "data.compute", "data.changeFormula", "data.checks", "data.fieldCheck", "data.unmarkChecks", "data.clearChecks", "-",
+        "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.fieldCheck", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "-",
         "data.values", "data.group", "data.arrange", "data.extract", "data.build", "-",
@@ -4750,9 +4836,9 @@
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "file.rename", "file.copyPath", "file.showFolder", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
-    col: ["format.renameCol", "format.tidyTitles", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showAllCols"],
   };
 
@@ -5010,6 +5096,11 @@
       }
       case "Enter":
         e.preventDefault();
+        // In a counts tab, Enter shows the selected lines' rows.
+        if (t.countsOf && !e.shiftKey && !e.ctrlKey) {
+          void countsShow(false);
+          return;
+        }
         grid.advance(...enterStep(prefs.data.enterMove, e.shiftKey));
         return;
       case "Tab":
@@ -5516,7 +5607,10 @@
     openMenu = null;
     // The cut items show only while something is cut.
     const cutItems = new Set(["edit.moveCut", "edit.cancelCut"]);
-    const items = (contextItems[area] ?? []).filter((i) => tab?.cut || !cutItems.has(i));
+    // The counts items (and their line) only in a counts tab.
+    const counts = !!tab?.countsOf;
+    let items = (contextItems[area] ?? []).filter((i) => (tab?.cut || !cutItems.has(i)) && (counts || (i !== "data.countsShow" && i !== "data.countsHide")));
+    if (!counts && items[0] === "-") items = items.slice(1);
     // Nothing is picked until the pointer or an arrow key moves onto an item.
     context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items, index: -1 };
   }
@@ -5833,6 +5927,11 @@
           onCommit={commitCell}
           onContext={openContext}
           onRenameCol={(c) => void askRename(c)}
+          onActivate={() => {
+            if (!tab?.countsOf) return false;
+            void countsShow(false);
+            return true;
+          }}
           onMessage={say}
           onFilterButton={(col, x, y) => (filterMenu = { col, x, y })}
           onFill={(dir, count, swap) => void fillHandle(dir, count, swap)}
@@ -6237,6 +6336,25 @@
     header={tab.header}
     onRun={(op, header) => { editKind = null; void runDialog({ data: op }, header); grid?.focus(); }}
     onClose={() => { editKind = null; grid?.focus(); }}
+  />
+{/if}
+
+{#if profileCol !== null && tab}
+  <ProfileDialog
+    doc={tab.id}
+    col={profileCol}
+    title={`“${columnTitle(tab, profileCol)}”`}
+    colRef={columnRef(tab.header ? columnTitle(tab, profileCol) : "", profileCol)}
+    header={tab.header}
+    run={runJob}
+    onShow={(expr, what) => {
+      const t = tab;
+      profileCol = null;
+      if (!t) return;
+      computeMode = "filter";
+      void runCompute({ expr, title: "", target: null, at: null, keep_first: t.header, read: { decimal_comma: false, date_order: "mdy" }, now: localDays() }).then(() => say(`Showing the rows with ${what}. Data › Clear filter shows every row.`));
+    }}
+    onClose={() => { profileCol = null; grid?.focus(); }}
   />
 {/if}
 

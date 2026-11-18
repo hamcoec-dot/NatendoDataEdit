@@ -123,6 +123,7 @@ funcs! {
     CountChar "COUNTCHAR" 2 2, Switch "SWITCH" 3 255, Choose "CHOOSE" 2 255,
     In "IN" 2 255, Between "BETWEEN" 3 3, Prev "PREV" 1 1, Next "NEXT" 1 1,
     Count "COUNT" 1 255, CountA "COUNTA" 1 255, Blank "BLANK" 0 0,
+    Shape "SHAPE" 1 1,
 }
 
 /// Every function name, for the help list and the editor.
@@ -2080,6 +2081,7 @@ fn call<'a>(f: Func, args: &'a [Node], re: Option<&'a Regex>, ctx: &Ctx<'a>) -> 
             Value::Num(n as f64)
         }
         Func::Blank => Value::Blank,
+        Func::Shape => text_val(crate::profile::shape_of(&tryv!(text(0)))),
         Func::Coalesce => {
             for a in args {
                 let v = eval(a, ctx);
@@ -2941,6 +2943,7 @@ mod tests {
         assert_eq!(run("CLEAN([a])", &["a\u{200b}b\u{a0}c\td"]), "ab cd");
         assert_eq!(run("COUNTCHAR([a], \",\")", &["a,b,,c"]), "3");
         assert_eq!(run("COUNTCHAR([a], \"\")", &["abc"]), "0");
+        assert_eq!(run("SHAPE([a])", &["37421-12"]), "99999-99");
     }
 
     #[test]

@@ -61,11 +61,13 @@
     onJump?: (dir: "up" | "down" | "left" | "right", extend: boolean) => void;
     /** Double-click on a column heading: rename the column. */
     onRenameCol?: (col: number) => void;
+    /** A double-click on a cell: true when it was used (no edit starts). */
+    onActivate?: () => boolean;
     readOnly: boolean;
     /** The file is locked (File > Read-only): nothing may change. */
     locked?: boolean;
   }
-  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onJump, onFillClear, readOnly, locked = false }: Props = $props();
+  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onActivate, onJump, onFillClear, readOnly, locked = false }: Props = $props();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -1708,7 +1710,7 @@
         if (e.shiftKey) select(tab.cell, { row: h.row, col: h.col });
         else select({ row: h.row, col: h.col });
         drag = { kind: "select" };
-        if (e.detail === 2) startEdit();
+        if (e.detail === 2 && !(onActivate?.() ?? false)) startEdit();
         break;
       case "row": {
         const r = tab.rect;

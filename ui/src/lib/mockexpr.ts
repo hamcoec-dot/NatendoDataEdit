@@ -2,6 +2,8 @@
 // only (the desktop app evaluates in Rust). Knows numbers, text, [Column]
 // and [#n], + - * / & and comparisons, and a few functions.
 
+import { shapeOf } from "./profile";
+
 type V = string | number | boolean;
 
 const FUNCS: Record<string, (a: V[]) => V> = {
@@ -17,6 +19,10 @@ const FUNCS: Record<string, (a: V[]) => V> = {
   },
   ISBLANK: (a) => a[0] === "",
   BLANK: () => "",
+  SHAPE: (a) => shapeOf(String(a[0] ?? "")),
+  AND: (a) => a.every(truthy),
+  OR: (a) => a.some(truthy),
+  NOT: (a) => !truthy(a[0]!),
   SUM: (a) => a.filter((v) => v !== "").reduce<number>((s, v) => s + toNum(v), 0),
   AVERAGE: (a) => {
     const v = a.filter((x) => x !== "");
