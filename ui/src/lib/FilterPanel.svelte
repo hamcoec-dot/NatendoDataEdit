@@ -4,6 +4,7 @@
   // the tab's filter rule on that column: each click is one filter change
   // (one undo step), and the filter menus show the same rules.
   import { backend, errorText, type Facet, type Facets, type ReadOptions, type Rule } from "./backend";
+  import { onDestroy } from "svelte";
   import type { Tab } from "./tab.svelte";
   import { ruleFor } from "./filters";
   import { barEdges, blankRule, dayText, FACET_BINS, pickedRange, pickedValues, rangeRule, toggleValue } from "./facets";
@@ -26,23 +27,34 @@
 
   // Count again whenever the cards, the filter or the data change (a newer
   // count cancels an older one in the engine, and so does an edit). After
-  // an edit alone the count waits a second, so typing never waits for it.
+  // an edit alone the count waits a second, so typing never waits for it;
+  // a pick counts at once. The tab's version also moves when a pick is
+  // applied, which changes neither: that run leaves the count it started.
   let seq = 0;
   let lastAsk = "";
+  let lastData: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     const t = tab;
     void t.version;
     const cards = t.facetCards.map((c) => ({ col: c.col, kind: c.kind, range: c.range, search: searches[c.col]?.trim() || null }));
     const spec = { columns: $state.snapshot(t.filter?.columns ?? []), keep_first: t.header, read: $state.snapshot(read) as ReadOptions };
+    const data = t.info.data_revision;
     if (!cards.length || !t.info.indexed) {
+      clearTimeout(timer);
       facets = null;
+      lastAsk = "";
+      if (!cards.length) void backend().facetForget(t.id).catch(() => {});
       return;
     }
     const ask = JSON.stringify([t.id, cards, spec]);
+    if (ask === lastAsk && data === lastData) return;
     const editOnly = ask === lastAsk;
     lastAsk = ask;
+    lastData = data;
     const mine = ++seq;
-    const timer = setTimeout(() => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
       backend()
         .facetCounts(t.id, cards, spec as never)
         .then((f) => {
@@ -60,7 +72,11 @@
           if (mine === seq && kind !== "cancelled" && !/still working/.test(errorText(e))) problem = errorText(e);
         });
     }, editOnly ? 1000 : 120);
-    return () => clearTimeout(timer);
+  });
+  // Closing the panel frees what it worked out.
+  onDestroy(() => {
+    clearTimeout(timer);
+    void backend().facetForget(tab.id).catch(() => {});
   });
 
   let adding = $state("");
@@ -164,7 +180,8 @@
           {/if}
         </ul>
         {#if f.values.length > 50 && !showAll[card.col]}<button type="button" class="link" onclick={() => (showAll[card.col] = true)}>Show {f.values.length - 50} more</button>{/if}
-        {#if !f.complete}<p class="note">The {f.values.length.toLocaleString()} most common of {f.distinct >= 10_000 ? "over 10,000" : f.distinct.toLocaleString()} values; search for others.</p>{/if}
+        {#if f.many}<p class="note many" role="status">{searches[card.col]?.trim() ? "Too many values match; type more of the value." : "Nearly every value here is different, so the card does not list them (that keeps every pick quick); search to pick."}</p>
+        {:else if !f.complete}<p class="note">The {f.values.length.toLocaleString()} most common of {f.distinct >= 10_000 ? "over 10,000" : f.distinct.toLocaleString()} values; search for others.</p>{/if}
       {:else}
         {@const kind = card.kind}
         {@const range = f.range}

@@ -618,7 +618,9 @@ everything is also in command search.
   or type a From and To range). Counts update as you pick: each card shows what picking in it
   would leave, given the picks on the other cards, as in a shop's search
   filters. Every pick is a normal filter, so Undo and Data > Clear filter
-  work as usual.
+  work as usual. On a column where nearly every value differs (an ID or a
+  phone number) the card lists only what you search for, so every pick
+  stays quick.
 
 ![The filter panel with cards for party and precinct](docs/screenshots/filter-panel.png)
 *Picking D on the party card: the precinct card's counts follow.*

@@ -1147,6 +1147,8 @@ pub struct DocInfo {
     pub filtered: bool,
     /// Columns with a filter rule.
     pub filter_cols: Vec<u32>,
+    /// Moves when what the rows hold changes (not with filters).
+    pub data_revision: u64,
     /// A filter rule sits on a deleted column (its rows stay hidden).
     pub filter_on_deleted: bool,
     pub cols: u32,
@@ -4805,6 +4807,23 @@ impl Docs {
         Ok(d.facet_counts_cached(&mut cache, cards, spec, &job.progress)?)
     }
 
+    /// Free what the filter panel worked out for a tab (the panel closed,
+    /// or its last card went). A count still running stops first.
+    pub fn facet_forget(&self, id: u32) -> CmdResult<()> {
+        let entry = self.get(id)?;
+        if let Some(j) = entry.jobs().as_ref() {
+            if j.label == FACET_JOB {
+                j.progress.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        entry
+            .facets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        Ok(())
+    }
+
     /// The cube for `spec` (read again only when the file or the fields
     /// changed). `sample`: only the first rows, for a quick first look.
     /// The cube for `spec` (read again only when the file or the fields
@@ -5782,6 +5801,7 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         total_rows: d.total_rows(),
         filtered: d.is_filtered(),
         filter_cols: d.filtered_columns(),
+        data_revision: d.data_revision(),
         filter_on_deleted: d.filter_on_deleted_column(),
         cols: d.col_count(),
         indexed: d.is_indexed(),

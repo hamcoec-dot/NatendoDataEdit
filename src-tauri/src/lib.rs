@@ -2812,6 +2812,13 @@ async fn facet_counts(
     blocking(move || docs.facet_counts(doc, &cards, &spec)).await
 }
 
+/// Free the filter panel's counts for a tab.
+#[tauri::command]
+async fn facet_forget(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.facet_forget(doc)).await
+}
+
 /// The column insight strip under the headings (a sample).
 #[tauri::command]
 async fn column_insights(
@@ -3373,6 +3380,7 @@ pub fn run() {
             column_profile,
             column_insights,
             facet_counts,
+            facet_forget,
             join_preview,
             value_tally,
             join_list,

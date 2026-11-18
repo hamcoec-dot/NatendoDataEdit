@@ -86,6 +86,8 @@ function generated(row: number, col: number): string {
 
 interface MockDoc {
   info: DocInfo;
+  /** What the data revision was worked out from (see refresh). */
+  dataSig?: string;
   /** Protected columns (physical), passed over by every change. */
   protectedPhys?: Set<number>;
   /** Row order: original row numbers (>= 0) or inserted rows (< 0). */
@@ -776,6 +778,12 @@ export class MockBackend implements Backend {
         ? d.undo.slice(d.clean).some((s) => !VIEW_STEPS.has(s.apply))
         : d.clean - n > d.redo.length || d.redo.slice(d.redo.length - (d.clean - n)).some((a) => !VIEW_STEPS.has(a)));
     d.info.column_changes = d.cols !== null;
+    // The data revision moves when a step that changes data is done or undone.
+    const sig = `${d.undo.filter((s) => !VIEW_STEPS.has(s.apply)).length}/${d.redo.filter((a) => !VIEW_STEPS.has(a)).length}`;
+    if (sig !== d.dataSig) {
+      d.dataSig = sig;
+      d.info.data_revision = (d.info.data_revision ?? 0) + 1;
+    }
     return { ...d.info };
   }
 
@@ -3185,6 +3193,7 @@ export class MockBackend implements Backend {
     return Array.from({ length: Math.min(this.rowCount(d), 5000) }, (_, r) => Array.from({ length: cols }, (_, c) => this.value(d, r, c)));
   }
 
+  async facetForget(): Promise<void> {}
   async facetCounts(doc: number, cards: FacetCard[], spec: FilterSpec): Promise<Facets> {
     const d = this.get(doc);
     const first = spec.keep_first ? 1 : 0;
