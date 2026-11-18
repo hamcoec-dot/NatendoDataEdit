@@ -38,6 +38,7 @@ pub mod fuzzy;
 pub mod highlight;
 pub mod import;
 pub mod index;
+pub mod insight;
 pub mod join;
 pub mod logs;
 pub mod mail;

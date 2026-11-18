@@ -2812,6 +2812,17 @@ async fn facet_counts(
     blocking(move || docs.facet_counts(doc, &cards, &spec)).await
 }
 
+/// The column insight strip under the headings (a sample).
+#[tauri::command]
+async fn column_insights(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::insight::InsightSpec,
+) -> CmdResult<natendo_engine::insight::Insights> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.column_insights(doc, &spec)).await
+}
+
 /// A column's profile: shapes, histogram, odd values.
 #[tauri::command]
 async fn column_profile(
@@ -3360,6 +3371,7 @@ pub fn run() {
             cell_formula,
             cell_formula_of,
             column_profile,
+            column_insights,
             facet_counts,
             join_preview,
             value_tally,

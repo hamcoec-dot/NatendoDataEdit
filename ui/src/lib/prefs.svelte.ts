@@ -20,6 +20,8 @@ export interface PrefsData {
   alignNumbers: boolean;
   /** Column headings also show spreadsheet letters (A, B, C). */
   colLetters: boolean;
+  /** A strip under each heading: filled share, different values, a tiny chart. */
+  insights: boolean;
   /** Where Enter moves after typing (Shift+Enter goes the other way). */
   enterMove: EnterMove;
   /** Columns with a list of allowed values show the list arrow on every
@@ -129,6 +131,7 @@ const DEFAULTS: PrefsData = {
   showInvisible: false,
   alignNumbers: true,
   colLetters: false,
+  insights: false,
   enterMove: "down",
   listArrows: false,
   spellcheck: true,
@@ -173,6 +176,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       showInvisible: p.showInvisible === true,
       alignNumbers: p.alignNumbers !== false,
       colLetters: p.colLetters === true,
+      insights: p.insights === true,
       listArrows: p.listArrows === true,
       enterMove: ENTER_MOVES.includes(p.enterMove as EnterMove) ? (p.enterMove as EnterMove) : "down",
       spellcheck: p.spellcheck !== false,

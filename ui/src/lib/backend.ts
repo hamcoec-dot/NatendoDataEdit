@@ -883,6 +883,29 @@ export type TableOp =
   | { op: "sample"; spec: Sample }
   | { op: "counts"; spec: CountsSpec }
   | { op: "compare"; other: number; spec: CompareSpec };
+export interface InsightSpec {
+  cols: number[];
+  keep_first: boolean;
+  sample: number;
+  read: ReadOptions;
+}
+export interface Insight {
+  col: number;
+  /** Share of sampled cells filled, 0 to 1. */
+  filled: number;
+  distinct: number;
+  /** Every filled sampled value differs. */
+  unique: boolean;
+  /** Bars are a histogram (else the most common values). */
+  numbers: boolean;
+  /** Heights, the tallest 1. */
+  bars: number[];
+}
+export interface Insights {
+  cols: Insight[];
+  sampled: number;
+  rows: number;
+}
 export interface ProfileSpec {
   col: number;
   keep_first: boolean;
@@ -1233,6 +1256,8 @@ export interface Backend {
   facetCounts(doc: number, cards: FacetCard[], spec: FilterSpec): Promise<Facets>;
   /** A column's profile (shapes, histogram, odd values). */
   columnProfile(doc: number, spec: ProfileSpec): Promise<Profile>;
+  /** The column insight strip, from a sample of the shown rows. */
+  columnInsights(doc: number, spec: InsightSpec): Promise<Insights>;
   /** Run a formula typed in a cell; its results are one undo step. */
   cellFormula(doc: number, spec: CellFormula): Promise<FormulaReport>;
   /** The formula a cell's value came from (while the value is unchanged). */
@@ -1723,6 +1748,9 @@ class TauriBackend implements Backend {
   }
   columnProfile(doc: number, spec: ProfileSpec) {
     return call<Profile>("column_profile", { doc, spec });
+  }
+  columnInsights(doc: number, spec: InsightSpec) {
+    return call<Insights>("column_insights", { doc, spec });
   }
   cellFormula(doc: number, spec: CellFormula) {
     return call<FormulaReport>("cell_formula", { doc, spec });

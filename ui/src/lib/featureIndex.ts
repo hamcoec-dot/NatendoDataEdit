@@ -172,6 +172,10 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "column lists start empty": ["data.removeDuplicates", "data.showDuplicates", "data.mergeRows", "data.subtotals", "data.group", "tools.fillBlanks"],
   // Seeing what is in the data
   "summary of each column": ["view.panelSummary"],
+  "counts tab": ["data.counts"],
+  "column profile": ["data.profile"],
+  "filter panel": ["view.panelFilters"],
+  "column insights": ["view.insights", "data.profile"],
   "quick totals": ["view.panel"],
   "charts line bar pie counts": ["view.panelChart", "data.subtotals", "view.highlights"],
   "compare two open files": ["tools.compare"],

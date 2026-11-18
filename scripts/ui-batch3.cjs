@@ -118,6 +118,30 @@ const url = process.argv[3] || "http://localhost:5202";
   await wait(800);
   ok(!(await p.evaluate(() => window.__nde.tab.info.filtered)), "one undo takes the pick back");
 
+  // ---- Column insight strip ----
+  ok(!(await p.evaluate(() => window.__nde.tab.insights)), "the insight strip is off at first");
+  await command("column insights");
+  await wait(900);
+  const ins = await p.evaluate(() => {
+    const i = window.__nde.tab.insights;
+    if (!i) return null;
+    const party = i.byCol.get(1);
+    const id = i.byCol.get(0);
+    return { party: party && { filled: party.filled, distinct: party.distinct }, idUnique: id && id.unique };
+  });
+  ok(ins && ins.party && ins.party.distinct === 3 && Math.abs(ins.party.filled - 0.9) < 0.01, `View › Column insights reads each column (${JSON.stringify(ins)})`);
+  ok(ins && ins.idUnique, "an ID column shows as all different");
+  const canvas = await p.locator("canvas").first().boundingBox();
+  const cp = await p.evaluate(() => window.__nde.grid.cellPoint({ row: 1, col: 1 }));
+  if (out) await p.screenshot({ path: path.join(out, "column-insights.png"), clip: { x: canvas.x, y: canvas.y, width: 620, height: 150 } });
+  await p.mouse.click(cp.x + 40, cp.y - 36);
+  await wait(900);
+  ok(await dialog("Profile of").count(), "clicking a strip opens the column profile");
+  await p.keyboard.press("Escape");
+  await wait(300);
+  await command("column insights");
+  await wait(300);
+
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   console.log(failed ? `${failed} FAILED` : "ALL PASS");
   await b.close();

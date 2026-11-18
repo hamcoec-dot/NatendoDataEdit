@@ -1207,6 +1207,100 @@ fn main() {
             Duration::from_millis(600),
         );
     }
+    // v0.4.3: exploring a file. Counts of a column, a column profile, the
+    // filter panel's recount and the insight strip, on 10M rows.
+    {
+        use natendo_engine::counts::CountsSpec;
+        use natendo_engine::filter::{FacetCard, FacetKind};
+        use natendo_engine::insight::InsightSpec;
+        use natendo_engine::profile::ProfileSpec;
+        let t = Instant::now();
+        let (table, _) = big
+            .counts_table(
+                &CountsSpec {
+                    cols: vec![4],
+                    keep_first: true,
+                },
+                &Progress::new(),
+            )
+            .unwrap();
+        drop(table);
+        check.budget(
+            "counts tab of a 311-value column",
+            t.elapsed(),
+            Duration::from_secs(3),
+        );
+        let t = Instant::now();
+        big.column_profile(
+            &ProfileSpec {
+                col: 2,
+                keep_first: true,
+                ..Default::default()
+            },
+            &Progress::new(),
+        )
+        .unwrap();
+        check.budget(
+            "column profile of a number column",
+            t.elapsed(),
+            Duration::from_secs(4),
+        );
+        let cards = [
+            FacetCard {
+                col: 4,
+                kind: FacetKind::Values,
+                range: None,
+                search: None,
+            },
+            FacetCard {
+                col: 2,
+                kind: FacetKind::Numbers,
+                range: Some((0.0, 100_000.0)),
+                search: None,
+            },
+        ];
+        let spec = FilterSpec {
+            keep_first: true,
+            ..Default::default()
+        };
+        // The first count (cards just added) and a recount.
+        let t = Instant::now();
+        big.facet_counts(&cards, &spec, &Progress::new()).unwrap();
+        check.budget(
+            "filter panel: two cards counted",
+            t.elapsed(),
+            Duration::from_secs(3),
+        );
+        let t = Instant::now();
+        let n = big.col_count();
+        let r = big
+            .column_insights(&InsightSpec {
+                cols: (0..n).collect(),
+                keep_first: true,
+                sample: 100_000,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(r.cols.len(), n as usize);
+        check.budget(
+            "column insight strip (100k-row sample, every column)",
+            t.elapsed(),
+            Duration::from_millis(400),
+        );
+        let t = Instant::now();
+        big.column_insights(&InsightSpec {
+            cols: (0..n).collect(),
+            keep_first: true,
+            sample: 5_000,
+            ..Default::default()
+        })
+        .unwrap();
+        check.budget(
+            "column insight strip (quick sample)",
+            t.elapsed(),
+            Duration::from_millis(60),
+        );
+    }
     let checks = |kinds: Vec<(u32, CheckKind)>| CheckSpec {
         checks: kinds
             .into_iter()

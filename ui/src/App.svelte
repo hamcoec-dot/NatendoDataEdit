@@ -69,6 +69,7 @@
   import PromptDialog from "./lib/PromptDialog.svelte";
   import ComputeDialog from "./lib/ComputeDialog.svelte";
   import ProfileDialog from "./lib/ProfileDialog.svelte";
+  import { FULL_SAMPLE, MAX_INSIGHT_COLS, QUICK_SAMPLE } from "./lib/insights";
   import ChecksDialog from "./lib/ChecksDialog.svelte";
   import FieldCheckDialog from "./lib/FieldCheckDialog.svelte";
   import MatchDialog from "./lib/MatchDialog.svelte";
@@ -199,6 +200,34 @@
   let computeOpen = $state(false);
   /** The column whose profile is open. */
   let profileCol = $state<number | null>(null);
+
+  // The column insight strip (View › Column insights): a quick sample, then
+  // a bigger one, whenever the tab's data or filter changes. Display only:
+  // a busy or failed read leaves the strip as it was.
+  let insightSeq = 0;
+  $effect(() => {
+    const t = tab;
+    if (!t || !prefs.data.insights) return;
+    void t.version;
+    void t.header;
+    const cols = Array.from({ length: Math.min(t.info.cols, MAX_INSIGHT_COLS) }, (_, c) => c);
+    if (!t.info.indexed || !cols.length) return;
+    const mine = ++insightSeq;
+    const ask = (sample: number) =>
+      backend()
+        .columnInsights(t.id, { cols, keep_first: t.header, sample, read: READ })
+        .then((r) => {
+          if (mine !== insightSeq) return false;
+          t.insights = { byCol: new Map(r.cols.map((i) => [i.col, i])), sampled: r.sampled, rows: r.rows };
+          return r.sampled < r.rows;
+        });
+    const timer = setTimeout(() => {
+      void ask(QUICK_SAMPLE)
+        .then((more) => (more && mine === insightSeq ? ask(FULL_SAMPLE) : false))
+        .catch(() => {});
+    }, 150);
+    return () => clearTimeout(timer);
+  });
   /** What the expression screen is for while open. */
   let computeMode = $state<"compute" | "change" | "filter">("compute");
   let checksOpen = $state(false);
@@ -4664,6 +4693,16 @@
     { id: "format.clip", label: "Cut off long te&xt", run: toggleClip, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.clips.has(c)) },
     { id: "view.listArrows", label: "List arrows on every cell", run: () => { prefs.data.listArrows = !prefs.data.listArrows; prefs.save(); }, checked: () => prefs.data.listArrows },
     { id: "view.colLetters", label: "Column &letters (A, B, C)", run: () => { prefs.data.colLetters = !prefs.data.colLetters; prefs.save(); }, checked: () => prefs.data.colLetters },
+    {
+      id: "view.insights",
+      label: "Column &insights",
+      run: () => {
+        prefs.data.insights = !prefs.data.insights;
+        prefs.save();
+        if (prefs.data.insights) say("Under each heading: how full the column is, how many different values, and a tiny chart (from a sample on big files). Click a strip for the column profile.");
+      },
+      checked: () => prefs.data.insights,
+    },
     { id: "view.alignNumbers", label: "&Numbers on the right", run: () => { prefs.data.alignNumbers = !prefs.data.alignNumbers; prefs.save(); }, checked: () => prefs.data.alignNumbers },
     { id: "format.wrap", label: "&Wrap text", run: toggleWrap, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.wraps.has(c)) },
     { id: "format.rowHeight", label: "Row &height (lines)…", run: askRowLines, enabled: hasTab },
@@ -4796,7 +4835,7 @@
         "view.panel", "view.panelSummary", "view.panelFilters", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.invisible", "view.colLetters", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.invisible", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
@@ -5943,6 +5982,7 @@
           onCommit={commitCell}
           onContext={openContext}
           onRenameCol={(c) => void askRename(c)}
+          onInsight={(c) => (profileCol = c)}
           onActivate={() => {
             if (!tab?.countsOf) return false;
             void countsShow(false);

@@ -16,6 +16,7 @@
   import { barSpan, completion, scaleColour, scalePos, valueType } from "./m10";
   import { colLetters } from "./goto";
   import { invisibleRuns } from "./invisible";
+  import { insightText } from "./insights";
   import { formulaHelp } from "./cellformula";
   import { FUNCTIONS } from "./m8";
   /** Odd spaces with View › Show invisible characters on. */
@@ -61,13 +62,15 @@
     onJump?: (dir: "up" | "down" | "left" | "right", extend: boolean) => void;
     /** Double-click on a column heading: rename the column. */
     onRenameCol?: (col: number) => void;
+    /** A click on a column's insight strip (its profile opens). */
+    onInsight?: (col: number) => void;
     /** A double-click on a cell: true when it was used (no edit starts). */
     onActivate?: () => boolean;
     readOnly: boolean;
     /** The file is locked (File > Read-only): nothing may change. */
     locked?: boolean;
   }
-  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onActivate, onJump, onFillClear, readOnly, locked = false }: Props = $props();
+  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onInsight, onActivate, onJump, onFillClear, readOnly, locked = false }: Props = $props();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -93,11 +96,15 @@
 
   // ---- metrics -----------------------------------------------------------
   const fontPx = $derived(Math.round(prefs.data.fontSize * prefs.data.zoom));
-  /** Height of the header row and of a one-line row. */
-  const headH = $derived(Math.round(fontPx * 1.8) + 2);
+  /** Height of a one-line row and of the heading's title line. */
+  const lineH = $derived(Math.round(fontPx * 1.8) + 2);
+  /** The column insight strip under the titles (View › Column insights). */
+  const stripH = $derived(prefs.data.insights ? Math.round(fontPx * 1.2) + 6 : 0);
+  /** Height of the heading band. */
+  const headH = $derived(lineH + stripH);
   /** Extra height per extra line of text. */
   const textLineH = $derived(Math.round(fontPx * 1.35));
-  const rowH = $derived(headH + (Math.max(1, Math.min(MAX_ROW_LINES, tab.rowLines)) - 1) * textLineH);
+  const rowH = $derived(lineH + (Math.max(1, Math.min(MAX_ROW_LINES, tab.rowLines)) - 1) * textLineH);
   const font = $derived(`${fontPx}px ${prefs.data.font}`);
   const headerFont = $derived(`600 ${fontPx}px ${prefs.data.font}`);
   let rowHeaderW = 56;
@@ -182,6 +189,8 @@
     void prefs.data.showInvisible;
     void prefs.data.alignNumbers;
     void prefs.data.colLetters;
+    void prefs.data.insights;
+    void tab.insights;
     void prefs.data.listArrows;
     void width;
     void height;
@@ -349,7 +358,7 @@
         if (arrow) {
           const ax = x + cw - room - (trailing ? MARK_W + 4 : 0) - 12;
           const s = Math.max(3, Math.round(fontPx * 0.28));
-          const cy = headH / 2;
+          const cy = lineH / 2;
           ctx.save();
           ctx.fillStyle = colors.accent;
           ctx.beginPath();
@@ -373,19 +382,20 @@
         let tx = x + 6 + (mark ? MARK_W : 0);
         if (locked.has(c)) {
           // A protected column: a small padlock before the title.
-          drawLock(ctx, tx, headH / 2);
+          drawLock(ctx, tx, lineH / 2);
           tx += 13;
         }
         if (prefs.data.colLetters) {
           // The column's letters first, in a quieter colour (View › Column letters).
           const letters = colLetters(c);
           ctx.fillStyle = colors.muted;
-          ctx.fillText(letters, tx, headH / 2);
+          ctx.fillText(letters, tx, lineH / 2);
           tx += ctx.measureText(letters).width + 6;
           ctx.fillStyle = inSel ? colors.text : colors.muted;
         }
-        ctx.fillText(colTitle(c), tx, headH / 2);
+        ctx.fillText(colTitle(c), tx, lineH / 2);
         ctx.restore();
+        if (stripH) drawInsight(ctx, c, x, cw);
         if (btn) drawFilterButton(ctx, x + cw - btn - 2, filtered.has(c));
         if (headArrow) drawHeadArrow(ctx, x + cw - FILTER_BTN - 2);
         if (mark) drawHiddenMark(ctx, x + 5, true);
@@ -454,7 +464,7 @@
       // The header row's own number, so it is clear row 1 is the titles.
       ctx.font = headerFont;
       ctx.fillStyle = colors.muted;
-      ctx.fillText("1", rowHeaderW - 10 - ctx.measureText("1").width, headH / 2);
+      ctx.fillText("1", rowHeaderW - 10 - ctx.measureText("1").width, lineH / 2);
     }
     drawFillHandle(ctx, w, h);
     drawMove(ctx, w, h);
@@ -817,7 +827,7 @@
 
   /** A small arrow at x pointing at hidden columns (left, or right). */
   function drawHiddenMark(ctx: CanvasRenderingContext2D, x: number, left: boolean): void {
-    const y = headH / 2;
+    const y = lineH / 2;
     const s = Math.max(3, Math.round(fontPx * 0.3));
     const tip = left ? x : x + s;
     const back = left ? x + s : x;
@@ -937,11 +947,49 @@
   /** Width of the pick-list arrow at the right of the active cell. */
   const PICK_BTN = 16;
 
+  /** Column `c`'s insight strip: a tiny bar chart, then "92% · 1.2k". */
+  function drawInsight(ctx: CanvasRenderingContext2D, c: number, x: number, cw: number): void {
+    const ins = tab.insights;
+    const i = ins?.byCol.get(c);
+    const top = lineH;
+    ctx.fillStyle = colors.border;
+    ctx.fillRect(x + 4, top, cw - 9, 1);
+    if (!ins || !i || cw < 24) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + 4, top, cw - 9, stripH);
+    ctx.clip();
+    const barsH = stripH - 8;
+    const n = Math.max(1, i.bars.length);
+    const bw = Math.max(2, Math.min(5, Math.floor((cw * 0.35) / n)));
+    let bx = x + 6;
+    ctx.fillStyle = colors.accent;
+    ctx.globalAlpha = 0.7;
+    for (const b of i.bars) {
+      const h = Math.max(1, Math.round(b * barsH));
+      ctx.fillRect(bx, top + 4 + barsH - h, bw - 1, h);
+      bx += bw;
+    }
+    ctx.globalAlpha = 1;
+    // A thin line under the chart: how full the column is.
+    ctx.fillStyle = colors.muted;
+    ctx.globalAlpha = 0.25;
+    ctx.fillRect(x + 6, top + stripH - 3, cw - 13, 2);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = colors.accent;
+    ctx.fillRect(x + 6, top + stripH - 3, Math.round((cw - 13) * i.filled), 2);
+    ctx.font = `${Math.max(9, Math.round(fontPx * 0.8))}px ${prefs.data.font}`;
+    ctx.fillStyle = colors.muted;
+    ctx.fillText(insightText(i, ins.sampled, ins.rows), bx + 4, top + (stripH - 2) / 2);
+    ctx.font = headerFont;
+    ctx.restore();
+  }
+
   function drawTick(ctx: CanvasRenderingContext2D, x: number, y: number, cw: number, on: boolean): void {
     const size = Math.min(14, rowH - 6, cw - 6);
     if (size < 6) return;
     const bx = Math.round(x + (cw - size) / 2) + 0.5;
-    const by = Math.round(y + (headH - size) / 2) + 0.5;
+    const by = Math.round(y + (lineH - size) / 2) + 0.5;
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = on ? colors.accent : colors.muted;
     if (on) {
@@ -1201,7 +1249,7 @@
         ctx.fillStyle = colors.muted;
         for (let r = rs.start; r < rs.end; r++) {
           if ((tab.header && r === 0) || (r === active.row && c === active.col)) continue;
-          const cy = rs.pos + (r - rs.start) * rowH + headH / 2;
+          const cy = rs.pos + (r - rs.start) * rowH + lineH / 2;
           ctx.beginPath();
           ctx.moveTo(cx - 3, cy - 1.5);
           ctx.lineTo(cx + 3, cy - 1.5);
@@ -1233,11 +1281,11 @@
       if (listCols.has(active.col) && !readOnly && !(tab.header && active.row === 0) && aw > PICK_BTN + 8) {
         const bx = ax + aw - PICK_BTN - 2;
         ctx.fillStyle = colors.surface;
-        ctx.fillRect(bx, ay + 3, PICK_BTN, Math.min(headH, rowH) - 6);
+        ctx.fillRect(bx, ay + 3, PICK_BTN, Math.min(lineH, rowH) - 6);
         ctx.fillStyle = colors.accent;
         ctx.beginPath();
         const cx = bx + PICK_BTN / 2;
-        const cy = ay + headH / 2;
+        const cy = ay + lineH / 2;
         ctx.moveTo(cx - 4, cy - 2);
         ctx.lineTo(cx + 4, cy - 2);
         ctx.lineTo(cx, cy + 3);
@@ -1253,13 +1301,13 @@
 
   /** A small arrow button; a funnel when the column has a filter rule. */
   function drawHeadArrow(ctx: CanvasRenderingContext2D, x: number): void {
-    const h = Math.min(FILTER_BTN, headH - 6);
-    const y = (headH - h) / 2;
+    const h = Math.min(FILTER_BTN, lineH - 6);
+    const y = (lineH - h) / 2;
     ctx.fillStyle = colors.surface;
     ctx.fillRect(x, y, FILTER_BTN, h);
     ctx.fillStyle = colors.muted;
     const cx = x + FILTER_BTN / 2;
-    const cy = headH / 2;
+    const cy = lineH / 2;
     ctx.beginPath();
     ctx.moveTo(cx - 4, cy - 2);
     ctx.lineTo(cx + 4, cy - 2);
@@ -1269,8 +1317,8 @@
   }
 
   function drawFilterButton(ctx: CanvasRenderingContext2D, x: number, on: boolean): void {
-    const h = Math.min(FILTER_BTN, headH - 6);
-    const y = (headH - h) / 2;
+    const h = Math.min(FILTER_BTN, lineH - 6);
+    const y = (lineH - h) / 2;
     ctx.fillStyle = on ? colors.accent : colors.surface;
     ctx.globalAlpha = on ? 0.9 : 1;
     ctx.fillRect(x, y, FILTER_BTN, h);
@@ -1280,7 +1328,7 @@
     ctx.fillStyle = on ? "#fff" : colors.muted;
     ctx.beginPath();
     const cx = x + FILTER_BTN / 2;
-    const cy = headH / 2;
+    const cy = lineH / 2;
     if (on) {
       // Funnel.
       ctx.moveTo(cx - 5, cy - 4);
@@ -1308,7 +1356,7 @@
   // ---- hit testing ---------------------------------------------------------
   type Hit =
     | { area: "cell"; row: number; col: number }
-    | { area: "col"; col: number; edge: number | null }
+    | { area: "col"; col: number; edge: number | null; strip?: boolean }
     | { area: "row"; row: number }
     | { area: "corner" }
     | { area: "none" };
@@ -1337,7 +1385,7 @@
       const prevRight = colX(col, cols);
       if (Math.abs(px - right) <= 4) edge = col;
       else if (Math.abs(px - prevRight) <= 4 && col > 0) edge = tab.columns.step(col, -1);
-      return { area: "col", col, edge };
+      return { area: "col", col, edge, strip: stripH > 0 && py >= lineH && edge === null };
     }
     if (px < rowHeaderW && row >= 0) return { area: "row", row };
     if (row >= 0 && col >= 0) return { area: "cell", row, col };
@@ -1725,6 +1773,10 @@
         break;
       }
       case "col":
+        if (h.strip && onInsight && e.button === 0 && !e.shiftKey && !e.ctrlKey) {
+          onInsight(h.col);
+          break;
+        }
         if (h.edge !== null) {
           const span = selectedColsWith(h.edge);
           if (e.detail === 2) {
@@ -2176,7 +2228,7 @@
     if (!r) return false;
     const size = Math.min(14, rowH - 6, r.w - 6) + 6;
     const cx = r.x + r.w / 2;
-    const cy = r.y + headH / 2;
+    const cy = r.y + lineH / 2;
     return Math.abs(px - cx) <= size / 2 && Math.abs(py - cy) <= size / 2;
   }
 

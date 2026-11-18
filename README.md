@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.4.2_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.4.3_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -115,6 +115,10 @@ Bigger jobs
 | Pivot: change sorting, totals, show-as or formats | 0.01 s |
 | Pivot with 3 million items (name by city), sum + median | 4.6 s |
 | Pivot drill-down to one city's 32,000 rows | 0.26 s |
+| Counts tab of a 311-value column, 10M rows | 0.12 s |
+| Column profile of a number column, 10M rows | 0.35 s |
+| Filter panel: two cards counted over 10M rows | 0.16 s |
+| Column insight strip, every column (100,000-row sample) | 0.33 s |
 | Computed column on every one of 10M rows | 6.2 s |
 | Share-safe copy of 10M rows (mask, scramble, age band) | 2.5 s |
 | Search a folder holding the 10M- and 1M-row files | 10.3 s |
@@ -593,6 +597,39 @@ everything is also in command search.
 
 - **Summary of each column:** type, count, blanks, distinct values, smallest,
   largest, average, total and the most common values.
+- **Counts tab** (Data > Count values in a new tab, Alt+Shift+F, or
+  right-click a heading): every value of a column, or of several columns
+  together, with its count and percent, most common first, as a tab of its
+  own you can sort, filter and save. Double-click a line (or press Enter) to
+  show its rows in the original tab.
+
+![A counts tab: each party with its count and percent](docs/screenshots/counts-tab.png)
+*Counting the party column: D, R, I and blanks, with their share.*
+- **Column profile** (Data > Column profile, or right-click a heading): what a
+  column holds at a glance. The shapes of its values (`99999` 98%,
+  `99999-9999` 1.5%, with digits as 9 and letters as A), a small chart of its
+  numbers, dates or lengths, the shortest and longest values, and odd ones:
+  rare shapes and numbers far from the rest. Click any line to show its rows.
+
+![The column profile of a ZIP column: two shapes, one of them rare](docs/screenshots/column-profile.png)
+*The zip column's profile: almost every value is five digits; the odd ones are a click away.*
+- **Filter panel** (View > Filter panel, Alt+Shift+L): a card per column with
+  each value and its count, or a chart of the numbers or dates you can drag
+  across. Counts update as you pick: each card shows what picking in it
+  would leave, given the picks on the other cards, as in a shop's search
+  filters. Every pick is a normal filter, so Undo and Data > Clear filter
+  work as usual.
+
+![The filter panel with cards for party and precinct](docs/screenshots/filter-panel.png)
+*Picking D on the party card: the precinct card's counts follow.*
+- **Column insights** (View > Column insights, off at first): a thin strip
+  under each heading with how full the column is, how many different values
+  it holds and a tiny chart (the spread of its numbers, or its most common
+  values). On a big file it reads a sample from the start, middle and end, so
+  it never slows anything down. Click a strip for the column profile.
+
+![The column insight strip under four headings](docs/screenshots/column-insights.png)
+*voter_id is all different, party is 90% filled with 3 values, zip has 32.*
 - **Quick totals** of the selection (sum, average, count, numbers, smallest,
   largest, different values, characters), with one click to copy a total.
 - Charts (line, bar, pie, counts), subtotals and groups, highlight rules.

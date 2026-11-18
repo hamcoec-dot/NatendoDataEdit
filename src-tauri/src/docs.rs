@@ -4434,6 +4434,18 @@ impl Docs {
 
     /// Each distinct value of a column with its count (a job: progress and
     /// Cancel).
+    /// The column insight strip (a quick sample; no job, so it never
+    /// blocks other work).
+    pub fn column_insights(
+        &self,
+        id: u32,
+        spec: &natendo_engine::insight::InsightSpec,
+    ) -> CmdResult<natendo_engine::insight::Insights> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.column_insights(spec)?)
+    }
+
     pub fn column_profile(
         &self,
         id: u32,

@@ -47,12 +47,13 @@ import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, Spli
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
-import type { CellFormula, FacetCard, Facets, FormulaReport, Profile, ProfileSpec } from "./backend";
+import type { CellFormula, FacetCard, Facets, FormulaReport, Insights, InsightSpec, Profile, ProfileSpec } from "./backend";
 import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
 import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
 import { mockEval } from "./mockexpr";
 import { rewriteA1 } from "./cellformula";
 import { stubProfile } from "./profile";
+import { stubInsights } from "./insights";
 import { stubFacets } from "./facets";
 import { previewOf, simulateJoin } from "./joins";
 
@@ -3191,6 +3192,17 @@ export class MockBackend implements Backend {
     const cols = this.colCount(d);
     for (let r = first; r < this.totalRows(d); r++) rows.push(Array.from({ length: cols }, (_, c) => this.valueAt(d, r, c)));
     return stubFacets(rows, cards, spec, testRule);
+  }
+
+  async columnInsights(doc: number, spec: InsightSpec): Promise<Insights> {
+    const d = this.get(doc);
+    const first = spec.keep_first ? 1 : 0;
+    const end = Math.min(this.rowCount(d), first + spec.sample);
+    return stubInsights(spec.cols, (c) => {
+      const out: string[] = [];
+      for (let r = first; r < end; r++) out.push(this.value(d, r, c));
+      return out;
+    });
   }
 
   async columnProfile(doc: number, spec: ProfileSpec): Promise<Profile> {
