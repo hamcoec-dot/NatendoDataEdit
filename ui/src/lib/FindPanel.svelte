@@ -847,7 +847,7 @@
           Replace {plural(pending.hits, "match", "matches")} in {plural(pending.cells, "cell")} across {plural(tabParts.length, "tab")}? Each tab can undo its part in one step.
         {:else}
           Replace {plural(pending.hits, "match", "matches")} in {plural(pending.cells - unticked.size, "cell")}{titleChanges.length ? ` and rename ${plural(titleChanges.length, "column")}` : ""}?
-          {titleChanges.length ? `It takes ${(pending.cells - unticked.size > 0 ? 1 : 0) + titleChanges.length} steps to undo (one per renamed title).` : "It is one step to undo."}{unticked.size ? ` ${plural(unticked.size, "change")} unticked will be left as they are.` : ""}
+          {titleChanges.length ? `It takes ${plural((pending.cells - unticked.size > 0 ? 1 : 0) + titleChanges.length, "step")} to undo (one per renamed title).` : "It is one step to undo."}{unticked.size ? ` ${plural(unticked.size, "change")} unticked will be left as they are.` : ""}
         {/if}
       </div>
       {#if titleChanges.length}
