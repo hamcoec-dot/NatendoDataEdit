@@ -4598,6 +4598,12 @@
       get grid() {
         return grid;
       },
+      get backend() {
+        return backend();
+      },
+      get tabs() {
+        return tabs;
+      },
     };
   }
 

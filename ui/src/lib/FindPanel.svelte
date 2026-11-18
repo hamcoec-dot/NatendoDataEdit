@@ -66,6 +66,29 @@
   let results = $state<{ t: Tab; r: FindAll }[] | null>(null);
   /** The search Find all ran on the shown tab (for acting on the rows). */
   let resultsSpec: FindSpec | null = null;
+  let resultsRev: number | undefined;
+  /** The versions of the tabs Find all searched: a change closes the list,
+   *  so its row actions never act on rows it doesn't show. */
+  let resultsAt = "";
+  // A tab's edits (its place in the undo history) and the rows shown: a
+  // redraw alone doesn't count.
+  const versions = (ts: Tab[]): string => ts.map((t) => `${t.id}:${t.info.history_pos}:${t.info.rows}:${t.info.total_rows}`).join(",");
+  $effect(() => {
+    const now = results ? versions(results.map((g) => g.t)) : "";
+    untrack(() => {
+      if (!results) {
+        resultsAt = "";
+        return;
+      }
+      if (!resultsAt) resultsAt = now;
+      else if (now !== resultsAt) {
+        results = null;
+        deleteAsk = false;
+        resultsAt = "";
+        status = "The file changed, so the Find all list was closed. Run Find all again.";
+      }
+    });
+  });
   /** Row notes that match ("Look in: Notes"). */
   let notes = $state<NoteMark[] | null>(null);
   let pending = $state<ReplaceReport | null>(null);
@@ -76,7 +99,9 @@
   /** Changes unticked in the preview ("row:col"); they are left as they are. */
   const unticked = new SvelteSet<string>();
   /** The last Replace all changed rows here: "Show changed rows" is offered. */
-  let canShowChanged = $state(false);
+  /** The tab and its version right after the last Replace all. */
+  let changedAt = $state<[number, number] | null>(null);
+  const canShowChanged = $derived(changedAt !== null && changedAt[0] === tab.id && changedAt[1] === tab.info.history_pos && !tab.info.filtered);
   let deleteAsk = $state(false);
   let flag = $state(1);
   /** Looking across every open tab. */
@@ -351,7 +376,10 @@
       try {
         const r = await run(allTabs ? `Searching ${t.info.name}` : "Searching", () => backend().findAll(t.id, s));
         if (!r) return;
-        if (t === tab) resultsSpec = s;
+        if (t === tab) {
+          resultsSpec = s;
+          resultsRev = r.revision;
+        }
         if (r.cells > 0) groups.push({ t, r });
       } catch (e) {
         if (!allTabs) {
@@ -362,6 +390,7 @@
       }
     }
     results = groups;
+    resultsAt = "";
     const n = groups.reduce((a, g) => a + g.r.cells, 0);
     status = (n === 0 ? "No matches." : "") + (skipped.length ? ` Not searched: ${skipped.join("; ")}.` : "");
   }
@@ -373,21 +402,23 @@
     deleteAsk = false;
     const label = action.kind === "delete" ? "Deleting rows" : action.kind === "copy" ? "Copying rows" : action.kind === "show" ? "Filtering" : "Flagging rows";
     try {
-      const info = await run(label, () => backend().findRows(tab.id, s, action));
-      if (!info) return;
+      const rep = await run(label, () => backend().findRows(tab.id, s, action, resultsRev));
+      if (!rep) return;
+      const info = rep.info;
       if (action.kind === "copy") {
         onNewTab(info);
-        status = `Copied ${info.rows.toLocaleString()} row${info.rows === 1 ? "" : "s"} to a new tab (not saved yet).`;
+        status = `Copied ${plural(info.rows, "row")} to a new tab (not saved yet)${rep.left_out_cols ? `; ${plural(rep.left_out_cols, "hidden column")} left out` : ""}.`;
         return;
       }
-      onChanged(info);
       results = null;
+      onChanged(info);
       if (action.kind === "show") status = "Showing only the rows with a match. Show all rows from the status bar, or undo.";
       else if (action.kind === "delete") status = "Deleted the rows with a match. Ctrl+Z puts them back.";
       else {
         tab.notesVersion++;
         tab.bump();
-        status = `Flagged the rows with a match ${FLAG_NAMES[action.flag]?.[1]?.toLowerCase() ?? ""}.`;
+        const colour = FLAG_NAMES[action.flag]?.[1]?.toLowerCase() ?? "";
+        status = `Flagged the rows with a match ${colour}${rep.recolored ? ` (${plural(rep.recolored, "row")} had another colour and ${rep.recolored === 1 ? "is" : "are"} now ${colour})` : ""}. Flags are kept with the notes, so Ctrl+Z doesn't take them off: clear them from Notes.`;
       }
     } catch (e) {
       status = errorText(e);
@@ -431,7 +462,7 @@
     unticked.clear();
     titleChanges = [];
     tabParts = [];
-    canShowChanged = false;
+    changedAt = null;
     const rep = replacement;
     try {
       if (allTabs) {
@@ -449,6 +480,7 @@
           return;
         }
         tabParts = parts;
+        partsAt = "";
         pending = { cells: parts.reduce((a, p) => a + p.r.cells, 0), hits: parts.reduce((a, p) => a + p.r.hits, 0), preview: [], info: null };
         status = "";
         return;
@@ -495,6 +527,26 @@
 
   const plural = (n: number, one: string, many = `${one}s`): string => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
+  // All open tabs: a change to any of them closes the preview (each tab's
+  // confirm would refuse it anyway, leaving the replace half done).
+  let partsAt = "";
+  $effect(() => {
+    const now = tabParts.length ? versions(tabParts.map((p) => p.t)) : "";
+    untrack(() => {
+      if (!tabParts.length) {
+        partsAt = "";
+        return;
+      }
+      if (!partsAt) partsAt = now;
+      else if (now !== partsAt && pending) {
+        pending = null;
+        tabParts = [];
+        partsAt = "";
+        status = "A tab changed, so the preview was closed: press Replace all… to see the changes again.";
+      }
+    });
+  });
+
   async function replaceAll(): Promise<void> {
     const what = previewed;
     const parts = tabParts;
@@ -533,13 +585,14 @@
         if (!r) return;
         if (r.info) onChanged(r.info);
         msg = `Replaced in ${plural(r.cells, "cell")}${skip.length ? ` (${plural(skip.length, "change")} left out)` : ""}.`;
-        canShowChanged = r.cells > 0;
+        if (r.cells > 0 && !titles.length) changedAt = [tab.id, tab.info.history_pos];
       }
       if (titles.length) {
         await onRenameColumns(titles.map(([c, , n]) => [c, n]));
         msg += ` Renamed ${plural(titles.length, "column")}.`;
       }
-      status = `${msg.trim()} Undo (Ctrl+Z) reverts it.`;
+      const steps = (cells - skip.length > 0 ? 1 : 0) + titles.length;
+      status = `${msg.trim()} ${steps > 1 ? `Undo (Ctrl+Z) ${steps} times reverts it all (each renamed title is its own step).` : "Undo (Ctrl+Z) reverts it."}${skip.length ? " With changes unticked it isn't kept as a recipe step." : ""}`;
     } catch (e) {
       status = errorText(e);
     }
@@ -550,7 +603,7 @@
       const info = await run("Filtering", () => backend().showChanged(tab.id, tab.header));
       if (!info) return;
       onChanged(info);
-      canShowChanged = false;
+      changedAt = null;
       status = "Showing only the rows the last Replace all changed. Show all rows from the status bar, or undo.";
     } catch (e) {
       status = errorText(e);
@@ -764,7 +817,7 @@
               <tr><td><code>a|b</code></td><td>either</td></tr>
               <tr><td><code>(\d&#123;3&#125;)-(\d&#123;4&#125;)</code></td><td>groups; replace with <code>$2-$1</code> (or <code>$&#123;1&#125;a</code>)</td></tr>
               <tr><td><code>\U$1</code> <code>\L$1</code></td><td>in the replacement: upper or lower case until <code>\E</code></td></tr>
-              <tr><td><code>\u$1</code> <code>\l$1</code></td><td>first letter upper or lower: <code>(\w+)</code> → <code>\u$1</code> makes "smith" "Smith"</td></tr>
+              <tr><td><code>\u$1</code> <code>\l$1</code></td><td>first letter upper or lower: <code>(\w+)</code> → <code>\u$1</code> makes "smith" "Smith"; <code>\\U</code> is a real backslash and U</td></tr>
             </tbody>
           </table>
         </div>
@@ -794,7 +847,7 @@
           Replace {plural(pending.hits, "match", "matches")} in {plural(pending.cells, "cell")} across {plural(tabParts.length, "tab")}? Each tab can undo its part in one step.
         {:else}
           Replace {plural(pending.hits, "match", "matches")} in {plural(pending.cells - unticked.size, "cell")}{titleChanges.length ? ` and rename ${plural(titleChanges.length, "column")}` : ""}?
-          It is one step to undo.{unticked.size ? ` ${plural(unticked.size, "change")} unticked will be left as they are.` : ""}
+          {titleChanges.length ? `It takes ${(pending.cells - unticked.size > 0 ? 1 : 0) + titleChanges.length} steps to undo (one per renamed title).` : "It is one step to undo."}{unticked.size ? ` ${plural(unticked.size, "change")} unticked will be left as they are.` : ""}
         {/if}
       </div>
       {#if titleChanges.length}

@@ -362,6 +362,16 @@ export interface FindAll {
   cells: number;
   /** Matching cells per column: [column, count], all of them. */
   per_col?: [number, number][];
+  /** The file's revision when searched (row actions refuse if it moved). */
+  revision?: number;
+}
+/** What acting on Find all's rows did. */
+export interface FindRowsReport {
+  info: DocInfo;
+  /** Rows whose flag had another colour (Flag). */
+  recolored: number;
+  /** Hidden columns left out of the new tab (Copy). */
+  left_out_cols: number;
 }
 export type FindRowsAction = { kind: "show" } | { kind: "delete" } | { kind: "copy" } | { kind: "flag"; flag: number };
 export interface BatchReplace {
@@ -893,7 +903,7 @@ export interface Backend {
   /** Replace in one cell (Find's Replace button; not a recipe step). */
   replaceCell(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport>;
   /** Act on the rows with a match. */
-  findRows(doc: number, spec: FindSpec, action: FindRowsAction): Promise<DocInfo>;
+  findRows(doc: number, spec: FindSpec, action: FindRowsAction, revision?: number): Promise<FindRowsReport>;
   /** Row notes that match a search. */
   findNotes(doc: number, pattern: Pattern): Promise<import("./notes").NoteMark[]>;
   /** Column titles a replace would change: [column, new title]. */
@@ -1266,8 +1276,8 @@ class TauriBackend implements Backend {
   replaceCell(doc: number, spec: FindSpec, replacement: string) {
     return call<ReplaceReport>("replace_cell", { doc, spec, replacement });
   }
-  findRows(doc: number, spec: FindSpec, action: FindRowsAction) {
-    return call<DocInfo>("find_rows", { doc, spec, action });
+  findRows(doc: number, spec: FindSpec, action: FindRowsAction, revision?: number) {
+    return call<FindRowsReport>("find_rows", { doc, spec, action, revision: revision ?? null });
   }
   findNotes(doc: number, pattern: Pattern) {
     return call<import("./notes").NoteMark[]>("find_notes", { doc, pattern });

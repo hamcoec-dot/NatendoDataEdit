@@ -351,7 +351,7 @@ pub struct Entry {
     /// when nothing changed since (request as JSON, plan).
     replace: Mutex<Option<(String, ReplacePlan)>>,
     /// Rows (ids) the last Replace all changed ("Show changed rows").
-    changed_rows: Mutex<Vec<u32>>,
+    changed_rows: Mutex<(u64, Vec<u32>)>,
     cancel: AtomicBool,
     /// Opened with quoted cells never spanning lines (cleared once a save
     /// has reloaded the file normally).
@@ -788,6 +788,16 @@ pub enum FindRowsAction {
     Delete,
     Copy,
     Flag { flag: u8 },
+}
+
+/// What acting on Find all's rows did.
+#[derive(Debug, Clone, Serialize)]
+pub struct FindRowsReport {
+    pub info: DocInfo,
+    /// Rows that had a flag of another colour (Flag).
+    pub recolored: u64,
+    /// Hidden columns left out of the new tab (Copy).
+    pub left_out_cols: u32,
 }
 
 /// At most this many rows flagged at once from Find.
@@ -1245,7 +1255,7 @@ impl Docs {
             doc: RwLock::new(doc),
             job: Mutex::new(None),
             replace: Mutex::new(None),
-            changed_rows: Mutex::new(Vec::new()),
+            changed_rows: Mutex::new((0, Vec::new())),
             cancel: AtomicBool::new(false),
             line_by_line: AtomicBool::new(line_by_line),
             error: Mutex::new(None),
@@ -2733,43 +2743,95 @@ impl Docs {
 
     /// Act on the rows with a match: show only them, delete them (one undo
     /// step), copy them to a new tab, or flag them (a row note flag).
-    pub fn find_rows(&self, id: u32, spec: FindSpec, action: FindRowsAction) -> CmdResult<DocInfo> {
+    /// `revision`: the one Find all ran at; the action refuses if the file
+    /// changed since, so it never acts on rows the list didn't show.
+    pub fn find_rows(
+        &self,
+        id: u32,
+        spec: FindSpec,
+        action: FindRowsAction,
+        revision: Option<u64>,
+    ) -> CmdResult<FindRowsReport> {
+        let changed = || {
+            CmdError::new(
+                "changed",
+                "the file changed since Find all, so nothing was done. Run Find all again",
+            )
+        };
+        let same = |d: &natendo_engine::document::Document| -> Result<(), natendo_engine::Error> {
+            match revision {
+                Some(r) if r != d.revision() => Err(natendo_engine::Error::Changed),
+                _ => Ok(()),
+            }
+        };
+        if let Some(r) = revision {
+            if self.get(id)?.read().revision() != r {
+                return Err(changed());
+            }
+        }
+        let report = |info: DocInfo| FindRowsReport {
+            info,
+            recolored: 0,
+            left_out_cols: 0,
+        };
+        let fix = |e: CmdError| if e.kind == "changed" { changed() } else { e };
         match action {
-            FindRowsAction::Show => self.compute_apply(
-                id,
-                "Filtering",
-                |d, p| d.plan_show_matching(&spec, p),
-                |d, plan| d.apply_rows(plan),
-            ),
-            FindRowsAction::Delete => self.compute_apply(
-                id,
-                "Deleting rows",
-                |d, p| d.plan_delete_matching(&spec, p),
-                |d, plan| d.apply_rows(plan),
-            ),
+            FindRowsAction::Show => self
+                .compute_apply(
+                    id,
+                    "Filtering",
+                    |d, p| {
+                        same(d)?;
+                        d.plan_show_matching(&spec, p)
+                    },
+                    |d, plan| d.apply_rows(plan),
+                )
+                .map(report)
+                .map_err(fix),
+            FindRowsAction::Delete => self
+                .compute_apply(
+                    id,
+                    "Deleting rows",
+                    |d, p| {
+                        same(d)?;
+                        d.plan_delete_matching(&spec, p)
+                    },
+                    |d, plan| d.apply_rows(plan),
+                )
+                .map(report)
+                .map_err(fix),
             FindRowsAction::Copy => {
                 let entry = self.get(id)?;
-                let table = {
+                let (table, all) = {
                     let job = entry.start("Copying rows")?;
                     let d = entry.read();
-                    d.matching_table(&spec, &job.progress)?
+                    same(&d).map_err(|_| changed())?;
+                    (d.matching_table(&spec, &job.progress)?, d.col_count())
                 };
                 drop(entry);
+                let left_out_cols = all.saturating_sub(table.cols);
                 let doc = table.into_document()?;
                 let (nid, _) = self.insert(doc, false)?;
                 self.inherit_private(nid, &[id], &[]);
                 self.set_title_of(nid, format!("Matches ({})", self.stem(id)));
-                self.info(nid)
+                Ok(FindRowsReport {
+                    info: self.info(nid)?,
+                    recolored: 0,
+                    left_out_cols,
+                })
             }
             FindRowsAction::Flag { flag } => {
                 use natendo_engine::notes::{Note, FLAGS};
                 if flag == 0 || flag > FLAGS {
                     return Err(CmdError::new("invalid", "that flag is unknown"));
                 }
+                // A job, so a big file shows progress and can be cancelled.
                 let rows = {
                     let entry = self.get(id)?;
+                    let job = entry.start("Flagging rows")?;
                     let d = entry.read();
-                    d.matching_rows(&spec, &Progress::new())?
+                    same(&d).map_err(|_| changed())?;
+                    d.matching_rows(&spec, &job.progress)?
                 };
                 if rows.len() > MAX_FLAG_ROWS {
                     return Err(CmdError::new(
@@ -2788,21 +2850,33 @@ impl Docs {
                         ));
                     }
                     let before = b.notes.clone();
+                    let mut recolored = 0u64;
                     for &r in &rows {
                         let key = d.note_key(b, r)?;
                         if key.is_empty() {
                             continue;
                         }
-                        let text = b.notes.get(&key).map(|n| n.text.clone()).unwrap_or_default();
+                        let old = b.notes.get(&key);
+                        if old.is_some_and(|n| n.flag != 0 && n.flag != flag) {
+                            recolored += 1;
+                        }
+                        let text = old.map(|n| n.text.clone()).unwrap_or_default();
                         b.notes.insert(key, Note { flag, text });
                     }
                     if let Err(e) = b.save(sidecar) {
                         b.notes = before;
                         return Err(e.into());
                     }
-                    Ok(())
-                })?;
-                self.info(id)
+                    Ok(recolored)
+                })
+                .map(|recolored| (recolored, self.info(id)))
+                .and_then(|(recolored, info)| {
+                    Ok(FindRowsReport {
+                        info: info?,
+                        recolored,
+                        left_out_cols: 0,
+                    })
+                })
             }
         }
     }
@@ -2976,7 +3050,8 @@ impl Docs {
                 e
             }
         })?;
-        *entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner()) = rows;
+        let rev = entry.read().revision();
+        *entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner()) = (rev, rows);
         Ok(ReplaceReport {
             cells,
             hits,
@@ -2987,8 +3062,8 @@ impl Docs {
 
     /// Show only the rows the last Replace all changed (a view, undoable).
     pub fn show_changed(&self, id: u32, keep_first: bool) -> CmdResult<DocInfo> {
-        let ids = self
-            .get(id)?
+        let entry = self.get(id)?;
+        let (rev, ids) = entry
             .changed_rows
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -2996,6 +3071,13 @@ impl Docs {
         if ids.is_empty() {
             return Err(CmdError::new("invalid", "nothing was replaced yet"));
         }
+        if rev != entry.read().revision() {
+            return Err(CmdError::new(
+                "changed",
+                "the file changed since the last Replace all (or it was undone), so there are no changed rows to show",
+            ));
+        }
+        drop(entry);
         self.compute_apply(
             id,
             "Filtering",
@@ -3045,11 +3127,22 @@ impl Docs {
                 plan.exclude(&exclude);
             }
         }
-        let step = RecipeOp::ReplaceAll {
-            spec: spec.clone(),
-            with: replacement.clone(),
+        // With changes unticked by hand the step can't be repeated on
+        // another file (or the same one) faithfully, so it is left out of
+        // recipes rather than replayed as a full Replace all.
+        let logged = if exclude.is_empty() {
+            Logged::Step(RecipeOp::ReplaceAll {
+                spec: spec.clone(),
+                with: replacement.clone(),
+            })
+        } else {
+            Logged::LeftOut(format!(
+                "Replace all with {} change{} unticked by hand",
+                exclude.len(),
+                if exclude.len() == 1 { "" } else { "s" }
+            ))
         };
-        self.recorded(id, Logged::Step(step), || {
+        self.recorded(id, logged, || {
             self.replace_all_now(id, spec, replacement, true)
         })
     }
@@ -3074,7 +3167,8 @@ impl Docs {
             let (cells, hits) = (plan.cells, plan.hits);
             let rows = plan.row_ids();
             let info = self.edit(id, |d| d.apply_replace(plan))?;
-            *entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner()) = rows;
+            let rev = entry.read().revision();
+            *entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner()) = (rev, rows);
             Ok(ReplaceReport {
                 cells,
                 hits,
@@ -7244,13 +7338,33 @@ ca,California
             skip_cols: Vec::new(),
         };
         let t = docs
-            .find_rows(id, spec.clone(), FindRowsAction::Copy)
-            .unwrap();
+            .find_rows(id, spec.clone(), FindRowsAction::Copy, None)
+            .unwrap()
+            .info;
         assert_eq!(t.rows, 2);
         assert!(t.name.starts_with("Matches (fr"));
+        // A stale Find all is refused: nothing is done.
+        let rev = docs.find_all(id, spec.clone()).unwrap().revision;
+        docs.set_cells(id, vec![(2, 0, "x2".into())]).unwrap();
         assert_eq!(
-            docs.find_rows(id, spec.clone(), FindRowsAction::Show)
+            docs.find_rows(id, spec.clone(), FindRowsAction::Delete, Some(rev))
+                .unwrap_err()
+                .kind,
+            "changed"
+        );
+        let rev = docs.find_all(id, spec.clone()).unwrap().revision;
+        docs.undo(id).unwrap();
+        assert_eq!(
+            docs.find_rows(id, spec.clone(), FindRowsAction::Show, Some(rev))
+                .unwrap_err()
+                .kind,
+            "changed"
+        );
+        let rev = docs.find_all(id, spec.clone()).unwrap().revision;
+        assert_eq!(
+            docs.find_rows(id, spec.clone(), FindRowsAction::Show, Some(rev))
                 .unwrap()
+                .info
                 .rows,
             2
         );
@@ -7258,7 +7372,13 @@ ca,California
             docs.replace_titles(id, spec.clone(), "y".into()).unwrap(),
             vec![(1, "y city".to_string())]
         );
-        docs.find_rows(id, spec.clone(), FindRowsAction::Flag { flag: 1 })
+        docs.find_rows(id, spec.clone(), FindRowsAction::Flag { flag: 1 }, None)
+            .unwrap();
+        let r = docs
+            .find_rows(id, spec.clone(), FindRowsAction::Flag { flag: 2 }, None)
+            .unwrap();
+        assert_eq!(r.recolored, 1);
+        docs.find_rows(id, spec.clone(), FindRowsAction::Flag { flag: 1 }, None)
             .unwrap();
         let (noted, _) = docs.note_list(id, 10).unwrap();
 
@@ -7275,6 +7395,10 @@ ca,California
         docs.replace_preview(id, spec.clone(), "y".into()).unwrap();
         docs.replace_confirm(id, spec, "y".into()).unwrap();
         assert_eq!(docs.show_changed(id, true).unwrap().rows, 2);
+        // After undo there are no changed rows to show.
+        docs.undo(id).unwrap();
+        docs.undo(id).unwrap();
+        assert_eq!(docs.show_changed(id, true).unwrap_err().kind, "changed");
     }
 
     #[test]

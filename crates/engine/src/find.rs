@@ -285,8 +285,8 @@ fn regex_ignore_accents(src: &str) -> String {
 /// case and `\L` lower case until `\E`, `\u` and `\l` for the next letter
 /// only (as in Notepad++ and VS Code), applied to the expanded text so a
 /// group's value is never read as marks.
-struct CaseTemplate<'a> {
-    parts: Vec<(Case, Option<bool>, &'a str)>,
+struct CaseTemplate {
+    parts: Vec<(Case, Option<bool>, String)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -296,17 +296,30 @@ enum Case {
     Lower,
 }
 
-impl<'a> CaseTemplate<'a> {
-    fn new(rep: &'a str) -> Self {
+impl CaseTemplate {
+    /// Marks are read in the replacement as typed, before `\t` and the
+    /// like become characters (`escapes`), so `\\U` stays a literal
+    /// backslash and U.
+    fn new(rep: &str, escapes: bool) -> Self {
+        let text = |s: &str| -> String {
+            if escapes {
+                unescape(s).into_owned()
+            } else {
+                s.to_string()
+            }
+        };
         let mut parts = Vec::new();
         let (mut case, mut once) = (Case::Keep, None);
         let mut start = 0;
         let b = rep.as_bytes();
         let mut i = 0;
         while i + 1 < b.len() {
-            if b[i] == b'\\' && matches!(b[i + 1], b'U' | b'L' | b'E' | b'u' | b'l') {
+            if b[i] == b'\\' && b[i + 1] == b'\\' {
+                // An escaped backslash: never the start of a mark.
+                i += 2;
+            } else if b[i] == b'\\' && matches!(b[i + 1], b'U' | b'L' | b'E' | b'u' | b'l') {
                 if start < i || once.is_some() {
-                    parts.push((case, once.take(), &rep[start..i]));
+                    parts.push((case, once.take(), text(&rep[start..i])));
                 }
                 match b[i + 1] {
                     b'U' => case = Case::Upper,
@@ -321,13 +334,13 @@ impl<'a> CaseTemplate<'a> {
                 i += 1;
             }
         }
-        parts.push((case, once, &rep[start..]));
+        parts.push((case, once, text(&rep[start..])));
         CaseTemplate { parts }
     }
 
     fn expand(&self, caps: &regex::Captures<'_>, out: &mut String) {
         if self.parts.len() == 1 && self.parts[0].0 == Case::Keep && self.parts[0].1.is_none() {
-            caps.expand(self.parts[0].2, out);
+            caps.expand(&self.parts[0].2, out);
             return;
         }
         let mut pending: Option<bool> = None;
@@ -361,6 +374,32 @@ impl<'a> CaseTemplate<'a> {
 
 /// `\t` `\n` `\r` `\\` `\u{XXXX}` in text as the characters they name;
 /// any other backslash stays as it is.
+/// `s` lower-cased letter by letter (the same for a pair and a cell). With
+/// `map`, also where each byte of the result came from in `s`: the start of
+/// a letter's lower-case form maps to that letter, the rest to `usize::MAX`,
+/// and the end to `s.len()`.
+fn fold(s: &str, map: Option<&mut Vec<usize>>) -> String {
+    let mut out = String::with_capacity(s.len());
+    match map {
+        None => {
+            for c in s.chars() {
+                out.extend(c.to_lowercase());
+            }
+        }
+        Some(map) => {
+            map.clear();
+            for (i, c) in s.char_indices() {
+                let at = out.len();
+                out.extend(c.to_lowercase());
+                map.resize(out.len(), usize::MAX);
+                map[at] = i;
+            }
+            map.push(s.len());
+        }
+    }
+    out
+}
+
 pub(crate) fn unescape(t: &str) -> Cow<'_, str> {
     if !t.contains('\\') {
         return Cow::Borrowed(t);
@@ -515,6 +554,7 @@ impl Matcher {
     /// cell is empty (so `^$` fills blank cells, but `x*` never inserts text
     /// between every character).
     pub fn replace(&self, s: &str, rep: &str) -> Result<Option<(String, u64)>, Error> {
+        let raw = rep;
         let rep: Cow<'_, str> = if self.rep_escapes {
             unescape(rep)
         } else {
@@ -544,7 +584,7 @@ impl Matcher {
                 hits += 1;
             }
         } else {
-            let template = CaseTemplate::new(rep);
+            let template = CaseTemplate::new(raw, self.rep_escapes);
             let mut piece = String::new();
             for caps in self.re.captures_iter(s) {
                 let m = caps.get(0).expect("group 0 always matches");
@@ -728,6 +768,10 @@ pub struct FindAll {
     /// order; columns with none are left out.
     #[serde(default)]
     pub per_col: Vec<(u32, u64)>,
+    /// The document's revision when searched (acting on the rows later
+    /// refuses if the file changed since).
+    #[serde(default)]
+    pub revision: u64,
 }
 
 /// One cell a replace would change (for the preview).
@@ -748,7 +792,7 @@ pub struct ReplacePlan {
     changes: Vec<(u32, Vec<(u32, String)>)>,
     /// For each entry of `changes`: its shown row and the logical column of
     /// each changed cell (for paging through the preview).
-    at: Vec<(u64, Vec<u32>)>,
+    at: Vec<(u64, Vec<(u32, u32)>)>,
     /// Cells that change.
     pub cells: u64,
     /// Matches replaced.
@@ -770,11 +814,12 @@ impl ReplacePlan {
             return;
         }
         let skip: std::collections::HashSet<(u64, u32)> = cells.iter().copied().collect();
-        let mut removed = 0u64;
+        let (mut removed, mut hits) = (0u64, 0u64);
         for ((_, row), (r, cols)) in self.changes.iter_mut().zip(self.at.iter_mut()) {
             let mut k = 0;
             while k < cols.len() {
-                if skip.contains(&(*r, cols[k])) {
+                if skip.contains(&(*r, cols[k].0)) {
+                    hits += u64::from(cols[k].1);
                     cols.remove(k);
                     row.remove(k);
                     removed += 1;
@@ -795,6 +840,7 @@ impl ReplacePlan {
             keep[i - 1]
         });
         self.cells = self.cells.saturating_sub(removed);
+        self.hits = self.hits.saturating_sub(hits);
     }
 }
 
@@ -1093,6 +1139,7 @@ impl Document {
                 hits: Vec::new(),
                 cells: 0,
                 per_col: Vec::new(),
+                revision: self.revision(),
             });
         }
         let ncols = area.cols.len();
@@ -1150,6 +1197,7 @@ impl Document {
             hits,
             cells,
             per_col,
+            revision: self.revision(),
         })
     }
 
@@ -1336,7 +1384,7 @@ impl Document {
             if spec.match_case {
                 s.to_string()
             } else {
-                s.to_lowercase()
+                fold(s, None)
             }
         };
         if spec.whole_cell {
@@ -1349,19 +1397,45 @@ impl Document {
                 Ok(map.get(&key(t)).map(|b| (b.to_string(), 1)))
             });
         }
+        // Case-blind: the pairs and each cell are lower-cased letter by
+        // letter (any language, not just English), and matches are mapped
+        // back to the cell's own text.
         let ac = aho_corasick::AhoCorasick::builder()
             .match_kind(aho_corasick::MatchKind::LeftmostLongest)
-            .ascii_case_insensitive(!spec.match_case)
-            .build(pairs.iter().map(|(a, _)| a.as_str()))
+            .build(pairs.iter().map(|(a, _)| key(a)))
             .map_err(|e| Error::Invalid(format!("the list could not be used: {e}")))?;
+        let blind = !spec.match_case;
         self.plan_cells_with(&area, preview, progress, |t| {
+            let mut map = Vec::new();
+            let folded;
+            let hay: &str = if !blind {
+                t
+            } else if t.is_ascii() {
+                folded = t.to_ascii_lowercase();
+                &folded
+            } else {
+                folded = fold(t, Some(&mut map));
+                &folded
+            };
+            // Where a match in `hay` starts or ends in `t` (None: inside one
+            // letter's lower-case form, which is not a whole match).
+            let back = |i: usize| -> Option<usize> {
+                if map.is_empty() {
+                    Some(i)
+                } else {
+                    map.get(i).copied().filter(|&p| p != usize::MAX)
+                }
+            };
             let mut out = String::new();
             let mut last = 0;
             let mut hits = 0u64;
-            for m in ac.find_iter(t) {
-                out.push_str(&t[last..m.start()]);
+            for m in ac.find_iter(hay) {
+                let (Some(s), Some(e)) = (back(m.start()), back(m.end())) else {
+                    continue;
+                };
+                out.push_str(&t[last..s]);
                 out.push_str(&pairs[m.pattern().as_usize()].1);
-                last = m.end();
+                last = e;
                 hits += 1;
                 if out.len() > MAX_RESULT_CELL_BYTES {
                     return Err(Error::OutOfMemory(
@@ -1471,8 +1545,14 @@ impl Document {
         progress: &Progress,
     ) -> Result<crate::reshape::Table, Error> {
         let rows = self.matching_rows(spec, progress)?;
-        let cols = self.col_count();
-        let all: Vec<u32> = (0..cols).collect();
+        // Hidden columns (the search's skipped ones) are left out.
+        let all: Vec<u32> = (0..self.col_count())
+            .filter(|c| !spec.skip_cols.contains(c))
+            .collect();
+        let cols = all.len() as u32;
+        if cols == 0 {
+            return Err(Error::Invalid("every column is hidden".into()));
+        }
         let mut out = Vec::new();
         let mut line: Vec<String> = Vec::with_capacity(cols as usize);
         let mut buf = Vec::new();
@@ -1524,7 +1604,7 @@ impl Document {
         let created = AtomicUsize::new(0);
         type Part = (
             Vec<(u32, Vec<(u32, String)>)>,
-            Vec<(u64, Vec<u32>)>,
+            Vec<(u64, Vec<(u32, u32)>)>,
             Vec<Change>,
             u64,
             u64,
@@ -1542,7 +1622,7 @@ impl Document {
                 let mut buf = Vec::new();
                 for r in s..e {
                     let Some(id) = self.id_at(r) else { continue };
-                    let mut row: Vec<(u32, String, u32)> = Vec::new();
+                    let mut row: Vec<(u32, String, u32, u32)> = Vec::new();
                     let mut err = None;
                     self.each_cell(area, r, false, &mut buf, |k, t| {
                         let phys = self.phys(area.cols[k])?;
@@ -1565,7 +1645,12 @@ impl Document {
                                 }
                                 cells += 1;
                                 hits += n;
-                                row.push((phys, new, area.cols[k]));
+                                row.push((
+                                    phys,
+                                    new,
+                                    area.cols[k],
+                                    u32::try_from(n).unwrap_or(u32::MAX),
+                                ));
                                 None
                             }
                             Ok(_) => None,
@@ -1580,8 +1665,8 @@ impl Document {
                     }
                     if !row.is_empty() {
                         row.sort_unstable_by_key(|c| c.0);
-                        at.push((r, row.iter().map(|c| c.2).collect()));
-                        changes.push((id, row.into_iter().map(|(p, s, _)| (p, s)).collect()));
+                        at.push((r, row.iter().map(|c| (c.2, c.3)).collect()));
+                        changes.push((id, row.into_iter().map(|(p, s, _, _)| (p, s)).collect()));
                     }
                 }
                 progress.step(e - s)?;
@@ -1639,7 +1724,7 @@ impl Document {
                 out.push(Change {
                     row: *row,
                     number: self.row_number(*row).unwrap_or(*row),
-                    col: *col,
+                    col: col.0,
                     before: short(&buf[k]),
                     after: short(new),
                 });
@@ -1915,6 +2000,58 @@ mod tests {
     }
 
     #[test]
+    fn batch_replace_case_blind_in_any_language() {
+        let d = doc("a\nJOSÉ Ruiz\nmaría josé\nİx\nΣΟΦΙΑ\n");
+        let p = Progress::new();
+        let spec = |pairs: Vec<(&str, &str)>| BatchReplace {
+            pairs: pairs
+                .into_iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect(),
+            scope: Scope::All,
+            skip_first: true,
+            ..Default::default()
+        };
+        let plan = d
+            .plan_batch_replace(&spec(vec![("josé", "J"), ("σοφια", "S")]), 10, &p)
+            .unwrap();
+        let got: Vec<&str> = plan.preview.iter().map(|c| c.after.as_str()).collect();
+        assert_eq!(got, vec!["J Ruiz", "maría J", "S"]);
+        // A letter whose lower-case form is longer ("İ" is "i̇") is matched
+        // as a whole and the text around it kept.
+        let plan = d
+            .plan_batch_replace(&spec(vec![("x", "y")]), 10, &p)
+            .unwrap();
+        assert_eq!(plan.preview[0].after, "İy");
+        let plan = d
+            .plan_batch_replace(&spec(vec![("i", "Q")]), 10, &p)
+            .unwrap();
+        assert!(plan.preview.iter().all(|c| !c.after.contains("Q̇")));
+    }
+
+    #[test]
+    fn copied_rows_leave_hidden_columns_out_and_untick_lowers_hits() {
+        let d = doc("k,secret,v\nx1,111,a\nb,222,c\n");
+        let p = Progress::new();
+        let mut s = spec(pat("x", PatternKind::Plain));
+        s.skip_first = true;
+        s.skip_cols = vec![1];
+        let t = d.matching_table(&s, &p).unwrap();
+        assert_eq!(t.cols, 2);
+        assert_eq!(
+            String::from_utf8(t.bytes).unwrap().replace("\r\n", "\n"),
+            "k,v\nx1,a\n"
+        );
+        let d = doc("a\nxx\nx\n");
+        let mut plan = d
+            .plan_replace(&spec(pat("x", PatternKind::Plain)), "y", 0, &p)
+            .unwrap();
+        assert_eq!((plan.cells, plan.hits), (2, 3));
+        plan.exclude(&[(1, 0)]);
+        assert_eq!((plan.cells, plan.hits), (1, 1));
+    }
+
+    #[test]
     fn batch_replace_all_at_once() {
         let d = doc("a,b\nA,x B y\nB,C\nzz,ab\n");
         let p = Progress::new();
@@ -1968,6 +2105,9 @@ mod tests {
         // A group's own text is never read as a mark.
         let m = with(r"(.+)", PatternKind::Regex, |_| {});
         assert_eq!(m.replace(r"a\Ub", r"\U$1").unwrap().unwrap().0, r"A\UB");
+        // A doubled backslash is a literal one, never a mark.
+        assert_eq!(m.replace("ab", r"\\U$1").unwrap().unwrap().0, r"\Uab");
+        assert_eq!(m.replace("ab", r"\\\U$1").unwrap().unwrap().0, r"\AB");
         // Plain text replacements are taken as they are.
         let m = with("x", PatternKind::Plain, |_| {});
         assert_eq!(m.replace("x", r"\Uy").unwrap().unwrap().0, r"\Uy");

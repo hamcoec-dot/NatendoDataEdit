@@ -2305,9 +2305,10 @@ async fn find_rows(
     doc: u32,
     spec: FindSpec,
     action: docs::FindRowsAction,
-) -> CmdResult<DocInfo> {
+    revision: Option<u64>,
+) -> CmdResult<docs::FindRowsReport> {
     let docs = docs.inner().clone();
-    blocking(move || docs.find_rows(doc, spec, action)).await
+    blocking(move || docs.find_rows(doc, spec, action, revision)).await
 }
 
 #[tauri::command]

@@ -40,22 +40,26 @@
 
   const srcTitles = $derived(src ? Array.from({ length: Math.min(src.info.cols, 2000) }, (_, c) => (src.header ? src.cache.get(0, c) || `Column ${c + 1}` : `Column ${c + 1}`)) : []);
 
-  /** Pasted lines: "find<TAB>replace" (or a comma when there is no tab). */
-  function parsePasted(): [string, string][] {
+  /** Pasted lines: "find<TAB>replace". Only when no line has a tab, a
+   *  comma splits them (with the spaces around it dropped). */
+  function parsePasted(src: string): [string, string][] {
     const out: [string, string][] = [];
-    for (const line of text.split(/\r?\n/)) {
+    const lines = src.split(/\r?\n/);
+    const tabs = lines.some((l) => l.includes("\t"));
+    for (const line of lines) {
       if (!line.trim()) continue;
-      const sep = line.includes("\t") ? "\t" : ",";
-      const i = line.indexOf(sep);
-      const a = i < 0 ? line : line.slice(0, i);
-      const b = i < 0 ? "" : line.slice(i + 1);
+      const i = line.indexOf(tabs ? "\t" : ",");
+      const a = i < 0 ? line : tabs ? line.slice(0, i) : line.slice(0, i).trimEnd();
+      const b = i < 0 ? "" : tabs ? line.slice(i + 1) : line.slice(i + 1).trimStart();
       if (a) out.push([a, b]);
     }
     return out;
   }
+  /** Worked out once per change of the text (a big paste stays quick). */
+  const pasted = $derived(parsePasted(text));
 
   async function pairs(): Promise<[string, string][] | null> {
-    if (from === "paste") return parsePasted();
+    if (from === "paste") return pasted;
     if (!src) return null;
     return backend().columnPairs(src.id, findCol, withCol, src.header);
   }
@@ -125,7 +129,7 @@
     <label class="row"><input type="radio" bind:group={from} value="tab" disabled={!others.length} /> Two columns of another open tab{others.length ? "" : " (open one first)"}</label>
     {#if from === "paste"}
       <textarea aria-label="Pairs to replace" rows="7" placeholder={"One pair per line: what to find, a tab (or comma), what to put instead\nTN\tTennessee\nGA\tGeorgia"} bind:value={text}></textarea>
-      <p class="note">{parsePasted().length.toLocaleString()} pairs. Copy two columns from a spreadsheet and paste them here.</p>
+      <p class="note">{pasted.length.toLocaleString()} pairs. Copy two columns from a spreadsheet and paste them here (or type "find, replace" lines).</p>
     {:else}
       <label class="row">Tab <select bind:value={srcId}>{#each others as t (t.id)}<option value={t.id}>{t.info.name}</option>{/each}</select></label>
       <label class="row">Find what is in <select bind:value={findCol}>{#each srcTitles as t, c (c)}<option value={c}>{t}</option>{/each}</select></label>

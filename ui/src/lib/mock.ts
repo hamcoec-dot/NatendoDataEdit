@@ -1150,25 +1150,34 @@ export class MockBackend implements Backend {
     return out;
   }
 
-  async findRows(doc: number, spec: FindSpec, action: FindRowsAction): Promise<DocInfo> {
+  async findRows(doc: number, spec: FindSpec, action: FindRowsAction): Promise<import("./backend").FindRowsReport> {
     const d = this.get(doc);
     const rows = this.matchingRows(d, spec);
+    const done = (info: DocInfo, recolored = 0, left_out_cols = 0) => ({ info, recolored, left_out_cols });
     switch (action.kind) {
       case "copy": {
-        const width = this.colCount(d);
-        const line = (r: number) => Array.from({ length: width }, (_, c) => this.value(d, r, c));
+        const skip = new Set(spec.skip_cols ?? []);
+        const cols = Array.from({ length: this.colCount(d) }, (_, c) => c).filter((c) => !skip.has(c));
+        const line = (r: number) => cols.map((c) => this.value(d, r, c));
         const lines = [...(spec.skip_first ? [line(0)] : []), ...rows.map(line)];
-        const info = this.make("Untitled", Math.max(1, lines.length), width);
+        const info = this.make("Untitled", Math.max(1, lines.length), cols.length);
         await this.setCells(info.id, lines.flatMap((l, r) => l.map((v, c) => [r, c, v] as [number, number, string])));
-        return this.setDocTitle(info.id, `Matches (${d.info.name.replace(/\.[^. ]{1,5}$/, "")})`);
+        return done(await this.setDocTitle(info.id, `Matches (${d.info.name.replace(/\.[^. ]{1,5}$/, "")})`), 0, this.colCount(d) - cols.length);
       }
-      case "flag":
-        for (const r of rows) await this.noteSet(doc, r, action.flag, "");
-        return this.refresh(d);
+      case "flag": {
+        let recolored = 0;
+        const m = this.notes.get(doc);
+        for (const r of rows) {
+          const old = m?.get(r);
+          if (old && old.flag && old.flag !== action.flag) recolored++;
+          await this.noteSet(doc, r, action.flag, old?.text ?? "");
+        }
+        return done(this.refresh(d), recolored);
+      }
       case "delete":
-        return this.removeRows(d, rows);
+        return done(this.removeRows(d, rows));
       case "show":
-        return this.showOnly(d, new Set(rows.map((r) => this.rowId(d, r))), spec.skip_first);
+        return done(this.showOnly(d, new Set(rows.map((r) => this.rowId(d, r))), spec.skip_first));
     }
   }
 

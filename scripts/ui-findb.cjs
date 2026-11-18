@@ -173,6 +173,45 @@ const url = process.argv[3] || "http://localhost:5198";
   await closeTab();
   void before;
 
+  // A change after Find all closes the list, so its row actions never act
+  // on rows it doesn't show.
+  await p.focus("input[aria-label='Find']");
+  await p.keyboard.press("Alt+Enter");
+  await wait(900);
+  ok(await p.isVisible(".find .acts"), "Find all is open again");
+  await p.evaluate(() => window.__nde.backend.setCells(window.__nde.tab.id, [[4, 1, "GA"]]).then((i) => window.__nde.tab.update(i, true)));
+  await wait(600);
+  ok(!(await p.isVisible(".find .acts")) && /Find all list was closed/.test(await fstatus()), `a change closes the list (${await fstatus()})`);
+  await grid();
+  await p.keyboard.press("Control+z");
+  await wait(600);
+
+  // Copy to new tab leaves a hidden column out, and says so.
+  await sel(1, 2);
+  await p.keyboard.press("Control+0");
+  await wait(400);
+  await p.focus("input[aria-label='Find']");
+  await p.keyboard.press("Alt+Enter");
+  await wait(900);
+  await p.click(".find .acts button:has-text('Copy to new tab')");
+  await wait(1000);
+  const hc = await p.evaluate(() => window.__nde.tab.info.cols);
+  ok(hc === 2 && /1 hidden column left out/.test(await fstatus()), `the hidden column is left out of the new tab (${hc} columns; ${await fstatus()})`);
+  await closeTab();
+  await p.evaluate(() => {
+    window.__nde.tab.columns.showAll();
+    window.__nde.tab.bump();
+  });
+  await wait(300);
+
+  // Flag says how to take flags off (Ctrl+Z doesn't).
+  await p.focus("input[aria-label='Find']");
+  await p.keyboard.press("Alt+Enter");
+  await wait(900);
+  await p.click(".find .acts button:has-text('Flag')");
+  await wait(700);
+  ok(/Ctrl\+Z doesn't take them off/.test(await fstatus()), "Flag says Ctrl+Z doesn't take flags off");
+
   // All open tabs: Find all and Replace all across them.
   await newTable("place,state\r\nOak,TN\r\nElm,KY\r\n".replace(/,/g, "\t"));
   await sel(1, 0);
@@ -190,18 +229,45 @@ const url = process.argv[3] || "http://localhost:5198";
   await p.click(".find button:has-text('Replace all…')");
   await wait(1200);
   ok(/across 2 tabs/.test(await p.textContent(".find .confirm")), "Replace all shows both tabs' parts");
+  // A change to the other tab closes the preview.
+  await p.evaluate(async () => {
+    const t = window.__nde.tabs[0];
+    const i = await window.__nde.backend.setCells(t.id, [[4, 0, "Dee2"]]);
+    t.update(i, true);
+  });
+  await wait(600);
+  ok(!(await p.isVisible(".find .confirm")) && /A tab changed/.test(await fstatus()), `a change to another tab closes the preview (${await fstatus()})`);
+  await p.click(".find button:has-text('Replace all…')");
+  await wait(1200);
   await p.click(".find .confirm button.primary");
   await wait(1200);
   ok((await cell(1, 1)) === "Tenn." && /in 2 tabs/.test(await fstatus()), `both tabs were changed (${await fstatus()})`);
   await p.selectOption("select[aria-label='Search in']", "all");
 
-  // Row notes: Look in Notes.
+  // Row notes: Look in Notes finds them, Find next goes to the row.
+  await p.evaluate(async () => {
+    const b = window.__nde.backend;
+    const id = window.__nde.tab.id;
+    await b.noteSet(id, 1, 0, "Call back on Tuesday");
+    await b.noteSet(id, 2, 2, "moved away");
+  });
   await p.selectOption("select[aria-label='Look in']", "notes");
   await type("zzz");
   await p.focus("input[aria-label='Find']");
   await p.keyboard.press("Alt+Enter");
   await wait(600);
-  ok(/No notes match/.test((await fstatus()) + (await p.textContent(".find").catch(() => ""))), "In row notes searches the notes");
+  ok(/No notes match/.test(await fstatus()), "a note search with no match says so");
+  await type("tuesday");
+  await sel(0, 1);
+  await p.focus("input[aria-label='Find']");
+  await p.keyboard.press("Enter");
+  await wait(600);
+  ok((await p.evaluate(() => window.__nde.tab.cell.row)) === 1 && /Call back on Tuesday/.test(await fstatus()), `Find next goes to the row with the note (${await fstatus()})`);
+  await type("a");
+  await p.focus("input[aria-label='Find']");
+  await p.keyboard.press("Alt+Enter");
+  await wait(600);
+  ok((await p.$$eval(".find .nlist .hit", (e) => e.length)) === 2, "Find all lists every matching note");
   await p.selectOption("select[aria-label='Look in']", "cells");
   await closeTab();
 
@@ -224,6 +290,15 @@ const url = process.argv[3] || "http://localhost:5198";
   await p.keyboard.press("Control+z");
   await wait(600);
   ok((await cell(1, 0)) === "Ann", "one undo step takes it all back");
+  // "find, replace" lines (no tab anywhere): the spaces after the comma go.
+  await p.click(".find button:has-text('From a list…')");
+  await wait(400);
+  await p.fill("textarea[aria-label='Pairs to replace']", "Ann, Anne");
+  await p.click("[role=dialog] button:has-text('Show what changes')");
+  await wait(900);
+  await p.click("[role=dialog] button.primary");
+  await wait(900);
+  ok((await cell(1, 0)) === "Anne", `a comma list drops the space after the comma (${JSON.stringify(await cell(1, 0))})`);
 
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   console.log(failed ? `${failed} FAILED` : "ALL PASS");
