@@ -11,8 +11,9 @@ use crate::validate::CheckSpec;
 use crate::value::{self, ReadOptions};
 use crate::Error;
 
-/// Most cells one Go To Special pick lists.
-pub const MAX_SPECIAL_CELLS: usize = 5_000_000;
+/// Most cells one Go To Special pick lists (as many as the window lights
+/// up; Fill and Clear work on every one in the engine).
+pub const MAX_SPECIAL_CELLS: usize = 100_000;
 
 /// Which cells to pick.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -301,7 +302,16 @@ impl Document {
         if value.len() > MAX_CELL_BYTES {
             return Err(Error::Invalid("the text is too long".into()));
         }
-        let (found, total) = self.special_scan(spec, MAX_BLOCK_CELLS + 1, progress)?;
+        // Protected columns are left out, so the count is what changes.
+        let mut spec = spec.clone();
+        let picked = spec.cols.len();
+        spec.cols.retain(|&c| !self.is_protected(c));
+        if picked > 0 && spec.cols.is_empty() {
+            return Err(Error::Invalid(
+                "those columns are protected, so nothing changed (right-click a heading › Protect column to switch it off)".into(),
+            ));
+        }
+        let (found, total) = self.special_scan(&spec, MAX_BLOCK_CELLS + 1, progress)?;
         if total > MAX_BLOCK_CELLS {
             return Err(Error::Invalid(format!(
                 "{total} cells were found; one fill changes at most {MAX_BLOCK_CELLS}. Pick fewer columns or rows."
@@ -468,10 +478,9 @@ mod tests {
             cols: vec![0],
             ..Default::default()
         };
-        let plan = d
+        assert!(d
             .plan_fill_special(&spec, "X", &Progress::default())
-            .unwrap();
-        assert!(d.apply_cells(plan).is_err());
+            .is_err());
         // A rename of the protected column works.
         d.set_first_row_cell(0, "voter_id".into()).unwrap();
         assert_eq!(d.cell(0, 0).unwrap(), "voter_id");

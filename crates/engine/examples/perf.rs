@@ -463,12 +463,21 @@ fn main() {
             enc.finish().unwrap().flush().unwrap();
         }
         let t = Instant::now();
-        let g = Document::open_indexed(&gz, OpenOptions::default(), None).unwrap();
+        let mut g = Document::open_indexed(&gz, OpenOptions::default(), None).unwrap();
         println!("     gzip: {} rows", g.row_count());
         check.budget(
             "open a gzipped file (about 220 MB unpacked)",
             t.elapsed(),
             Duration::from_secs(4),
+        );
+        // Saved back gzipped after one edit (compressed on every core).
+        g.set_cell(1, 1, "edited".into()).unwrap();
+        let t = Instant::now();
+        g.save(SaveOptions::default()).unwrap();
+        check.budget(
+            "save a gzipped file after one edit (about 220 MB unpacked)",
+            t.elapsed(),
+            Duration::from_secs(3),
         );
         drop(g);
         let _ = fs::remove_file(&gz);

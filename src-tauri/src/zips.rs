@@ -164,9 +164,12 @@ impl Zips {
             .get(&token)
             .cloned()
             .ok_or_else(|| err("that zip file is no longer waiting; open it again"))?;
+        // The zip is read and parsed once for every table picked.
+        let data = read_zip(&path)?;
+        let zip = Zip::open(&data)?;
         let mut out = Vec::new();
         for n in names {
-            out.extend(self.open_entry(docs, &path, n)?);
+            out.extend(Self::open_from(docs, &zip, &path, n)?);
         }
         Ok(out)
     }
@@ -178,9 +181,15 @@ impl Zips {
         }
         let data = read_zip(path)?;
         let zip = Zip::open(&data)?;
+        Self::open_from(docs, &zip, path, name)
+    }
+
+    /// One table from an opened zip, as a tab.
+    fn open_from(docs: &Docs, zip: &Zip, path: &Path, name: &str) -> CmdResult<Vec<DocInfo>> {
+        if !is_table(name) {
+            return Err(err("that is not a table in the zip"));
+        }
         let bytes = zip.read_bytes(name, MAX_ENTRY_BYTES)?;
-        drop(zip);
-        drop(data);
         let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
         let doc = Document::from_bytes(bytes, OpenOptions::default(), ext.as_deref())?;
         let short = name.rsplit('/').next().unwrap_or(name);

@@ -93,7 +93,7 @@
   import { defaultPage, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS } from "./lib/m8";
   import type { Check, CheckSpec, ComputeSpec, PageSetup } from "./lib/backend";
   import { exportDefaults } from "./lib/transfer";
-  import { cleanShortcuts, matchColumns, safeFont, MAX_VIEWS, type RecentItem, type Shortcuts, type View } from "./lib/views";
+  import { cleanShortcuts, matchColumns, safeFont, MAX_VIEWS, sessionView, type RecentItem, type Shortcuts, type View } from "./lib/views";
 
   const DEFAULT_COL_WIDTH = 130;
   const MAX_CELLS_PER_CHANGE = 100_000;
@@ -1218,9 +1218,8 @@
       .filter((t) => t.info.path && !t.private?.file && !t.private?.folder)
       .map((t) => ({
         doc: t.id,
-        // Sorting changed the rows (a change of the file), so it is not
-        // replayed; the rest of the view is.
-        view: { ...currentView(t, t.info.name), sort: null },
+        // Layout only: never anything that can hold values from the file.
+        view: sessionView(currentView(t, t.info.name)),
         row: t.cell.row,
         col: t.cell.col,
         active: t === tab,
@@ -1248,7 +1247,7 @@
         const names = items.slice(0, 6).map((i) => i.name).join(", ") + (items.length > 6 ? `, and ${items.length - 6} more` : "");
         const a = await ask(
           `Reopen ${items.length === 1 ? "the file" : `${items.length} files`} from last time?`,
-          `${names}. Each opens at the same cell with its filter, hidden columns and widths${items.some((i) => i.changed) ? "; a file changed since opens fresh" : ""}.`,
+          `${names}. Each opens at the same cell with its hidden columns and widths${items.some((i) => i.changed) ? "; a file changed since opens fresh" : ""}.`,
           [
             { id: "open", label: "Reopen", primary: true },
             { id: "no", label: "Not now" },
@@ -2400,6 +2399,22 @@
     if (r.cols >= t.info.cols) {
       say("At least one column must remain.");
       return;
+    }
+    // Protection is there to stop accidents with a key column; deleting it
+    // is the biggest one, so it asks.
+    const guarded = (t.info.protected ?? []).filter((c) => c >= r.col && c < r.col + r.cols);
+    if (guarded.length) {
+      const names = guarded.slice(0, 3).map((c) => `“${columnTitle(t, c)}”`).join(", ") + (guarded.length > 3 ? ` and ${guarded.length - 3} more` : "");
+      const a = await ask(
+        `Delete ${guarded.length === 1 ? "a protected column" : "protected columns"}?`,
+        `${names} ${guarded.length === 1 ? "is" : "are"} protected. Delete ${guarded.length === 1 ? "it" : "them"} anyway? Undo (Ctrl+Z) brings ${guarded.length === 1 ? "it" : "them"} back.`,
+        [
+          { id: "delete", label: "Delete anyway" },
+          { id: "no", label: "Keep", primary: true },
+        ],
+        "no",
+      );
+      if (a !== "delete") return;
     }
     if (await change({ op: "delete_cols", at: r.col, count: r.cols })) {
       t.columns.shift(r.col, -r.cols);

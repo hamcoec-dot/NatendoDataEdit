@@ -98,6 +98,14 @@ export interface View {
   /** Lines of text per row (1 to 10). */
   row_lines?: number;
 }
+/** A view as "Pick up where you left off" keeps it on disk: only how the
+ *  table is laid out. Filters, highlight rules and data checks can hold
+ *  values from the file (a picked name, "contains Smith"), so they are left
+ *  out; sorting changed the rows, so it is not replayed either. */
+export function sessionView(v: View): View {
+  return { ...v, sort: null, filter: null, highlights: [], checks: [] };
+}
+
 export interface RecentItem {
   /** Stable while the app runs; opaque (the full path stays in the backend). */
   id: string;

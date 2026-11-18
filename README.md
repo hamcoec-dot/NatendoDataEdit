@@ -179,15 +179,18 @@ everything is also in command search.
 - **Zipped and gzipped files:** open `voters.csv.gz` or `export.zip` without
   unpacking them first. A zip holding several tables lists them to pick from
   (or open them all, one tab each). Everything is unpacked in memory only, so
-  no unpacked copy of the data is left on disk. A `.gz` file saves back
-  gzipped; a table from a zip opens as a new tab and Save asks where to save
+  no unpacked copy of the data is left on disk (as with any file, unsaved
+  changes are kept in a recovery copy until you save or close; private file
+  mode turns that off). A `.gz` file saves back gzipped, fast, using every
+  core; a table from a zip opens as a new tab and Save asks where to save
   it (the zip itself is never changed). Sizes are capped, and a file that
   would unpack to hundreds of times its size is refused.
 - **Pick up where you left off:** at start, the app offers to reopen the
-  files that were open last time, each at the same cell with its filter,
-  hidden columns, widths and protected columns. A file changed since opens
-  fresh and says so. Only where each file is and how it was shown are kept,
-  never what is in the cells; files in private file mode, encrypted files
+  files that were open last time, each at the same cell with its hidden
+  columns, widths and protected columns. A file changed since opens fresh
+  and says so. Only where each file is and how it was laid out are kept,
+  never anything from the cells (so filters and highlight rules, which can
+  hold names from the file, are not kept either); files in private file mode, encrypted files
   and tabs never saved are not remembered. File > Options sets it to offer
   (the default), reopen without asking, or never remember.
 

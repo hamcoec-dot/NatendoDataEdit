@@ -1872,7 +1872,11 @@ impl Document {
         }
         let m = Matcher::new(&spec.pattern)?;
         m.check_replacement(replacement)?;
-        let area = self.area(spec)?;
+        // Protected columns are left out of the plan (so the preview counts
+        // only cells that change).
+        let mut spec = spec.clone();
+        spec.skip_cols.extend(self.protected_cols());
+        let area = self.area(&spec)?;
         self.plan_cells_with(&area, preview, progress, |t| m.replace(t, replacement))
     }
 
@@ -1905,7 +1909,12 @@ impl Document {
             pattern: Pattern::default(),
             scope: spec.scope.clone(),
             skip_first: spec.skip_first,
-            skip_cols: spec.skip_cols.clone(),
+            skip_cols: spec
+                .skip_cols
+                .iter()
+                .copied()
+                .chain(self.protected_cols())
+                .collect(),
             ..Default::default()
         };
         let area = self.area(&find)?;
@@ -2500,6 +2509,20 @@ mod tests {
         let m = with(" ", PatternKind::Plain, |_| {});
         assert_eq!(m.replace("a b", r"\n").unwrap().unwrap().0, r"a\nb");
         assert_eq!(unescape(r"a\\b\q\u{zz}"), r"a\b\q\u{zz}");
+    }
+
+    #[test]
+    fn replace_preview_leaves_protected_columns_out() {
+        let mut d = doc("a,b
+x,x
+x,q
+");
+        d.set_protected(&[0]);
+        let p = Progress::new();
+        let plan = d
+            .plan_replace(&spec(pat("x", PatternKind::Plain)), "y", 10, &p)
+            .unwrap();
+        assert_eq!(plan.cells, 1);
     }
 
     #[test]

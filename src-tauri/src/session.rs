@@ -138,6 +138,7 @@ impl Session {
             };
             let view = t
                 .view
+                .map(layout_only)
                 .filter(|v| serde_json::to_vec(v).is_ok_and(|b| b.len() <= MAX_VIEW_BYTES));
             entries.push(Entry {
                 path: path.to_string_lossy().into_owned(),
@@ -223,9 +224,57 @@ impl Session {
     }
 }
 
+/// A view with only its layout: filters, highlight rules and data checks
+/// can hold values from the file (a picked name, "contains Smith"), and
+/// nothing from the cells is ever written here; sorting is not replayed.
+fn layout_only(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(o) = v.as_object_mut() {
+        o.insert("filter".into(), serde_json::Value::Null);
+        o.insert("sort".into(), serde_json::Value::Null);
+        o.insert("highlights".into(), serde_json::json!([]));
+        o.insert("checks".into(), serde_json::json!([]));
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn never_keeps_values_from_the_file() {
+        let dir = std::env::temp_dir().join(format!("nde-session-v-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("a.csv");
+        std::fs::write(
+            &a, "x,y
+1,2
+",
+        )
+        .unwrap();
+        let s = Session::default();
+        s.load(&dir);
+        let view = serde_json::json!({
+            "name": "v",
+            "filter": {"columns": [{"col": 0, "rule": {"Values": {"values": ["Red Bank"]}}}]},
+            "highlights": [{"text": "Smith"}],
+            "checks": [{"col": 1, "kind": {"type": "list", "values": ["Lee"]}}],
+            "columns": [{"width": 90}],
+        });
+        let tabs = vec![SessionTab {
+            doc: 1,
+            view: Some(view),
+            row: 0,
+            col: 0,
+            active: true,
+        }];
+        s.save(tabs, |_| Some(a.clone())).unwrap();
+        let disk = std::fs::read_to_string(dir.join("session.json")).unwrap();
+        for v in ["Red Bank", "Smith", "Lee"] {
+            assert!(!disk.contains(v), "{v} was written to the session file");
+        }
+        assert!(disk.contains("\"width\":90"));
+    }
 
     #[test]
     fn remembers_paths_and_views_only() {

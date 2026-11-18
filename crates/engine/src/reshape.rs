@@ -653,7 +653,10 @@ impl Document {
                 },
             )?;
         let mut plan = ColPlan::new(self);
-        let mut gone: Vec<u32> = (0..w as u32).filter(|&c| !filled[c as usize]).collect();
+        // A protected column stays even when blank.
+        let mut gone: Vec<u32> = (0..w as u32)
+            .filter(|&c| !filled[c as usize] && !self.is_protected(c))
+            .collect();
         if w > 0 && gone.len() == w {
             gone.remove(0);
         }
