@@ -26,6 +26,8 @@ export interface DocInfo {
   filtered: boolean;
   /** Columns with a filter rule. */
   filter_cols: number[];
+  /** Looking at an earlier recipe step: changes and saving are refused. */
+  peeking?: boolean;
   /** A filter rule sits on a deleted column: rows stay hidden without a funnel. */
   filter_on_deleted: boolean;
   cols: number;
@@ -1345,7 +1347,10 @@ export interface Backend {
   /** Run recipe on files: choose the files, a folder of them, the recipe or the results folder. */
   batchPick(which: "files" | "folder" | "recipe" | "out"): Promise<import("./batch").BatchStatus>;
   batchStatus(): Promise<import("./batch").BatchStatus>;
-  batchStart(answers: [string, string][], force: boolean): Promise<import("./batch").BatchStatus>;
+  /** `existing`: results already in the output folder are replaced, or the
+   *  new ones get (2) and so on; without it, refused with kind
+   *  "outputs_exist" when there are any. */
+  batchStart(answers: [string, string][], force: boolean, existing?: "replace" | "number"): Promise<import("./batch").BatchStatus>;
   batchStop(): Promise<import("./batch").BatchStatus>;
   /** Label sheets to choose from. */
   labelSheets(): Promise<[string, import("./mail").LabelSheet][]>;
@@ -1921,8 +1926,8 @@ class TauriBackend implements Backend {
   batchStatus() {
     return call<import("./batch").BatchStatus>("batch_status");
   }
-  batchStart(answers: [string, string][], force: boolean) {
-    return call<import("./batch").BatchStatus>("batch_start", { answers, force });
+  batchStart(answers: [string, string][], force: boolean, existing?: "replace" | "number") {
+    return call<import("./batch").BatchStatus>("batch_start", { answers, force, existing: existing ?? null });
   }
   batchStop() {
     return call<import("./batch").BatchStatus>("batch_stop");

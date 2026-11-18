@@ -464,6 +464,11 @@ struct Rows {
 
 impl Rows {
     fn create(path: &Path, sep: u8, overwrite: bool) -> Result<Rows, String> {
+        Rows::create_with(path, sep, overwrite, 1 << 20)
+    }
+
+    /// `buffer`: bytes kept before writing (smaller when many are open).
+    fn create_with(path: &Path, sep: u8, overwrite: bool, buffer: usize) -> Result<Rows, String> {
         if path.exists() && !overwrite {
             return Err(format!(
                 "{} already exists; add --overwrite to replace it",
@@ -472,7 +477,7 @@ impl Rows {
         }
         let f = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(Rows {
-            w: BufWriter::with_capacity(1 << 20, f),
+            w: BufWriter::with_capacity(buffer, f),
             sep,
             rows: 0,
         })
@@ -586,6 +591,18 @@ pub fn slice(args: &[&str]) -> Result<(), String> {
 
 /// `split <in> -o <folder> (--rows N | --by <column>)`: parts of N data
 /// rows, or one file per value of a column; each keeps the title row.
+/// `base.ext`, or `base (2).ext` and so on when that name (any case) is
+/// already taken; the name is then taken.
+fn part_name(base: &str, ext: &str, taken: &mut std::collections::HashSet<String>) -> String {
+    let mut name = format!("{base}.{ext}");
+    let mut n = 2;
+    while !taken.insert(name.to_lowercase()) {
+        name = format!("{base} ({n}).{ext}");
+        n += 1;
+    }
+    name
+}
+
 pub fn split(args: &[&str]) -> Result<(), String> {
     let o = opts(args, &["--rows", "--by"], &[])?;
     let input = one_input(&o)?;
@@ -646,6 +663,9 @@ pub fn split(args: &[&str]) -> Result<(), String> {
             let mut files: std::collections::HashMap<String, (String, Rows)> =
                 std::collections::HashMap::new();
             let mut order = Vec::new();
+            // File names given so far, compared as Windows does (any case);
+            // two values that clean to one name get (2), (3) and so on.
+            let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
             for r in head..d.row_count() {
                 let row = d.row_values(r).map_err(|e| e.to_string())?;
                 let v = row.get(c as usize).cloned().unwrap_or_default();
@@ -666,19 +686,22 @@ pub fn split(args: &[&str]) -> Result<(), String> {
                         })
                         .take(80)
                         .collect();
-                    let name = format!(
-                        "{stem} {}.{ext}",
+                    // Windows drops trailing dots and spaces from a name.
+                    let safe = safe.trim_end_matches(['.', ' ']).to_string();
+                    let base = format!(
+                        "{stem} {}",
                         if safe.is_empty() {
                             "(blank)".to_string()
                         } else {
                             safe
                         }
                     );
+                    let name = part_name(&base, &ext, &mut taken);
                     let path = dir.join(&name);
                     if same_file(input, &path) {
                         return Err("a part would land on the input file".into());
                     }
-                    let mut w = Rows::create(&path, sep, overwrite)?;
+                    let mut w = Rows::create_with(&path, sep, overwrite, 64 << 10)?;
                     if let Some(t) = &title {
                         w.row(t)?;
                     }
@@ -796,6 +819,45 @@ mod tests {
 
     fn s(p: &std::path::Path) -> String {
         p.display().to_string()
+    }
+
+    #[test]
+    fn split_by_keeps_every_row_when_names_clash() {
+        let d = dir("clash");
+        let a = d.join("p.csv");
+        let long = "x".repeat(90);
+        std::fs::write(
+            &a,
+            format!("k,n
+a/b,1
+a_b,2
+a/b,3
+{long}1,4
+{long}2,5
+end.,6
+end,7
+"),
+        )
+        .unwrap();
+        let out = d.join("parts");
+        let (a, o) = (s(&a), s(&out));
+        split(&[&a, "-o", &o, "--by", "k", "--overwrite"]).unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), 6, "{names:?}");
+        assert!(names.contains(&"p a_b.csv".to_string()));
+        assert!(names.contains(&"p a_b (2).csv".to_string()));
+        let rows: usize = names
+            .iter()
+            .map(|n| std::fs::read_to_string(out.join(n)).unwrap().lines().count() - 1)
+            .sum();
+        assert_eq!(rows, 7, "every row is in a file");
+        let first = std::fs::read_to_string(out.join("p a_b.csv")).unwrap();
+        assert!(first.contains("a/b,1") && first.contains("a/b,3"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -34,7 +34,7 @@
   async function refresh(): Promise<void> {
     try {
       view = await backend().stepsView(tab.id);
-      tab.peeking = !!view && view.at < view.steps.length;
+      tab.peeking = (!!view && view.at < view.steps.length) || !!tab.info.peeking;
       problem = "";
     } catch (e) {
       problem = errorText(e);
@@ -52,11 +52,25 @@
     if (tab.peeking && v && v.steps.length) {
       tab.peeking = false;
       void backend()
-        .stepsGoto(tab.id, v.steps.length - 1)
+        .stepsGoto(tab.id, v.steps.length)
         .then(onInfo)
         .catch(() => {});
     }
   });
+
+  /** The right-click menu on a step. */
+  let menu = $state<{ k: number; x: number; y: number } | null>(null);
+  function openMenu(e: MouseEvent, k: number): void {
+    const s = view?.steps[k];
+    if (!s || s.kind === "left_out") return;
+    e.preventDefault();
+    e.stopPropagation();
+    menu = { k, x: Math.min(e.clientX, window.innerWidth - 220), y: Math.min(e.clientY, window.innerHeight - 220) };
+  }
+  function fromMenu(f: () => void): void {
+    menu = null;
+    f();
+  }
 
   async function goto(k: number | null): Promise<void> {
     try {
@@ -120,16 +134,31 @@
   const steps = $derived(view?.steps.filter((s) => s.kind !== "left_out").length ?? 0);
 </script>
 
+<svelte:window onpointerdown={(e) => { if (menu && !(e.target as HTMLElement | null)?.closest?.(".step-menu")) menu = null; }} onkeydown={(e) => { if (menu && e.key === "Escape") menu = null; }} />
+
 <div class="steps-panel">
+  {#if menu && view?.steps[menu.k]}
+    {@const k = menu.k}
+    {@const s = view.steps[k]!}
+    <div class="step-menu" role="menu" aria-label={`Step ${k + 1}`} style:left="{menu.x}px" style:top="{menu.y}px">
+      <button type="button" role="menuitem" onclick={() => fromMenu(() => void goto(k))}>Show the table after this step</button>
+      <button type="button" role="menuitem" onclick={() => fromMenu(() => void change(k, { kind: "toggle" }))}>{s.kind === "off" ? "Turn on" : "Turn off"}</button>
+      <button type="button" role="menuitem" disabled={k === 0} onclick={() => fromMenu(() => void change(k, { kind: "move_up" }))}>Move up</button>
+      <button type="button" role="menuitem" disabled={k + 1 >= count} onclick={() => fromMenu(() => void change(k, { kind: "move_down" }))}>Move down</button>
+      <button type="button" role="menuitem" onclick={() => fromMenu(() => s.op && openSettings(k, s.op))}>Change its settings…</button>
+      {#if s.texts.length}<button type="button" role="menuitem" onclick={() => fromMenu(() => openAsk(k))}>Ask for a value each run…</button>{/if}
+      <button type="button" role="menuitem" onclick={() => fromMenu(() => void change(k, { kind: "remove" }))}>Take this step out</button>
+    </div>
+  {/if}
   {#if !view}
     <p class="note">Reading the steps…</p>
   {:else if count === 0}
     <p class="note">No steps yet. Sorts, filters, column changes, replacing, cleaning, computed columns and the other Data and Tools changes you make are listed here as you go. Click one to see the table as it was then; change or turn off a step and the ones after it run again.</p>
   {:else}
-    {#if view.at < count}
+    {#if view.at < count || tab.info.peeking}
       <div class="peek" role="status">
-        Looking at the table after {view.at === 0 ? "none of the steps" : `step ${view.at}`}; it can't be edited here.
-        <button type="button" onclick={() => void goto(count - 1)}>Back to the latest step</button>
+        Looking at the table after {view.at === 0 ? "none of the steps" : `step ${view.at}`}: changes and saving are off until you go back to the latest step.
+        <button type="button" onclick={() => void goto(count)}>Back to the latest step</button>
       </div>
     {/if}
     <ol class="list" aria-label="Recipe steps">
@@ -137,7 +166,7 @@
         <button type="button" class="step" onclick={() => void goto(null)}>Before the first step</button>
       </li>
       {#each view.steps as s, k (k)}
-        <li class:here={view.at === k + 1} class:later={!s.done} class:off={s.kind === "off"} class:out={s.kind === "left_out"}>
+        <li class:here={view.at === k + 1} class:later={!s.done} class:off={s.kind === "off"} class:out={s.kind === "left_out"} oncontextmenu={(e) => openMenu(e, k)}>
           <button type="button" class="step" title={s.kind === "left_out" ? "Done by hand: a recipe cannot repeat this" : "Show the table after this step"} disabled={s.kind === "left_out"} onclick={() => void goto(k)}>
             <span class="n">{k + 1}</span> {s.text}{#if s.kind === "off"} <em>(off)</em>{/if}{#if s.kind === "left_out"} <em>(not in the recipe)</em>{/if}
           </button>
@@ -261,6 +290,26 @@
   .row {
     display: flex;
     gap: 6px;
+  }
+  .step-menu {
+    position: fixed;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    min-width: 200px;
+    padding: 4px 0;
+    background: var(--bg, #fff);
+    border: 1px solid var(--border, #bbb);
+    box-shadow: 0 4px 14px rgb(0 0 0 / 0.18);
+  }
+  .step-menu button {
+    text-align: left;
+    border: 0;
+    background: none;
+    padding: 4px 12px;
+  }
+  .step-menu button:hover:not(:disabled) {
+    background: var(--hover, rgb(0 0 0 / 0.08));
   }
   .peek {
     border: 1px solid var(--accent, #1f7a6d);

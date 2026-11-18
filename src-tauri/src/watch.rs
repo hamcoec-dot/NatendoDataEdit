@@ -211,7 +211,11 @@ fn run(
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let line = match run_one(p, out, recipe, force, recent) {
+            let target = match p.file_name() {
+                Some(n) => out.join(n),
+                None => continue,
+            };
+            let line = match run_one(p, &target, recipe, force, recent) {
                 Ok(r) => {
                     let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                     st.done += 1;
@@ -246,9 +250,10 @@ pub(crate) struct RunDone {
     pub target: PathBuf,
 }
 
+/// Run `recipe` on the file at `path` and save the result as `target`.
 pub(crate) fn run_one(
     path: &Path,
-    out: &Path,
+    target: &Path,
     recipe: &Recipe,
     force: bool,
     recent: &Recent,
@@ -269,7 +274,7 @@ pub(crate) fn run_one(
         .map_or(1, |t| t.as_nanos() as u64);
     d.run_recipe(recipe, now, seed, &Progress::new())
         .map_err(|e| e.to_string())?;
-    let target = out.join(path.file_name().ok_or("no file name")?);
+    let target = target.to_path_buf();
     let r = d
         .save(SaveOptions {
             path: Some(target.clone()),
@@ -314,14 +319,28 @@ mod tests {
         };
         let recent = Arc::new(Recent::default());
         // One file, then a file with other columns.
-        let r = run_one(&inbox.join("old.csv"), &outbox, &recipe, false, &recent).unwrap();
+        let r = run_one(
+            &inbox.join("old.csv"),
+            &outbox.join("old.csv"),
+            &recipe,
+            false,
+            &recent,
+        )
+        .unwrap();
         assert_eq!(r.rows_out, 2);
         assert_eq!(
             std::fs::read_to_string(outbox.join("old.csv")).unwrap(),
             "a,c\r\n1,3\r\n"
         );
         std::fs::write(inbox.join("other.csv"), b"x,y\r\n1,2\r\n").unwrap();
-        assert!(run_one(&inbox.join("other.csv"), &outbox, &recipe, false, &recent).is_err());
+        assert!(run_one(
+            &inbox.join("other.csv"),
+            &outbox.join("other.csv"),
+            &recipe,
+            false,
+            &recent
+        )
+        .is_err());
         // The watcher refuses an output folder inside the watched one.
         let w = Watcher::default();
         {

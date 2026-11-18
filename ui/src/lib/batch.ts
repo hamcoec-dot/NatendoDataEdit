@@ -20,6 +20,8 @@ export interface BatchStatus {
   steps: string[];
   questions: Question[];
   out: string | null;
+  /** One of the files is private (its answers are not remembered). */
+  private?: boolean;
   running: boolean;
   done: number;
   failed: number;

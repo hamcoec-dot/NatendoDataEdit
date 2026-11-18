@@ -365,6 +365,10 @@ pub struct Entry {
     title: Mutex<Option<String>>,
     /// Read-only: every change and every save over the file is refused.
     locked: AtomicBool,
+    /// The steps panel is showing an earlier step (the later ones are in
+    /// the redo list): changes and saving are refused until it goes back
+    /// to the latest.
+    peeking: AtomicBool,
     /// The last data-check run: the checks (as JSON), the document revision
     /// and, per unique check, the rows whose value repeats.
     checks: Mutex<Option<LastChecks>>,
@@ -1258,6 +1262,8 @@ pub struct DocInfo {
     pub layout_confidence: Option<f32>,
     /// Read-only (file lock): changes and saving over the file are refused.
     pub read_only: bool,
+    /// Looking at an earlier recipe step: changes and saving are off.
+    pub peeking: bool,
     /// Rows the user hid (still saved).
     pub hidden_rows: u64,
     /// Protected columns (changes pass them over).
@@ -1406,6 +1412,7 @@ impl Docs {
             error: Mutex::new(None),
             title: Mutex::new(None),
             locked: AtomicBool::new(false),
+            peeking: AtomicBool::new(false),
             checks: Mutex::new(None),
             totals: Mutex::new(None),
             find_count: Mutex::new(None),
@@ -1692,6 +1699,7 @@ impl Docs {
         spec: &natendo_engine::privacy::SafeCopy,
         now: f64,
     ) -> CmdResult<natendo_engine::privacy::SafeCopyReport> {
+        self.refuse_peeking(id)?;
         if spec.columns.len() > natendo_engine::document::MAX_MAPPED_COLS as usize {
             return Err(Error::Invalid("too many columns".into()).into());
         }
@@ -1711,7 +1719,11 @@ impl Docs {
     /// `recovery`). Never waits for the document: a busy one is skipped.
     pub fn autosave(&self, id: u32) -> CmdResult<Autosaved> {
         let entry = self.get(id)?;
-        if entry.jobs().is_some() || entry.private.load(Ordering::SeqCst) {
+        // While looking back, the copy would hold the earlier version.
+        if entry.jobs().is_some()
+            || entry.private.load(Ordering::SeqCst)
+            || entry.peeking.load(Ordering::Relaxed)
+        {
             return Ok(Autosaved::Skipped);
         }
         // One copy at a time per document.
@@ -1987,6 +1999,7 @@ impl Docs {
         entry.note_path(&d);
         let mut info = describe(id, &d, entry.line_by_line.load(Ordering::Relaxed), error);
         info.read_only = entry.locked.load(Ordering::Relaxed);
+        info.peeking = entry.peeking.load(Ordering::Relaxed);
         if let (None, Some(t)) = (&info.path, title) {
             info.name = t;
         }
@@ -2599,6 +2612,9 @@ impl Docs {
         options: Option<&SaveAs>,
     ) -> CmdResult<DocInfo> {
         let entry = self.get(id)?;
+        if entry.peeking.load(Ordering::Relaxed) {
+            return Err(peeking());
+        }
         // A save over a locked file (this tab's or another's, however the
         // path is written) is refused before this document is locked for
         // writing.
@@ -3648,6 +3664,7 @@ impl Docs {
         header: bool,
         replace: bool,
     ) -> CmdResult<u64> {
+        self.refuse_peeking(id)?;
         self.check_writable(path)?;
         if self.find_open(path).is_some() {
             return Err(CmdError::new(
@@ -3665,6 +3682,7 @@ impl Docs {
 
     /// Save tab `id`'s shown rows as an encrypted file.
     pub fn save_encrypted(&self, id: u32, path: &Path, password: &str) -> CmdResult<u64> {
+        self.refuse_peeking(id)?;
         self.check_writable(path)?;
         if self.find_open(path).is_some() {
             return Err(CmdError::new(
@@ -3977,19 +3995,36 @@ impl Docs {
     }
 
     /// Move the table to just after step `k` (`None`: before the first
-    /// step), by undo or redo: a look at the table as it was then.
+    /// step; the number of steps: the latest, with any changes by hand
+    /// after the last step), by undo or redo: a look at the table as it was
+    /// then. Before the latest, changes and saving are refused.
     pub fn steps_goto(&self, id: u32, k: Option<usize>) -> CmdResult<DocInfo> {
         let (steps, _, reach) = self.live_steps(id)?;
         let target = match k {
             None => steps.first().map(|e| e.before),
+            Some(k) if k == steps.len() => Some(reach),
             Some(k) => steps.get(k).map(|e| e.pos),
         }
         .ok_or_else(|| CmdError::new("invalid", "there is no such step"))?;
         let target = target.min(reach);
-        self.edit(id, |d| {
+        let entry = self.get(id)?;
+        let r = self.edit_any(id, true, |d| {
             history_to(d, target)?;
             Ok(())
-        })
+        });
+        let at = entry.read().history_pos();
+        entry.peeking.store(at < reach, Ordering::Relaxed);
+        let mut info = r?;
+        info.peeking = at < reach;
+        Ok(info)
+    }
+
+    /// Refuse while the steps panel looks back.
+    fn refuse_peeking(&self, id: u32) -> CmdResult<()> {
+        if self.get(id)?.peeking.load(Ordering::Relaxed) {
+            return Err(peeking());
+        }
+        Ok(())
     }
 
     /// Change step `k` (remove it, turn it off or on, move it, or give it
@@ -4006,7 +4041,8 @@ impl Docs {
     ) -> CmdResult<DocInfo> {
         let (_, _, reach) = self.live_steps(id)?;
         // From the latest step.
-        self.edit(id, |d| history_to(d, reach))?;
+        self.edit_any(id, true, |d| history_to(d, reach))?;
+        self.get(id)?.peeking.store(false, Ordering::Relaxed);
         let (steps, at, _) = self.live_steps(id)?;
         if k >= steps.len() {
             return Err(CmdError::new("invalid", "there is no such step"));
@@ -4045,6 +4081,7 @@ impl Docs {
             .map(|e| e.item.clone())
             .filter(|l| !matches!(l, Logged::LeftOut(_)))
             .collect();
+        let original = items.clone();
         let rel = k - start;
         match change {
             StepChange::Remove => {
@@ -4077,7 +4114,7 @@ impl Docs {
             Ok(())
         })?;
         // The steps from `start` on are noted again as they run.
-        {
+        let kept = {
             let entry = self.get(id)?;
             let mut log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
             let first = &steps[start];
@@ -4088,14 +4125,62 @@ impl Docs {
             {
                 log.steps.truncate(i);
             }
+            log.steps.len()
+        };
+        // All or nothing: when a step fails (or the run is cancelled), the
+        // table goes back and the steps as they were run again.
+        if let Err(e) = self.replay_steps(id, start, items, &questions, now) {
+            let restore = self
+                .edit_any(id, true, |d| {
+                    history_to(d, back)?;
+                    d.drop_redo();
+                    Ok(())
+                })
+                .and_then(|_| {
+                    let entry = self.get(id)?;
+                    entry
+                        .recipe
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .steps
+                        .truncate(kept);
+                    self.replay_steps(id, start, original, &questions, now)
+                });
+            let what = if e.kind == "cancelled" {
+                "running the steps again was cancelled".to_string()
+            } else {
+                e.message
+            };
+            return Err(CmdError::new(
+                "invalid",
+                match restore {
+                    Ok(()) => format!("{what}; nothing was changed"),
+                    Err(r) => format!(
+                        "{what}; putting the steps back as they were also failed: {}",
+                        r.message
+                    ),
+                },
+            ));
         }
+        self.info(id)
+    }
+
+    /// Run `items` (steps from number `start + 1` on) and note them.
+    fn replay_steps(
+        &self,
+        id: u32,
+        start: usize,
+        items: Vec<Logged>,
+        questions: &[natendo_engine::recipe::Question],
+        now: f64,
+    ) -> CmdResult<()> {
         for (i, item) in items.into_iter().enumerate() {
             match item {
                 Logged::Step(op) => {
                     // Questions take their last answers; the step keeps
                     // its question.
                     let mut r = one_step_recipe(op.clone());
-                    r.questions = questions.clone();
+                    r.questions = questions.to_vec();
                     let run = r.answered(&[])?.steps.remove(0);
                     self.run_recipe_op(id, run, now).map_err(|mut e| {
                         e.message =
@@ -4122,7 +4207,7 @@ impl Docs {
                 Logged::LeftOut(_) => {}
             }
         }
-        self.info(id)
+        Ok(())
     }
 
     /// Make the text at `path` in step `k` a question asked each time the
@@ -5846,6 +5931,22 @@ impl Docs {
         changes: bool,
         f: impl FnOnce(&mut Document) -> Result<(), Error>,
     ) -> CmdResult<DocInfo> {
+        // Any step (a filter too) would clear the redo list, where the
+        // steps after the one looked at are kept.
+        if self.get(id)?.peeking.load(Ordering::Relaxed) {
+            return Err(peeking());
+        }
+        self.edit_any(id, changes, f)
+    }
+
+    /// As [`Docs::edit_as`], also while the steps panel looks back (for
+    /// its own moves).
+    fn edit_any(
+        &self,
+        id: u32,
+        changes: bool,
+        f: impl FnOnce(&mut Document) -> Result<(), Error>,
+    ) -> CmdResult<DocInfo> {
         let entry = self.get(id)?;
         let locked = entry.locked.load(Ordering::Relaxed);
         if changes && locked {
@@ -5868,6 +5969,7 @@ impl Docs {
         entry.note_path(&d);
         let mut info = describe(id, &d, entry.line_by_line.load(Ordering::Relaxed), error);
         info.read_only = locked;
+        info.peeking = entry.peeking.load(Ordering::Relaxed);
         Ok(info)
     }
 
@@ -5978,6 +6080,13 @@ fn path_key(p: &Path) -> String {
         }
     };
     norm(p)
+}
+
+fn peeking() -> CmdError {
+    CmdError::new(
+        "peeking",
+        "looking at an earlier recipe step: go back to the latest step to change or save",
+    )
 }
 
 fn read_only() -> CmdError {
@@ -6163,6 +6272,7 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         preamble_lines: d.preamble_lines(),
         layout_confidence: d.detection().map(|x| x.confidence),
         read_only: false,
+        peeking: false,
         hidden_rows: d.hidden_rows(),
         protected: d.protected_cols(),
         protected_skipped: d.protected_skipped(),
@@ -6526,6 +6636,45 @@ mod tests {
         assert_eq!(docs.steps_view(id).unwrap().at, 1);
         docs.steps_goto(id, Some(2)).unwrap();
         assert_eq!(docs.first_row_cell(id, 2).unwrap(), "town");
+        // While looking back, changes and saving are refused and the later
+        // steps stay.
+        let info = docs.steps_goto(id, Some(0)).unwrap();
+        assert!(info.peeking);
+        assert_eq!(docs.delete_cols(id, 0, 1).unwrap_err().kind, "peeking");
+        assert_eq!(
+            docs.set_cells(id, vec![(1, 0, "x".into())])
+                .unwrap_err()
+                .kind,
+            "peeking"
+        );
+        assert_eq!(docs.undo(id).unwrap_err().kind, "peeking");
+        assert_eq!(
+            docs.save(id, None, true, true, None).unwrap_err().kind,
+            "peeking"
+        );
+        assert!(matches!(docs.autosave(id).unwrap(), Autosaved::Skipped));
+        let info = docs.steps_goto(id, Some(3)).unwrap();
+        assert!(!info.peeking);
+        assert_eq!(docs.first_row_cell(id, 0).unwrap(), "");
+        assert_eq!(docs.steps_view(id).unwrap().steps.len(), 3);
+        // A change whose steps fail to run again leaves everything as it
+        // was: here the new settings name a column that is not there.
+        let e = docs
+            .steps_change(
+                id,
+                1,
+                StepChange::Replace {
+                    op: RecipeOp::DeleteCols { at: 40, count: 1 },
+                },
+                0.0,
+                false,
+            )
+            .unwrap_err();
+        assert!(e.message.ends_with("nothing was changed"), "{}", e.message);
+        assert_eq!(docs.first_row_cell(id, 2).unwrap(), "town");
+        let v = docs.steps_view(id).unwrap();
+        assert_eq!((v.steps.len(), v.at), (3, 3));
+        assert!(v.steps.iter().all(|s| s.kind == "step"));
         // Turn step 1 off: the junk column comes back, the later steps
         // run again.
         docs.steps_change(id, 0, StepChange::Toggle, 0.0, false)

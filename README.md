@@ -828,12 +828,14 @@ selection, a column or the whole table:
   columns are different. Also from the command line.
 - **Recipe steps panel** (View > Recipe steps, Alt+Shift+R): the steps you
   have taken on a tab, listed as you work, as in Power Query's applied steps.
-  Click a step to see the table as it was after it (it can't be edited while
-  you look back), then go back to the latest. Turn a step off or on, move it
-  up or down, take it out or change its settings, and the steps after it run
-  again. If going back would undo something a recipe can't repeat (a paste,
-  changes typed by hand), it asks first. Save the steps as a recipe from the
-  panel.
+  Click a step to see the table as it was after it, then go back to the
+  latest; while you look back, changes and saving are off, so the later
+  steps are never lost. Turn a step off or on, move it up or down, take it
+  out or change its settings (buttons, or right-click a step), and the steps
+  after it run again. If a step then fails, or you cancel, everything is put
+  back as it was. If going back would undo something a recipe can't repeat
+  (a paste, changes typed by hand), it asks first. Save the steps as a
+  recipe from the panel, or right-click the tab.
 
 ![The recipe steps panel looking at the table after step 1](docs/screenshots/steps-panel.png)
 *Looking back at the table after step 1; step 4, a paste, can't be part of a recipe.*
@@ -841,12 +843,16 @@ selection, a column or the whole table:
   recipe ask for one of its values each time it runs ("Which county?",
   "Election date?"), with the last answer filled in. One recipe then serves
   every county or every election. On the command line, answer with
-  `--set county=Knox`.
+  `--set county=Knox`. The last answers are remembered in the app's own
+  settings on this computer (never for a private file), and a saved recipe
+  keeps the answer its step had as the one filled in first.
 - **Run recipe on files** (Tools > Run recipe on files): pick files or a
   folder, a recipe and a results folder, and every file is run through the
   recipe now and written to the results folder under its own name, with a
   line for each file (rows in, rows out, or why it was not done) and a total.
-  The files picked are never changed.
+  The files picked are never changed. When the results folder already holds
+  files of those names, it asks first: replace them, or keep them and add
+  (2) to the new names.
 
 ![Running a recipe on three files: two done, one with other columns](docs/screenshots/recipe-files.png)
 *A monthly recipe run on three county files; the third has other columns, so it is listed as not done.*

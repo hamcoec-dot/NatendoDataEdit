@@ -2060,7 +2060,12 @@ static BATCH: std::sync::LazyLock<batch::Batch> = std::sync::LazyLock::new(batch
 /// Run recipe on files: choose the files ("files" or a "folder"), the
 /// "recipe" or the "out" folder, in the app's own dialogs.
 #[tauri::command]
-async fn batch_pick(window: WebviewWindow, which: String) -> CmdResult<batch::BatchStatus> {
+async fn batch_pick(
+    window: WebviewWindow,
+    recent: RecentState<'_>,
+    which: String,
+) -> CmdResult<batch::BatchStatus> {
+    let recent = recent.inner().clone();
     blocking(move || {
         match which.as_str() {
             "files" => {
@@ -2107,6 +2112,11 @@ async fn batch_pick(window: WebviewWindow, which: String) -> CmdResult<batch::Ba
             }
             _ => return Err(CmdError::new("invalid", "unknown choice")),
         }
+        {
+            // Private files: their answers are not remembered by the window.
+            let mut s = BATCH.setup.lock().unwrap_or_else(|e| e.into_inner());
+            s.private = s.files.iter().any(|f| recent.is_private(f));
+        }
         Ok(BATCH.status())
     })
     .await
@@ -2124,10 +2134,11 @@ fn batch_start(
     recent: RecentState<'_>,
     answers: Vec<(String, String)>,
     force: bool,
+    existing: Option<batch::Existing>,
 ) -> CmdResult<batch::BatchStatus> {
     BATCH
-        .start(&answers, force, recent.inner().clone())
-        .map_err(|e| CmdError::new("invalid", e))?;
+        .start(&answers, force, existing, recent.inner().clone())
+        .map_err(|(kind, e)| CmdError::new(kind, e))?;
     Ok(BATCH.status())
 }
 

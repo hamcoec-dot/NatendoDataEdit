@@ -797,6 +797,8 @@ export class MockBackend implements Backend {
   }
 
   private push(d: MockDoc, apply: () => () => void): DocInfo {
+    // Like the app: no change while looking at an earlier recipe step.
+    if (d.info.peeking) throw err("peeking", "looking at an earlier recipe step: go back to the latest step to change or save");
     const inverse = apply();
     d.undo.push({ apply, inverse });
     if (d.clean > d.undo.length - 1) d.clean = -1;
@@ -1049,6 +1051,7 @@ export class MockBackend implements Backend {
   }
 
   async save(doc: number, f: SaveFlags): Promise<DocInfo | null> {
+    if (this.get(doc).info.peeking) throw err("peeking", "looking at an earlier recipe step: go back to the latest step to change or save");
     const d = this.get(doc);
     if (!d.info.path && !f.saveAs && d.info.name === "Untitled") {
       d.info.name = "Untitled.csv";
@@ -3150,8 +3153,11 @@ export class MockBackend implements Backend {
     return { steps: s.rows.map((r, i) => ({ ...r, done: i < s.at })), at: s.at, hand_changes: false, questions: s.questions };
   }
   async stepsGoto(doc: number, k: number | null): Promise<DocInfo> {
-    this.stepsOf(doc).at = k === null ? 0 : k + 1;
-    return { ...this.get(doc).info };
+    const s = this.stepsOf(doc);
+    s.at = k === null ? 0 : Math.min(k + 1, s.rows.length);
+    const d = this.get(doc);
+    d.info.peeking = s.at < s.rows.length;
+    return { ...d.info };
   }
   async stepsChange(doc: number, k: number, change: import("./recipe").StepChange, _now: number, force: boolean): Promise<DocInfo> {
     const s = this.stepsOf(doc);
@@ -3189,8 +3195,11 @@ export class MockBackend implements Backend {
   async batchStatus(): Promise<import("./batch").BatchStatus> {
     return { ...this.mockBatch };
   }
-  async batchStart(): Promise<import("./batch").BatchStatus> {
+  async batchStart(_answers: [string, string][], _force: boolean, existing?: "replace" | "number"): Promise<import("./batch").BatchStatus> {
     const b = this.mockBatch;
+    // Like the app: results already in the folder are replaced only when asked.
+    const there = b.results.filter((r) => r.ok).length;
+    if (there && !existing) throw err("outputs_exist", `${there} files in ${b.out} already have these names`);
     b.results = b.files.map((f, i) => {
       const name = f.split("\\").pop() ?? f;
       return i === 2 ? { name, ok: false, rows_in: 0, rows_out: 0, message: 'its columns differ from the recipe\'s (column 2 is "Town", not "county")' } : { name, ok: true, rows_in: 1200 + i * 310, rows_out: 1180 + i * 300, message: `written to ${b.out}\\${name}` };

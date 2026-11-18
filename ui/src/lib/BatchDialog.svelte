@@ -17,6 +17,8 @@
   let st = $state<BatchStatus | null>(null);
   let force = $state(false);
   let problem = $state("");
+  /** The output folder already holds results of these names: ask. */
+  let clash = $state("");
   let answers = $state<Record<string, string>>({});
 
   function take(s: BatchStatus): void {
@@ -49,14 +51,16 @@
       problem = errorText(e);
     }
   }
-  async function start(): Promise<void> {
+  async function start(existing?: "replace" | "number"): Promise<void> {
     if (!st) return;
     problem = "";
+    clash = "";
     try {
-      if (st.recipe) keepAnswers(st.recipe, answers);
-      take(await backend().batchStart(answerPairs(st.questions, answers), force));
+      if (st.recipe && !st.private) keepAnswers(st.recipe, answers);
+      take(await backend().batchStart(answerPairs(st.questions, answers), force, existing));
     } catch (e) {
-      problem = errorText(e);
+      if ((e as { kind?: string }).kind === "outputs_exist") clash = errorText(e);
+      else problem = errorText(e);
     }
   }
   async function stop(): Promise<void> {
@@ -108,6 +112,14 @@
       {/each}
     </div>
   {/if}
+  {#if clash}
+    <div class="clash" role="alert">
+      <p>{clash}.</p>
+      <button type="button" onclick={() => void start("replace")}>Replace them</button>
+      <button type="button" onclick={() => void start("number")}>Keep them; add (2) to the new names</button>
+      <button type="button" onclick={() => (clash = "")}>Cancel</button>
+    </div>
+  {/if}
   {#if problem}<p class="warn" role="alert">{problem}</p>{/if}
   {#snippet buttons()}
     {#if st?.running}
@@ -120,6 +132,16 @@
 </FormShell>
 
 <style>
+  .clash {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+  .clash p {
+    flex-basis: 100%;
+    margin: 0;
+  }
   .setup {
     display: grid;
     grid-template-columns: 9em 1fr auto;
