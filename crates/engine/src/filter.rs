@@ -1268,9 +1268,40 @@ impl Document {
                 None => {
                     if let Some(p) = card_phys[k] {
                         let key = (p, format!("{:?} {read:?}", c.kind));
-                        match cache.ranges.get(&key) {
-                            Some(&(r, range)) if r == self.data_revision() => c.range = range,
-                            _ => slow_range.push(k),
+                        let now = self.data_revision();
+                        match cache.ranges.get(&key).copied() {
+                            Some((r, range)) if r == now => c.range = range,
+                            // After an edit: widened by the changed cells
+                            // (the bars stay put; they never shrink).
+                            Some((r, range)) => match self.changed_since(r) {
+                                Some(changed) => {
+                                    let (mut lo, mut hi) =
+                                        range.unwrap_or((f64::INFINITY, f64::NEG_INFINITY));
+                                    let mut buf = Vec::new();
+                                    for pos in changed {
+                                        if pos < u64::from(keep_first) {
+                                            continue;
+                                        }
+                                        let Some(id) = self.doc_id_at(pos) else {
+                                            continue;
+                                        };
+                                        self.read_cells(id, &[p], &mut buf);
+                                        let x = if c.kind == FacetKind::Numbers {
+                                            value::parse_number(&buf[0], read)
+                                        } else {
+                                            value::parse_date(&buf[0], read).map(f64::floor)
+                                        };
+                                        if let Some(x) = x {
+                                            lo = lo.min(x);
+                                            hi = hi.max(x);
+                                        }
+                                    }
+                                    c.range = (lo <= hi).then_some((lo, hi));
+                                    cache.ranges.insert(key, (now, c.range));
+                                }
+                                None => slow_range.push(k),
+                            },
+                            None => slow_range.push(k),
                         }
                     }
                 }
