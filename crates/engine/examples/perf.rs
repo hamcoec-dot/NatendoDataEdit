@@ -1150,6 +1150,10 @@ fn main() {
         check.budget("computed column with TEXT, every row", took, limit);
         let took = time(&mut big, "[col2] - PREV([col2])");
         check.budget("computed column with PREV, every row", took, limit);
+        // Let go of the undone column kept for redo now (freeing 10M cells
+        // takes seconds), so the next timed step does not pay for it.
+        big.hide_rows(1, 1).unwrap();
+        big.undo();
         let t = Instant::now();
         let res = big
             .run_cell_formula(&CellFormula {
