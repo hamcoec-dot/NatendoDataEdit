@@ -4453,10 +4453,14 @@ impl Docs {
             };
             spec.tables = self.lookup_tables(id, &probe)?;
         }
+        // A job: a long fill shows progress and can be cancelled. The results
+        // are written only if the table is still as it was read (see
+        // `formula_plan`).
         let res = {
             let entry = self.get(id)?;
+            let job = entry.start("Running the formula")?;
             let d = entry.read();
-            d.run_cell_formula(&spec)?
+            d.run_cell_formula(&spec, &job.progress)?
         };
         let (written, errors, first_error) =
             (res.cells.len() as u64, res.errors, res.first_error.clone());
@@ -4465,7 +4469,13 @@ impl Docs {
         } else {
             check_write(res.cells.len() as u64, res.cells.iter().map(|c| c.2.len()))?;
             let info = self.edit(id, |d| {
-                let plan = d.formula_plan(&res)?;
+                let plan = d.formula_plan(&res).map_err(|e| match e {
+                    Error::Changed => Error::Invalid(
+                        "the file changed while the formula ran, so nothing was written; try again"
+                            .into(),
+                    ),
+                    e => e,
+                })?;
                 d.apply_cells(plan)
             })?;
             let entry = self.get(id)?;

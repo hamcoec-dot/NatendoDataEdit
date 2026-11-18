@@ -184,14 +184,17 @@ fn main() {
         use natendo_engine::cellformula::CellFormula;
         let t = Instant::now();
         let res = doc
-            .run_cell_formula(&CellFormula {
-                formula: "=C2*2 + $C$2".into(),
-                row: 1,
-                col: 0,
-                targets: (1..=100_000).map(|r| (r, 0)).collect(),
-                keep_first: true,
-                ..Default::default()
-            })
+            .run_cell_formula(
+                &CellFormula {
+                    formula: "=C2*2 + $C$2".into(),
+                    row: 1,
+                    col: 0,
+                    targets: (1..=100_000).map(|r| (r, 0)).collect(),
+                    keep_first: true,
+                    ..Default::default()
+                },
+                &Progress::new(),
+            )
             .unwrap();
         let plan = doc.formula_plan(&res).unwrap();
         doc.apply_cells(plan).unwrap();
@@ -1156,19 +1159,52 @@ fn main() {
         big.undo();
         let t = Instant::now();
         let res = big
-            .run_cell_formula(&CellFormula {
-                formula: "=SUM(C2:C100001)".into(),
-                row: 1,
-                col: 0,
-                keep_first: true,
-                ..Default::default()
-            })
+            .run_cell_formula(
+                &CellFormula {
+                    formula: "=SUM(C2:C1000001)".into(),
+                    row: 1,
+                    col: 0,
+                    keep_first: true,
+                    ..Default::default()
+                },
+                &Progress::new(),
+            )
             .unwrap();
         assert_eq!(res.cells.len(), 1);
         check.budget(
-            "cell formula summing 100k cells",
+            "cell formula summing 1M cells",
             t.elapsed(),
-            Duration::from_secs(1),
+            Duration::from_millis(400),
+        );
+        // A 200-cell range filled down 100k cells, and a running total down
+        // 100k rows: each range is worked out from running totals.
+        let fill = |f: &str| CellFormula {
+            formula: f.into(),
+            row: 1,
+            col: 0,
+            targets: (1..=100_000).map(|r| (r, 0)).collect(),
+            keep_first: true,
+            ..Default::default()
+        };
+        let t = Instant::now();
+        let res = big
+            .run_cell_formula(&fill("=SUM(C2:C201)"), &Progress::new())
+            .unwrap();
+        assert_eq!(res.cells.len(), 100_000);
+        check.budget(
+            "cell formula SUM(C2:C201) filled down 100k cells",
+            t.elapsed(),
+            Duration::from_millis(600),
+        );
+        let t = Instant::now();
+        let res = big
+            .run_cell_formula(&fill("=SUM($C$2:C2)"), &Progress::new())
+            .unwrap();
+        assert_eq!(res.cells.len(), 100_000);
+        check.budget(
+            "running total SUM($C$2:C2) filled down 100k cells",
+            t.elapsed(),
+            Duration::from_millis(600),
         );
     }
     let checks = |kinds: Vec<(u32, CheckKind)>| CheckSpec {

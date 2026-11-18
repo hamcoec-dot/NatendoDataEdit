@@ -12,8 +12,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::document::Document;
-use crate::expr::{to_text_owned, Ctx, Expr, Lookups, Value};
+use rayon::prelude::*;
+
+use crate::document::{Document, Progress};
+use crate::expr::{to_text_owned, Ctx, Expr, Lookups, RangeAgg, RefSource, Value};
 use crate::ops::{check_cols, Cols};
 use crate::value::ReadOptions;
 use crate::Error;
@@ -57,6 +59,10 @@ pub struct FormulaResult {
     pub errors: u64,
     /// The first error, as the cell would show it, with its cell.
     pub first_error: Option<String>,
+    /// The table's revision the results were worked out on (they are
+    /// written only to that same version).
+    #[serde(skip)]
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,28 +150,6 @@ fn parse_ref(chars: &[char], i: usize) -> Option<(Ref, usize)> {
     ))
 }
 
-/// A text literal for an expression.
-fn quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        if c == '"' {
-            out.push('"');
-        }
-        out.push(c);
-    }
-    out.push('"');
-    out
-}
-
-/// What a formula does to one cell, worked out.
-enum Rewritten {
-    /// The expression to run, and the formula as this cell keeps it.
-    Ok(String, String),
-    /// A reference moved off the table.
-    Off,
-}
-
 impl Document {
     /// A cell's text by row id and logical column.
     fn cell_text_by_id(&self, id: u32, col: u32) -> String {
@@ -174,40 +158,111 @@ impl Document {
         reader.read(self, id, &mut buf);
         reader.get(&buf, 0).to_string()
     }
+}
+/// One filled cell: (row, column, value, its formula), or the error.
+type CellOutcome = Result<(u64, u32, String, String), String>;
 
-    /// The formula's text for the cell `(pos, col)` (document position):
-    /// references moved by its distance from where it was typed, then read.
-    fn rewrite_formula(
-        &self,
-        src: &str,
-        from: (i64, i64),
-        to: (i64, i64),
-        reads: &mut u64,
-    ) -> Result<Rewritten, Error> {
+/// A range in a formula: two corners, or whole columns (`C:C`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RangeRef {
+    a: Ref,
+    b: Ref,
+    /// `C:C`: every data row (the rows do not move).
+    whole: bool,
+}
+
+/// A piece of the formula as a filled cell keeps it.
+#[derive(Debug, Clone)]
+enum Seg {
+    Text(String),
+    Cell(usize),
+    Range(usize),
+}
+
+/// The formula worked out once: the expression (references as
+/// `CELLREF_(i)` and ranges as `RANGEREF_(j)`), its references, and the
+/// pieces that show it again for each cell it fills.
+struct Template {
+    run: String,
+    cells: Vec<Ref>,
+    ranges: Vec<RangeRef>,
+    segs: Vec<Seg>,
+}
+
+/// The functions a range may be given to (worked out from running totals).
+const RANGE_FUNCS: [&str; 6] = ["SUM", "AVERAGE", "MIN", "MAX", "COUNT", "COUNTA"];
+
+/// Whole columns at `chars[i..]`: `C:C`, `$A:$C`. Its length too.
+fn parse_cols(chars: &[char], i: usize) -> Option<(RangeRef, usize)> {
+    let col = |j: usize| -> Option<(i64, bool, usize)> {
+        let mut k = j;
+        let fixed = chars.get(k) == Some(&'$');
+        if fixed {
+            k += 1;
+        }
+        let s = k;
+        while k < chars.len() && chars[k].is_ascii_alphabetic() && k - s < 3 {
+            k += 1;
+        }
+        if k == s
+            || chars
+                .get(k)
+                .is_some_and(|c| c.is_alphanumeric() || *c == '_' || *c == '(')
+        {
+            return None;
+        }
+        let letters: String = chars[s..k].iter().collect();
+        Some((letters_to_col(&letters)?, fixed, k))
+    };
+    let (c1, f1, k) = col(i)?;
+    if chars.get(k) != Some(&':') {
+        return None;
+    }
+    let (c2, f2, end) = col(k + 1)?;
+    let r = |c, f| Ref {
+        col: c,
+        col_fixed: f,
+        row: 0,
+        row_fixed: true,
+    };
+    Some((
+        RangeRef {
+            a: r(c1, f1),
+            b: r(c2, f2),
+            whole: true,
+        },
+        end - i,
+    ))
+}
+
+fn show_ref(r: Ref) -> String {
+    format!(
+        "{}{}{}{}",
+        if r.col_fixed { "$" } else { "" },
+        col_letters(r.col.max(0) as u32),
+        if r.row_fixed { "$" } else { "" },
+        r.row + 1
+    )
+}
+
+impl Template {
+    /// Read the formula's references (nothing is read from the table).
+    fn new(src: &str) -> Result<Template, Error> {
         let chars: Vec<char> = src.chars().collect();
-        let (dr, dc) = (to.0 - from.0, to.1 - from.1);
-        let rows = self.total_rows() as i64;
-        let cols = i64::from(self.col_count());
-        let mut run = String::with_capacity(src.len());
-        let mut keep = String::with_capacity(src.len());
-        // Function names open, to skip text cells inside SUM-like ranges.
+        let mut t = Template {
+            run: String::with_capacity(src.len()),
+            cells: Vec::new(),
+            ranges: Vec::new(),
+            segs: Vec::new(),
+        };
+        let mut text = String::new();
         let mut open: Vec<String> = Vec::new();
         let mut word = String::new();
         let mut i = 0;
-        let start_reads = *reads;
-        let moved = |r: Ref| Ref {
-            col: if r.col_fixed { r.col } else { r.col + dc },
-            row: if r.row_fixed { r.row } else { r.row + dr },
-            ..r
-        };
-        let show = |r: Ref| {
-            format!(
-                "{}{}{}{}",
-                if r.col_fixed { "$" } else { "" },
-                col_letters(r.col.max(0) as u32),
-                if r.row_fixed { "$" } else { "" },
-                r.row + 1
-            )
+        let flush = |text: &mut String, segs: &mut Vec<Seg>| {
+            if !text.is_empty() {
+                segs.push(Seg::Text(std::mem::take(text)));
+            }
         };
         while i < chars.len() {
             let c = chars[i];
@@ -227,93 +282,43 @@ impl Document {
                     }
                     i += 1;
                 }
-                let t: String = chars[s..i].iter().collect();
-                run.push_str(&t);
-                keep.push_str(&t);
+                let piece: String = chars[s..i].iter().collect();
+                t.run.push_str(&piece);
+                text.push_str(&piece);
                 word.clear();
                 continue;
             }
             let boundary = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
             if boundary && (c == '$' || c.is_ascii_alphabetic()) {
-                if let Some((a, n)) = parse_ref(&chars, i) {
-                    let mut end = i + n;
-                    let mut b = None;
-                    if chars.get(end) == Some(&':') {
-                        if let Some((r2, n2)) = parse_ref(&chars, end + 1) {
-                            b = Some(r2);
-                            end += 1 + n2;
-                        }
+                // A range (B2:B9 or C:C), or one cell (B2).
+                let range = match parse_ref(&chars, i) {
+                    Some((a, n)) if chars.get(i + n) == Some(&':') => parse_ref(&chars, i + n + 1)
+                        .map(|(b, n2)| (RangeRef { a, b, whole: false }, n + 1 + n2)),
+                    Some(_) => None,
+                    None => parse_cols(&chars, i),
+                };
+                if let Some((r, n)) = range {
+                    let inside = open.last().map(String::as_str);
+                    if !inside.is_some_and(|f| RANGE_FUNCS.contains(&f)) {
+                        return Err(Error::Invalid(
+                            "a range like B2:B9 goes inside SUM, AVERAGE, MIN, MAX, COUNT or COUNTA"
+                                .into(),
+                        ));
                     }
-                    let (a, b) = (moved(a), b.map(moved));
-                    let fits = |r: Ref| r.col >= 0 && r.col < cols && r.row >= 0 && r.row < rows;
-                    if !fits(a) || b.is_some_and(|b| !fits(b)) {
-                        return Ok(Rewritten::Off);
-                    }
-                    match b {
-                        None => {
-                            *reads += 1;
-                            let t = self
-                                .doc_id_at(a.row as u64)
-                                .map(|id| self.cell_text_by_id(id, a.col as u32))
-                                .unwrap_or_default();
-                            run.push_str(&if t.is_empty() {
-                                "BLANK()".into()
-                            } else {
-                                quote(&t)
-                            });
-                            keep.push_str(&show(a));
-                        }
-                        Some(b) => {
-                            let (r1, r2) = (a.row.min(b.row), a.row.max(b.row));
-                            let (c1, c2) = (a.col.min(b.col), a.col.max(b.col));
-                            let n = ((r2 - r1 + 1) * (c2 - c1 + 1)) as u64;
-                            *reads += n;
-                            if *reads - start_reads > MAX_RANGE_CELLS {
-                                return Err(Error::Invalid(format!(
-                                    "a formula reads at most {MAX_RANGE_CELLS} cells; use a smaller range, or Data › Computed column"
-                                )));
-                            }
-                            if *reads > MAX_FORMULA_READS {
-                                return Err(Error::Invalid(
-                                    "this formula reads too many cells; use a smaller range or select fewer cells".into(),
-                                ));
-                            }
-                            let numbers_only = open.last().is_some_and(|f| {
-                                matches!(f.as_str(), "SUM" | "AVERAGE" | "MIN" | "MAX")
-                            });
-                            let ids: Vec<u32> =
-                                (r1..=r2).filter_map(|r| self.doc_id_at(r as u64)).collect();
-                            let cs: Vec<u32> = (c1..=c2).map(|c| c as u32).collect();
-                            let reader = Cols::new(self, &cs);
-                            let mut buf = Vec::new();
-                            let mut parts: Vec<String> = Vec::new();
-                            for id in ids {
-                                reader.read(self, id, &mut buf);
-                                for k in 0..cs.len() {
-                                    let t = reader.get(&buf, k);
-                                    if t.is_empty() {
-                                        continue;
-                                    }
-                                    if numbers_only
-                                        && crate::value::parse_number(t, ReadOptions::default())
-                                            .is_none()
-                                    {
-                                        continue;
-                                    }
-                                    parts.push(quote(t));
-                                }
-                            }
-                            if parts.is_empty() {
-                                run.push_str("BLANK()");
-                            } else {
-                                run.push_str(&parts.join(","));
-                            }
-                            keep.push_str(&show(a));
-                            keep.push(':');
-                            keep.push_str(&show(b));
-                        }
-                    }
-                    i = end;
+                    flush(&mut text, &mut t.segs);
+                    t.run.push_str(&format!("RANGEREF_({})", t.ranges.len()));
+                    t.segs.push(Seg::Range(t.ranges.len()));
+                    t.ranges.push(r);
+                    i += n;
+                    word.clear();
+                    continue;
+                }
+                if let Some((r, n)) = parse_ref(&chars, i) {
+                    flush(&mut text, &mut t.segs);
+                    t.run.push_str(&format!("CELLREF_({})", t.cells.len()));
+                    t.segs.push(Seg::Cell(t.cells.len()));
+                    t.cells.push(r);
+                    i += n;
                     word.clear();
                     continue;
                 }
@@ -328,42 +333,152 @@ impl Document {
                 }
                 word.clear();
             }
-            run.push(c);
-            keep.push(c);
+            t.run.push(c);
+            text.push(c);
             i += 1;
         }
-        Ok(Rewritten::Ok(run, keep))
+        flush(&mut text, &mut t.segs);
+        Ok(t)
     }
 
-    /// The formula as an expression for the cell it was typed in (its
-    /// references read), e.g. to find the tabs its LOOKUPs read.
+    /// The formula as the cell `(dr, dc)` from where it was typed keeps it.
+    fn shown(&self, dr: i64, dc: i64) -> String {
+        let mut out = String::from("=");
+        for s in &self.segs {
+            match s {
+                Seg::Text(t) => out.push_str(t),
+                Seg::Cell(i) => out.push_str(&show_ref(moved(self.cells[*i], dr, dc))),
+                Seg::Range(j) => {
+                    let r = self.ranges[*j];
+                    if r.whole {
+                        let c = |x: Ref| {
+                            let m = moved(x, 0, dc);
+                            format!(
+                                "{}{}",
+                                if m.col_fixed { "$" } else { "" },
+                                col_letters(m.col.max(0) as u32)
+                            )
+                        };
+                        out.push_str(&format!("{}:{}", c(r.a), c(r.b)));
+                    } else {
+                        out.push_str(&show_ref(moved(r.a, dr, dc)));
+                        out.push(':');
+                        out.push_str(&show_ref(moved(r.b, dr, dc)));
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A reference moved by `(dr, dc)` unless it is fixed (`$`).
+fn moved(r: Ref, dr: i64, dc: i64) -> Ref {
+    Ref {
+        col: if r.col_fixed { r.col } else { r.col + dc },
+        row: if r.row_fixed { r.row } else { r.row + dr },
+        ..r
+    }
+}
+
+/// The cells a formula reads, kept by column over the rows its fills span:
+/// the text, and running totals (sum, numbers, filled cells) so a range's
+/// SUM, AVERAGE, COUNT and COUNTA cost the same at any size.
+struct Sheet {
+    /// Document position of the first row kept.
+    lo: i64,
+    cols: std::collections::HashMap<i64, ColData>,
+}
+
+struct ColData {
+    text: Vec<String>,
+    /// The number in each cell (NaN when it is not one).
+    num: Vec<f64>,
+    /// Running totals, one longer than the rows (index 0 is nothing).
+    sum: Vec<f64>,
+    nums: Vec<u32>,
+    filled: Vec<u32>,
+}
+
+impl Sheet {
+    fn text(&self, row: i64, col: i64) -> Option<&str> {
+        let c = self.cols.get(&col)?;
+        c.text
+            .get(usize::try_from(row - self.lo).ok()?)
+            .map(String::as_str)
+    }
+
+    /// Rows `r1..=r2` of columns `c1..=c2` worked out.
+    fn agg(&self, r1: i64, r2: i64, c1: i64, c2: i64, min_max: bool) -> Option<RangeAgg> {
+        let (a, b) = (
+            usize::try_from(r1 - self.lo).ok()?,
+            usize::try_from(r2 - self.lo).ok()? + 1,
+        );
+        let mut g = RangeAgg {
+            sum: 0.0,
+            nums: 0,
+            filled: 0,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+        };
+        for c in c1..=c2 {
+            let d = self.cols.get(&c)?;
+            if b > d.text.len() {
+                return None;
+            }
+            g.sum += d.sum[b] - d.sum[a];
+            g.nums += u64::from(d.nums[b] - d.nums[a]);
+            g.filled += u64::from(d.filled[b] - d.filled[a]);
+            if min_max {
+                for &x in &d.num[a..b] {
+                    if !x.is_nan() {
+                        g.min = g.min.min(x);
+                        g.max = g.max.max(x);
+                    }
+                }
+            }
+        }
+        Some(g)
+    }
+}
+
+/// One filled cell's view of the sheet: its references moved.
+struct At<'s> {
+    sheet: &'s Sheet,
+    cells: Vec<Option<(i64, i64)>>,
+    ranges: Vec<Option<(i64, i64, i64, i64)>>,
+}
+
+impl RefSource for At<'_> {
+    fn cell(&self, i: usize) -> Option<&str> {
+        let (r, c) = (*self.cells.get(i)?)?;
+        self.sheet.text(r, c)
+    }
+
+    fn range(&self, j: usize, min_max: bool) -> Option<RangeAgg> {
+        let (r1, r2, c1, c2) = (*self.ranges.get(j)?)?;
+        self.sheet.agg(r1, r2, c1, c2, min_max)
+    }
+}
+
+impl Document {
+    /// The formula as an expression for the cell it was typed in, e.g. to
+    /// find the tabs its LOOKUPs read (references stand in as functions).
     pub fn cell_formula_expr(&self, spec: &CellFormula) -> Result<String, Error> {
         let src = spec.formula.trim_start();
         let src = src.strip_prefix('=').unwrap_or(src);
-        let p = self.row_number(spec.row).ok_or(Error::OutOfRange)? as i64;
-        let at = (p, i64::from(spec.col));
-        let mut reads = 0;
-        match self.rewrite_formula(src, at, at, &mut reads)? {
-            Rewritten::Ok(run, _) => Ok(run),
-            Rewritten::Off => Err(Error::Invalid(
-                "a cell reference in the formula is outside the table".into(),
-            )),
-        }
+        Ok(Template::new(src)?.run)
     }
 
-    /// A worked-out formula (its ranges written out) as an expression.
-    fn parse_run(run: &str, names: &[String]) -> Result<Expr, Error> {
-        Expr::parse_within(
-            run,
-            names,
-            usize::MAX,
-            MAX_RANGE_CELLS as usize + crate::expr::MAX_NODES,
-        )
-    }
-
-    /// Run a cell formula over its cells. Nothing changes here: the caller
-    /// writes `cells` (one undo step) and remembers `formulas`.
-    pub fn run_cell_formula(&self, spec: &CellFormula) -> Result<FormulaResult, Error> {
+    /// Run a cell formula over its cells, with progress and Cancel.
+    /// Nothing changes here: the caller writes `cells` (one undo step,
+    /// refused if the table changed since: see `revision`) and remembers
+    /// `formulas`.
+    pub fn run_cell_formula(
+        &self,
+        spec: &CellFormula,
+        progress: &Progress,
+    ) -> Result<FormulaResult, Error> {
         let src = spec.formula.trim_start();
         let src = src.strip_prefix('=').unwrap_or(src);
         if src.trim().is_empty() {
@@ -384,84 +499,321 @@ impl Document {
                 "a formula fills at most {MAX_FORMULA_CELLS} cells at once; for a whole column use Data › Computed column"
             )));
         }
+        let tpl = Template::new(src)?;
+        let names = self.expr_names(spec.keep_first);
+        let mut e = Expr::parse(&tpl.run, &names)?;
+        e.bind(&spec.tables);
+        check_cols(self, e.columns())?;
         let pos = |r: u64| -> Result<i64, Error> {
             self.row_number(r)
                 .map(|p| p as i64)
                 .ok_or(Error::OutOfRange)
         };
         let from = (pos(spec.row)?, i64::from(spec.col));
-        // Check it reads as an expression once, so a typo is one message
-        // (references read as blank here).
-        let mut reads = 0u64;
-        let probe = match self.rewrite_formula(src, from, from, &mut reads)? {
-            Rewritten::Ok(run, _) => run,
-            Rewritten::Off => {
-                return Err(Error::Invalid(
-                    "a cell reference in the formula is outside the table".into(),
-                ))
-            }
-        };
-        let names = self.expr_names(spec.keep_first);
-        let mut e = Self::parse_run(&probe, &names)?;
-        check_cols(self, e.columns())?;
-        let total = self.total_rows();
-        let first = u64::from(spec.keep_first && total > 0);
-        let mut out = FormulaResult::default();
-        let mut buf = Vec::new();
-        let (mut pv, mut nv) = (Vec::new(), Vec::new());
-        reads = 0;
+        let rows = self.total_rows() as i64;
+        let ncols = i64::from(self.col_count());
+        let data_lo = i64::from(spec.keep_first && rows > 0);
+        // Every cell's references, moved; and what they reach in all.
+        struct Placed {
+            row: u64,
+            col: u32,
+            pos: i64,
+            dr: i64,
+            dc: i64,
+            cells: Vec<Option<(i64, i64)>>,
+            ranges: Vec<Option<(i64, i64, i64, i64)>>,
+        }
+        let fits = |r: i64, c: i64| r >= 0 && r < rows && c >= 0 && c < ncols;
+        // Where it was typed, every reference is on the table.
+        let typed_off = tpl.cells.iter().any(|x| !fits(x.row, x.col))
+            || tpl.ranges.iter().any(|x| {
+                let r = if x.whole {
+                    data_lo
+                } else {
+                    x.a.row.min(x.b.row)
+                };
+                let r2 = if x.whole {
+                    rows - 1
+                } else {
+                    x.a.row.max(x.b.row)
+                };
+                !(fits(r, x.a.col.min(x.b.col)) && fits(r2, x.a.col.max(x.b.col)))
+            });
+        if typed_off {
+            return Err(Error::Invalid(
+                "a cell reference in the formula is outside the table".into(),
+            ));
+        }
+        let mut placed = Vec::with_capacity(targets.len());
+        let (mut lo, mut hi) = (i64::MAX, i64::MIN);
+        let mut want_cols: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+        let mut scan: u64 = 0;
+        let mut min_max_ranges = vec![false; tpl.ranges.len()];
+        Self::mark_min_max(&tpl.run, &mut min_max_ranges);
         for &(r, c) in &targets {
             let p = pos(r)?;
-            let (run, keep) =
-                match self.rewrite_formula(src, from, (p, i64::from(c)), &mut reads)? {
-                    Rewritten::Ok(run, keep) => (run, keep),
-                    Rewritten::Off => {
-                        out.errors += 1;
-                        out.first_error.get_or_insert_with(|| "#REF!".into());
-                        continue;
+            let (dr, dc) = (p - from.0, i64::from(c) - from.1);
+            let cells: Vec<Option<(i64, i64)>> = tpl
+                .cells
+                .iter()
+                .map(|&x| {
+                    let m = moved(x, dr, dc);
+                    fits(m.row, m.col).then_some((m.row, m.col))
+                })
+                .collect();
+            let ranges: Vec<Option<(i64, i64, i64, i64)>> = tpl
+                .ranges
+                .iter()
+                .enumerate()
+                .map(|(j, x)| {
+                    let (a, b) = (moved(x.a, dr, dc), moved(x.b, dr, dc));
+                    let (c1, c2) = (a.col.min(b.col), a.col.max(b.col));
+                    let (r1, r2) = if x.whole {
+                        (data_lo, rows - 1)
+                    } else {
+                        (a.row.min(b.row), a.row.max(b.row))
+                    };
+                    if !(fits(r1, c1) && fits(r2, c2)) || r1 > r2 {
+                        return None;
                     }
-                };
-            e = Self::parse_run(&run, &names)?;
-            e.bind(&spec.tables);
-            let reader = Cols::new(self, e.columns());
-            let id = self.doc_id_at(p as u64).ok_or(Error::OutOfRange)?;
-            reader.read(self, id, &mut buf);
-            let near = e.uses_near();
-            let (mut has_p, mut has_n) = (false, false);
-            if near {
-                let p = p as u64;
-                if p > first {
-                    if let Some(pid) = self.doc_id_at(p - 1) {
-                        reader.read(self, pid, &mut pv);
-                        has_p = true;
+                    if min_max_ranges[j] {
+                        scan += ((r2 - r1 + 1) * (c2 - c1 + 1)) as u64;
                     }
+                    Some((r1, r2, c1, c2))
+                })
+                .collect();
+            for &(rr, cc) in cells.iter().flatten() {
+                lo = lo.min(rr);
+                hi = hi.max(rr);
+                want_cols.insert(cc);
+            }
+            for &(r1, r2, c1, c2) in ranges.iter().flatten() {
+                lo = lo.min(r1);
+                hi = hi.max(r2);
+                want_cols.extend(c1..=c2);
+            }
+            placed.push(Placed {
+                row: r,
+                col: c,
+                pos: p,
+                dr,
+                dc,
+                cells,
+                ranges,
+            });
+        }
+        // The cost is known before anything is read: refuse at once.
+        let kept = if lo <= hi {
+            (hi - lo + 1) as u64 * want_cols.len() as u64
+        } else {
+            0
+        };
+        if kept > MAX_FORMULA_READS || scan > MAX_FORMULA_READS {
+            return Err(Error::Invalid(
+                "this formula reads too many cells; use a smaller range or select fewer cells"
+                    .into(),
+            ));
+        }
+        let span = if lo <= hi { (hi - lo + 1) as u64 } else { 0 };
+        progress.start(span + placed.len() as u64);
+        let sheet = self.formula_sheet(lo, hi, &want_cols, spec.read, progress)?;
+        // Each cell, in parallel.
+        let reader = Cols::new(self, e.columns());
+        let near = e.uses_near();
+        let shown = self.row_count();
+        let first = u64::from(spec.keep_first && shown > 0);
+        let revision = self.revision();
+        let parts: Vec<Vec<CellOutcome>> = placed
+            .par_chunks(4096)
+            .map(|chunk| -> Result<_, Error> {
+                let mut out = Vec::with_capacity(chunk.len());
+                let (mut buf, mut pv, mut nv) = (Vec::new(), Vec::new(), Vec::new());
+                for t in chunk {
+                    let id = self.doc_id_at(t.pos as u64).ok_or(Error::OutOfRange)?;
+                    reader.read(self, id, &mut buf);
+                    // PREV and NEXT: the shown rows above and below.
+                    let (mut has_p, mut has_n) = (false, false);
+                    if near {
+                        if t.row > first {
+                            if let Some(pid) = self.id_at(t.row - 1) {
+                                reader.read(self, pid, &mut pv);
+                                has_p = true;
+                            }
+                        }
+                        if t.row + 1 < shown {
+                            if let Some(nid) = self.id_at(t.row + 1) {
+                                reader.read(self, nid, &mut nv);
+                                has_n = true;
+                            }
+                        }
+                    }
+                    let at = At {
+                        sheet: &sheet,
+                        cells: t.cells.clone(),
+                        ranges: t.ranges.clone(),
+                    };
+                    let off =
+                        t.cells.iter().any(Option::is_none) || t.ranges.iter().any(Option::is_none);
+                    let ctx = Ctx {
+                        cells: &buf,
+                        slots: reader.slots(),
+                        row: t.pos as u64 + 1,
+                        now: spec.now,
+                        read: spec.read,
+                        prev: has_p.then_some(pv.as_slice()),
+                        next: has_n.then_some(nv.as_slice()),
+                        refs: Some(&at),
+                    };
+                    let v = if off {
+                        Value::Err(crate::expr::Fault::Ref)
+                    } else {
+                        e.eval(&ctx)
+                    };
+                    out.push(match v {
+                        Value::Err(_) => Err(to_text_owned(&v)),
+                        v => Ok((t.row, t.col, to_text_owned(&v), tpl.shown(t.dr, t.dc))),
+                    });
                 }
-                if p + 1 < total {
-                    if let Some(nid) = self.doc_id_at(p + 1) {
-                        reader.read(self, nid, &mut nv);
-                        has_n = true;
-                    }
+                progress.step(chunk.len() as u64)?;
+                Ok(out)
+            })
+            .collect::<Result<_, _>>()?;
+        let mut out = FormulaResult {
+            revision,
+            ..Default::default()
+        };
+        for r in parts.into_iter().flatten() {
+            match r {
+                Ok((row, col, v, f)) => {
+                    out.cells.push((row, col, v));
+                    out.formulas.push(f);
+                }
+                Err(err) => {
+                    out.errors += 1;
+                    out.first_error.get_or_insert(err);
                 }
             }
-            let ctx = Ctx {
-                cells: &buf,
-                slots: reader.slots(),
-                row: p as u64 + 1,
-                now: spec.now,
-                read: spec.read,
-                prev: has_p.then_some(pv.as_slice()),
-                next: has_n.then_some(nv.as_slice()),
-            };
-            let v = e.eval(&ctx);
-            if let Value::Err(_) = v {
-                out.errors += 1;
-                out.first_error.get_or_insert_with(|| to_text_owned(&v));
-                continue;
-            }
-            out.cells.push((r, c, to_text_owned(&v)));
-            out.formulas.push(format!("={keep}"));
         }
         Ok(out)
+    }
+
+    /// Which ranges sit inside MIN or MAX (those are scanned, not summed).
+    fn mark_min_max(run: &str, marks: &mut [bool]) {
+        let mut open: Vec<String> = Vec::new();
+        let mut word = String::new();
+        let mut it = run.char_indices().peekable();
+        while let Some((i, c)) = it.next() {
+            if c == '"' {
+                // Skip text.
+                while let Some((_, d)) = it.next() {
+                    if d == '"' {
+                        if it.peek().is_some_and(|x| x.1 == '"') {
+                            it.next();
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                word.clear();
+                continue;
+            }
+            if c.is_alphanumeric() || c == '_' {
+                word.push(c);
+                continue;
+            }
+            if c == '(' {
+                if word == "RANGEREF_" {
+                    let rest = &run[i + 1..];
+                    if let Some(j) = rest
+                        .split(')')
+                        .next()
+                        .and_then(|n| n.trim().parse::<usize>().ok())
+                    {
+                        if open.last().is_some_and(|f| f == "MIN" || f == "MAX") {
+                            if let Some(m) = marks.get_mut(j) {
+                                *m = true;
+                            }
+                        }
+                    }
+                }
+                open.push(word.to_ascii_uppercase());
+            } else if c == ')' {
+                open.pop();
+            }
+            word.clear();
+        }
+    }
+
+    /// Read columns `cols` over document positions `lo..=hi` (in parallel)
+    /// with their running totals.
+    fn formula_sheet(
+        &self,
+        lo: i64,
+        hi: i64,
+        cols: &std::collections::BTreeSet<i64>,
+        read: ReadOptions,
+        progress: &Progress,
+    ) -> Result<Sheet, Error> {
+        let mut sheet = Sheet {
+            lo,
+            cols: std::collections::HashMap::new(),
+        };
+        if lo > hi || cols.is_empty() {
+            return Ok(sheet);
+        }
+        let list: Vec<u32> = cols.iter().map(|&c| c as u32).collect();
+        let reader = Cols::new(self, &list);
+        let n = (hi - lo + 1) as usize;
+        let chunk = 1 << 15;
+        let parts: Vec<Vec<Vec<String>>> = (0..n.div_ceil(chunk))
+            .into_par_iter()
+            .map(|k| -> Result<Vec<Vec<String>>, Error> {
+                let s = k * chunk;
+                let e = (s + chunk).min(n);
+                let mut out = vec![Vec::with_capacity(e - s); list.len()];
+                let mut buf = Vec::new();
+                for p in s..e {
+                    let id = self
+                        .doc_id_at(lo as u64 + p as u64)
+                        .ok_or(Error::OutOfRange)?;
+                    reader.read(self, id, &mut buf);
+                    for (i, o) in out.iter_mut().enumerate() {
+                        o.push(reader.get(&buf, i).to_string());
+                    }
+                }
+                progress.step((e - s) as u64)?;
+                Ok(out)
+            })
+            .collect::<Result<_, _>>()?;
+        for (i, &c) in list.iter().enumerate() {
+            let mut text = Vec::with_capacity(n);
+            for p in &parts {
+                text.extend(p[i].iter().cloned());
+            }
+            let num: Vec<f64> = text
+                .par_iter()
+                .map(|t| crate::value::parse_number(t, read).unwrap_or(f64::NAN))
+                .collect();
+            let (mut sum, mut nums, mut filled) =
+                (vec![0.0; n + 1], vec![0u32; n + 1], vec![0u32; n + 1]);
+            for k in 0..n {
+                let x = num[k];
+                sum[k + 1] = sum[k] + if x.is_nan() { 0.0 } else { x };
+                nums[k + 1] = nums[k] + u32::from(!x.is_nan());
+                filled[k + 1] = filled[k] + u32::from(!text[k].is_empty());
+            }
+            sheet.cols.insert(
+                i64::from(c),
+                ColData {
+                    text,
+                    num,
+                    sum,
+                    nums,
+                    filled,
+                },
+            );
+        }
+        Ok(sheet)
     }
 }
 
@@ -469,6 +821,9 @@ impl Document {
     /// The results as a change of cells (one undo step, the path a paste
     /// takes).
     pub fn formula_plan(&self, res: &FormulaResult) -> Result<crate::ops::CellPlan, Error> {
+        if res.revision != self.revision() {
+            return Err(Error::Changed);
+        }
         let mut cells: Vec<(u64, u32, &str)> = res
             .cells
             .iter()
@@ -548,13 +903,16 @@ mod tests {
     }
 
     fn one(d: &Document, f: &str, row: u64, col: u32) -> FormulaResult {
-        d.run_cell_formula(&CellFormula {
-            formula: f.into(),
-            row,
-            col,
-            keep_first: true,
-            ..Default::default()
-        })
+        d.run_cell_formula(
+            &CellFormula {
+                formula: f.into(),
+                row,
+                col,
+                keep_first: true,
+                ..Default::default()
+            },
+            &Progress::new(),
+        )
         .unwrap()
     }
 
@@ -607,7 +965,7 @@ mod tests {
             keep_first: true,
             ..Default::default()
         };
-        let r = d.run_cell_formula(&spec).unwrap();
+        let r = d.run_cell_formula(&spec, &Progress::new()).unwrap();
         assert_eq!(
             r.cells,
             vec![
@@ -626,7 +984,7 @@ mod tests {
             keep_first: true,
             ..Default::default()
         };
-        let r = d.run_cell_formula(&spec).unwrap();
+        let r = d.run_cell_formula(&spec, &Progress::new()).unwrap();
         assert_eq!(r.cells, vec![(1, 3, "Price".to_string())]);
         assert_eq!(r.first_error.as_deref(), Some("#REF!"));
     }
@@ -635,12 +993,15 @@ mod tests {
     fn bad_formulas_are_refused() {
         let d = doc();
         let bad = |f: &str| {
-            d.run_cell_formula(&CellFormula {
-                formula: f.into(),
-                keep_first: true,
-                row: 1,
-                ..Default::default()
-            })
+            d.run_cell_formula(
+                &CellFormula {
+                    formula: f.into(),
+                    keep_first: true,
+                    row: 1,
+                    ..Default::default()
+                },
+                &Progress::new(),
+            )
             .is_err()
         };
         assert!(bad("="));
@@ -664,5 +1025,109 @@ mod tests {
         // Undo brings back the value, and with it the formula.
         assert!(d.undo());
         assert_eq!(d.cell_formula(1, 3).as_deref(), Some("=B2*C2"));
+    }
+
+    #[test]
+    fn ranges_are_worked_out_directly() {
+        let d = doc();
+        // Running totals down Price (text and blanks passed over).
+        let spec = CellFormula {
+            formula: "=SUM($B$2:B2)".into(),
+            row: 1,
+            col: 3,
+            targets: vec![(1, 3), (2, 3), (3, 3), (4, 3)],
+            keep_first: true,
+            ..Default::default()
+        };
+        let r = d.run_cell_formula(&spec, &Progress::new()).unwrap();
+        let v: Vec<&str> = r.cells.iter().map(|c| c.2.as_str()).collect();
+        assert_eq!(v, ["2", "3.5", "3.5", "3.5"]);
+        assert_eq!(r.formulas[2], "=SUM($B$2:B4)");
+        // Whole columns: the data rows (titles left out).
+        assert_eq!(one(&d, "=SUM(C:C)", 1, 3).cells[0].2, "13");
+        assert_eq!(one(&d, "=COUNTA(B:C)", 1, 3).cells[0].2, "7");
+        assert_eq!(one(&d, "=MAX(B:B)+MIN(C:C)", 1, 3).cells[0].2, "3");
+        assert_eq!(one(&d, "=SUM(C:C)", 1, 3).cells.len(), 1);
+        assert_eq!(one(&d, "=AVERAGE(B2:C3)", 1, 3).cells[0].2, "2.625");
+        // A range anywhere else is refused.
+        let bad = d.run_cell_formula(
+            &CellFormula {
+                formula: "=UPPER(B2:B3)".into(),
+                row: 1,
+                col: 3,
+                keep_first: true,
+                ..Default::default()
+            },
+            &Progress::new(),
+        );
+        assert!(bad.is_err());
+    }
+
+    #[test]
+    fn decimal_commas_are_read_in_ranges() {
+        let d = Document::from_bytes(
+            b"a;b\r\n1,5;x\r\n2,5;y\r\n".to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        let read = ReadOptions {
+            decimal_comma: true,
+            ..Default::default()
+        };
+        let r = d
+            .run_cell_formula(
+                &CellFormula {
+                    formula: "=SUM(A2:A3)".into(),
+                    row: 1,
+                    col: 1,
+                    keep_first: true,
+                    read,
+                    ..Default::default()
+                },
+                &Progress::new(),
+            )
+            .unwrap();
+        assert_eq!(r.cells[0].2, "4");
+    }
+
+    #[test]
+    fn a_changed_table_is_not_written() {
+        let mut d = doc();
+        let r = one(&d, "=B2*C2", 1, 3);
+        d.set_cells(vec![(2, 0, "Pencil".into())]).unwrap();
+        assert!(matches!(d.formula_plan(&r), Err(Error::Changed)));
+    }
+
+    #[test]
+    fn too_many_reads_are_refused_at_once() {
+        let mut csv = String::from("a\r\n");
+        for i in 0..30_000 {
+            csv.push_str(&format!("{i}\r\n"));
+        }
+        let d =
+            Document::from_bytes(csv.into_bytes(), OpenOptions::default(), Some("csv")).unwrap();
+        // Running totals are cheap at any length.
+        let targets: Vec<(u64, u32)> = (1..30_001).map(|r| (r, 0)).collect();
+        let spec = CellFormula {
+            formula: "=SUM($A$2:A2)".into(),
+            row: 1,
+            col: 0,
+            targets: targets.clone(),
+            keep_first: true,
+            ..Default::default()
+        };
+        let r = d.run_cell_formula(&spec, &Progress::new()).unwrap();
+        assert_eq!(
+            r.cells.last().unwrap().2,
+            (29_999u64 * 30_000 / 2).to_string()
+        );
+        // MIN over growing ranges scans each: too many, refused before work.
+        let spec = CellFormula {
+            formula: "=MIN($A$2:A2)".into(),
+            targets,
+            ..spec
+        };
+        assert!(d.run_cell_formula(&spec, &Progress::new()).is_err());
     }
 }
