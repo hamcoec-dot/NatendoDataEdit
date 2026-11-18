@@ -171,8 +171,9 @@ function mockNumber(s: string): number | null {
   if (t === "" || !/^[-+]?(\d+\.?\d*|\.\d+)$/.test(t)) return null;
   return neg ? -Number(t) : Number(t);
 }
-function mockDate(s: string): number | null {
-  const t = s.trim();
+function mockDate(s: string, dayFirst = false): number | null {
+  let t = s.trim();
+  if (dayFirst) t = t.replace(/^(\d{1,2})\/(\d{1,2})\//, "$2/$1/");
   if (!/\d/.test(t)) return null;
   const ms = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(t) ? `${t}T00:00` : t);
   return Number.isNaN(ms) ? null : (ms - new Date(ms).getTimezoneOffset() * 60_000) / 86_400_000;
@@ -201,7 +202,8 @@ function cellTestOf(p: Pattern): CellTest {
     return new CellTest((s) => editsWithin(want, similarKey(s), max));
   }
   const date = p.kind === "date";
-  const read = date ? mockDate : mockNumber;
+  const dmy = p.read?.date_order === "dmy";
+  const read = date ? (s: string) => mockDate(s, dmy) : mockNumber;
   const val = (s: string): [number, boolean] => {
     const v = read(s);
     if (v === null) throw err("bad_pattern", `the pattern is not valid: "${s.trim()}" is not a ${date ? "date (try 1/5/2024 or 2024-01-05)" : "number"}`);

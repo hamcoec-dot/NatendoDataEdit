@@ -255,6 +255,8 @@ export interface Pattern {
   escapes?: boolean;
   /** The replacement takes the case of what it replaces. */
   preserve_case?: boolean;
+  /** How numbers and dates are read (number and date kinds). */
+  read?: ReadOptions;
 }
 export type Condition =
   | { type: "text"; op: TextOp; text: string; match_case?: boolean }

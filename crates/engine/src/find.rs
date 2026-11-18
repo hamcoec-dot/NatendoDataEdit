@@ -138,8 +138,11 @@ impl Test {
                 if want.is_empty() {
                     return Err(Error::BadPattern("enter a name or word to look for".into()));
                 }
+                // One or two letters ("A", a middle initial) must match
+                // exactly: one letter off would match nearly anything.
                 let max = match want.len() {
-                    0..=4 => 1,
+                    0..=2 => 0,
+                    3..=4 => 1,
                     5..=10 => 2,
                     _ => 3,
                 };
@@ -220,7 +223,8 @@ impl Test {
                     return false;
                 }
                 let got: Vec<char> = similar_key(s).chars().collect();
-                within(want, &got, *max)
+                // A blank cell (or only punctuation) is never similar.
+                !got.is_empty() && within(want, &got, *max)
             }
         }
     }
@@ -534,6 +538,15 @@ impl CaseTemplate {
         CaseTemplate { parts }
     }
 
+    /// The replacement uses case marks.
+    fn has_marks(&self) -> bool {
+        self.parts.len() > 1
+            || self
+                .parts
+                .iter()
+                .any(|p| p.0 != Case::Keep || p.1.is_some())
+    }
+
     fn expand(&self, caps: &regex::Captures<'_>, out: &mut String) {
         if self.parts.len() == 1 && self.parts[0].0 == Case::Keep && self.parts[0].1.is_none() {
             caps.expand(&self.parts[0].2, out);
@@ -687,7 +700,8 @@ impl Matcher {
                 // Never used: the test decides.
                 re: build(r"[^\s\S]", true)?,
                 literal: true,
-                rep_escapes: p.escapes,
+                // The replacement is put in as typed.
+                rep_escapes: false,
                 test: Some(test),
                 preserve: false,
             });
@@ -820,6 +834,9 @@ impl Matcher {
             }
         } else {
             let template = CaseTemplate::new(raw, self.rep_escapes);
+            // \U \L \u \l in the replacement say the case: they win over
+            // Preserve case.
+            let preserve = self.preserve && !template.has_marks();
             let mut piece = String::new();
             for caps in self.re.captures_iter(s) {
                 let m = caps.get(0).expect("group 0 always matches");
@@ -829,7 +846,7 @@ impl Matcher {
                 push(&mut out, &s[last..m.start()])?;
                 piece.clear();
                 template.expand(&caps, &mut piece);
-                if self.preserve {
+                if preserve {
                     piece = keep_case(m.as_str(), &piece);
                 }
                 push(&mut out, &piece)?;
@@ -1445,8 +1462,27 @@ impl Document {
                 match (area.cols.iter().position(|&x| x == c), backward) {
                     (Some(k), false) => (k, r + 1),
                     (Some(k), true) => (k, r),
-                    (None, false) => (area.cols.partition_point(|&x| x < c), r0),
-                    (None, true) => (area.cols.partition_point(|&x| x < c), r1),
+                    // Outside the searched columns: the next searched one to
+                    // the right (forwards) or to the left (backwards); past
+                    // the end the search starts over from the other end.
+                    (None, false) => {
+                        let k = area.cols.partition_point(|&x| x < c);
+                        if k >= ncols {
+                            return Ok(self
+                                .find_next_by_columns(m, area, None, false, progress)?
+                                .map(|(h, _)| (h, true)));
+                        }
+                        (k, r0)
+                    }
+                    (None, true) => {
+                        let k = area.cols.partition_point(|&x| x < c);
+                        if k == 0 {
+                            return Ok(self
+                                .find_next_by_columns(m, area, None, true, progress)?
+                                .map(|(h, _)| (h, true)));
+                        }
+                        (k - 1, r1)
+                    }
                 }
             }
             _ if backward => (ncols - 1, r1),
@@ -1677,15 +1713,21 @@ impl Document {
             None => (0, 0, false),
         };
         let nblocks = (r1 - r0).div_ceil(BLOCK);
-        let count_block = |b: u64| -> Result<FindCount, Error> {
+        let ncols = area.cols.len();
+        // A block's count, and (column order) its count per column.
+        let count_block = |b: u64| -> Result<(FindCount, Vec<u64>), Error> {
             let s = r0 + b * BLOCK;
             let e = (s + BLOCK).min(r1);
             let mut out = FindCount::default();
+            let mut per = vec![0u64; if cols_first { ncols } else { 0 }];
             let mut buf = Vec::new();
             for r in s..e {
                 self.each_cell(&area, r, false, &mut buf, |k, t| {
                     if m.is_match(t) {
                         out.cells += 1;
+                        if cols_first {
+                            per[k] += 1;
+                        }
                         let earlier = if cols_first {
                             k < ak || (k == ak && r < ar)
                         } else {
@@ -1701,9 +1743,44 @@ impl Document {
                 });
             }
             progress.step(e - s)?;
-            Ok(out)
+            Ok((out, per))
         };
-        // Kept counts work in row order only.
+        // Column order keeps a count per block and column (block by block).
+        if cols_first {
+            if let Some(kept) = blocks
+                .as_ref()
+                .filter(|k| k.len() as u64 == nblocks * ncols as u64)
+            {
+                let col_total =
+                    |k: usize| -> u64 { (0..nblocks as usize).map(|b| kept[b * ncols + k]).sum() };
+                let cells = kept.iter().sum();
+                let left: u64 = (0..ak.min(ncols)).map(col_total).sum();
+                let (before, here) = match at {
+                    Some((r, _)) if r >= r0 && r < r1 => {
+                        let b = ((r - r0) / BLOCK) as usize;
+                        let (mine, _) = count_block(b as u64)?;
+                        // Earlier columns in the other blocks, the cell's
+                        // column in the blocks above, then its own block.
+                        let mut before =
+                            left - (0..ak.min(ncols)).map(|k| kept[b * ncols + k]).sum::<u64>();
+                        if ak < ncols {
+                            before += (0..b).map(|x| kept[x * ncols + ak]).sum::<u64>();
+                        }
+                        (before + mine.before, mine.here)
+                    }
+                    Some((r, _)) if r >= r1 => {
+                        (left + if ak < ncols { col_total(ak) } else { 0 }, false)
+                    }
+                    Some(_) => (left, false),
+                    None => (0, false),
+                };
+                return Ok(FindCount {
+                    cells,
+                    before,
+                    here,
+                });
+            }
+        }
         if let Some(kept) = blocks
             .as_ref()
             .filter(|k| k.len() as u64 == nblocks && !cols_first)
@@ -1714,7 +1791,7 @@ impl Document {
             let (before, here) = match at {
                 Some((r, _)) if r >= r0 && r < r1 => {
                     let b = (r - r0) / BLOCK;
-                    let mine = count_block(b)?;
+                    let (mine, _) = count_block(b)?;
                     (
                         kept[..b as usize].iter().sum::<u64>() + mine.before,
                         mine.here,
@@ -1729,11 +1806,16 @@ impl Document {
                 here,
             });
         }
-        let parts: Vec<FindCount> = (0..nblocks)
+        let parts: Vec<(FindCount, Vec<u64>)> = (0..nblocks)
             .into_par_iter()
             .map(count_block)
             .collect::<Result<_, _>>()?;
-        *blocks = Some(parts.iter().map(|p| p.cells).collect());
+        *blocks = Some(if cols_first {
+            parts.iter().flat_map(|p| p.1.iter().copied()).collect()
+        } else {
+            parts.iter().map(|p| p.0.cells).collect()
+        });
+        let parts: Vec<FindCount> = parts.into_iter().map(|p| p.0).collect();
         Ok(parts
             .into_iter()
             .fold(FindCount::default(), |a, p| FindCount {
@@ -1994,7 +2076,7 @@ impl Document {
         let rows = self.matching_rows(spec, progress)?;
         // Hidden columns (the search's skipped ones) are left out.
         let all: Vec<u32> = (0..self.col_count())
-            .filter(|c| !spec.skip_cols.contains(c))
+            .filter(|c| !spec.skip_cols.contains(c) && !spec.hidden_cols.contains(c))
             .collect();
         let cols = all.len() as u32;
         if cols == 0 {
@@ -2505,6 +2587,24 @@ mod tests {
             assert!(!s.is_match(n), "{n}");
         }
         assert!(with("Ann", PatternKind::Similar, |_| {}).is_match("Anne"));
+        // Short searches match exactly (case and accents aside), and a blank
+        // or punctuation-only cell never matches.
+        let one = with("A", PatternKind::Similar, |_| {});
+        for y in ["a", "Á", " a. "] {
+            assert!(one.is_match(y), "{y}");
+        }
+        for n in ["", "-", "b", "ab", "  "] {
+            assert!(!one.is_match(n), "{n:?}");
+        }
+        assert!(!with("Al", PatternKind::Similar, |_| {}).is_match("Ab"));
+        assert!(!with("Jon Smyth", PatternKind::Similar, |_| {}).is_match(""));
+        // Case marks win over Preserve case.
+        let m = with(r"(\w+)", PatternKind::Regex, |p| p.preserve_case = true);
+        assert_eq!(m.replace("SMITH", r"\L${1}x").unwrap().unwrap().0, "smithx");
+        assert_eq!(m.replace("SMITH", "jones").unwrap().unwrap().0, "JONES");
+        // Value patterns put the replacement in as typed.
+        let v = with("5", PatternKind::Number, |p| p.escapes = true);
+        assert_eq!(v.replace("5", r"a\tb").unwrap().unwrap().0, r"a\tb");
         assert!(!with("Ann", PatternKind::Similar, |_| {}).is_match("Annette"));
         let m = with("smith", PatternKind::Plain, |p| p.preserve_case = true);
         assert_eq!(
@@ -2612,6 +2712,45 @@ mod tests {
         );
         let back = d.find_next(&s, Some((1, 1)), true, &p).unwrap().unwrap();
         assert_eq!(back, ((2, 0), false));
+        // Outside the searched columns: backwards starts in the column to
+        // the left; forwards past the last one starts over.
+        let d3 = doc("a,b,c\nx,.,x\nx,.,x\n");
+        let mut s3 = spec(pat("x", PatternKind::Plain));
+        s3.by_columns = true;
+        s3.scope = Scope::Columns { cols: vec![0, 2] };
+        assert_eq!(
+            d3.find_next(&s3, Some((1, 1)), true, &p).unwrap(),
+            Some(((2, 0), false))
+        );
+        assert_eq!(
+            d3.find_next(&s3, Some((1, 1)), false, &p).unwrap(),
+            Some(((1, 2), false))
+        );
+        s3.scope = Scope::Columns { cols: vec![0] };
+        assert_eq!(
+            d3.find_next(&s3, Some((1, 2)), false, &p).unwrap(),
+            Some(((1, 0), true))
+        );
+        assert_eq!(
+            d3.find_next(&s3, Some((1, 2)), true, &p).unwrap(),
+            Some(((2, 0), false))
+        );
+        s3.scope = Scope::Columns { cols: vec![2] };
+        assert_eq!(
+            d3.find_next(&s3, Some((1, 0)), true, &p).unwrap(),
+            Some(((2, 2), true))
+        );
+        // Kept counts in column order agree with a fresh count.
+        let big = doc(&format!("a,b\n{}", "x,x\n.,x\n".repeat(20_000)));
+        let mut sb = spec(pat("x", PatternKind::Plain));
+        sb.by_columns = true;
+        let mut kept = None;
+        for at in [(1, 0), (30_001, 0), (5, 1), (39_999, 1), (40_000, 1)] {
+            let fresh = big.find_count(&sb, Some(at), &p).unwrap();
+            let cached = big.find_count_with(&sb, Some(at), &mut kept, &p).unwrap();
+            assert_eq!(fresh, cached, "{at:?}");
+        }
+        assert!(kept.is_some());
         // "3 of 4" in column order.
         let c = d.find_count(&s, Some((1, 1)), &p).unwrap();
         assert_eq!((c.before, c.here), (2, true));
@@ -2666,6 +2805,10 @@ mod tests {
         s.skip_cols = vec![1];
         let t = d.matching_table(&s, &p).unwrap();
         assert_eq!(t.cols, 2);
+        // Include hidden: the hidden column is searched but still not copied.
+        s.skip_cols = Vec::new();
+        s.hidden_cols = vec![1];
+        assert_eq!(d.matching_table(&s, &p).unwrap().cols, 2);
         assert_eq!(
             String::from_utf8(t.bytes).unwrap().replace("\r\n", "\n"),
             "k,v\nx1,a\n"

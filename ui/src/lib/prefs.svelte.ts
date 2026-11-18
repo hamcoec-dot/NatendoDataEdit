@@ -201,19 +201,29 @@ export interface SavedSearch {
   ignoreAccents: boolean;
   escapes: boolean;
   preserveCase: boolean;
+  /** Dates are read day first (03/04/2026 is 3 April). */
+  dayFirst: boolean;
 }
 export const MAX_SAVED_SEARCHES = 100;
 const KINDS = ["plain", "wildcard", "regex", "number", "date", "similar"] as const;
 
-/** Saved searches (untrusted), checked and bounded. */
+/** Saved searches (untrusted), checked and bounded: a blank or repeated
+ *  name is dropped (the first one with a name is kept). */
 export function savedSearches(v: unknown): SavedSearch[] {
   if (!Array.isArray(v)) return [];
   const str = (x: unknown, n: number) => (typeof x === "string" ? x.slice(0, n) : "");
+  const seen = new Set<string>();
   return v
     .filter((s): s is Record<string, unknown> => !!s && typeof s === "object" && typeof (s as { name?: unknown }).name === "string")
+    .filter((s) => {
+      const name = str(s.name, 100).trim();
+      if (!name || seen.has(name)) return false;
+      seen.add(name);
+      return true;
+    })
     .slice(0, MAX_SAVED_SEARCHES)
     .map((s) => ({
-      name: str(s.name, 100) || "Search",
+      name: str(s.name, 100).trim(),
       text: str(s.text, 1000),
       replacement: str(s.replacement, 1000),
       kind: (KINDS as readonly string[]).includes(s.kind as string) ? (s.kind as SavedSearch["kind"]) : "plain",
@@ -224,6 +234,7 @@ export function savedSearches(v: unknown): SavedSearch[] {
       ignoreAccents: s.ignoreAccents === true,
       escapes: s.escapes === true,
       preserveCase: s.preserveCase === true,
+      dayFirst: s.dayFirst === true,
     }));
 }
 

@@ -38,7 +38,7 @@
     /** Open "Replace from a list…". */
     onBatch: () => void;
     /** Copy the Find all list (after the privacy check); false if stopped. */
-    onCopy: (text: string) => Promise<boolean>;
+    onCopy: (text: string, tabs: Tab[]) => Promise<boolean>;
     onClose: () => void;
   }
   let { tab, tabs, replace = $bindable(), options = $bindable(), block = $bindable(), run, onSelect, onChanged, onGoTab, onNewTab, onRenameColumns, onBatch, onCopy, onClose }: Props = $props();
@@ -449,7 +449,7 @@
     const head = [...(many ? ["Tab"] : []), "Row", "Column", "Cell"].join("\t");
     const lines = [head];
     for (const { t, h } of shown) lines.push([...(many ? [t.info.name] : []), `${h.number + 1}${h.hidden ? " (hidden)" : ""}`, title(h.col, t), h.text].map((x) => x.replace(/[\t\r\n]+/g, " ")).join("\t"));
-    if (await onCopy(lines.join("\r\n") + "\r\n")) status = `Copied the list of ${plural(shown.length, "match", "matches")} (as listed, each cell around its match).`;
+    if (await onCopy(lines.join("\r\n") + "\r\n", results.map((g) => g.t))) status = `Copied the list of ${plural(shown.length, "match", "matches")} (as listed, each cell around its match).`;
   }
 
   // ---- saved searches (kept in Options only when Save is pressed) ----
@@ -470,6 +470,7 @@
       ignoreAccents: options.ignoreAccents,
       escapes: options.escapes,
       preserveCase: options.preserveCase,
+      dayFirst: options.dayFirst,
     };
     const list = prefs.data.savedSearches.filter((x) => x.name !== name);
     if (list.length >= MAX_SAVED_SEARCHES) {
@@ -492,10 +493,10 @@
     options.ignoreAccents = s.ignoreAccents;
     options.escapes = s.escapes;
     options.preserveCase = s.preserveCase;
-    if (s.replacement) {
-      replacement = s.replacement;
-      replace = true;
-    }
+    options.dayFirst = s.dayFirst;
+    // The saved replacement, or none (so an earlier one isn't used by mistake).
+    replacement = s.replacement;
+    if (s.replacement) replace = true;
     savedOpen = false;
     results = null;
     pending = null;
@@ -863,7 +864,7 @@
       <button type="button" disabled={allTabs} title={allTabs ? "Replace one at a time works in the shown tab: pick Whole file" : ""} onclick={() => void replaceOne()}>Replace</button>
       <button type="button" title="Replace all (Ctrl+Alt+Enter)" onclick={() => void previewAll()}>Replace all…</button>
       <button type="button" title="Many find-and-replace pairs at once, from a pasted list or another tab" onclick={onBatch}>From a list…</button>
-      {#if !valueKind}<label title="SMITH becomes JONES, Smith becomes Jones"><input type="checkbox" bind:checked={options.preserveCase} /> Preserve case</label>{/if}
+      {#if !valueKind}<label title="SMITH becomes JONES, Smith becomes Jones (in a regular expression, \U \L \u \l in the replacement win)"><input type="checkbox" bind:checked={options.preserveCase} /> Preserve case</label>{/if}
     </div>
   {/if}
   {#if picking}
@@ -901,7 +902,8 @@
         <label title="\t tab, \n line break, \r return, \\ backslash, \u&#123;A0&#125; any character (in Replace with too)"><input type="checkbox" bind:checked={options.escapes} /> \t \n</label>
       {/if}
     {:else}
-      <span class="muted">{options.kind === "similar" ? "Whole cells, a letter or two different; case, accents and punctuation aside." : "Whole cells by value; Replace puts the replacement in the whole cell."}</span>
+      <span class="muted">{options.kind === "similar" ? "Whole cells, a letter or two different (one or two letters: exactly); case, accents and punctuation aside." : "Whole cells by value; Replace puts the replacement in the whole cell."}</span>
+      {#if options.kind === "date"}<label title="03/04/2026 is 3 April"><input type="checkbox" bind:checked={options.dayFirst} /> Day first</label>{/if}
     {/if}
     <label title="Hidden columns and hidden rows (filtered out or hidden by hand) are skipped unless this is ticked; Find next stays on shown rows"><input type="checkbox" bind:checked={options.includeHidden} /> Include hidden</label>
     <label title="Find next goes down each column before moving right"><input type="checkbox" bind:checked={options.byColumns} /> By columns</label>
@@ -923,7 +925,7 @@
           <b>By value</b>
           <table>
             <tbody>
-              <tr><td><code>5</code></td><td>Numbers: 5, 5.00, $5 (not 15)</td></tr>
+              <tr><td><code>5</code></td><td>Numbers: 5, 5.00, $5 (not 15); 50% is the number 0.5</td></tr>
               <tr><td><code>10..20</code> <code>&gt;5</code> <code>&lt;=100</code></td><td>a range or a comparison (numbers and dates)</td></tr>
               <tr><td><code>1/5/2024</code></td><td>Dates: 2024-01-05, Jan 5 2024</td></tr>
               <tr><td><code>Jon Smyth</code></td><td>Similar spelling: John Smith</td></tr>

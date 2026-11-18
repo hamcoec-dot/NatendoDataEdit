@@ -222,6 +222,8 @@ export interface FindOptions {
   preserveCase: boolean;
   /** Find next goes down each column before moving right. */
   byColumns: boolean;
+  /** Dates by value are read day first (03/04/2026 is 3 April). */
+  dayFirst: boolean;
 }
 
 export const FIND_DEFAULTS: FindOptions = {
@@ -240,6 +242,7 @@ export const FIND_DEFAULTS: FindOptions = {
   cols: [],
   preserveCase: false,
   byColumns: false,
+  dayFirst: false,
 };
 
 /** The search the find bar describes, for a selection and header setting. */
@@ -266,6 +269,7 @@ export function findSpecOf(
   else if (o.scope === "column") scope = { kind: "columns", cols: Array.from({ length: sel.cols }, (_, i) => sel.col + i) };
   else if (o.scope === "pick") scope = { kind: "columns", cols: [...(o.cols ?? [])].sort((a, b) => a - b) };
   if (o.preserveCase && !o.blank) pattern.preserve_case = true;
+  if (o.dayFirst && o.kind === "date" && !o.blank) pattern.read = { decimal_comma: false, date_order: "dmy" };
   // "Include hidden": hidden columns and hidden rows (filtered out or hidden
   // by hand) are searched too, and a replace says how many of its cells
   // are hidden.

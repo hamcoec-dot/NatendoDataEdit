@@ -90,6 +90,13 @@ const url = process.argv[3] || "http://localhost:5199";
   ok((await count()) === "2 matches", `1/5/2024 finds 2024-01-05 too (${await count()})`);
   await type("1/1/2024..1/31/2024");
   ok((await count()) === "3 matches", `a January range finds Jan 9 2024 too (${await count()})`);
+  // Day first: 5/1/2024 is 5 January.
+  await type("5/1/2024");
+  ok((await count()) === "No matches", `month first by default, 5/1/2024 is May 1 (${await count()})`);
+  await tick("Day first").check();
+  await wait(900);
+  ok((await count()) === "1 match", `with Day first ticked it is 5 January (and the cell 1/5/2024 is read as 1 May) (${await count()})`);
+  await tick("Day first").uncheck();
   await type(">1/31/2024");
   ok((await count()) === "1 match", `after January (${await count()})`);
 
@@ -185,6 +192,38 @@ const url = process.argv[3] || "http://localhost:5199";
   await p.click(".find .menu.right button[aria-label='Delete Big amounts']");
   await wait(200);
   ok(/No saved searches yet/.test(await p.textContent(".find .menu.right")), "a saved search can be deleted");
+  // A saved search with no replacement clears the Replace with box.
+  await p.click(".find button:has-text('Saved ▾')");
+  await p.fill("input[aria-label='Replace with']", "");
+  await p.click(".find button:has-text('Saved ▾')");
+  await p.fill("input[aria-label='Name for this search']", "No replacement");
+  await p.keyboard.press("Enter");
+  await wait(300);
+  await p.fill("input[aria-label='Replace with']", "leftover");
+  await p.click(".find button:has-text('Saved ▾')");
+  await wait(200);
+  await p.click(".find .menu.right button:has-text('No replacement')");
+  await wait(500);
+  ok((await p.inputValue("input[aria-label='Replace with']")) === "", "a saved search with no replacement clears the box");
+
+  // Saved searches with a repeated or blank name (a damaged settings file)
+  // still open the menu.
+  await p.evaluate(() => {
+    const k = Object.keys(localStorage).find((x) => /pref/i.test(x));
+    const v = JSON.parse(localStorage.getItem(k) || "{}");
+    v.savedSearches = [{ name: "Twice", text: "a" }, { name: "Twice", text: "b" }, { name: "", text: "c" }, { name: "Once", text: "d" }];
+    localStorage.setItem(k, JSON.stringify(v));
+  });
+  await p.reload();
+  await wait(1200);
+  await p.keyboard.press("Control+n");
+  await wait(600);
+  await p.keyboard.press("Control+f");
+  await wait(300);
+  await p.click(".find button:has-text('Saved ▾')");
+  await wait(300);
+  const items = await p.$$eval(".find .menu.right .saved button[role=menuitem]", (e) => e.map((x) => x.textContent));
+  ok(items.join(",") === "Twice,Once", `repeated and blank names are dropped (${items.join(",")})`);
 
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   console.log(failed ? `${failed} FAILED` : "ALL PASS");

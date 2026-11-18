@@ -447,9 +447,11 @@ everything is also in command search.
 - **Find numbers, dates and similar spellings by value**: "Numbers by value"
   finds `5` as 5, 5.00 or $5 (not 15), and takes ranges and comparisons
   (`10..20`, `>5`, `<=100`); "Dates by value" finds `1/5/2024` as 2024-01-05
-  or Jan 5 2024, with ranges such as `1/1/2024..3/31/2024`; "Similar
+  or Jan 5 2024, with ranges such as `1/1/2024..3/31/2024` (tick Day first
+  for day-first dates); "Similar
   spelling" finds whole cells a letter or two apart ("Jon Smyth" finds "John
-  Smith"), case, accents and punctuation aside. Replace puts the replacement
+  Smith"), case, accents and punctuation aside (one or two letters must
+  match exactly; blank cells never match). Replace puts the replacement
   in the whole cell.
 - **Preserve case, hidden rows and search by columns**: with Preserve case,
   replacing "smith" with "jones" turns SMITH into JONES and Smith into Jones.

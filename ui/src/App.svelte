@@ -286,8 +286,8 @@
   }
 
   /** Before data leaves the app: warn if the tab looks private. False to stop. */
-  async function privacyGate(what: string, cols?: [number, number]): Promise<boolean> {
-    const t = tab;
+  async function privacyGate(what: string, cols?: [number, number], of?: Tab): Promise<boolean> {
+    const t = of ?? tab;
     if (!t || !prefs.data.privacyWarnings || t.warned) return true;
     let f = await findingsOf(t);
     if (cols) f = f.filter((x) => copyTouches([x], cols[0], cols[1]));
@@ -5252,8 +5252,9 @@
           for (const [c, name] of list) await renameColumn(t.id, c, name, true, shownTitles(t));
         }}
         onBatch={() => { batchOpen = true; }}
-        onCopy={async (text) => {
-          if (!(await privacyGate("The list of matches goes to the clipboard, where other programs can read it."))) return false;
+        onCopy={async (text, from) => {
+          // Every tab the list comes from is checked.
+          for (const t of from) if (!(await privacyGate(`The list of matches${from.length > 1 ? ` (with ${t.info.name})` : ""} goes to the clipboard, where other programs can read it.`, undefined, t))) return false;
           try {
             await navigator.clipboard.writeText(text);
             return true;
