@@ -5187,6 +5187,10 @@ impl Docs {
                     let (t, r) = d.sample_report(spec, &job.progress)?;
                     // The file's fingerprint, when the tab holds it unchanged.
                     let print = match d.path() {
+                        Some(_) if d.changed_on_disk() => {
+                            "(the file changed on disk since it was opened; open it again for a fingerprint)"
+                                .into()
+                        }
                         Some(p) if !d.is_modified() => {
                             natendo_engine::tools::file_sha256(p, &job.progress)?
                         }
@@ -5941,16 +5945,46 @@ impl Docs {
         Ok(d.export_file(path, opts, &job.progress)?)
     }
 
+    /// Before parts go to files of their own beside `path`: the part names
+    /// already there (they would be replaced), and parts of an earlier
+    /// export in another number of parts ("voters (3 of 12).xlsx").
+    pub fn xlsx_part_clash(
+        &self,
+        id: u32,
+        path: &Path,
+        opts: &ExportOptions,
+    ) -> CmdResult<(Vec<String>, Vec<String>)> {
+        if opts.format != ExportFormat::Xlsx || !opts.split_files {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let n = self.get(id)?.read().xlsx_parts(opts).len();
+        if n < 2 {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        Ok(part_clash(path, n))
+    }
+
     /// Several tabs as the sheets of one Excel workbook (each tab named
     /// after it; a tab longer than a sheet goes on over more sheets).
+    /// `widths`: each tab's on-screen column widths, in the order of `ids`.
     pub fn export_book(
         &self,
         ids: &[u32],
         path: &Path,
         opts: &ExportOptions,
+        widths: &[Vec<u32>],
     ) -> CmdResult<ExportReport> {
         check_export(opts)?;
         self.check_writable(path)?;
+        // The same tab twice goes in once.
+        let mut seen = std::collections::HashSet::new();
+        let order: Vec<usize> = (0..ids.len()).filter(|&k| seen.insert(ids[k])).collect();
+        let widths: Vec<Vec<u32>> = order
+            .iter()
+            .map(|&k| widths.get(k).cloned().unwrap_or_default())
+            .collect();
+        let ids: Vec<u32> = order.iter().map(|&k| ids[k]).collect();
+        let ids = ids.as_slice();
         if ids.is_empty() || ids.len() > 256 {
             return Err(CmdError::new("invalid", "choose 1 to 256 tabs"));
         }
@@ -5968,8 +6002,15 @@ impl Docs {
             })
             .collect::<CmdResult<_>>()?;
         let docs: Vec<_> = entries.iter().map(|e| e.read()).collect();
+        let tab_opts: Vec<ExportOptions> = widths
+            .into_iter()
+            .map(|w| ExportOptions {
+                widths: w,
+                ..opts.clone()
+            })
+            .collect();
         let mut sheets = Vec::new();
-        for (d, name) in docs.iter().zip(&names) {
+        for ((d, name), opts) in docs.iter().zip(&names).zip(&tab_opts) {
             let parts = d.xlsx_parts(opts);
             let n = parts.len();
             for (k, rows) in parts.into_iter().enumerate() {
@@ -6287,6 +6328,47 @@ pub const EXPORT_PREVIEW_ROWS: u64 = 20;
 pub const EXPORT_PREVIEW_BYTES: usize = 64 << 10;
 /// Longest text option of an export (names, template parts).
 pub const MAX_EXPORT_OPTION_CHARS: usize = 1 << 20;
+
+/// Part files of `n` already beside `path`, and parts of another count
+/// ("stem (k of m).xlsx", m not n) left by an earlier export.
+fn part_clash(path: &Path, n: usize) -> (Vec<String>, Vec<String>) {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let same: Vec<String> = (1..=n)
+        .map(|i| format!("{stem} ({i} of {n}).xlsx"))
+        .filter(|f| dir.join(f).exists())
+        .collect();
+    let mut other = Vec::new();
+    let head = format!("{stem} (").to_lowercase();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten().take(100_000) {
+            let f = e.file_name().to_string_lossy().to_string();
+            let low = f.to_lowercase();
+            let Some(rest) = low
+                .strip_prefix(&head)
+                .and_then(|r| r.strip_suffix(").xlsx"))
+            else {
+                continue;
+            };
+            let Some((k, m)) = rest.split_once(" of ") else {
+                continue;
+            };
+            if let (Ok(k), Ok(m)) = (k.parse::<usize>(), m.parse::<usize>()) {
+                if k >= 1 && k <= m && m != n {
+                    other.push(f);
+                }
+            }
+        }
+    }
+    other.sort();
+    (same, other)
+}
 
 fn check_export(o: &ExportOptions) -> CmdResult<()> {
     let long = [&o.root, &o.record, &o.before, &o.row, &o.after, &o.sheet]
@@ -8551,12 +8633,13 @@ by party ",
         let out = p.with_file_name("audit-book.xlsx");
         let r = docs
             .export_book(
-                &[id, rep.info.id],
+                &[id, rep.info.id, id],
                 &out,
                 &ExportOptions {
                     format: ExportFormat::Xlsx,
                     ..Default::default()
                 },
+                &[vec![300], vec![], vec![]],
             )
             .unwrap();
         assert_eq!((r.sheets, r.rows), (2, 10));
@@ -8566,6 +8649,53 @@ by party ",
         assert_eq!(names[0], "audit");
         assert!(names[1].starts_with("Sample (audit"), "{names:?}");
         let _ = std::fs::remove_file(&out);
+        // Another program changes the file: the record says so instead of
+        // fingerprinting bytes that are not the rows sampled.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            &p,
+            b"id,precinct
+9,Z
+9,Z
+9,Z
+",
+        )
+        .unwrap();
+        let rep = docs
+            .new_table_report(
+                id,
+                TableOp::Sample {
+                    spec: Sample {
+                        size: SampleSize::Rows { n: 1 },
+                        seed: 7,
+                        keep_first: true,
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        let rec = rep.record.expect("a record tab");
+        let v = docs.cell_text(rec.id, 2, 1).unwrap().0;
+        assert!(v.contains("changed on disk"), "{v}");
+    }
+
+    #[test]
+    fn part_files_already_there_are_found() {
+        let dir = std::env::temp_dir().join(format!("nde-clash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in [
+            "voters (2 of 3).xlsx",
+            "Voters (7 of 10).xlsx",
+            "voters (1 of 3).csv",
+            "other (1 of 2).xlsx",
+        ] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        let (same, other) = part_clash(&dir.join("voters.xlsx"), 3);
+        assert_eq!(same, vec!["voters (2 of 3).xlsx".to_string()]);
+        assert_eq!(other, vec!["Voters (7 of 10).xlsx".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

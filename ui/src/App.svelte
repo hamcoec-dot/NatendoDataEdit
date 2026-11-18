@@ -66,7 +66,7 @@
   import SubtotalDialog from "./lib/SubtotalDialog.svelte";
   import BatchReplaceDialog from "./lib/BatchReplaceDialog.svelte";
   import PivotDialog from "./lib/PivotDialog.svelte";
-  import type { PivotSpec } from "./lib/pivot";
+  import { followColumns, type PivotSpec } from "./lib/pivot";
   import PromptDialog from "./lib/PromptDialog.svelte";
   import ComputeDialog from "./lib/ComputeDialog.svelte";
   import ProfileDialog from "./lib/ProfileDialog.svelte";
@@ -191,7 +191,9 @@
   let pivotDoc = $state<number | null>(null);
   /** Each tab's last pivot layout, and which tab each pivot tab came from. */
   const pivotSpecs = new Map<number, PivotSpec>();
-  const pivotOf = new Map<number, { source: number; spec: PivotSpec }>();
+  /** Each pivot tab's source, layout and the source's column titles then
+   *  (Refresh follows the columns by title). */
+  const pivotOf = new Map<number, { source: number; spec: PivotSpec; titles: string[] }>();
   /** A one-line question (a view's name, a font name). */
   let prompt = $state<{ title: string; label: string; value: string; note?: string; check?: (v: string) => string; done: (v: string) => void } | null>(null);
   let recent = $state<RecentItem[]>([]);
@@ -1034,7 +1036,20 @@
     });
   }
 
-  async function exportRun(o: ExportOptions, to: "file" | "clipboard", allTabs = false): Promise<void> {
+  let exportTabs = $state<{ id: number; name: string; why: string }[]>([]);
+  /** The open tabs for a workbook of several, with why a tab is left out
+   *  unless ticked (private, encrypted, an audit record). */
+  async function exportTabList(): Promise<{ id: number; name: string; why: string }[]> {
+    return Promise.all(
+      tabs.map(async (x) => {
+        const enc = await backend().encryptedOrigin(x.id).catch(() => null);
+        const why = enc ? "from an encrypted file" : x.private.file || x.private.folder ? "private" : /^Sample record/.test(x.info.name) ? "an audit record" : "";
+        return { id: x.id, name: x.info.name, why };
+      }),
+    );
+  }
+
+  async function exportRun(o: ExportOptions, to: "file" | "clipboard", tabIds?: number[]): Promise<void> {
     exportOpen = false;
     const t = tab;
     if (!t) return;
@@ -1045,7 +1060,16 @@
         await navigator.clipboard.writeText(text);
         say("Copied the export to the clipboard.");
       } else {
-        const r = await runJob("Exporting", () => (allTabs ? backend().exportBook(tabs.map((x) => x.id), o) : backend().exportFile(t.id, o)));
+        if (tabIds && !tabIds.length) {
+          say("Tick at least one tab for the workbook.");
+          return;
+        }
+        // Each sheet gets its own tab's on-screen widths.
+        const widthsOf = (id: number) => {
+          const x = tabs.find((y) => y.id === id);
+          return x ? Array.from({ length: Math.min(x.info.cols, 16_384) }, (_, c) => x.columns.customWidth(c) ?? 0) : [];
+        };
+        const r = await runJob("Exporting", () => (tabIds ? backend().exportBook(tabIds, o, tabIds.map(widthsOf)) : backend().exportFile(t.id, o)));
         if (!r) return;
         if (r.files?.length) say(`Exported ${plural(r.rows, "row")} to ${plural(r.files.length, "file")}: ${r.files[0]} to ${r.files[r.files.length - 1]}, each with the title row.`);
         else say(`Exported ${plural(r.rows, "row")}${r.sheets > 1 ? ` on ${plural(r.sheets, "sheet")}` : ""}.`);
@@ -2249,6 +2273,7 @@
     if (id === null || !t) return;
     pivotDone(spec);
     try {
+      const titles = await titlesOf(id, spec.keep_first);
       const d = await runJob("Building the pivot table", () => backend().pivotTable(id, spec));
       if (!d) return;
       addTab(d, false);
@@ -2257,7 +2282,7 @@
         nt.header = true;
         nt.headerTouched = true;
         nt.bump();
-        pivotOf.set(nt.id, { source: id, spec });
+        pivotOf.set(nt.id, { source: id, spec, titles });
       }
       say(`The pivot table has ${plural(d.rows, "row")} and ${plural(d.cols, "column")}. It is not saved yet (Ctrl+S). Data › Pivot table on it changes the layout.`);
     } catch (e) {
@@ -2283,7 +2308,13 @@
       if (a !== "go") return;
     }
     try {
-      const d = await runJob("Refreshing the pivot table", () => backend().pivotTable(from.source, from.spec));
+      const now = await titlesOf(from.source, from.spec.keep_first);
+      const spec = followColumns(from.spec, from.titles, now);
+      if (typeof spec === "string") {
+        say(spec);
+        return;
+      }
+      const d = await runJob("Refreshing the pivot table", () => backend().pivotTable(from.source, spec));
       if (!d) return;
       const nt = new Tab(d, DEFAULT_COL_WIDTH);
       nt.header = true;
@@ -2294,10 +2325,10 @@
       tabs[i] = nt;
       active = i;
       pivotOf.delete(t.id);
-      pivotOf.set(nt.id, from);
+      pivotOf.set(nt.id, { source: from.source, spec, titles: now });
       await backend().closeDocument(t.id).catch(() => {});
       nt.bump();
-      say(`Refreshed from ${tabs.find((x) => x.id === from.source)?.info.name ?? "its source"}: ${plural(d.rows, "row")} and ${plural(d.cols, "column")}.${t.info.path ? " Save it again (Ctrl+S) to keep it." : ""}`);
+      say(`Refreshed from ${tabs.find((x) => x.id === from.source)?.info.name ?? "its source"}: ${plural(d.rows, "row")} and ${plural(d.cols, "column")}.${t.info.path ? ` The refreshed table is not saved yet: Ctrl+S, then pick ${t.info.name} to save over the old one.` : ""}`);
       void tick().then(() => grid?.focus());
     } catch (e) {
       say(errorText(e));
@@ -4582,7 +4613,7 @@
     { id: "file.saveAs", label: "Save &As…", keys: ["F12"], run: () => void save(true), enabled: ready },
     { id: "file.import", label: "&Import…", run: () => void importFile() },
     { id: "file.importClipboard", label: "Import from clip&board…", run: () => void importClipboard() },
-    { id: "file.export", label: "&Export…", run: () => void privacyGate("Exporting writes another copy of it.").then((ok) => { if (ok) exportOpen = true; }), enabled: ready },
+    { id: "file.export", label: "&Export…", run: () => void privacyGate("Exporting writes another copy of it.").then(async (ok) => { if (ok) { exportTabs = await exportTabList(); exportOpen = true; } }), enabled: ready },
     { id: "file.safeCopy", label: "Save a share-safe cop&y…", run: () => void openPrivacy(), enabled: ready },
     { id: "file.private", label: "Private file mode (this file)", run: () => void togglePrivate(false), enabled: hasTab, checked: () => !!tab?.private.file },
     { id: "file.privateFolder", label: "Private file mode (every file in this folder)", run: () => void togglePrivate(true), enabled: hasTab, checked: () => !!tab?.private.folder },
@@ -6381,9 +6412,9 @@
     filtered={tab.info.filtered}
     titles={Array.from({ length: Math.min(tab.info.cols, 200) }, (_, c) => columnTitle(tab!, c))}
     rows={tab.info.rows}
-    tabCount={tabs.length}
+    tabList={exportTabs}
     widths={Array.from({ length: Math.min(tab.info.cols, 16_384) }, (_, c) => tab!.columns.customWidth(c) ?? 0)}
-    onExport={(o, to, all) => void exportRun(o, to, all)}
+    onExport={(o, to, ids) => void exportRun(o, to, ids)}
     onClose={() => { exportOpen = false; grid?.focus(); }}
   />
 {/if}

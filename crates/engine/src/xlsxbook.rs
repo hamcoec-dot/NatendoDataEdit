@@ -221,13 +221,32 @@ impl Stat {
 const CURRENCY: &[char] = &['$', '€', '£', '¥', '₹', '₩', '₽', '¢'];
 
 /// A title naming an identifier or a code, kept as text when its values are
-/// all digits (a voter ID, a ZIP code, a phone number).
+/// all digits (a voter ID, a ZIP code, a phone number). Words are split at
+/// spaces, punctuation and capitals ("VoterID", "voter_id", "VoterId"), so
+/// "Valid" or "Amount paid" are not IDs; a title that also names a quantity
+/// ("Postal votes", "Cell count", "Account total") is a number.
 fn id_title(title: &str) -> bool {
-    let t = title.to_lowercase();
-    let words: Vec<&str> = t
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .collect();
+    let mut words: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut prev: Option<char> = None;
+    for c in title.chars() {
+        if !c.is_alphanumeric() {
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+            prev = None;
+            continue;
+        }
+        // A capital after a small letter starts a word: Voter|ID, Voter|Id.
+        if c.is_uppercase() && prev.is_some_and(|p| p.is_lowercase()) && !cur.is_empty() {
+            words.push(std::mem::take(&mut cur));
+        }
+        cur.extend(c.to_lowercase());
+        prev = Some(c);
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
     const WORDS: &[&str] = &[
         "id",
         "ids",
@@ -251,10 +270,18 @@ fn id_title(title: &str) -> bool {
         "ein",
         "npi",
     ];
-    words.iter().any(|w| WORDS.contains(w))
-        || words
-            .last()
-            .is_some_and(|w| w.len() > 2 && (w.ends_with("id") || w.ends_with("zip")))
+    const QUANTITY: &[&str] = &[
+        "count", "counts", "votes", "ballots", "total", "totals", "amount", "amounts", "balance",
+        "sum", "qty", "quantity", "paid", "num",
+    ];
+    let quantity = words.iter().enumerate().any(|(i, w)| {
+        QUANTITY.contains(&w.as_str())
+            || (w == "number" && words.get(i + 1).is_some_and(|n| n == "of"))
+    });
+    !quantity
+        && words
+            .iter()
+            .any(|w| WORDS.contains(&w.as_str()) || (w.len() > 3 && w.starts_with("zip")))
 }
 
 /// The Excel number format of a kind: a built-in id, or a format string.
@@ -817,6 +844,30 @@ mod tests {
         );
         assert_eq!(kind_of("VoterID", &["2001", "2002"]), Kind::Text);
         assert_eq!(kind_of("votes", &["2001", "2002"]), Kind::Number(None));
+        // ID words only as whole words, and not beside a quantity.
+        for t in [
+            "Postal votes",
+            "Amount paid",
+            "Valid",
+            "Unpaid",
+            "Cell count",
+            "Account total",
+            "Number of ZIP codes",
+        ] {
+            assert_eq!(kind_of(t, &["120", "7"]), Kind::Number(None), "{t}");
+        }
+        for t in [
+            "Voter ID",
+            "voter_id",
+            "VoterId",
+            "ZIP",
+            "Zip5",
+            "Phone",
+            "Phone number",
+            "Account",
+        ] {
+            assert_eq!(kind_of(t, &["120", "7"]), Kind::Text, "{t}");
+        }
         assert_eq!(kind_of("card", &["4111111111111111"]), Kind::Text);
         assert_eq!(kind_of("n", &["007", "abc"]), Kind::Text);
         assert_eq!(kind_of("zip", &["37421", "37402-0042", ""]), Kind::Text);

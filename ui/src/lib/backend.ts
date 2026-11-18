@@ -1096,7 +1096,9 @@ export interface Backend {
   /** Shows the Export dialog; null when cancelled. */
   exportFile(doc: number, options: ExportOptions): Promise<ExportReport | null>;
   /** Several tabs as the sheets of one Excel workbook (a Save dialog first). */
-  exportBook(docs: number[], options: ExportOptions): Promise<ExportReport | null>;
+  /** Tabs as the sheets of one workbook; `widths`: each tab's on-screen
+   *  column widths. */
+  exportBook(docs: number[], options: ExportOptions, widths?: number[][]): Promise<ExportReport | null>;
   exportText(doc: number, options: ExportOptions): Promise<string>;
   /** Open the document's file again; `layout` null detects it again. */
   reopen(doc: number, lineByLine: boolean, layout?: Layout | null): Promise<DocInfo>;
@@ -1459,8 +1461,8 @@ class TauriBackend implements Backend {
   exportPreview(doc: number, options: ExportOptions) {
     return call<string>("export_preview", { doc, options });
   }
-  exportBook(docs: number[], options: ExportOptions) {
-    return call<ExportReport | null>("export_book", { docsIds: docs, options });
+  exportBook(docs: number[], options: ExportOptions, widths: number[][] = []) {
+    return call<ExportReport | null>("export_book", { docsIds: docs, options, widths });
   }
   exportFile(doc: number, options: ExportOptions) {
     return call<ExportReport | null>("export_file", { doc, options });

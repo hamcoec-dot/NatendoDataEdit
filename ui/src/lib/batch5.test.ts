@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { toolsRequest, type ToolChoices } from "./m10";
 import { exportDefaults } from "./transfer";
+import { followColumns, newField, newSpec, newValue, type PivotSpec } from "./pivot";
 
 const base: ToolChoices = {
   cols: [],
@@ -48,5 +49,22 @@ describe("Excel export defaults", () => {
     expect(o.format).toBe("xlsx");
     expect(o.look).toBe(true);
     expect(o.part_rows).toBe(0);
+  });
+});
+
+describe("pivot Refresh follows columns by title", () => {
+  const spec = (): PivotSpec => {
+    const s = newSpec(true);
+    s.rows = [newField(2)];
+    s.values = [newValue(1, "sum")];
+    return s;
+  };
+  it("finds each column where its title is now", () => {
+    const r = followColumns(spec(), ["id", "fee", "precinct"], ["new", "id", "fee", "precinct"]);
+    expect(typeof r !== "string" && [r.rows[0]!.col, r.values[0]!.col]).toEqual([3, 2]);
+  });
+  it("stops when a title is gone or on two columns", () => {
+    expect(followColumns(spec(), ["id", "fee", "precinct"], ["id", "precinct"])).toMatch(/no longer has a column named fee/);
+    expect(followColumns(spec(), ["id", "fee", "precinct"], ["fee", "fee", "precinct"])).toMatch(/2 columns named fee/);
   });
 });

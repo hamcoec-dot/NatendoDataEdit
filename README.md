@@ -662,7 +662,9 @@ everything is also in command search.
   number shown and kept: the same seed draws the same rows of the same table
   again, so anyone can check the sample. A record opens beside it with the
   seed, the method (a published one, so others can reproduce it), the file's
-  SHA-256 fingerprint and the rows in and taken per group. A Row column gives
+  SHA-256 fingerprint (left out, with the reason, when the tab has unsaved
+  changes or another program changed the file since it was opened) and the
+  rows in and taken per group. A Row column gives
   each row's number in the table. The method, to draw the same sample with
   any tool: number a group's rows 0 up in table order (all shown rows when
   there are no groups); seed SplitMix64 with the seed, or for a group with
@@ -713,7 +715,11 @@ everything is also in command search.
   (1,048,575 rows under the titles) is cut into parts, each with the title
   row, as separate files ("voters (1 of 10).xlsx") or as sheets of one
   workbook; the choice is remembered. Choose your own rows per part too.
-- **All open tabs as one workbook:** each tab on a sheet named after it.
+  Part files already in the folder are replaced only after you say so, and
+  nothing in the folder changes if the export fails or is cancelled.
+- **Several open tabs as one workbook:** tick the tabs; each goes on a sheet
+  named after it, with its own column widths. Private tabs, tabs from an
+  encrypted file and audit records start unticked.
 
 ![Exporting to Excel: made for Excel users, in four parts as separate files](docs/screenshots/excel-export.png)
 *A table cut into parts of 10 rows, each part a file of its own with the title row.*
@@ -823,7 +829,9 @@ preview:
   double-click a number to get the rows behind it in a new tab.
 - **Refresh** (Data > Refresh pivot table, Alt+F5, or right-click the pivot's
   tab): build the pivot again from its source after edits there, in the same
-  tab.
+  tab. It follows the source's columns by their titles, so moving, adding or
+  deleting other columns is fine; if a column it uses is gone (or two now
+  share its title), it says so instead.
 
 ![Right-click on a pivot's tab: Refresh pivot table](docs/screenshots/pivot-refresh.png)
 - **Use the result:** open it as a new tab (save or export it like any file)

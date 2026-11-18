@@ -195,7 +195,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "split one file into many": ["tools.split", "tools.combine"],
   "excel files made for excel users": ["file.export"],
   "more rows than excel holds": ["file.export", "tools.split"],
-  "all open tabs as one workbook": ["file.export"],
+  "several open tabs as one workbook": ["file.export"],
   "append": ["data.append"],
   "encrypted copies": ["file.saveEncrypted", "file.openEncrypted"],
   // Joining two lists

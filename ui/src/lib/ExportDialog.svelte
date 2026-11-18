@@ -16,14 +16,15 @@
     titles: string[];
     /** Rows shown (the title row too). */
     rows?: number;
-    /** Open tabs (several: they can go to one workbook). */
-    tabCount?: number;
+    /** Open tabs (several: they can go to one workbook). A private,
+     *  encrypted or audit-record tab is marked and starts unticked. */
+    tabList?: { id: number; name: string; why: string }[];
     /** Column widths set on screen (pixels; 0 for the default). */
     widths?: number[];
-    onExport: (o: ExportOptions, to: "file" | "clipboard", allTabs?: boolean) => void;
+    onExport: (o: ExportOptions, to: "file" | "clipboard", tabIds?: number[]) => void;
     onClose: () => void;
   }
-  let { doc, name, header, filtered, titles, rows = 0, tabCount = 1, widths = [], onExport, onClose }: Props = $props();
+  let { doc, name, header, filtered, titles, rows = 0, tabList = [], widths = [], onExport, onClose }: Props = $props();
 
   /** Data rows a sheet holds under the title row. */
   const SHEET_ROWS = 1_048_575;
@@ -37,6 +38,8 @@
     }
   }
   let allTabs = $state(false);
+  let picked = $state<Record<number, boolean>>(untrack(() => Object.fromEntries(tabList.map((t) => [t.id, !t.why]))));
+  const pickedIds = $derived(tabList.filter((t) => picked[t.id]).map((t) => t.id));
   let partRows = $state("");
 
   let o = $state<ExportOptions>(untrack(() => ({ ...exportDefaults(header, name.replace(/\.[^.]*$/, "").slice(0, 31) || "Sheet1"), split_files: lastSplit() })));
@@ -100,7 +103,7 @@
           // Asked again next time.
         }
     }
-    onExport(snap, to, snap.format === "xlsx" && allTabs);
+    onExport(snap, to, snap.format === "xlsx" && allTabs ? pickedIds : undefined);
   }
 </script>
 
@@ -127,8 +130,17 @@
         Values exactly as written: numbers are numbers only when Excel shows them the same ("007" and "1.50" stay text); dates stay text.
       {/if}
     </p>
-    {#if tabCount > 1}
-      <label class="row"><input type="checkbox" bind:checked={allTabs} /> All {tabCount} open tabs, each on a sheet named after it</label>
+    {#if tabList.length > 1}
+      <label class="row"><input type="checkbox" bind:checked={allTabs} /> Several open tabs as one workbook, each on a sheet named after it</label>
+      {#if allTabs}
+        <fieldset class="split tabs" aria-label="Tabs">
+          <legend>{pickedIds.length} of {tabList.length} tabs</legend>
+          {#each tabList as t (t.id)}
+            <label class="row"><input type="checkbox" bind:checked={picked[t.id]} /> {t.name}{#if t.why}<span class="why"> ({t.why})</span>{/if}</label>
+          {/each}
+          {#if tabList.some((t) => t.why && picked[t.id])}<p class="note warn">The workbook is a plain file anyone can read, private tabs too.</p>{/if}
+        </fieldset>
+      {/if}
     {/if}
     <label class="row">Rows per part <input type="text" inputmode="numeric" bind:value={partRows} placeholder="as many as fit (1,048,575)" /></label>
     {#if parts > 1 && !allTabs}
@@ -188,3 +200,13 @@
     <button type="button" onclick={onClose}>Cancel</button>
   {/snippet}
 </FormShell>
+
+<style>
+  .tabs {
+    max-height: 180px;
+    overflow: auto;
+  }
+  .why {
+    color: var(--muted, #666);
+  }
+</style>

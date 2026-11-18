@@ -9,7 +9,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -756,27 +756,58 @@ impl Document {
         let mut report = ExportReport::default();
         progress.start(parts.iter().map(|r| r.end - r.start).sum());
         let mut plans = crate::xlsxbook::Plans::default();
-        for (i, rows) in parts.into_iter().enumerate() {
-            let name = format!("{stem} ({} of {n}).xlsx", i + 1);
-            let p = path.with_file_name(&name);
-            let sheet = crate::xlsxbook::BookSheet {
-                doc: self,
-                opts,
-                name: crate::xlsxbook::part_sheet_name(&opts.sheet, i + 1, n),
-                rows,
-            };
-            let r = write_atomic(&p, |w| {
-                crate::xlsxbook::write_book_on(
-                    w,
-                    std::slice::from_ref(&sheet),
-                    progress,
-                    &mut plans,
-                )
-            })?;
-            report.rows += r.rows;
-            report.sheets += r.sheets;
-            report.bytes += r.bytes;
-            report.files.push(name);
+        // Every part goes to a temp file first; only when all are written do
+        // they take their names, so a failure or Cancel leaves the folder as
+        // it was.
+        let mut temps: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(n);
+        let wrote = (|| -> Result<(), Error> {
+            for (i, rows) in parts.into_iter().enumerate() {
+                let name = format!("{stem} ({} of {n}).xlsx", i + 1);
+                let p = path.with_file_name(&name);
+                let sheet = crate::xlsxbook::BookSheet {
+                    doc: self,
+                    opts,
+                    name: crate::xlsxbook::part_sheet_name(&opts.sheet, i + 1, n),
+                    rows,
+                };
+                let (temp, file) = crate::save::create_temp(&p)?;
+                temps.push((temp, p));
+                let r = (|| -> Result<ExportReport, Error> {
+                    let mut w = BufWriter::with_capacity(1 << 20, &file);
+                    let r = crate::xlsxbook::write_book_on(
+                        &mut w,
+                        std::slice::from_ref(&sheet),
+                        progress,
+                        &mut plans,
+                    )?;
+                    w.flush()?;
+                    drop(w);
+                    file.sync_all()?;
+                    Ok(r)
+                })()?;
+                report.rows += r.rows;
+                report.sheets += r.sheets;
+                report.bytes += r.bytes;
+                report.files.push(name);
+            }
+            Ok(())
+        })();
+        if let Err(e) = wrote {
+            for (t, _) in &temps {
+                let _ = fs::remove_file(t);
+            }
+            return Err(e);
+        }
+        for (k, (t, p)) in temps.iter().enumerate() {
+            if let Err(e) = crate::save::replace(t, p) {
+                for (t, _) in &temps[k..] {
+                    let _ = fs::remove_file(t);
+                }
+                return Err(Error::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("{e}; {k} of {n} parts were saved"),
+                )));
+            }
         }
         Ok(report)
     }
@@ -1252,6 +1283,33 @@ mod tests {
             "each part has the titles"
         );
         assert_eq!(t.row_values(1).unwrap()[0], "2002");
+        // A cancelled export leaves the folder as it was: no part replaced,
+        // no temp file left.
+        std::fs::write(dir.join("voters (1 of 2).xlsx"), b"last month").unwrap();
+        let stop = Progress::new();
+        stop.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let e = d.export_file(
+            &dir.join("voters.xlsx"),
+            &ExportOptions {
+                format: ExportFormat::Xlsx,
+                part_rows: 1,
+                split_files: true,
+                ..Default::default()
+            },
+            &stop,
+        );
+        assert!(matches!(e, Err(Error::Cancelled)), "{e:?}");
+        assert_eq!(
+            std::fs::read(dir.join("voters (1 of 2).xlsx")).unwrap(),
+            b"last month"
+        );
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(left.len(), 2, "{left:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

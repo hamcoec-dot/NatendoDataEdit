@@ -1202,6 +1202,56 @@ async fn export_file(
         let Some(path) = dialog.save_file() else {
             return Ok(None);
         };
+        // Parts go beside the chosen name: ask before replacing any.
+        let (same, other) = docs.xlsx_part_clash(doc, &path, &options)?;
+        if !same.is_empty() || !other.is_empty() {
+            let folder = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let mut text = String::new();
+            if !same.is_empty() {
+                text.push_str(&format!(
+                    "{} already in {folder}: {}{}. Exporting replaces {}.",
+                    if same.len() == 1 { "1 part file is".to_string() } else { format!("{} part files are", same.len()) },
+                    same[0],
+                    if same.len() > 1 { format!(" to {}", same[same.len() - 1]) } else { String::new() },
+                    if same.len() == 1 { "it" } else { "them" },
+                ));
+            }
+            if !other.is_empty() {
+                if !text.is_empty() {
+                    text.push_str("
+
+");
+                }
+                text.push_str(&format!(
+                    "{} from an earlier export in another number of parts ({}{}) {} there too; {} left as {}.",
+                    if other.len() == 1 { "1 file".to_string() } else { format!("{} files", other.len()) },
+                    other[0],
+                    if other.len() > 1 { ", …" } else { "" },
+                    if other.len() == 1 { "is" } else { "are" },
+                    if other.len() == 1 { "it is" } else { "they are" },
+                    if other.len() == 1 { "it is" } else { "they are" },
+                ));
+            }
+            let go = rfd::MessageDialog::new()
+                .set_title(if same.is_empty() { "Earlier parts are there" } else { "Replace the part files?" })
+                .set_description(text)
+                .set_level(rfd::MessageLevel::Warning)
+                .set_buttons(rfd::MessageButtons::OkCancelCustom(
+                    if same.is_empty() { "Export".into() } else { "Replace".into() },
+                    "Cancel".into(),
+                ))
+                .set_parent(&window)
+                .show();
+            if !matches!(go, rfd::MessageDialogResult::Ok | rfd::MessageDialogResult::Yes)
+                && !matches!(&go, rfd::MessageDialogResult::Custom(s) if s == "Replace" || s == "Export")
+            {
+                return Ok(None);
+            }
+        }
         docs.export_file(doc, &path, &options).map(Some)
     })
     .await
@@ -1215,6 +1265,7 @@ async fn export_book(
     docs: DocsState<'_>,
     docs_ids: Vec<u32>,
     options: ExportOptions,
+    widths: Option<Vec<Vec<u32>>>,
 ) -> CmdResult<Option<ExportReport>> {
     let docs = docs.inner().clone();
     blocking(move || {
@@ -1231,7 +1282,8 @@ async fn export_book(
         let Some(path) = dialog.save_file() else {
             return Ok(None);
         };
-        docs.export_book(&docs_ids, &path, &options).map(Some)
+        docs.export_book(&docs_ids, &path, &options, &widths.unwrap_or_default())
+            .map(Some)
     })
     .await
 }

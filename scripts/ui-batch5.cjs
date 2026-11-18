@@ -98,6 +98,17 @@ const url = process.argv[3] || "http://localhost:5205";
     await p.screenshot({ path: path.join(out, "sample-record.png") });
   }
 
+  // ---- Several tabs as one workbook: listed, the record unticked ----
+  await command("Export");
+  await ex.locator("label:has-text('Several open tabs') input").check();
+  await wait(300);
+  const tl = ex.locator("fieldset[aria-label='Tabs']");
+  const recLabel = tl.locator("label:has-text('Sample record')");
+  ok(/an audit record/.test(await recLabel.textContent()) && !(await recLabel.locator("input").isChecked()), "the record tab is listed, marked and unticked");
+  ok(/2 of 3 tabs/.test(await tl.textContent()), `the other tabs are ticked (${(await tl.locator("legend").textContent())})`);
+  await ex.locator("button:has-text('Cancel')").click();
+  await wait(300);
+
   // ---- Split view ----
   await p.evaluate(() => {
     const i = window.__nde.tabs.findIndex((t) => t.info.rows === 41);
@@ -175,6 +186,27 @@ const url = process.argv[3] || "http://localhost:5205";
   const after = await p.evaluate(() => [window.__nde.tab.info.rows, window.__nde.tab.info.name]);
   ok(after[0] === rowsBefore + 1, `Alt+F5 builds it again with the new value (${rowsBefore} → ${after[0]})`);
   ok(/^Refreshed from/.test(await status()), "it says so");
+  // A column inserted at the left of the source: Refresh still groups by
+  // precinct, found by its title.
+  const groups = after[0];
+  await p.evaluate(() => {
+    const i = window.__nde.tabs.findIndex((t) => t.info.rows === 41);
+    window.__nde.activate?.(i);
+  });
+  await wait(300);
+  await sel(1, 0);
+  await command("Columns left");
+  await wait(400);
+  ok((await p.evaluate(() => window.__nde.tab.info.cols)) === 5, "a column was inserted in the source");
+  await p.evaluate((id) => {
+    const i = window.__nde.tabs.findIndex((t) => t.info.name.startsWith("Pivot"));
+    window.__nde.activate?.(i);
+  }, pivotId);
+  await wait(300);
+  await p.keyboard.press("Alt+F5");
+  await wait(900);
+  const moved = await p.evaluate(() => [window.__nde.tab.info.rows, window.__nde.tab.info.name]);
+  ok(moved[0] === groups && /precinct/.test(moved[1]), `Refresh follows precinct to its new place (${moved.join(", ")})`);
 
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   console.log(failed ? `${failed} FAILED` : "ALL PASS");

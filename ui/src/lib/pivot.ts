@@ -617,3 +617,31 @@ export function moveValue(s: PivotSpec, from: number, to: number): void {
     return j;
   });
 }
+
+/** Follow a pivot's columns by title after its source changed: each field
+ *  and value moves to the column that now has its title. A title that is
+ *  gone, or is now on two columns, gives the reason the pivot can't be
+ *  refreshed. */
+export function followColumns(s: PivotSpec, was: string[], now: string[]): PivotSpec | string {
+  const at = new Map<string, number[]>();
+  now.forEach((t, c) => at.set(t, [...(at.get(t) ?? []), c]));
+  let why = "";
+  const move = (col: number): number => {
+    const t = was[col] ?? `Column ${col + 1}`;
+    const cs = at.get(t) ?? [];
+    if (cs.length !== 1 && !why)
+      why = cs.length
+        ? `The source now has ${cs.length} columns named ${t}, so Refresh can't tell which one this pivot table used; rename one, or make the pivot table again.`
+        : `The source no longer has a column named ${t}; make the pivot table again.`;
+    return cs[0] ?? col;
+  };
+  const field = (f: PivotField): PivotField => ({ ...f, col: move(f.col) });
+  const out: PivotSpec = {
+    ...s,
+    rows: s.rows.map(field),
+    cols: s.cols.map(field),
+    filters: s.filters.map(field),
+    values: s.values.map((v) => ({ ...v, col: move(v.col) })),
+  };
+  return why || out;
+}

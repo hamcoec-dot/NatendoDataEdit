@@ -1051,6 +1051,12 @@ impl Document {
         (!identity).then_some(m)
     }
 
+    /// Whether another program changed the file (size or time) since it
+    /// was opened or last saved.
+    pub fn changed_on_disk(&self) -> bool {
+        self.source.changed_on_disk().unwrap_or(true)
+    }
+
     pub fn is_modified(&self) -> bool {
         // Unsaved unless every step between the saved state and now only
         // changed what shows (a filter or hidden rows).

@@ -636,7 +636,7 @@ export class MockBackend implements Backend {
     if (o.format === "xlsx" && o.split_files && parts > 1) return { rows, sheets: parts, bytes: rows * 40, files: Array.from({ length: parts }, (_, i) => `${stem} (${i + 1} of ${parts}).xlsx`) };
     return { rows, sheets: o.format === "xlsx" ? parts : 0, bytes: rows * 40 };
   }
-  async exportBook(docs: number[], o: ExportOptions): Promise<ExportReport | null> {
+  async exportBook(docs: number[], o: ExportOptions, _widths: number[][] = []): Promise<ExportReport | null> {
     let rows = 0;
     for (const id of docs) rows += Math.max(0, this.rowCount(this.get(id)) - (o.header ? 1 : 0));
     return { rows, sheets: docs.length, bytes: rows * 40 };
