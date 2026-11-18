@@ -1954,19 +1954,23 @@ export class MockBackend implements Backend {
         const names = allCols.map((c) => (op.spec.keep_first ? this.value(d, 0, c) : "") || `Column ${c + 1}`);
         const first = op.spec.keep_first ? 1 : 0;
         if (rows > 100_000) throw err("too_large", "the browser preview computes at most 100,000 rows");
-        const vals: string[] = [];
+        const vals: [number, string][] = [];
         let errors = 0;
         for (let r = first; r < rows; r++) {
           const v = mockEval(op.spec.expr, names, allCols.map((c) => this.value(d, r, c)));
-          if (v.startsWith("#")) errors++;
-          vals.push(v);
+          if (v.startsWith("#")) {
+            errors++;
+            // Changing a column, an error keeps the cell's value.
+            if (op.spec.target !== null) continue;
+          }
+          vals.push([r, v]);
         }
         let col = op.spec.target;
         if (col === null) {
           col = op.spec.at ?? allCols.length;
           await this.change(doc, { op: "insert_cols", at: col, count: 1 });
         }
-        const cells: [number, number, string][] = vals.map((v, k) => [k + first, col, v]);
+        const cells: [number, number, string][] = vals.map(([r, v]) => [r, col, v]);
         if (op.spec.target === null && first) cells.push([0, col, op.spec.title || "Computed"]);
         const info = await this.setCells(doc, cells);
         return this.report(info, { cells: cells.length, cols: op.spec.target === null ? 1 : 0, errors });

@@ -124,11 +124,13 @@ funcs! {
     In "IN" 2 255, Between "BETWEEN" 3 3, Prev "PREV" 1 1, Next "NEXT" 1 1,
     Count "COUNT" 1 255, CountA "COUNTA" 1 255, Blank "BLANK" 0 0,
     Shape "SHAPE" 1 1,
+    CellRef "CELLREF_" 1 1, RangeRef "RANGEREF_" 1 1,
 }
 
 /// Every function name, for the help list and the editor.
 pub fn function_names() -> Vec<&'static str> {
-    FUNCS.iter().map(|f| f.0).collect()
+    // Not the stand-ins a cell formula uses for its references.
+    FUNCS.iter().map(|f| f.0).filter(|n| !n.ends_with('_')).collect()
 }
 
 #[derive(Debug)]
@@ -199,6 +201,40 @@ pub struct Ctx<'b> {
     /// `None` at the ends, or where an expression runs on one row alone.
     pub prev: Option<&'b [Cow<'b, str>]>,
     pub next: Option<&'b [Cow<'b, str>]>,
+    /// A cell formula's A1 references and ranges (`None` elsewhere: they
+    /// are then #REF!).
+    pub refs: Option<&'b dyn RefSource>,
+}
+
+/// A range's numbers, worked out without reading it as text values: the
+/// sum, how many numbers and filled cells, the smallest and largest.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RangeAgg {
+    pub sum: f64,
+    pub nums: u64,
+    pub filled: u64,
+    pub min: f64,
+    pub max: f64,
+}
+
+/// Where a cell formula's references are read (see `cellformula`).
+pub trait RefSource: Sync {
+    /// Reference `i`'s cell text, or `None` when it is off the table.
+    fn cell(&self, i: usize) -> Option<&str>;
+    /// Range `j` worked out; `min_max`: the smallest and largest are
+    /// needed too (the rest comes from running totals).
+    fn range(&self, j: usize, min_max: bool) -> Option<RangeAgg>;
+}
+
+/// The range a node stands for, when it is one (`RANGEREF_(j)`).
+fn range_index(n: &Node) -> Option<usize> {
+    match n {
+        Node::Call(Func::RangeRef, a, _) => match a.first() {
+            Some(Node::Num(j)) => Some(*j as usize),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 // ---- tokens ----
@@ -1699,6 +1735,24 @@ fn call<'a>(f: Func, args: &'a [Node], re: Option<&'a Regex>, ctx: &Ctx<'a>) -> 
                 _ => 0.0,
             };
             for a in args {
+                // A cell formula's range, worked out at once (text cells
+                // passed over, as a spreadsheet does).
+                if let Some(j) = range_index(a) {
+                    let Some(g) = ctx
+                        .refs
+                        .and_then(|r| r.range(j, matches!(f, Func::Min | Func::Max)))
+                    else {
+                        return Value::Err(Fault::Ref);
+                    };
+                    seen += g.nums as usize;
+                    acc = match f {
+                        Func::Min if g.nums > 0 => acc.min(g.min),
+                        Func::Max if g.nums > 0 => acc.max(g.max),
+                        Func::Min | Func::Max => acc,
+                        _ => acc + g.sum,
+                    };
+                    continue;
+                }
                 let v = eval(a, ctx);
                 if is_blank(&v) {
                     continue;
@@ -2066,6 +2120,13 @@ fn call<'a>(f: Func, args: &'a [Node], re: Option<&'a Regex>, ctx: &Ctx<'a>) -> 
         Func::Count | Func::CountA => {
             let mut n = 0usize;
             for a in args {
+                if let Some(j) = range_index(a) {
+                    let Some(g) = ctx.refs.and_then(|r| r.range(j, false)) else {
+                        return Value::Err(Fault::Ref);
+                    };
+                    n += if f == Func::Count { g.nums } else { g.filled } as usize;
+                    continue;
+                }
                 let v = eval(a, ctx);
                 let hit = match (&v, f) {
                     (Value::Err(_), Func::Count) => false,
@@ -2082,6 +2143,16 @@ fn call<'a>(f: Func, args: &'a [Node], re: Option<&'a Regex>, ctx: &Ctx<'a>) -> 
         }
         Func::Blank => Value::Blank,
         Func::Shape => text_val(crate::profile::shape_of(&tryv!(text(0)))),
+        Func::CellRef => {
+            let i = tryv!(number(0)) as usize;
+            match ctx.refs.and_then(|r| r.cell(i)) {
+                Some(t) => cell_value(t),
+                None => Value::Err(Fault::Ref),
+            }
+        }
+        // A range anywhere but inside SUM, AVERAGE, MIN, MAX, COUNT or
+        // COUNTA (the formula check refuses that before it runs).
+        Func::RangeRef => Value::Err(Fault::Value),
         Func::Coalesce => {
             for a in args {
                 let v = eval(a, ctx);
@@ -2270,6 +2341,9 @@ impl Default for ComputeSpec {
     }
 }
 
+/// One row's changed cells: its id and (column, value) pairs.
+type RowChange = (u32, Vec<(u32, String)>);
+
 /// What a computed column did.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputeReport {
@@ -2318,44 +2392,32 @@ impl Document {
         check_cols(self, e.columns())?;
         let reader = Cols::new(self, e.columns());
         let near = e.uses_near();
-        let total = self.total_rows();
         let first = u64::from(spec.keep_first && self.row_count() > 0);
         let errors = AtomicU64::new(0);
-        let ids: Vec<u32> =
-            self.par_rows(self.data_rows(spec.keep_first), progress, |r, id, buf| {
-                reader.read(self, id, buf);
-                let (mut pv, mut nv) = (Vec::new(), Vec::new());
-                let (mut has_p, mut has_n) = (false, false);
-                let pos = self.row_number(r).unwrap_or(r);
-                if near {
-                    if pos > first {
-                        if let Some(pid) = self.doc_id_at(pos - 1) {
-                            reader.read(self, pid, &mut pv);
-                            has_p = true;
-                        }
-                    }
-                    if pos + 1 < total {
-                        if let Some(nid) = self.doc_id_at(pos + 1) {
-                            reader.read(self, nid, &mut nv);
-                            has_n = true;
-                        }
-                    }
-                }
+        // PREV and NEXT: the shown rows above and below.
+        let ids: Vec<u32> = self.par_rows_near(
+            self.data_rows(spec.keep_first),
+            &reader,
+            near,
+            progress,
+            |r, id, buf, prev, next| {
                 let ctx = Ctx {
                     cells: buf,
                     slots: reader.slots(),
-                    row: pos + 1,
+                    row: self.row_number(r).unwrap_or(r) + 1,
                     now: spec.now,
                     read: spec.read,
-                    prev: has_p.then_some(pv.as_slice()),
-                    next: has_n.then_some(nv.as_slice()),
+                    prev,
+                    next,
+                    refs: None,
                 };
                 let v = e.eval(&ctx);
                 if matches!(v, Value::Err(_)) {
                     errors.fetch_add(1, Ordering::Relaxed);
                 }
                 Ok(matches!(to_bool(&v), Ok(true)).then_some(id))
-            })?;
+            },
+        )?;
         let base = self.next_row_id();
         let mut bits = vec![0u64; (base as usize).div_ceil(64)];
         for &id in &ids {
@@ -2395,18 +2457,27 @@ impl Document {
             let id = self.id_at(r).ok_or(Error::OutOfRange)?;
             reader.read(self, id, &mut buf);
             let pos = self.row_number(r).unwrap_or(r);
-            // As the run reads them: the rows above and below in the file's
-            // order, hidden or not.
+            // As the run reads them: changing a column, the shown rows above
+            // and below; a new column (every row, hidden ones too), the rows
+            // above and below in the file.
             let (mut has_p, mut has_n) = (false, false);
             if near {
-                if pos > first {
-                    if let Some(pid) = self.doc_id_at(pos - 1) {
+                let (at, hi) = match spec.target {
+                    Some(_) => (r, self.row_count()),
+                    None => (pos, total),
+                };
+                let id_of = |p: u64| match spec.target {
+                    Some(_) => self.id_at(p),
+                    None => self.doc_id_at(p),
+                };
+                if at > first {
+                    if let Some(pid) = id_of(at - 1) {
                         reader.read(self, pid, &mut pv);
                         has_p = true;
                     }
                 }
-                if pos + 1 < total {
-                    if let Some(nid) = self.doc_id_at(pos + 1) {
+                if at + 1 < hi {
+                    if let Some(nid) = id_of(at + 1) {
                         reader.read(self, nid, &mut nv);
                         has_n = true;
                     }
@@ -2420,9 +2491,11 @@ impl Document {
                 read: spec.read,
                 prev: has_p.then_some(pv.as_slice()),
                 next: has_n.then_some(nv.as_slice()),
+                refs: None,
             };
             let v = e.eval(&ctx);
-            if matches!(v, Value::Err(_)) {
+            let failed = matches!(v, Value::Err(_));
+            if failed {
                 out.errors += 1;
             }
             let mut t = to_text(&v).into_owned();
@@ -2439,7 +2512,9 @@ impl Document {
         Ok(out)
     }
 
-    /// Plan a computed column over every row (hidden ones too).
+    /// Plan a computed column over every row (hidden ones too), or change
+    /// `target` on the shown rows (a cell whose result is an error keeps its
+    /// value; `errors` counts them).
     pub fn plan_compute(
         &self,
         spec: &ComputeSpec,
@@ -2472,37 +2547,63 @@ impl Document {
         let errors = AtomicU64::new(0);
         let slot = spec.target.unwrap_or(at);
         let near = e.uses_near();
-        // PREV and NEXT read the rows above and below (not the titles).
-        let changes: Vec<(u32, Vec<(u32, String)>)> =
-            self.par_all_rows_near(first, &reader, near, progress, |p, id, buf, prev, next| {
-                let ctx = Ctx {
-                    cells: buf,
-                    slots: &reader.slots()[..nexpr],
-                    row: p + 1,
-                    now: spec.now,
-                    read: spec.read,
-                    prev,
-                    next,
-                };
-                let v = e.eval(&ctx);
-                if matches!(v, Value::Err(_)) {
-                    errors.fetch_add(1, Ordering::Relaxed);
-                }
-                let t = to_text(&v);
-                let unchanged = match spec.target {
-                    Some(_) => reader.get(buf, nexpr) == t.as_ref(),
-                    None => t.is_empty(),
-                };
-                if unchanged {
+        // One row (`row`: its document position).
+        let one = |row: u64,
+                   id: u32,
+                   buf: &[Cow<'_, str>],
+                   prev: Option<&[Cow<'_, str>]>,
+                   next: Option<&[Cow<'_, str>]>|
+         -> Result<Option<RowChange>, Error> {
+            let ctx = Ctx {
+                cells: buf,
+                slots: &reader.slots()[..nexpr],
+                row: row + 1,
+                now: spec.now,
+                read: spec.read,
+                prev,
+                next,
+                refs: None,
+            };
+            let v = e.eval(&ctx);
+            if matches!(v, Value::Err(_)) {
+                errors.fetch_add(1, Ordering::Relaxed);
+                // Changing a column, an error keeps the cell's value.
+                if spec.target.is_some() {
                     return Ok(None);
                 }
-                if !crate::find::charge_within(&spent, t.len(), budget) {
-                    return Err(Error::OutOfMemory(
-                        "this computed column would make too many new cells at once",
-                    ));
-                }
-                Ok(Some((id, vec![(slot, t.into_owned())])))
-            })?;
+            }
+            let t = to_text(&v);
+            let unchanged = match spec.target {
+                Some(_) => reader.get(buf, nexpr) == t.as_ref(),
+                None => t.is_empty(),
+            };
+            if unchanged {
+                return Ok(None);
+            }
+            if !crate::find::charge_within(&spent, t.len(), budget) {
+                return Err(Error::OutOfMemory(
+                    "this computed column would make too many new cells at once",
+                ));
+            }
+            Ok(Some((id, vec![(slot, t.into_owned())])))
+        };
+        // A new column fills every row, hidden ones too (PREV and NEXT: the
+        // rows above and below in the file). Changing a column touches the
+        // shown rows only (PREV and NEXT: the shown rows above and below).
+        let changes: Vec<(u32, Vec<(u32, String)>)> = match spec.target {
+            None => {
+                self.par_all_rows_near(first, &reader, near, progress, |p, id, buf, prev, next| {
+                    one(p, id, buf, prev, next)
+                })?
+            }
+            Some(_) => self.par_rows_near(
+                self.data_rows(spec.keep_first),
+                &reader,
+                near,
+                progress,
+                |r, id, buf, prev, next| one(self.row_number(r).unwrap_or(r), id, buf, prev, next),
+            )?,
+        };
         let mut plan = ColPlan::new(self);
         if spec.target.is_none() {
             plan.insert = Some((at, 1));
@@ -2550,6 +2651,7 @@ mod tests {
             read: ReadOptions::default(),
             prev: None,
             next: None,
+            refs: None,
         };
         e.text(&ctx)
     }
@@ -2724,6 +2826,7 @@ mod tests {
                         read: ReadOptions::default(),
                         prev: None,
                         next: None,
+                        refs: None,
                     };
                     e.text(&ctx)
                 })
@@ -2823,6 +2926,7 @@ mod tests {
                     read: ReadOptions::default(),
                     prev: None,
                     next: None,
+                    refs: None,
                 };
                 let _ = e.text(&ctx);
             }
@@ -3088,6 +3192,74 @@ Thu,20
         assert!(d.undo());
         assert_eq!(d.row_values(1).unwrap(), ["2", "3"]);
         assert_eq!(d.col_count(), 2);
+    }
+
+    #[test]
+    fn changing_a_column_keeps_errors_and_hidden_rows() {
+        let mut d = Document::from_bytes(
+            b"v\r\n1\r\nx\r\n3\r\n4\r\n".to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        // Hide the row holding 3.
+        d.hide_rows(3, 1).unwrap();
+        let spec = ComputeSpec {
+            expr: "[v] * 10".into(),
+            target: Some(0),
+            keep_first: true,
+            ..Default::default()
+        };
+        let pv = d.preview_compute(&spec, 10).unwrap();
+        assert_eq!(
+            pv.rows,
+            vec![(2, "10".into()), (3, "#VALUE!".into()), (4, "40".into())]
+        );
+        assert_eq!(pv.errors, 1);
+        let (plan, rep) = d.plan_compute(&spec, &Progress::new()).unwrap();
+        assert_eq!((rep.cells, rep.errors), (2, 1));
+        d.apply_cols(plan).unwrap();
+        d.show_rows(crate::rows::ShowRows::All).unwrap();
+        let col: Vec<String> = (1..5).map(|r| d.cell(r, 0).unwrap()).collect();
+        assert_eq!(col, ["10", "x", "3", "40"]);
+    }
+
+    #[test]
+    fn prev_and_next_are_the_shown_rows() {
+        let mut d = Document::from_bytes(
+            b"v\r\n1\r\n2\r\n3\r\n4\r\n".to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        d.hide_rows(2, 1).unwrap();
+        // Shown: 1, 3, 4. Above 3 is 1 as shown.
+        let spec = ComputeSpec {
+            expr: "PREV([v]) = \"1\"".into(),
+            keep_first: true,
+            ..Default::default()
+        };
+        let (plan, _) = d.plan_formula_filter(&spec, &Progress::new()).unwrap();
+        assert_eq!(plan.rows, 1);
+        d.apply_rows(plan).unwrap();
+        assert_eq!(d.cell(1, 0).as_deref(), Some("3"));
+        // Changing a column reads them the same way.
+        let mut d = Document::from_bytes(
+            b"v\r\n1\r\n2\r\n3\r\n".to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        d.hide_rows(2, 1).unwrap();
+        let spec = ComputeSpec {
+            expr: "[v] & \"<\" & NEXT([v])".into(),
+            target: Some(0),
+            keep_first: true,
+            ..Default::default()
+        };
+        let (plan, _) = d.plan_compute(&spec, &Progress::new()).unwrap();
+        d.apply_cols(plan).unwrap();
+        assert_eq!(d.cell(1, 0).as_deref(), Some("1<3"));
     }
 
     #[test]

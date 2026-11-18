@@ -281,6 +281,7 @@ impl Compiled {
                 read,
                 prev: None,
                 next: None,
+                refs: None,
             };
             return e.holds(&ctx);
         }

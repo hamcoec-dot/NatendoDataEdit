@@ -187,6 +187,8 @@
     </div>
     {#if mode === "filter"}
       <p class="note">The first {preview.rows.length} rows: TRUE rows stay shown.{preview.errors ? ` ${preview.errors} came out as errors and are hidden.` : ""} Data › Clear filter shows every row again.</p>
+    {:else if place === "over"}
+      <p class="note">The first {preview.rows.length} shown rows: {preview.rows.length - preview.errors} get the new value{preview.errors ? `, ${preview.errors} give an error and keep their value` : ""}. Hidden rows are left as they are.</p>
     {:else}
       <p class="note">The first {preview.rows.length} rows.{preview.errors ? ` ${preview.errors} came out as errors (like #VALUE!: text where a number is needed).` : ""} Values are saved as text; the expression is not kept in the file.</p>
     {/if}

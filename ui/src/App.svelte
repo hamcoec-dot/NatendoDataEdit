@@ -1458,15 +1458,19 @@
     let firstError: string | null = null;
     let written = 0;
     try {
-      const rep = await backend().cellFormula(t.id, {
-        formula,
-        row,
-        col,
-        targets,
-        keep_first: t.header,
-        read: { decimal_comma: false, date_order: "mdy" },
-        now: localDays(),
-      });
+      // A job: a long fill shows progress and Cancel.
+      const rep = await runJob(fill ? "Filling the formula" : "Running the formula", () =>
+        backend().cellFormula(t.id, {
+          formula,
+          row,
+          col,
+          targets,
+          keep_first: t.header,
+          read: READ,
+          now: localDays(),
+        }),
+      );
+      if (!rep) return true;
       ({ errors, written } = rep);
       firstError = rep.first_error;
       if (written) {
@@ -5219,6 +5223,12 @@
     const rep = await runOp({ op: "compute", spec }, "Computing");
     if (!rep || !t) return;
     if (spec.target === null && spec.at !== null) t.columns.shift(spec.at, 1);
+    if (spec.target !== null) {
+      const kept = rep.errors ? ` ${plural(rep.errors, "cell")} gave an error and kept ${rep.errors === 1 ? "its" : "their"} value.` : "";
+      say(`Changed ${plural(rep.cells, "cell")} in the shown rows.${kept} Undo (Ctrl+Z) takes it back.`);
+      void tick().then(() => grid?.focus());
+      return;
+    }
     const errs = rep.errors ? ` ${plural(rep.errors, "cell")} came out as errors (like #VALUE!).` : "";
     say(`Computed ${plural(rep.cells, "cell")}.${errs} The values are saved as text. Undo (Ctrl+Z) takes it back.`);
     void tick().then(() => grid?.focus());

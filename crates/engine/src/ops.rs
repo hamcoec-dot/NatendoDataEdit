@@ -564,6 +564,49 @@ impl Document {
             + Sync,
     ) -> Result<Vec<T>, Error> {
         let total = self.total_rows();
+        self.par_near(from..total, false, reader, near, progress, f)
+    }
+
+    /// Like [`Document::par_all_rows_near`] over shown rows `rows`: PREV and NEXT are
+    /// the shown rows above and below (none past `rows`' ends). `f` gets
+    /// the shown row.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn par_rows_near<'a, T: Send>(
+        &'a self,
+        rows: std::ops::Range<u64>,
+        reader: &Cols,
+        near: bool,
+        progress: &Progress,
+        f: impl Fn(
+                u64,
+                u32,
+                &[Cow<'a, str>],
+                Option<&[Cow<'a, str>]>,
+                Option<&[Cow<'a, str>]>,
+            ) -> Result<Option<T>, Error>
+            + Sync,
+    ) -> Result<Vec<T>, Error> {
+        self.par_near(rows, true, reader, near, progress, f)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn par_near<'a, T: Send>(
+        &'a self,
+        rows: std::ops::Range<u64>,
+        shown: bool,
+        reader: &Cols,
+        near: bool,
+        progress: &Progress,
+        f: impl Fn(
+                u64,
+                u32,
+                &[Cow<'a, str>],
+                Option<&[Cow<'a, str>]>,
+                Option<&[Cow<'a, str>]>,
+            ) -> Result<Option<T>, Error>
+            + Sync,
+    ) -> Result<Vec<T>, Error> {
+        let (from, total) = (rows.start, rows.end);
         progress.start(total.saturating_sub(from));
         let chunks = (total.saturating_sub(from) as usize).div_ceil(CHUNK);
         let parts: Vec<Vec<T>> = (0..chunks)
@@ -573,7 +616,14 @@ impl Document {
                 let e = (s + CHUNK as u64).min(total);
                 let mut out = Vec::new();
                 let (mut prev, mut cur, mut next) = (Vec::new(), Vec::new(), Vec::new());
-                let id_of = |p: u64| self.doc_id_at(p).ok_or(Error::OutOfRange);
+                let id_of = |p: u64| {
+                    if shown {
+                        self.id_at(p)
+                    } else {
+                        self.doc_id_at(p)
+                    }
+                    .ok_or(Error::OutOfRange)
+                };
                 let mut has_prev = false;
                 if near && s > from {
                     reader.read(self, id_of(s - 1)?, &mut prev);
