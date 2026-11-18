@@ -12,7 +12,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Progress};
-use crate::fill::{civil_from_days, days_from_civil, format_number};
+use crate::fill::{civil_from_days, days_from_civil, days_in_month as month_days, format_number};
 use crate::join::LookupTable;
 use crate::ops::{check_cols, ColPlan, Cols};
 use crate::value::{parse_date, parse_number, ReadOptions};
@@ -116,6 +116,13 @@ funcs! {
     Coalesce "COALESCE" 1 255, RegexMatch "REGEXMATCH" 2 2,
     RegexExtract "REGEXEXTRACT" 2 3, RegexReplace "REGEXREPLACE" 3 3,
     Lookup "LOOKUP" 4 5,
+    Age "AGE" 1 2, DateDif "DATEDIF" 3 3, EDate "EDATE" 2 2, EoMonth "EOMONTH" 2 2,
+    NetworkDays "NETWORKDAYS" 2 255, WeekNum "WEEKNUM" 1 2, DateValue "DATEVALUE" 1 1,
+    TextF "TEXT" 2 2, TextBefore "TEXTBEFORE" 2 3, TextAfter "TEXTAFTER" 2 3,
+    SplitPart "SPLITPART" 3 3, PadLeft "PADLEFT" 2 3, Clean "CLEAN" 1 1,
+    CountChar "COUNTCHAR" 2 2, Switch "SWITCH" 3 255, Choose "CHOOSE" 2 255,
+    In "IN" 2 255, Between "BETWEEN" 3 3, Prev "PREV" 1 1, Next "NEXT" 1 1,
+    Count "COUNT" 1 255, CountA "COUNTA" 1 255, Blank "BLANK" 0 0,
 }
 
 /// Every function name, for the help list and the editor.
@@ -187,6 +194,10 @@ pub struct Ctx<'b> {
     pub row: u64,
     pub now: f64,
     pub read: ReadOptions,
+    /// The shown rows above and below, read the same way (PREV, NEXT);
+    /// `None` at the ends, or where an expression runs on one row alone.
+    pub prev: Option<&'b [Cow<'b, str>]>,
+    pub next: Option<&'b [Cow<'b, str>]>,
 }
 
 // ---- tokens ----
@@ -345,6 +356,7 @@ struct Parser<'n> {
     names: &'n [String],
     cols: Vec<u32>,
     nodes: usize,
+    max_nodes: usize,
     depth: usize,
     lookups: Vec<LookupRef>,
 }
@@ -360,7 +372,7 @@ impl Parser<'_> {
 
     fn node(&mut self, n: Node) -> Result<Node, Error> {
         self.nodes += 1;
-        if self.nodes > MAX_NODES {
+        if self.nodes > self.max_nodes {
             return Err(Error::Invalid("the expression is too long".into()));
         }
         Ok(n)
@@ -572,6 +584,12 @@ impl Parser<'_> {
                 if f == Func::Ifs && n % 2 == 1 {
                     return Err(bad("IFS takes pairs of test and value", at));
                 }
+                if matches!(f, Func::Prev | Func::Next) && !matches!(args[0], Node::Col(_)) {
+                    return Err(bad(
+                        &format!("{upper} takes a column, like {upper}([amount])"),
+                        at,
+                    ));
+                }
                 if f == Func::Lookup {
                     let mut names = Vec::with_capacity(3);
                     for a in &args[1..4] {
@@ -633,10 +651,22 @@ impl Parser<'_> {
 impl Expr {
     /// Parse `src` against the column titles (one per logical column).
     pub fn parse(src: &str, names: &[String]) -> Result<Expr, Error> {
+        Self::parse_within(src, names, MAX_EXPR_CHARS, MAX_NODES)
+    }
+
+    /// [`Expr::parse`] with other limits: a cell formula's ranges are
+    /// written out as their cells, so it may be far longer than anything
+    /// typed (its cells are capped instead).
+    pub(crate) fn parse_within(
+        src: &str,
+        names: &[String],
+        max_chars: usize,
+        max_nodes: usize,
+    ) -> Result<Expr, Error> {
         let n = src.chars().count();
-        if n > MAX_EXPR_CHARS {
+        if n > max_chars {
             return Err(Error::Invalid(format!(
-                "an expression can be at most {MAX_EXPR_CHARS} characters"
+                "an expression can be at most {max_chars} characters"
             )));
         }
         let src = src.trim_start().strip_prefix('=').unwrap_or(src);
@@ -651,6 +681,7 @@ impl Expr {
             names,
             cols: Vec::new(),
             nodes: 0,
+            max_nodes,
             depth: 0,
             lookups: Vec::new(),
         };
@@ -697,6 +728,25 @@ impl Expr {
             }
         }
         walk(&mut self.root, tables);
+    }
+
+    /// Whether the expression reads the rows above or below (PREV, NEXT);
+    /// only then does a run read those rows too.
+    pub fn uses_near(&self) -> bool {
+        fn walk(n: &Node) -> bool {
+            match n {
+                Node::Call(f, args, _) => {
+                    matches!(f, Func::Prev | Func::Next) || args.iter().any(walk)
+                }
+                Node::Neg(x) | Node::Percent(x) => walk(x),
+                Node::Bin(_, a, b) => walk(a) || walk(b),
+                Node::Lookup { key, fallback, .. } => {
+                    walk(key) || fallback.as_deref().is_some_and(walk)
+                }
+                _ => false,
+            }
+        }
+        walk(&self.root)
     }
 
     /// The logical columns this expression reads, in `Ctx::cells` order.
@@ -760,6 +810,240 @@ fn date(v: &Value, read: ReadOptions) -> Result<f64, Fault> {
     }
 }
 
+/// A cell's text as a value (an empty cell is blank), as a column reads.
+fn cell_value(c: &str) -> Value<'_> {
+    if c.is_empty() {
+        Value::Blank
+    } else {
+        Value::Text(Cow::Borrowed(c))
+    }
+}
+
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+const WEEKDAYS: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+];
+
+/// TEXT(value, pattern): a date pattern when it has y, d, h or s letters
+/// (or the value is a date), else a number pattern like `0.00`, `#,##0`,
+/// `00000` or `0%`. Text in quotes is kept as it is.
+fn format_value(v: &Value, pat: &str, read: ReadOptions) -> Result<String, Fault> {
+    let mut quoted = false;
+    let mut datey = matches!(v, Value::Date(_));
+    for c in pat.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            'y' | 'Y' | 'd' | 'D' | 'h' | 'H' | 's' | 'S' if !quoted => datey = true,
+            _ => {}
+        }
+    }
+    if datey {
+        format_date(date(v, read)?, pat)
+    } else {
+        Ok(format_num(num(v, read)?, pat))
+    }
+}
+
+fn format_date(d: f64, pat: &str) -> Result<String, Fault> {
+    if !d.is_finite() || !(-4e6..=4e6).contains(&d) {
+        return Err(Fault::Num);
+    }
+    let day = d.floor();
+    let (y, m, dd) = civil_from_days(day as i64);
+    let secs = ((d - day) * 86_400.0).round() as i64;
+    let (hh, mi, ss) = (secs / 3600 % 24, secs / 60 % 60, secs % 60);
+    let wd = (day as i64 + 3).rem_euclid(7) as usize;
+    let ampm = {
+        let l = pat.to_ascii_lowercase();
+        l.contains("am/pm") || l.contains("a/p")
+    };
+    let chars: Vec<char> = pat.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let mut after_hour = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' {
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                out.push(chars[i]);
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '\\' && i + 1 < chars.len() {
+            out.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        let rest: String = chars[i..].iter().collect::<String>().to_ascii_lowercase();
+        if rest.starts_with("am/pm") {
+            out.push_str(if hh < 12 { "AM" } else { "PM" });
+            i += 5;
+            continue;
+        }
+        if rest.starts_with("a/p") {
+            out.push(if hh < 12 { 'A' } else { 'P' });
+            i += 3;
+            continue;
+        }
+        let lc = c.to_ascii_lowercase();
+        let mut n = 0;
+        while i + n < chars.len() && chars[i + n].to_ascii_lowercase() == lc {
+            n += 1;
+        }
+        match lc {
+            'y' => {
+                if n >= 3 {
+                    out.push_str(&format!("{y:04}"));
+                } else {
+                    out.push_str(&format!("{:02}", y.rem_euclid(100)));
+                }
+            }
+            'm' => {
+                // After an hour (or before seconds), m is minutes.
+                let next_s = chars[i + n..]
+                    .iter()
+                    .find(|c| c.is_ascii_alphabetic())
+                    .is_some_and(|c| c.eq_ignore_ascii_case(&'s'));
+                if (after_hour || next_s) && n <= 2 {
+                    out.push_str(&if n == 2 {
+                        format!("{mi:02}")
+                    } else {
+                        mi.to_string()
+                    });
+                } else {
+                    match n {
+                        1 => out.push_str(&m.to_string()),
+                        2 => out.push_str(&format!("{m:02}")),
+                        3 => out.push_str(&MONTHS[m as usize - 1][..3]),
+                        _ => out.push_str(MONTHS[m as usize - 1]),
+                    }
+                }
+            }
+            'd' => match n {
+                1 => out.push_str(&dd.to_string()),
+                2 => out.push_str(&format!("{dd:02}")),
+                3 => out.push_str(&WEEKDAYS[wd][..3]),
+                _ => out.push_str(WEEKDAYS[wd]),
+            },
+            'h' => {
+                let h = if ampm { (hh + 11) % 12 + 1 } else { hh };
+                out.push_str(&if n >= 2 {
+                    format!("{h:02}")
+                } else {
+                    h.to_string()
+                });
+            }
+            's' => out.push_str(&if n >= 2 {
+                format!("{ss:02}")
+            } else {
+                ss.to_string()
+            }),
+            _ => {
+                for _ in 0..n {
+                    out.push(c);
+                }
+            }
+        }
+        if lc.is_ascii_alphabetic() {
+            after_hour = lc == 'h';
+        }
+        i += n;
+    }
+    Ok(out)
+}
+
+fn format_num(v: f64, pat: &str) -> String {
+    // Split into the text before, the number part and the text after.
+    let is_num = |c: char| matches!(c, '0' | '#' | ',' | '.' | '?');
+    let chars: Vec<char> = pat.chars().collect();
+    let Some(a) = chars.iter().position(|&c| matches!(c, '0' | '#' | '?')) else {
+        return format_number(v, false);
+    };
+    // Back up over a leading "." (like ".00").
+    let a = if a > 0 && chars[a - 1] == '.' {
+        a - 1
+    } else {
+        a
+    };
+    let mut b = a;
+    while b < chars.len() && is_num(chars[b]) {
+        b += 1;
+    }
+    let lit = |s: &[char]| -> String { s.iter().filter(|&&c| c != '"').collect() };
+    let (pre, body, post) = (lit(&chars[..a]), &chars[a..b], lit(&chars[b..]));
+    let pct = pat.contains('%');
+    let v = if pct { v * 100.0 } else { v };
+    let dot = body.iter().position(|&c| c == '.');
+    let (ip, fp) = match dot {
+        Some(i) => (&body[..i], &body[i + 1..]),
+        None => (body, &body[..0]),
+    };
+    let decimals = fp.iter().filter(|&&c| matches!(c, '0' | '#' | '?')).count();
+    let min_frac = fp.iter().filter(|&&c| c == '0').count();
+    let min_int = ip.iter().filter(|&&c| c == '0').count();
+    let group = ip.contains(&',');
+    let r = round_to(v, decimals as f64, 0);
+    let s = format!("{:.*}", decimals, r.abs());
+    let (int, frac) = s.split_once('.').unwrap_or((s.as_str(), ""));
+    let mut frac = frac.to_string();
+    while frac.len() > min_frac && frac.ends_with('0') {
+        frac.pop();
+    }
+    let mut int = int.trim_start_matches('0').to_string();
+    while int.len() < min_int {
+        int.insert(0, '0');
+    }
+    if group {
+        let mut g = String::new();
+        for (i, c) in int.chars().enumerate() {
+            if i > 0 && (int.len() - i) % 3 == 0 {
+                g.push(',');
+            }
+            g.push(c);
+        }
+        int = g;
+    }
+    let mut out = pre;
+    if r < 0.0
+        && (!int.is_empty() || !frac.is_empty())
+        && (int
+            .chars()
+            .chain(frac.chars())
+            .any(|c| c != '0' && c != ','))
+    {
+        out.push('-');
+    }
+    out.push_str(&int);
+    if !frac.is_empty() {
+        out.push('.');
+        out.push_str(&frac);
+    }
+    out.push_str(&post);
+    out
+}
+
 fn date_text(d: f64) -> String {
     let day = d.floor();
     let (y, m, dd) = civil_from_days(day as i64);
@@ -780,6 +1064,11 @@ fn date_text(d: f64) -> String {
             secs % 60
         )
     }
+}
+
+/// `to_text`, owned.
+pub fn to_text_owned(v: &Value) -> String {
+    to_text(v).into_owned()
 }
 
 pub fn to_text<'a>(v: &Value<'a>) -> Cow<'a, str> {
@@ -1474,6 +1763,323 @@ fn call<'a>(f: Func, args: &'a [Node], re: Option<&'a Regex>, ctx: &Ctx<'a>) -> 
         Func::Row => Value::Num(ctx.row as f64),
         // Made into its own node when parsed.
         Func::Lookup => Value::Err(Fault::Ref),
+        Func::Age => {
+            let born = tryv!(date(&arg(0), read)).floor();
+            let on = match opt(1) {
+                Some(v) => tryv!(date(&v, read)).floor(),
+                None => ctx.now.floor(),
+            };
+            if !(-4e6..=4e6).contains(&born) || !(-4e6..=4e6).contains(&on) {
+                return Value::Err(Fault::Num);
+            }
+            let (y1, m1, d1) = civil_from_days(born as i64);
+            let (y2, m2, d2) = civil_from_days(on as i64);
+            // Born on 29 February: a year older on 1 March in other years.
+            let mut years = y2 - y1;
+            if (m2, d2) < (m1, d1) {
+                years -= 1;
+            }
+            if on < born {
+                return Value::Err(Fault::Num);
+            }
+            Value::Num(years as f64)
+        }
+        Func::DateDif => {
+            let a = tryv!(date(&arg(0), read)).floor();
+            let b = tryv!(date(&arg(1), read)).floor();
+            let unit = tryv!(text(2)).trim().to_ascii_uppercase();
+            if a > b || !(-4e6..=4e6).contains(&a) || !(-4e6..=4e6).contains(&b) {
+                return Value::Err(Fault::Num);
+            }
+            let (y1, m1, d1) = civil_from_days(a as i64);
+            let (y2, m2, d2) = civil_from_days(b as i64);
+            let months = (y2 - y1) * 12 + m2 as i64 - m1 as i64 - i64::from(d2 < d1);
+            let n = match unit.as_str() {
+                "Y" => months.div_euclid(12),
+                "M" => months,
+                "D" => (b - a) as i64,
+                "YM" => months.rem_euclid(12),
+                "MD" => {
+                    if d2 >= d1 {
+                        i64::from(d2 - d1)
+                    } else {
+                        // Days from the same day of the month before.
+                        let (py, pm) = if m2 == 1 { (y2 - 1, 12) } else { (y2, m2 - 1) };
+                        let last = month_days(py, pm);
+                        let start = days_from_civil(py, pm, d1.min(last));
+                        b as i64 - start
+                    }
+                }
+                "YD" => {
+                    let mut start = days_from_civil(y2, m1, d1.min(month_days(y2, m1)));
+                    if start > b as i64 {
+                        start = days_from_civil(y2 - 1, m1, d1.min(month_days(y2 - 1, m1)));
+                    }
+                    b as i64 - start
+                }
+                _ => return Value::Err(Fault::Num),
+            };
+            Value::Num(n as f64)
+        }
+        Func::EDate | Func::EoMonth => {
+            let d = tryv!(date(&arg(0), read)).floor();
+            let k = tryv!(number(1)).trunc();
+            if !(-4e6..=4e6).contains(&d) || k.abs() > 120_000.0 {
+                return Value::Err(Fault::Num);
+            }
+            let (y, m, dd) = civil_from_days(d as i64);
+            let mi = m as i64 - 1 + k as i64;
+            let yy = y + mi.div_euclid(12);
+            let mm = mi.rem_euclid(12) as u32 + 1;
+            let last = month_days(yy, mm);
+            let day = if f == Func::EoMonth {
+                last
+            } else {
+                dd.min(last)
+            };
+            Value::Date(days_from_civil(yy, mm, day) as f64)
+        }
+        Func::NetworkDays => {
+            let a = tryv!(date(&arg(0), read)).floor();
+            let b = tryv!(date(&arg(1), read)).floor();
+            if !(-4e6..=4e6).contains(&a) || !(-4e6..=4e6).contains(&b) {
+                return Value::Err(Fault::Num);
+            }
+            let (lo, hi, sign) = if a <= b {
+                (a as i64, b as i64, 1.0)
+            } else {
+                (b as i64, a as i64, -1.0)
+            };
+            // Weekdays of 1970-01-01 (day 0) was a Thursday: Monday is 0.
+            let weekday = |d: i64| (d + 3).rem_euclid(7);
+            let total = hi - lo + 1;
+            let mut n = total / 7 * 5;
+            for k in 0..total % 7 {
+                if weekday(lo + total / 7 * 7 + k) < 5 {
+                    n += 1;
+                }
+            }
+            let mut off: Vec<i64> = Vec::new();
+            for i in 2..args.len() {
+                let h = tryv!(date(&arg(i), read)).floor() as i64;
+                if h >= lo && h <= hi && weekday(h) < 5 && !off.contains(&h) {
+                    off.push(h);
+                }
+            }
+            Value::Num(sign * (n - off.len() as i64) as f64)
+        }
+        Func::WeekNum => {
+            let d = tryv!(date(&arg(0), read)).floor();
+            let kind = match opt(1) {
+                Some(v) => tryv!(num(&v, read)).trunc() as i64,
+                None => 1,
+            };
+            if !(-4e6..=4e6).contains(&d) {
+                return Value::Err(Fault::Num);
+            }
+            let day = d as i64;
+            let monday0 = |x: i64| (x + 3).rem_euclid(7);
+            match kind {
+                1 | 2 => {
+                    let (y, _, _) = civil_from_days(day);
+                    let jan1 = days_from_civil(y, 1, 1);
+                    // Days back to the start of Jan 1's week.
+                    let back = if kind == 1 {
+                        (monday0(jan1) + 1) % 7
+                    } else {
+                        monday0(jan1)
+                    };
+                    Value::Num(((day - (jan1 - back)) / 7 + 1) as f64)
+                }
+                21 => {
+                    // ISO 8601: the week with the year's first Thursday.
+                    let thursday = day - monday0(day) + 3;
+                    let (y, _, _) = civil_from_days(thursday);
+                    Value::Num(((thursday - days_from_civil(y, 1, 1)) / 7 + 1) as f64)
+                }
+                _ => Value::Err(Fault::Num),
+            }
+        }
+        Func::DateValue => match arg(0) {
+            Value::Date(d) => Value::Date(d.floor()),
+            Value::Err(e) => Value::Err(e),
+            v => match parse_date(&to_text(&v), read) {
+                Some(d) => Value::Date(d.floor()),
+                None => Value::Err(Fault::Value),
+            },
+        },
+        Func::TextF => {
+            let v = arg(0);
+            if let Value::Err(e) = v {
+                return Value::Err(e);
+            }
+            let pat = tryv!(text(1));
+            text_val(tryv!(format_value(&v, &pat, read)))
+        }
+        Func::TextBefore | Func::TextAfter => {
+            let s = tryv!(text(0));
+            let sep = tryv!(text(1));
+            let k = match opt(2) {
+                Some(v) => tryv!(num(&v, read)).trunc() as i64,
+                None => 1,
+            };
+            if sep.is_empty() || k == 0 {
+                return Value::Err(Fault::Value);
+            }
+            let hits: Vec<usize> = s.match_indices(sep.as_ref()).map(|(i, _)| i).collect();
+            let idx = if k > 0 {
+                hits.get(k as usize - 1)
+            } else {
+                hits.len()
+                    .checked_sub(k.unsigned_abs() as usize)
+                    .and_then(|i| hits.get(i))
+            };
+            match idx {
+                None => Value::Err(Fault::Na),
+                Some(&i) => {
+                    let out = if f == Func::TextBefore {
+                        &s[..i]
+                    } else {
+                        &s[i + sep.len()..]
+                    };
+                    text_val(out.to_string())
+                }
+            }
+        }
+        Func::SplitPart => {
+            let s = tryv!(text(0));
+            let sep = tryv!(text(1));
+            let k = tryv!(number(2)).trunc() as i64;
+            if sep.is_empty() || k == 0 {
+                return Value::Err(Fault::Value);
+            }
+            let parts: Vec<&str> = s.split(sep.as_ref()).collect();
+            let i = if k > 0 {
+                (k - 1) as usize
+            } else {
+                match parts.len().checked_sub(k.unsigned_abs() as usize) {
+                    Some(i) => i,
+                    None => return Value::Text(Cow::Borrowed("")),
+                }
+            };
+            text_val(parts.get(i).copied().unwrap_or("").to_string())
+        }
+        Func::PadLeft => {
+            let s = tryv!(text(0));
+            let want = tryv!(count_arg(&arg(1), read));
+            let pad = match opt(2) {
+                Some(v) => to_text(&v).into_owned(),
+                None => "0".to_string(),
+            };
+            let have = chars_len(&s);
+            let Some(ch) = pad.chars().next() else {
+                return Value::Err(Fault::Value);
+            };
+            if have >= want {
+                return Value::Text(s);
+            }
+            let mut out = String::with_capacity(want);
+            out.extend(std::iter::repeat_n(ch, want - have));
+            out.push_str(&s);
+            text_val(out)
+        }
+        Func::Clean => {
+            let s = tryv!(text(0));
+            let out: String = s
+                .chars()
+                .filter_map(|c| match c {
+                    '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}' | '\u{feff}' | '\u{ad}' => {
+                        None
+                    }
+                    '\u{a0}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => {
+                        Some(' ')
+                    }
+                    c if c.is_control() => None,
+                    c => Some(c),
+                })
+                .collect();
+            text_val(out)
+        }
+        Func::CountChar => {
+            let s = tryv!(text(0));
+            let sub = tryv!(text(1));
+            if sub.is_empty() {
+                return Value::Num(0.0);
+            }
+            Value::Num(s.matches(sub.as_ref()).count() as f64)
+        }
+        Func::Switch => {
+            let v = arg(0);
+            if let Value::Err(e) = v {
+                return Value::Err(e);
+            }
+            let rest = &args[1..];
+            for pair in rest.chunks(2) {
+                if pair.len() == 1 {
+                    return eval(&pair[0], ctx);
+                }
+                if tryv!(compare(&v, &eval(&pair[0], ctx), read)) == std::cmp::Ordering::Equal {
+                    return eval(&pair[1], ctx);
+                }
+            }
+            Value::Err(Fault::Na)
+        }
+        Func::Choose => {
+            let i = tryv!(number(0)).trunc();
+            if i < 1.0 || i as usize >= args.len() {
+                return Value::Err(Fault::Value);
+            }
+            eval(&args[i as usize], ctx)
+        }
+        Func::In => {
+            let v = arg(0);
+            if let Value::Err(e) = v {
+                return Value::Err(e);
+            }
+            for a in &args[1..] {
+                if tryv!(compare(&v, &eval(a, ctx), read)) == std::cmp::Ordering::Equal {
+                    return Value::Bool(true);
+                }
+            }
+            Value::Bool(false)
+        }
+        Func::Between => {
+            let v = arg(0);
+            let lo = tryv!(compare(&v, &arg(1), read));
+            let hi = tryv!(compare(&v, &arg(2), read));
+            Value::Bool(lo != std::cmp::Ordering::Less && hi != std::cmp::Ordering::Greater)
+        }
+        Func::Prev | Func::Next => {
+            let near = if f == Func::Prev { ctx.prev } else { ctx.next };
+            let Node::Col(i) = &args[0] else {
+                return Value::Err(Fault::Value);
+            };
+            match near {
+                None => Value::Blank,
+                Some(cells) => match ctx.slots.get(*i).copied().flatten() {
+                    Some(s) => cell_value(cells.get(s).map_or("", |c| c.as_ref())),
+                    None => Value::Blank,
+                },
+            }
+        }
+        Func::Count | Func::CountA => {
+            let mut n = 0usize;
+            for a in args {
+                let v = eval(a, ctx);
+                let hit = match (&v, f) {
+                    (Value::Err(_), Func::Count) => false,
+                    (v, Func::Count) => {
+                        !is_blank(v)
+                            && numeric(v, read).is_ok_and(|x| !x.1)
+                            && !matches!(v, Value::Bool(_))
+                    }
+                    (v, _) => !is_blank(v),
+                };
+                n += usize::from(hit);
+            }
+            Value::Num(n as f64)
+        }
+        Func::Blank => Value::Blank,
         Func::Coalesce => {
             for a in args {
                 let v = eval(a, ctx);
@@ -1698,6 +2304,79 @@ impl Document {
         Ok(e)
     }
 
+    /// Filter by formula: of the shown rows, keep those where the
+    /// expression is TRUE (the title row stays). Like a filter, it only
+    /// changes what is shown; errors count as not TRUE.
+    pub fn plan_formula_filter(
+        &self,
+        spec: &ComputeSpec,
+        progress: &Progress,
+    ) -> Result<(crate::reshape::RowPlan, u64), Error> {
+        let e = self.compute_expr(spec)?;
+        check_cols(self, e.columns())?;
+        let reader = Cols::new(self, e.columns());
+        let near = e.uses_near();
+        let total = self.total_rows();
+        let first = u64::from(spec.keep_first && self.row_count() > 0);
+        let errors = AtomicU64::new(0);
+        let ids: Vec<u32> =
+            self.par_rows(self.data_rows(spec.keep_first), progress, |r, id, buf| {
+                reader.read(self, id, buf);
+                let (mut pv, mut nv) = (Vec::new(), Vec::new());
+                let (mut has_p, mut has_n) = (false, false);
+                let pos = self.row_number(r).unwrap_or(r);
+                if near {
+                    if pos > first {
+                        if let Some(pid) = self.doc_id_at(pos - 1) {
+                            reader.read(self, pid, &mut pv);
+                            has_p = true;
+                        }
+                    }
+                    if pos + 1 < total {
+                        if let Some(nid) = self.doc_id_at(pos + 1) {
+                            reader.read(self, nid, &mut nv);
+                            has_n = true;
+                        }
+                    }
+                }
+                let ctx = Ctx {
+                    cells: buf,
+                    slots: reader.slots(),
+                    row: pos + 1,
+                    now: spec.now,
+                    read: spec.read,
+                    prev: has_p.then_some(pv.as_slice()),
+                    next: has_n.then_some(nv.as_slice()),
+                };
+                let v = e.eval(&ctx);
+                if matches!(v, Value::Err(_)) {
+                    errors.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(matches!(to_bool(&v), Ok(true)).then_some(id))
+            })?;
+        let base = self.next_row_id();
+        let mut bits = vec![0u64; (base as usize).div_ceil(64)];
+        for &id in &ids {
+            bits[(id >> 6) as usize] |= 1 << (id & 63);
+        }
+        let keep_first = first == 1;
+        if keep_first {
+            let id = self.id_at(0).ok_or(Error::OutOfRange)?;
+            bits[(id >> 6) as usize] |= 1 << (id & 63);
+        }
+        let mut plan = crate::reshape::RowPlan::new(self);
+        plan.rows = ids.len() as u64;
+        plan.view = Some(crate::document::View::new(
+            crate::filter::FilterSpec {
+                keep_first,
+                ..Default::default()
+            },
+            bits,
+            base,
+        ));
+        Ok((plan, errors.into_inner()))
+    }
+
     /// Results for the first `count` shown data rows.
     pub fn preview_compute(&self, spec: &ComputeSpec, count: u64) -> Result<ComputePreview, Error> {
         let e = self.compute_expr(spec)?;
@@ -1707,15 +2386,38 @@ impl Document {
         let end = self.row_count().min(first + count.min(MAX_PREVIEW));
         let mut out = ComputePreview::default();
         let mut buf = Vec::new();
+        let near = e.uses_near();
+        let total = self.total_rows();
+        let (mut pv, mut nv) = (Vec::new(), Vec::new());
         for r in first..end {
             let id = self.id_at(r).ok_or(Error::OutOfRange)?;
             reader.read(self, id, &mut buf);
+            let pos = self.row_number(r).unwrap_or(r);
+            // As the run reads them: the rows above and below in the file's
+            // order, hidden or not.
+            let (mut has_p, mut has_n) = (false, false);
+            if near {
+                if pos > first {
+                    if let Some(pid) = self.doc_id_at(pos - 1) {
+                        reader.read(self, pid, &mut pv);
+                        has_p = true;
+                    }
+                }
+                if pos + 1 < total {
+                    if let Some(nid) = self.doc_id_at(pos + 1) {
+                        reader.read(self, nid, &mut nv);
+                        has_n = true;
+                    }
+                }
+            }
             let ctx = Ctx {
                 cells: &buf,
                 slots: reader.slots(),
-                row: self.row_number(r).unwrap_or(r) + 1,
+                row: pos + 1,
                 now: spec.now,
                 read: spec.read,
+                prev: has_p.then_some(pv.as_slice()),
+                next: has_n.then_some(nv.as_slice()),
             };
             let v = e.eval(&ctx);
             if matches!(v, Value::Err(_)) {
@@ -1767,15 +2469,18 @@ impl Document {
         let budget = crate::find::split_budget(self);
         let errors = AtomicU64::new(0);
         let slot = spec.target.unwrap_or(at);
+        let near = e.uses_near();
+        // PREV and NEXT read the rows above and below (not the titles).
         let changes: Vec<(u32, Vec<(u32, String)>)> =
-            self.par_all_rows(first, progress, |p, id, buf| {
-                reader.read(self, id, buf);
+            self.par_all_rows_near(first, &reader, near, progress, |p, id, buf, prev, next| {
                 let ctx = Ctx {
                     cells: buf,
                     slots: &reader.slots()[..nexpr],
                     row: p + 1,
                     now: spec.now,
                     read: spec.read,
+                    prev,
+                    next,
                 };
                 let v = e.eval(&ctx);
                 if matches!(v, Value::Err(_)) {
@@ -1841,6 +2546,8 @@ mod tests {
             row: 7,
             now: 19_000.5,
             read: ReadOptions::default(),
+            prev: None,
+            next: None,
         };
         e.text(&ctx)
     }
@@ -2013,6 +2720,8 @@ mod tests {
                         row: 1,
                         now: 0.0,
                         read: ReadOptions::default(),
+                        prev: None,
+                        next: None,
                     };
                     e.text(&ctx)
                 })
@@ -2110,10 +2819,224 @@ mod tests {
                     row: 1,
                     now: 0.0,
                     read: ReadOptions::default(),
+                    prev: None,
+                    next: None,
                 };
                 let _ = e.text(&ctx);
             }
         }
+    }
+
+    #[test]
+    fn new_date_functions() {
+        assert_eq!(run("AGE(\"2000-02-29\", \"2024-02-28\")", &[]), "23");
+        assert_eq!(run("AGE(\"2000-02-29\", \"2024-02-29\")", &[]), "24");
+        assert_eq!(run("AGE(\"2000-02-29\", \"2023-03-01\")", &[]), "23");
+        assert_eq!(run("AGE(\"2030-01-01\", \"2020-01-01\")", &[]), "#NUM!");
+        assert_eq!(
+            run("DATEDIF(\"2020-01-15\", \"2021-03-10\", \"Y\")", &[]),
+            "1"
+        );
+        assert_eq!(
+            run("DATEDIF(\"2020-01-15\", \"2021-03-10\", \"M\")", &[]),
+            "13"
+        );
+        assert_eq!(
+            run("DATEDIF(\"2020-01-15\", \"2021-03-10\", \"D\")", &[]),
+            "420"
+        );
+        assert_eq!(
+            run("DATEDIF(\"2020-01-15\", \"2021-03-10\", \"YM\")", &[]),
+            "1"
+        );
+        assert_eq!(
+            run("DATEDIF(\"2020-01-15\", \"2021-03-10\", \"MD\")", &[]),
+            "23"
+        );
+        assert_eq!(
+            run("DATEDIF(\"2020-01-15\", \"2021-03-10\", \"YD\")", &[]),
+            "54"
+        );
+        assert_eq!(
+            run("DATEDIF(\"2021-01-01\", \"2020-01-01\", \"D\")", &[]),
+            "#NUM!"
+        );
+        assert_eq!(
+            run("DATEDIF(\"2020-01-01\", \"2021-01-01\", \"Q\")", &[]),
+            "#NUM!"
+        );
+        assert_eq!(run("EDATE(\"2024-01-31\", 1)", &[]), "2024-02-29");
+        assert_eq!(run("EDATE(\"2024-03-15\", -14)", &[]), "2023-01-15");
+        assert_eq!(run("EOMONTH(\"2023-02-10\", 0)", &[]), "2023-02-28");
+        assert_eq!(run("EOMONTH(\"2023-11-10\", 3)", &[]), "2024-02-29");
+        // Mon 2024-01-01 to Fri 2024-01-12: ten weekdays, one holiday.
+        assert_eq!(
+            run("NETWORKDAYS(\"2024-01-01\", \"2024-01-12\")", &[]),
+            "10"
+        );
+        assert_eq!(
+            run(
+                "NETWORKDAYS(\"2024-01-01\", \"2024-01-12\", \"2024-01-01\", \"2024-01-06\")",
+                &[]
+            ),
+            "9"
+        );
+        assert_eq!(
+            run("NETWORKDAYS(\"2024-01-12\", \"2024-01-01\")", &[]),
+            "-10"
+        );
+        assert_eq!(run("NETWORKDAYS(\"2024-01-06\", \"2024-01-07\")", &[]), "0");
+        // Sun 2023-01-01: week 1 (Sunday start), week 1 (Monday start), ISO
+        // week 52 of 2022.
+        assert_eq!(run("WEEKNUM(\"2023-01-01\")", &[]), "1");
+        assert_eq!(run("WEEKNUM(\"2023-01-02\")", &[]), "1");
+        assert_eq!(run("WEEKNUM(\"2023-01-02\", 2)", &[]), "2");
+        assert_eq!(run("WEEKNUM(\"2023-01-01\", 2)", &[]), "1");
+        assert_eq!(run("WEEKNUM(\"2023-01-01\", 21)", &[]), "52");
+        assert_eq!(run("WEEKNUM(\"2021-01-04\", 21)", &[]), "1");
+        assert_eq!(run("WEEKNUM(\"2020-12-31\", 21)", &[]), "53");
+        assert_eq!(run("DATEVALUE(\"2024-05-06 13:30\")", &[]), "2024-05-06");
+        assert_eq!(run("DATEVALUE(\"soon\")", &[]), "#VALUE!");
+    }
+
+    #[test]
+    fn new_text_functions() {
+        assert_eq!(run("TEXT(1234.5, \"#,##0.00\")", &[]), "1,234.50");
+        assert_eq!(run("TEXT(42, \"00000\")", &[]), "00042");
+        assert_eq!(run("TEXT(0.256, \"0.0%\")", &[]), "25.6%");
+        assert_eq!(run("TEXT(-3.14159, \"0.00\")", &[]), "-3.14");
+        assert_eq!(run("TEXT(2.5, \"$0.00\")", &[]), "$2.50");
+        assert_eq!(run("TEXT(1.5, \"0.##\")", &[]), "1.5");
+        assert_eq!(
+            run("TEXT([a], \"dddd d mmmm yyyy\")", &["2024-03-05"]),
+            "Tuesday 5 March 2024"
+        );
+        assert_eq!(run("TEXT([a], \"mm/dd/yy\")", &["2024-03-05"]), "03/05/24");
+        assert_eq!(
+            run("TEXT([a], \"yyyy-mm-dd hh:mm\")", &["2024-03-05 14:07"]),
+            "2024-03-05 14:07"
+        );
+        assert_eq!(
+            run("TEXT([a], \"h:mm AM/PM\")", &["2024-03-05 14:07"]),
+            "2:07 PM"
+        );
+        assert_eq!(
+            run("TEXT([a], \"ddd mmm d\")", &["2024-03-05"]),
+            "Tue Mar 5"
+        );
+        assert_eq!(run("TEXTBEFORE([a], \"@\")", &["jo@example.com"]), "jo");
+        assert_eq!(
+            run("TEXTAFTER([a], \"@\")", &["jo@example.com"]),
+            "example.com"
+        );
+        assert_eq!(run("TEXTAFTER([a], \"/\", -1)", &["a/b/c.txt"]), "c.txt");
+        assert_eq!(run("TEXTBEFORE([a], \"/\", 2)", &["a/b/c.txt"]), "a/b");
+        assert_eq!(run("TEXTAFTER([a], \"#\")", &["abc"]), "#N/A");
+        assert_eq!(run("SPLITPART([a], \"-\", 2)", &["2024-03-05"]), "03");
+        assert_eq!(run("SPLITPART([a], \"-\", -1)", &["2024-03-05"]), "05");
+        assert_eq!(run("SPLITPART([a], \"-\", 9)", &["2024-03-05"]), "");
+        assert_eq!(run("PADLEFT([a], 5)", &["42"]), "00042");
+        assert_eq!(run("PADLEFT([a], 4, \" \")", &["7"]), "   7");
+        assert_eq!(run("PADLEFT([a], 2)", &["12345"]), "12345");
+        assert_eq!(run("CLEAN([a])", &["a\u{200b}b\u{a0}c\td"]), "ab cd");
+        assert_eq!(run("COUNTCHAR([a], \",\")", &["a,b,,c"]), "3");
+        assert_eq!(run("COUNTCHAR([a], \"\")", &["abc"]), "0");
+    }
+
+    #[test]
+    fn new_logic_functions() {
+        assert_eq!(
+            run(
+                "SWITCH([a], \"N\", \"North\", \"S\", \"South\", \"?\")",
+                &["S"]
+            ),
+            "South"
+        );
+        assert_eq!(run("SWITCH([a], \"N\", \"North\", \"?\")", &["W"]), "?");
+        assert_eq!(
+            run("SWITCH([a], \"N\", \"North\", \"S\", \"South\")", &["W"]),
+            "#N/A"
+        );
+        assert_eq!(run("SWITCH([a], 1, \"one\", 2, \"two\")", &["2"]), "two");
+        assert_eq!(run("CHOOSE(2, \"a\", \"b\", \"c\")", &[]), "b");
+        assert_eq!(run("CHOOSE(4, \"a\", \"b\", \"c\")", &[]), "#VALUE!");
+        assert_eq!(run("IN([a], \"TN\", \"GA\", \"AL\")", &["ga"]), "TRUE");
+        assert_eq!(run("IN([a], \"TN\", \"GA\")", &["KY"]), "FALSE");
+        assert_eq!(run("BETWEEN([a], 1, 10)", &["10"]), "TRUE");
+        assert_eq!(run("BETWEEN([a], 1, 10)", &["10.5"]), "FALSE");
+        assert_eq!(
+            run(
+                "BETWEEN([a], \"2024-01-01\", \"2024-12-31\")",
+                &["2024-06-01"]
+            ),
+            "TRUE"
+        );
+        assert_eq!(run("COUNT([a], [b], [c])", &["1", "x", ""]), "1");
+        assert_eq!(run("COUNTA([a], [b], [c])", &["1", "x", ""]), "2");
+        assert_eq!(run("IF([a] = \"\", BLANK(), [a])", &[""]), "");
+        // PREV and NEXT only take a column, and are blank where no row runs.
+        assert!(Expr::parse("PREV(1)", &[]).is_err());
+        assert_eq!(run("PREV([a])", &["5"]), "");
+    }
+
+    #[test]
+    fn filter_by_formula() {
+        let mut d = Document::from_bytes(
+            b"Day,Total
+Mon,10
+Tue,15
+Wed,x
+Thu,20
+"
+            .to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        let spec = ComputeSpec {
+            expr: "VALUE([Total]) > 12".into(),
+            keep_first: true,
+            ..Default::default()
+        };
+        let (plan, errors) = d.plan_formula_filter(&spec, &Progress::new()).unwrap();
+        assert_eq!((plan.rows, errors), (2, 1));
+        d.apply_rows(plan).unwrap();
+        assert_eq!(d.row_count(), 3);
+        assert_eq!(d.row_values(1).unwrap(), ["Tue", "15"]);
+        // Again on the shown rows: it narrows them.
+        let spec = ComputeSpec {
+            expr: "IN([Day], \"Thu\", \"Mon\")".into(),
+            keep_first: true,
+            ..Default::default()
+        };
+        let (plan, _) = d.plan_formula_filter(&spec, &Progress::new()).unwrap();
+        d.apply_rows(plan).unwrap();
+        assert_eq!(d.row_count(), 2);
+        assert_eq!(d.row_values(1).unwrap(), ["Thu", "20"]);
+    }
+
+    #[test]
+    fn prev_and_next_read_the_rows_around() {
+        let mut d = Document::from_bytes(
+            b"Day,Total\r\nMon,10\r\nTue,15\r\nWed,12\r\n".to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        let spec = ComputeSpec {
+            expr: "IF(PREV([Total]) = \"\", 0, [Total] - PREV([Total])) & \"/\" & NEXT([Day])"
+                .into(),
+            title: "Change".into(),
+            ..Default::default()
+        };
+        let pv = d.preview_compute(&spec, 10).unwrap();
+        assert_eq!(
+            pv.rows,
+            vec![(2, "0/Tue".into()), (3, "5/Wed".into()), (4, "-3/".into())]
+        );
+        let (plan, _) = d.plan_compute(&spec, &Progress::new()).unwrap();
+        d.apply_cols(plan).unwrap();
+        assert_eq!(d.row_values(3).unwrap(), ["Wed", "12", "-3/"]);
     }
 
     #[test]

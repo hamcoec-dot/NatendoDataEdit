@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.4.1_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.4.2_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -353,6 +353,20 @@ everything is also in command search.
 ![Go to special picking the blank cells of the selection to fill them with UNKNOWN](docs/screenshots/go-to-special.png)
 *Go to special: every blank cell in the selection gets UNKNOWN, as one undo step.*
 
+- **Formulas in cells**: type `=B2*C2`, `=SUM(C2:C40)` or
+  `=[Price]*[Qty]` in a cell and press Enter; the formula runs once and the
+  cell keeps the result (a CSV file holds values, not formulas). Columns go
+  by letter and rows by the number in the row heading. Select a block and
+  press Ctrl+Enter to fill the formula into every cell, with references
+  moving row by row as in a spreadsheet (`$C$2` stays put). F2 and the cell
+  bar show the formula again until the cell changes. A formula that doesn't
+  work is refused with the reason; start with an apostrophe (`'=`) to keep
+  text that begins with "=". While you type, a helper suggests functions
+  (Tab puts one in) and shows how the one you are in is used.
+
+![Typing a formula in a cell: the helper suggests AVERAGE and shows how ROUND is used](docs/screenshots/cell-formula.png)
+*A formula in a cell: AVERAGE is suggested (Tab puts it in) and the line above says how ROUND is used.*
+
 - **Tidy column titles** (Format > Tidy column titles, or right-click a
   heading): trim and collapse spaces, one case style (Title Case,
   lower_with_underscores, UPPER, lower), remove odd characters, and make
@@ -468,6 +482,14 @@ everything is also in command search.
   `$1a` for `${1}a`) is caught before anything changes.
 - **Right-click a cell to find its value**: Find this value, Replace this
   value, or Find all like this in the column.
+- **Filter by formula** (Data > Filter by formula, or right-click a heading):
+  show only the rows where an expression is TRUE, like
+  `AND([Total] > 100, ISBLANK([Notes]))` or `IN([State], "TN", "GA")`. The
+  first results show as you type; it works on the rows already shown, so it
+  narrows a filter, and Data > Clear filter shows every row again.
+
+![Filter by formula: the rows where Price is over 2, with the first results](docs/screenshots/filter-formula.png)
+*Filter by formula: TRUE rows stay shown.*
 - **Find blanks, special characters, column titles and notes**: pick "Blank
   cells" to find empty cells; Special… puts in characters that are hard to
   type or see (a non-breaking space, a zero-width space, curly quotes, any
@@ -667,7 +689,16 @@ preview:
 - **Extract** a number, e-mail, ZIP, phone number, text in brackets, words or
   a unit into a new column.
 - **Choose and order columns:** keep, delete, reorder and rename in one step.
-- **Computed columns** with Excel-like expressions (values saved as text).
+- **Computed columns** with Excel-like expressions (values saved as text),
+  with a helper that suggests functions and columns as you type. Date
+  functions (AGE, DATEDIF, EDATE, EOMONTH, NETWORKDAYS, WEEKNUM, DATEVALUE),
+  text functions (TEXT, TEXTBEFORE, TEXTAFTER, SPLITPART, PADLEFT, CLEAN,
+  COUNTCHAR), choices (SWITCH, CHOOSE, IN, BETWEEN), counts (COUNT, COUNTA)
+  and the rows around (PREV and NEXT: the value in the row above or below,
+  for a change from the last row or a running check).
+- **Change a column with a formula** (Data > Change column with a formula, or
+  right-click a heading): rewrite a column in place, like `UPPER([Name])` or
+  `PADLEFT([ZIP], 5)`, with the first results shown first; one undo step.
 - **Build a column without a formula:** from a template, or from if-then rules.
 - **Group figures** in a new column: count, sum, average, smallest, largest,
   first, last, rank, running count, percent of group.

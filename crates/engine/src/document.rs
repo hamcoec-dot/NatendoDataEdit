@@ -417,6 +417,8 @@ pub struct Document {
     protected: Vec<u32>,
     /// Cells the last change left alone because their column is protected.
     protected_skipped: AtomicU64,
+    /// Formulas typed in cells, beside the values they gave.
+    pub(crate) formulas: crate::cellformula::Formulas,
 }
 
 impl Document {
@@ -557,6 +559,7 @@ impl Document {
             history_pos: 0,
             protected: Vec::new(),
             protected_skipped: AtomicU64::new(0),
+            formulas: Default::default(),
         })
     }
 

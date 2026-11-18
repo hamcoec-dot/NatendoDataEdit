@@ -178,6 +178,47 @@ fn main() {
     doc.apply_sort(plan).unwrap();
     check.budget("sort text column (natural)", t.elapsed(), budget(5.0));
     doc.undo();
+    // v0.4.2: a cell formula filled down 100k cells (Ctrl+Enter) costs
+    // about what pasting 100k rows does.
+    {
+        use natendo_engine::cellformula::CellFormula;
+        let t = Instant::now();
+        let res = doc
+            .run_cell_formula(&CellFormula {
+                formula: "=C2*2 + $C$2".into(),
+                row: 1,
+                col: 0,
+                targets: (1..=100_000).map(|r| (r, 0)).collect(),
+                keep_first: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let plan = doc.formula_plan(&res).unwrap();
+        doc.apply_cells(plan).unwrap();
+        doc.remember_formulas(&res);
+        check.budget(
+            "cell formula filled down 100k cells",
+            t.elapsed(),
+            budget(1.0),
+        );
+        doc.undo();
+    }
+    // v0.4.2: filter by formula costs about what a filter on one column does.
+    let t = Instant::now();
+    let (plan, _) = doc
+        .plan_formula_filter(
+            &ComputeSpec {
+                expr: "AND(VALUE([col2]) > 500, LEN([col4]) = 8)".into(),
+                keep_first: true,
+                ..Default::default()
+            },
+            &p,
+        )
+        .unwrap();
+    println!("     filter by formula: {} rows", plan.rows);
+    doc.apply_rows(plan).unwrap();
+    check.budget("filter by formula", t.elapsed(), budget(1.0));
+    doc.clear_filter();
     let t = Instant::now();
     let spec = FilterSpec {
         columns: vec![ColumnFilter {
@@ -1066,6 +1107,57 @@ fn main() {
     big.apply_cols(plan).unwrap();
     check.budget("computed column, every row", t.elapsed(), budget(8.0));
     assert_eq!(rep.errors, 0);
+    // v0.4.2: the new functions, the rows around (PREV), filter by formula
+    // and cell formulas.
+    {
+        use natendo_engine::cellformula::CellFormula;
+        // Measured against a plain computed column making the same number
+        // of cells (writing them is most of the time): at most 30% more.
+        let time = |big: &mut Document, expr: &str| {
+            let t = Instant::now();
+            let (plan, _) = big
+                .plan_compute(
+                    &ComputeSpec {
+                        expr: expr.into(),
+                        title: "x".into(),
+                        keep_first: true,
+                        ..Default::default()
+                    },
+                    &p,
+                )
+                .unwrap();
+            big.apply_cols(plan).unwrap();
+            let took = t.elapsed();
+            big.undo();
+            took
+        };
+        let plain = time(&mut big, "[col2] - 5");
+        println!(
+            "     plain computed column for comparison: {:.1} s",
+            plain.as_secs_f64()
+        );
+        let limit = plain.mul_f64(1.3);
+        let took = time(&mut big, "TEXT([col2], \"#,##0.00\")");
+        check.budget("computed column with TEXT, every row", took, limit);
+        let took = time(&mut big, "[col2] - PREV([col2])");
+        check.budget("computed column with PREV, every row", took, limit);
+        let t = Instant::now();
+        let res = big
+            .run_cell_formula(&CellFormula {
+                formula: "=SUM(C2:C100001)".into(),
+                row: 1,
+                col: 0,
+                keep_first: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(res.cells.len(), 1);
+        check.budget(
+            "cell formula summing 100k cells",
+            t.elapsed(),
+            Duration::from_secs(1),
+        );
+    }
     let checks = |kinds: Vec<(u32, CheckKind)>| CheckSpec {
         checks: kinds
             .into_iter()

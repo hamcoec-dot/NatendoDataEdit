@@ -2800,6 +2800,29 @@ async fn data_edge(
     blocking(move || docs.data_edge(doc, row, col, dir)).await
 }
 
+/// Run a formula typed in a cell (or filled with Ctrl+Enter).
+#[tauri::command]
+async fn cell_formula(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::cellformula::CellFormula,
+) -> CmdResult<docs::FormulaReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.cell_formula(doc, &spec)).await
+}
+
+/// The formula a cell's value came from, if it still holds that value.
+#[tauri::command]
+async fn cell_formula_of(
+    docs: DocsState<'_>,
+    doc: u32,
+    row: u64,
+    col: u32,
+) -> CmdResult<Option<String>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.cell_formula_of(doc, row, col)).await
+}
+
 /// The first results of a computed column.
 #[tauri::command]
 async fn compute_preview(
@@ -3311,6 +3334,8 @@ pub fn run() {
             export_text,
             take_opened,
             compute_preview,
+            cell_formula,
+            cell_formula_of,
             join_preview,
             value_tally,
             join_list,

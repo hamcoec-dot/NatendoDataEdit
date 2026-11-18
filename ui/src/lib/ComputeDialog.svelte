@@ -6,6 +6,7 @@
   import { backend, errorText, type ComputePreview, type ComputeSpec } from "./backend";
   import FormShell from "./FormShell.svelte";
   import { columnRef, FUNCTIONS, localDays } from "./m8";
+  import { formulaHelp } from "./cellformula";
 
   interface Props {
     doc: number;
@@ -13,14 +14,17 @@
     /** The column the cursor is in. */
     col: number;
     header: boolean;
+    /** compute: a new column (or over one); change: over the cursor's
+     *  column; filter: show only the rows where it is TRUE. */
+    mode?: "compute" | "change" | "filter";
     onRun: (spec: ComputeSpec) => void;
     onClose: () => void;
   }
-  let { doc, titles, col, header, onRun, onClose }: Props = $props();
+  let { doc, titles, col, header, mode = "compute", onRun, onClose }: Props = $props();
 
-  let expr = $state("");
+  let expr = $state(untrack(() => (mode === "change" ? columnRef(titles[col] ?? "", col) : "")));
   let title = $state("");
-  let place = $state<"end" | "after" | "over">("end");
+  let place = $state<"end" | "after" | "over">(untrack(() => (mode === "change" ? "over" : "end")));
   let target = $state(untrack(() => col));
   let preview = $state<ComputePreview | null>(null);
   let problem = $state("");
@@ -88,14 +92,58 @@
     if (!expr.trim() || problem) return;
     onRun(spec());
   }
-  const hint = $derived(FUNCTIONS.find((f) => f.name === fn)?.hint ?? "");
+
+  // The formula helper: what fits the word being typed, and how the
+  // function around the cursor is used.
+  let caret = $state(0);
+  let picked = $state(0);
+  const help = $derived(formulaHelp(expr, caret, FUNCTIONS, titles));
+  function noteCaret(): void {
+    caret = box?.selectionStart ?? expr.length;
+    picked = 0;
+  }
+  function accept(i: number): void {
+    const s = help.suggest[i];
+    const el = box;
+    if (!s || !el) return;
+    const end = caret;
+    expr = expr.slice(0, help.from) + s.insert + expr.slice(end);
+    const at = help.from + s.insert.length;
+    caret = at;
+    queueMicrotask(() => {
+      el.focus();
+      el.selectionStart = el.selectionEnd = at;
+    });
+  }
+  function helperKey(e: KeyboardEvent): void {
+    if (!help.suggest.length) return;
+    if (e.key === "Tab") {
+      e.preventDefault();
+      accept(picked);
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const n = help.suggest.length;
+      picked = (picked + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+    }
+  }
+  const hint = $derived(help.hint || (FUNCTIONS.find((f) => f.name === fn)?.hint ?? ""));
+  const heading = $derived(mode === "filter" ? "Filter by formula" : mode === "change" ? "Change a column with a formula" : "Computed column");
 </script>
 
-<FormShell title="Computed column" wide {onClose} onEnter={run}>
-  <label class="block">Expression
+<FormShell title={heading} wide {onClose} onEnter={run}>
+  <label class="block">{mode === "filter" ? "Show the rows where this is TRUE" : "Expression"}
     <textarea bind:this={box} bind:value={expr} rows="3" spellcheck="false" class="mono"
-      placeholder={`for example  ${columnRef(titles[0] ?? "", 0)} & " " & UPPER(${columnRef(titles[1] ?? "", 1)})`}></textarea>
+      oninput={noteCaret} onclick={noteCaret} onkeyup={(e) => { if (!["ArrowDown", "ArrowUp", "Tab"].includes(e.key)) noteCaret(); }} onkeydown={helperKey}
+      placeholder={mode === "filter" ? `for example  AND(${columnRef(titles[0] ?? "", 0)} > 100, ISBLANK(${columnRef(titles[1] ?? "", 1)}))` : `for example  ${columnRef(titles[0] ?? "", 0)} & " " & UPPER(${columnRef(titles[1] ?? "", 1)})`}></textarea>
   </label>
+  {#if help.suggest.length}
+    <div class="suggest" role="listbox" aria-label="Suggestions">
+      {#each help.suggest as s, i (s.label)}
+        <button type="button" role="option" aria-selected={i === picked} class:on={i === picked} title={s.hint} onmousedown={(e) => { e.preventDefault(); accept(i); }}>{s.label}</button>
+      {/each}
+      <span class="note">Tab puts in the {picked === 0 ? "first" : "lit"} one</span>
+    </div>
+  {/if}
   <div class="grid2">
     <label class="row">Insert a column
       <select value="" onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v !== "") insert(columnRef(titles[Number(v)] ?? "", Number(v))); (e.currentTarget as HTMLSelectElement).value = ""; }}>
@@ -112,6 +160,7 @@
   </div>
   {#if hint}<p class="note mono">{hint}</p>{/if}
   <p class="note">Columns are written in brackets, like <code>[Price]</code> or <code>[#3]</code> for the third column. Text goes in double quotes. Join text with <code>&amp;</code>; compare with <code>= &lt;&gt; &lt; &gt; &lt;= &gt;=</code>.</p>
+  {#if mode !== "filter"}
   <fieldset>
     <legend>Put the results</legend>
     <label class="row"><input type="radio" bind:group={place} value="end" /> in a new column at the end</label>
@@ -125,6 +174,7 @@
       <label class="row">New column's title <input type="text" bind:value={title} placeholder="Computed" /></label>
     {/if}
   </fieldset>
+  {/if}
   {#if preview}
     <div class="table-preview" aria-label="First results">
       <table>
@@ -135,11 +185,15 @@
         </tbody>
       </table>
     </div>
-    <p class="note">The first {preview.rows.length} rows.{preview.errors ? ` ${preview.errors} came out as errors (like #VALUE!: text where a number is needed).` : ""} Values are saved as text; the expression is not kept in the file.</p>
+    {#if mode === "filter"}
+      <p class="note">The first {preview.rows.length} rows: TRUE rows stay shown.{preview.errors ? ` ${preview.errors} came out as errors and are hidden.` : ""} Data › Clear filter shows every row again.</p>
+    {:else}
+      <p class="note">The first {preview.rows.length} rows.{preview.errors ? ` ${preview.errors} came out as errors (like #VALUE!: text where a number is needed).` : ""} Values are saved as text; the expression is not kept in the file.</p>
+    {/if}
   {/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#snippet buttons()}
-    <button type="button" class="primary" onclick={run} disabled={!expr.trim() || !!problem}>Compute</button>
+    <button type="button" class="primary" onclick={run} disabled={!expr.trim() || !!problem}>{mode === "filter" ? "Filter" : mode === "change" ? "Change" : "Compute"}</button>
     <button type="button" onclick={onClose}>Cancel</button>
   {/snippet}
 </FormShell>
@@ -151,6 +205,20 @@
   td.num {
     color: var(--muted);
     text-align: right;
+  }
+  .suggest {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    margin: 2px 0 6px;
+  }
+  .suggest button {
+    font-family: ui-monospace, Consolas, monospace;
+    padding: 1px 6px;
+  }
+  .suggest button.on {
+    outline: 2px solid var(--accent, #3b82f6);
   }
   td.err {
     color: var(--danger, #c0392b);

@@ -544,6 +544,76 @@ impl Document {
         Ok(parts.into_iter().flatten().collect())
     }
 
+    /// [`Document::par_all_rows`] reading each row's `reader` columns, and
+    /// with `near` the rows above and below too (from `from`; none past the
+    /// ends). Each row is read once: a chunk slides over its rows.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn par_all_rows_near<'a, T: Send>(
+        &'a self,
+        from: u64,
+        reader: &Cols,
+        near: bool,
+        progress: &Progress,
+        f: impl Fn(
+                u64,
+                u32,
+                &[Cow<'a, str>],
+                Option<&[Cow<'a, str>]>,
+                Option<&[Cow<'a, str>]>,
+            ) -> Result<Option<T>, Error>
+            + Sync,
+    ) -> Result<Vec<T>, Error> {
+        let total = self.total_rows();
+        progress.start(total.saturating_sub(from));
+        let chunks = (total.saturating_sub(from) as usize).div_ceil(CHUNK);
+        let parts: Vec<Vec<T>> = (0..chunks)
+            .into_par_iter()
+            .map(|c| -> Result<Vec<T>, Error> {
+                let s = from + (c * CHUNK) as u64;
+                let e = (s + CHUNK as u64).min(total);
+                let mut out = Vec::new();
+                let (mut prev, mut cur, mut next) = (Vec::new(), Vec::new(), Vec::new());
+                let id_of = |p: u64| self.doc_id_at(p).ok_or(Error::OutOfRange);
+                let mut has_prev = false;
+                if near && s > from {
+                    reader.read(self, id_of(s - 1)?, &mut prev);
+                    has_prev = true;
+                }
+                if near && s < e {
+                    reader.read(self, id_of(s)?, &mut cur);
+                }
+                for p in s..e {
+                    let id = id_of(p)?;
+                    let has_next = near && p + 1 < total;
+                    if near {
+                        if has_next {
+                            reader.read(self, id_of(p + 1)?, &mut next);
+                        }
+                    } else {
+                        reader.read(self, id, &mut cur);
+                    }
+                    if let Some(t) = f(
+                        p,
+                        id,
+                        &cur,
+                        has_prev.then_some(prev.as_slice()),
+                        has_next.then_some(next.as_slice()),
+                    )? {
+                        out.push(t);
+                    }
+                    if near {
+                        std::mem::swap(&mut prev, &mut cur);
+                        std::mem::swap(&mut cur, &mut next);
+                        has_prev = true;
+                    }
+                }
+                progress.step(e - s)?;
+                Ok(out)
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(parts.into_iter().flatten().collect())
+    }
+
     /// Like [`Document::par_rows`] over every row in document order (shown
     /// or hidden): for column-layout changes, which affect every row.
     pub(crate) fn par_all_rows<'a, T: Send>(

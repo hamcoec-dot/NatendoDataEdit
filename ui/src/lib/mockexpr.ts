@@ -16,6 +16,23 @@ const FUNCS: Record<string, (a: V[]) => V> = {
     return Math.round(toNum(a[0]!) * f) / f;
   },
   ISBLANK: (a) => a[0] === "",
+  BLANK: () => "",
+  SUM: (a) => a.filter((v) => v !== "").reduce<number>((s, v) => s + toNum(v), 0),
+  AVERAGE: (a) => {
+    const v = a.filter((x) => x !== "");
+    if (!v.length) throw new Error("#DIV/0!");
+    return v.reduce<number>((s, x) => s + toNum(x), 0) / v.length;
+  },
+  MIN: (a) => Math.min(...a.filter((v) => v !== "").map(toNum)),
+  MAX: (a) => Math.max(...a.filter((v) => v !== "").map(toNum)),
+  COUNTA: (a) => a.filter((v) => v !== "").length,
+  PADLEFT: (a) => String(a[0] ?? "").padStart(toNum(a[1] ?? 0), String(a[2] ?? "0")),
+  TEXTBEFORE: (a) => {
+    const s = String(a[0] ?? "");
+    const i = s.indexOf(String(a[1] ?? ""));
+    if (i < 0) throw new Error("#N/A");
+    return s.slice(0, i);
+  },
 };
 
 function toNum(v: V): number {

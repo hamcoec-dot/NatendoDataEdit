@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::recovery::Autosaved;
+use natendo_engine::cellformula::CellFormula;
 use natendo_engine::clean::{CleanPreview, CleanSpec, SplitName};
 use natendo_engine::editing::{
     Arrange, Extract, GroupCalc, MapValues, TallySpec, ValueTally, MAX_PAIRS,
@@ -718,6 +719,10 @@ pub enum DataOp {
     FillRect {
         spec: natendo_engine::shift::RectFill,
     },
+    /// Filter by formula: show only the rows where it is TRUE.
+    FormulaFilter {
+        spec: ComputeSpec,
+    },
     /// Compare two columns: show only the rows where they differ.
     CompareShow {
         spec: natendo_engine::colcompare::CompareCols,
@@ -804,6 +809,17 @@ pub enum FindRowsAction {
     Delete,
     Copy,
     Flag { flag: u8 },
+}
+
+/// What a cell formula did.
+#[derive(Debug, Clone, Serialize)]
+pub struct FormulaReport {
+    pub info: DocInfo,
+    /// Cells written.
+    pub written: u64,
+    /// Cells left as they were because the formula gave an error there.
+    pub errors: u64,
+    pub first_error: Option<String>,
 }
 
 /// What acting on Find all's rows did.
@@ -917,6 +933,9 @@ fn recipe_step(op: &DataOp) -> Logged {
             return Logged::LeftOut(
                 "showing rows where two columns differ (a view, not a change)".into(),
             )
+        }
+        DataOp::FormulaFilter { .. } => {
+            return Logged::LeftOut("filtering by a formula (a view, not a change)".into())
         }
         DataOp::CompareColumn { spec } => RecipeOp::CompareColumn { spec: spec.clone() },
         DataOp::Join { .. } => return Logged::LeftOut("a join with another tab or a list".into()),
@@ -3946,6 +3965,7 @@ impl Docs {
             // Showing rows changes no data, so a locked file allows it.
             DataOp::ShowProblems { .. } => "Filtering",
             DataOp::CompareShow { .. } | DataOp::CompareColumn { .. } => "Comparing",
+            DataOp::FormulaFilter { .. } => "Filtering",
             DataOp::SortProblems { .. } | DataOp::CheckColumn { .. } => "Checking",
             DataOp::FillBlanks { .. } => "Filling blanks",
             DataOp::CountRepeats { .. } | DataOp::BlankRepeats { .. } => "Looking for repeats",
@@ -4003,7 +4023,9 @@ impl Docs {
         // LOOKUP tables of a computed column, copied out the same way.
         let mut read_tabs: Vec<u32> = Vec::new();
         let tables = match &op {
-            DataOp::Compute { spec } => self.lookup_tables_from(id, spec, Some(&mut read_tabs))?,
+            DataOp::Compute { spec } | DataOp::FormulaFilter { spec } => {
+                self.lookup_tables_from(id, spec, Some(&mut read_tabs))?
+            }
             _ => Lookups::default(),
         };
         // Columns brought in from a private tab make this tab private too
@@ -4085,6 +4107,13 @@ impl Docs {
                     let (plan, rep) = d.plan_compute(&spec, p)?;
                     errors.set(rep.errors);
                     Planned::Cols(plan)
+                }
+                DataOp::FormulaFilter { spec } => {
+                    let mut spec = spec.clone();
+                    spec.tables = tables.clone();
+                    let (plan, n) = d.plan_formula_filter(&spec, p)?;
+                    errors.set(n);
+                    Planned::Rows(plan)
                 }
                 DataOp::ShowProblems { spec, passing } => {
                     let rep = d.run_checks(spec, p)?;
@@ -4404,6 +4433,58 @@ impl Docs {
         let job = entry.start("Counting values")?;
         let d = entry.read();
         Ok(d.value_tally(spec, &job.progress)?)
+    }
+
+    /// Run a formula typed in a cell (or filled over a block with
+    /// Ctrl+Enter): its results are written as one undo step and the formula
+    /// is remembered beside them.
+    pub fn cell_formula(&self, id: u32, spec: &CellFormula) -> CmdResult<FormulaReport> {
+        let mut spec = spec.clone();
+        let expr = {
+            let entry = self.get(id)?;
+            let d = entry.read();
+            d.cell_formula_expr(&spec)
+        };
+        if let Ok(expr) = expr {
+            let probe = ComputeSpec {
+                expr,
+                keep_first: spec.keep_first,
+                ..Default::default()
+            };
+            spec.tables = self.lookup_tables(id, &probe)?;
+        }
+        let res = {
+            let entry = self.get(id)?;
+            let d = entry.read();
+            d.run_cell_formula(&spec)?
+        };
+        let (written, errors, first_error) =
+            (res.cells.len() as u64, res.errors, res.first_error.clone());
+        let info = if res.cells.is_empty() {
+            self.info(id)?
+        } else {
+            check_write(res.cells.len() as u64, res.cells.iter().map(|c| c.2.len()))?;
+            let info = self.edit(id, |d| {
+                let plan = d.formula_plan(&res)?;
+                d.apply_cells(plan)
+            })?;
+            let entry = self.get(id)?;
+            entry.write().remember_formulas(&res);
+            info
+        };
+        Ok(FormulaReport {
+            info,
+            written,
+            errors,
+            first_error,
+        })
+    }
+
+    /// The formula a cell's value came from (while the value is unchanged).
+    pub fn cell_formula_of(&self, id: u32, row: u64, col: u32) -> CmdResult<Option<String>> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.cell_formula(row, col))
     }
 
     /// The first results of a computed column.

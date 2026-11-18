@@ -311,7 +311,7 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-fn days_in_month(y: i64, m: u32) -> u32 {
+pub(crate) fn days_in_month(y: i64, m: u32) -> u32 {
     match m {
         2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
         2 => 28,

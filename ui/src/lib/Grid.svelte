@@ -16,6 +16,8 @@
   import { barSpan, completion, scaleColour, scalePos, valueType } from "./m10";
   import { colLetters } from "./goto";
   import { invisibleRuns } from "./invisible";
+  import { formulaHelp } from "./cellformula";
+  import { FUNCTIONS } from "./m8";
   /** Odd spaces with View › Show invisible characters on. */
   const ODD_COLOR = "#f76b15";
   /** Mark value for a data-check problem (drawn red). */
@@ -2103,6 +2105,8 @@
           return;
         }
         value = t.text;
+        // A value that came from a formula opens as its formula.
+        if (tab.hasFormulas) value = (await backend().cellFormulaOf(tab.id, c.row, c.col).catch(() => null)) ?? value;
       } catch (e) {
         onMessage(errorText(e));
         return;
@@ -2271,10 +2275,30 @@
   /** Type-ahead requests: only the newest one's answer is used. */
   let suggestAsked = 0;
 
+  // The formula helper while a cell formula is typed (=…).
+  let fxCaret = $state(0);
+  const fx = $derived(editing && editing.value.startsWith("=") ? formulaHelp(editing.value, fxCaret, FUNCTIONS) : null);
+  function noteFxCaret(): void {
+    fxCaret = editor?.selectionStart ?? 0;
+  }
+  function acceptFx(): boolean {
+    const s = fx?.suggest[0];
+    if (!s || !editing || !editor) return false;
+    const v = editing.value;
+    const nv = v.slice(0, fx!.from) + s.insert + v.slice(fxCaret);
+    const at = fx!.from + s.insert.length;
+    editor.value = nv;
+    editing.value = nv;
+    editor.selectionStart = editor.selectionEnd = at;
+    fxCaret = at;
+    return true;
+  }
+
   function onEditorInput(e: Event): void {
     if (!editing) return;
     const ta = e.currentTarget as HTMLTextAreaElement;
     editing.value = ta.value;
+    fxCaret = ta.selectionStart ?? ta.value.length;
     pickTyped = true;
     pickHidden = false;
     pickIndex = -1;
@@ -2309,6 +2333,11 @@
 
   async function onEditorKey(e: KeyboardEvent): Promise<void> {
     e.stopPropagation();
+    // Tab puts in the formula helper's first suggestion.
+    if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && fx?.suggest.length && acceptFx()) {
+      e.preventDefault();
+      return;
+    }
     if (picks && picks.length && !e.ctrlKey) {
       if (e.key === "ArrowDown" && !e.altKey) {
         e.preventDefault();
@@ -2520,10 +2549,23 @@
       value={editing.value}
       oninput={onEditorInput}
       onkeydown={onEditorKey}
+      onkeyup={noteFxCaret}
+      onclick={noteFxCaret}
       onblur={() => void commitEdit()}
       aria-label="Cell editor"
       aria-autocomplete={picks ? "list" : undefined}
     ></textarea>
+    {#if fx && (fx.hint || fx.suggest.length)}
+      <div
+        class="fxhelp"
+        role="status"
+        style:left="{editing.x}px"
+        style:top="{Math.max(0, editing.y - rowH - 2)}px"
+      >
+        {#if fx.suggest.length}<span class="fxs">{fx.suggest.map((s) => s.label).join("  ")}</span> <span class="fxk">Tab</span>{/if}
+        {#if fx.hint}<span class="fxh">{fx.hint}</span>{/if}
+      </div>
+    {/if}
     {#if picks}
       <div
         class="picks"
@@ -2615,6 +2657,28 @@
     border: 0;
     resize: none;
     pointer-events: none;
+  }
+  .fxhelp {
+    position: absolute;
+    z-index: 4;
+    max-width: 70vw;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font: 12px ui-monospace, Consolas, monospace;
+    pointer-events: none;
+  }
+  .fxhelp .fxk {
+    color: var(--muted);
+  }
+  .fxhelp .fxh {
+    margin-left: 8px;
+    color: var(--muted);
   }
   .picks {
     position: absolute;

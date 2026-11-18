@@ -15,6 +15,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod cellformula;
 pub mod changes;
 pub mod clean;
 pub mod colcompare;

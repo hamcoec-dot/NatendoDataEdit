@@ -279,6 +279,8 @@ impl Compiled {
                 row,
                 now: spec.now,
                 read,
+                prev: None,
+                next: None,
             };
             return e.holds(&ctx);
         }

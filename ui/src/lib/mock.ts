@@ -47,9 +47,11 @@ import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, Spli
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
+import type { CellFormula, FormulaReport } from "./backend";
 import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
 import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
 import { mockEval } from "./mockexpr";
+import { rewriteA1 } from "./cellformula";
 import { previewOf, simulateJoin } from "./joins";
 
 const FIRST = ["Ada", "Bo", "Cy", "Dee", "Eli", "Fay", "Gus", "Hal", "Ivy", "Jo"];
@@ -2042,6 +2044,26 @@ export class MockBackend implements Backend {
         const info = await this.setCells(doc, cells);
         return this.report(info, { cols: 1, cells: cells.length, groups: groups.size });
       }
+      case "formula_filter": {
+        const s = op.spec;
+        const cols = Array.from({ length: this.colCount(d) }, (_, i) => i);
+        const names = cols.map((c) => (s.keep_first ? this.value(d, 0, c) : "") || `Column ${c + 1}`);
+        const keep = new Set<number>();
+        let errors = 0;
+        for (let r = s.keep_first ? 1 : 0; r < this.rowCount(d); r++) {
+          let v: string;
+          try {
+            v = mockEval(s.expr, names, cols.map((c) => this.value(d, r, c)));
+          } catch (e) {
+            throw err("invalid", e instanceof Error ? e.message : String(e));
+          }
+          if (v.startsWith("#")) errors++;
+          if (v === "TRUE") keep.add(this.rowId(d, r));
+        }
+        const rows = keep.size;
+        if (s.keep_first && this.rowCount(d) > 0) keep.add(this.rowId(d, 0));
+        return this.report(this.setView(d, keep, { columns: [], keep_first: s.keep_first }), { rows, errors });
+      }
       case "compare_show": {
         const rep = await this.compareCols(doc, op.spec);
         const keep = new Set(rep.rows.map((r) => this.rowId(d, r)));
@@ -3135,6 +3157,48 @@ export class MockBackend implements Backend {
   private table(d: MockDoc): string[][] {
     const cols = this.colCount(d);
     return Array.from({ length: Math.min(this.rowCount(d), 5000) }, (_, r) => Array.from({ length: cols }, (_, c) => this.value(d, r, c)));
+  }
+
+  private formulas = new Map<string, [string, string]>();
+  async cellFormula(doc: number, spec: CellFormula): Promise<FormulaReport> {
+    const d = this.get(doc);
+    const ncols = this.colCount(d);
+    const nrows = this.rowCount(d);
+    const cols = Array.from({ length: ncols }, (_, i) => i);
+    const names = cols.map((c) => (spec.keep_first ? this.value(d, 0, c) : "") || `Column ${c + 1}`);
+    const src = spec.formula.replace(/^\s*=/, "");
+    const targets = spec.targets.length ? spec.targets : [[spec.row, spec.col] as [number, number]];
+    if (targets.length > 100_000) throw err("invalid", "a formula fills at most 100000 cells at once; for a whole column use Data › Computed column");
+    const at = (r: number, c: number) => this.value(d, r, c);
+    const probe = rewriteA1(src, [spec.row, spec.col], [spec.row, spec.col], [nrows, ncols], at);
+    if (!probe) throw err("invalid", "a cell reference in the formula is outside the table");
+    try {
+      mockEval(probe.run, names, cols.map((c) => at(spec.row, c)));
+    } catch (e) {
+      throw err("invalid", e instanceof Error ? e.message : String(e));
+    }
+    const cells: [number, number, string][] = [];
+    const kept: string[] = [];
+    let errors = 0;
+    let first: string | null = null;
+    for (const [r, c] of targets) {
+      const w = rewriteA1(src, [spec.row, spec.col], [r, c], [nrows, ncols], at);
+      const v = w ? mockEval(w.run, names, cols.map((k) => at(r, k))) : "#REF!";
+      if (v.startsWith("#")) {
+        errors++;
+        first ??= v;
+        continue;
+      }
+      cells.push([r, c, v]);
+      kept.push(`=${w!.keep}`);
+    }
+    const info = cells.length ? this.writeCells(doc, cells) : this.refresh(d);
+    cells.forEach(([r, c, v], i) => this.formulas.set(`${doc}:${r}:${c}`, [kept[i]!, v]));
+    return { info, written: cells.length, errors, first_error: first };
+  }
+  async cellFormulaOf(doc: number, row: number, col: number): Promise<string | null> {
+    const f = this.formulas.get(`${doc}:${row}:${col}`);
+    return f && this.value(this.get(doc), row, col) === f[1] ? f[0] : null;
   }
 
   async computePreview(doc: number, spec: ComputeSpec): Promise<ComputePreview> {

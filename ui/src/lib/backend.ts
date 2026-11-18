@@ -664,6 +664,7 @@ export type DataOp =
   | { op: "fill_rect"; spec: { row: number; rows: number; col: number; cols: number; value: string; skip_cols?: number[] } }
   | { op: "fill_special"; spec: SpecialSpec; value: string }
   | { op: "compare_show"; spec: CompareCols }
+  | { op: "formula_filter"; spec: ComputeSpec }
   | { op: "compare_column"; spec: CompareCols }
   | { op: "shift_cells"; spec: { row: number; rows: number; col: number; cols: number; shift: "up" | "left" | "down" | "right" } };
 
@@ -679,6 +680,25 @@ export interface ComputeSpec {
   read: ReadOptions;
   /** Local date and time as days since 1970 (TODAY, NOW). */
   now: number;
+}
+/** A formula typed in a cell (or filled over a block with Ctrl+Enter). */
+export interface CellFormula {
+  formula: string;
+  /** The cell it was typed in: shown row, column. */
+  row: number;
+  col: number;
+  /** Every cell it fills (shown row, column); empty: just that one. */
+  targets: [number, number][];
+  keep_first: boolean;
+  read: ReadOptions;
+  now: number;
+}
+export interface FormulaReport {
+  info: DocInfo;
+  written: number;
+  /** Cells left as they were: the formula gave an error there. */
+  errors: number;
+  first_error: string | null;
 }
 export interface ComputePreview {
   /** Row number (from 1) and result. */
@@ -1147,6 +1167,10 @@ export interface Backend {
   quitApp(): Promise<void>;
   onCloseRequested(handler: () => void): void;
   computePreview(doc: number, spec: ComputeSpec): Promise<ComputePreview>;
+  /** Run a formula typed in a cell; its results are one undo step. */
+  cellFormula(doc: number, spec: CellFormula): Promise<FormulaReport>;
+  /** The formula a cell's value came from (while the value is unchanged). */
+  cellFormulaOf(doc: number, row: number, col: number): Promise<string | null>;
   /** Each distinct value of a column with its count (a job). */
   valueTally(doc: number, spec: TallySpec): Promise<ValueTally>;
   /** The first rows after a join, with counts for the whole table (a job). */
@@ -1627,6 +1651,12 @@ class TauriBackend implements Backend {
   }
   onCloseRequested(handler: () => void) {
     void import("@tauri-apps/api/event").then(({ listen }) => listen("close-requested", handler));
+  }
+  cellFormula(doc: number, spec: CellFormula) {
+    return call<FormulaReport>("cell_formula", { doc, spec });
+  }
+  cellFormulaOf(doc: number, row: number, col: number) {
+    return call<string | null>("cell_formula_of", { doc, row, col });
   }
   computePreview(doc: number, spec: ComputeSpec) {
     return call<ComputePreview>("compute_preview", { doc, spec });

@@ -138,6 +138,9 @@ export class Tab {
   /** Cells Go To Special lit up ("row:col", shown rows); gone with the
    *  next change or change of shown rows. */
   picked = new Set<string>();
+  /** A formula has been typed in a cell here, so F2 and the cell bar ask
+   *  whether a cell's value came from one. */
+  hasFormulas = false;
   /** Those cells on screen ("row:col"). */
   edits = new Set<string>();
   /** Bumped when the checks change. */

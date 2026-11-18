@@ -47,6 +47,7 @@
   import TidyTitlesDialog from "./lib/TidyTitlesDialog.svelte";
   import CompareColsDialog, { type CompareAction } from "./lib/CompareColsDialog.svelte";
   import type { CompareCols } from "./lib/backend";
+  import { typedCell } from "./lib/cellformula";
   import type { TitleSpec } from "./lib/backend";
   import type { ZipList } from "./lib/backend";
   import type { SpecialKind, SpecialSpec } from "./lib/backend";
@@ -195,6 +196,8 @@
   let recentOpen = $state(false);
   let panelTab = $state<PanelTab>(prefs.data.panel ?? "summary");
   let computeOpen = $state(false);
+  /** What the expression screen is for while open. */
+  let computeMode = $state<"compute" | "change" | "filter">("compute");
   let checksOpen = $state(false);
   let fieldCheckOpen = $state(false);
   let matchOpen = $state(false);
@@ -1391,6 +1394,12 @@
   async function commitCell(row: number, col: number, value: string, fill: boolean, what = "filling cells"): Promise<boolean> {
     const t = tab;
     if (!t) return false;
+    // Typed (not pasted): "=…" is a formula, "'=…" text.
+    if (what !== "pasting") {
+      const typed = typedCell(value);
+      if ("formula" in typed) return runCellFormula(t, row, col, typed.formula, fill);
+      value = typed.text;
+    }
     if (fill) {
       const r = t.rect;
       // A big block is one engine job (with progress and Cancel).
@@ -1413,6 +1422,62 @@
     const no = shownRowNo(t, row);
     t.whatNext = no === null ? "typing in a cell" : `typing in R${no} C${col + 1}`;
     return apply((x) => backend().setCells(x.id, [[row, col, value]]));
+  }
+
+  /** A formula typed in a cell (=B2*2, =SUM(C2:C9), =[Price]*[Qty]): it
+   *  runs once and the cell keeps the result. With Ctrl+Enter it fills
+   *  every selected cell, references moving with each one. */
+  async function runCellFormula(t: Tab, row: number, col: number, formula: string, fill: boolean): Promise<boolean> {
+    let targets: [number, number][] = [];
+    if (fill) {
+      const r = t.rect;
+      if (cellCount(r) > MAX_CELLS_PER_CHANGE) {
+        say(`A formula fills at most ${MAX_CELLS_PER_CHANGE.toLocaleString()} cells at once. For a whole column use Data › Computed column.`);
+        return false;
+      }
+      const skip = new Set([...hiddenColsOf(t), ...(t.info.protected ?? [])]);
+      for (let y = r.row; y < r.row + r.rows; y++)
+        for (let x = r.col; x < r.col + r.cols; x++) if (!skip.has(x)) targets.push([y, x]);
+      if (!targets.length) {
+        say("Nothing to fill: the selected columns are hidden or protected.");
+        return true;
+      }
+    } else if (t.info.protected?.includes(col)) {
+      say(`“${columnTitle(t, col)}” is protected, so nothing in it changes. Right-click its heading › Protect column to switch it off.`);
+      return true;
+    }
+    t.whatNext = fill ? "filling a formula" : "a formula";
+    let errors = 0;
+    let firstError: string | null = null;
+    let written = 0;
+    try {
+      const rep = await backend().cellFormula(t.id, {
+        formula,
+        row,
+        col,
+        targets,
+        keep_first: t.header,
+        read: { decimal_comma: false, date_order: "mdy" },
+        now: localDays(),
+      });
+      ({ errors, written } = rep);
+      firstError = rep.first_error;
+      if (written) {
+        t.hasFormulas = true;
+        t.update(rep.info, true);
+        noteProtected(rep.info);
+      }
+    } catch (e) {
+      say(`That formula doesn't work: ${errorText(e)}. To keep it as text, start it with an apostrophe ('=…).`);
+      return false;
+    }
+    if (errors && !written) {
+      say(`The formula gives ${firstError ?? "an error"}${targets.length > 1 ? " in every cell" : ""}, so nothing changed.`);
+      return targets.length > 1;
+    }
+    if (errors) say(`Filled ${plural(written, "cell")}; ${plural(errors, "cell")} gave ${firstError ?? "an error"} and kept ${errors === 1 ? "its" : "their"} value. Undo (Ctrl+Z) takes it back.`);
+    else if (targets.length > 1) say(`Filled ${plural(written, "cell")} with the formula. Undo (Ctrl+Z) takes it back.`);
+    return true;
   }
 
   /** Clear a block of cells (the fill handle dragged back over it). */
@@ -4171,6 +4236,18 @@
     // headings show it).
     const shownNo = t.info.filtered ? t.cache.rowNumber(f.row) : f.row;
     gotoText = `R${(shownNo ?? f.row) + 1} C${f.col + 1}`;
+    // A value that came from a formula shows its formula.
+    let fxShown = false;
+    if (t.hasFormulas)
+      void backend()
+        .cellFormulaOf(t.id, f.row, f.col)
+        .then((fx) => {
+          if (fx !== null && cellBarFor === key && !cellBarDirty) {
+            cellBarText = fx;
+            fxShown = true;
+          }
+        })
+        .catch(() => {});
     const cached = t.cache.get(f.row, f.col);
     if (cached !== undefined && !t.cache.isTruncated(f.row, f.col)) {
       cellBarText = cached;
@@ -4180,7 +4257,7 @@
     backend()
       .cellText(t.id, f.row, f.col)
       .then((v) => {
-        if (cellBarFor !== key || cellBarDirty) return;
+        if (cellBarFor !== key || cellBarDirty || fxShown) return;
         cellBarText = v.text;
         cellBarTruncated = v.truncated;
       })
@@ -4275,7 +4352,9 @@
     { id: "tools.searchFolder", label: "Search a &folder of files…", keys: ["Ctrl+Shift+F"], run: () => { folderSearchOpen = true; } },
     { id: "view.showEdits", label: "Show my &edits", run: () => setShowEdits(!tab?.showEdits), enabled: hasTab, checked: () => !!tab?.showEdits },
     { id: "file.options", label: "Op&tions…", run: () => { optionsOpen = true; } },
-    { id: "data.compute", label: "Compu&ted column…", run: () => { computeOpen = true; }, enabled: ready },
+    { id: "data.compute", label: "Compu&ted column…", run: () => { computeMode = "compute"; computeOpen = true; }, enabled: ready },
+    { id: "data.changeFormula", label: "Change column with a formula…", run: () => { computeMode = "change"; computeOpen = true; }, enabled: ready },
+    { id: "data.filterFormula", label: "Filter by formula…", run: () => { computeMode = "filter"; computeOpen = true; }, enabled: ready },
     { id: "data.checks", label: "Data checks (&validation)…", run: () => { checksOpen = true; }, enabled: ready },
     { id: "data.fieldCheck", label: "Check &fields with patterns…", run: () => { fieldCheckOpen = true; }, enabled: ready },
     { id: "data.unmarkChecks", label: "Hide problem marks", run: () => { if (tab) keepChecks(tab.checks, false); }, enabled: () => !!tab?.checksMarked },
@@ -4616,11 +4695,11 @@
       label: "&Data",
       items: [
         "data.sortAsc", "data.sortDesc", "data.sort", "data.sortColsAsc", "data.sortColsDesc", "data.shuffle", "-",
-        "data.filter", "data.filterMenu", "data.filterBySel", "data.clearFilter", "data.reapply", "-",
+        "data.filter", "data.filterMenu", "data.filterBySel", "data.filterFormula", "data.clearFilter", "data.reapply", "-",
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.unpivot", "data.subtotals", "data.form", "-",
-        "data.compute", "data.checks", "data.fieldCheck", "data.unmarkChecks", "data.clearChecks", "-",
+        "data.compute", "data.changeFormula", "data.checks", "data.fieldCheck", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "-",
         "data.values", "data.group", "data.arrange", "data.extract", "data.build", "-",
@@ -4658,7 +4737,7 @@
     tab: ["file.save", "file.saveAs", "-", "file.rename", "file.copyPath", "file.showFolder", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
-    col: ["format.renameCol", "format.tidyTitles", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showAllCols"],
   };
 
@@ -5017,6 +5096,14 @@
   async function runCompute(spec: ComputeSpec): Promise<void> {
     computeOpen = false;
     const t = tab;
+    if (computeMode === "filter") {
+      const rep = await runOp({ op: "formula_filter", spec }, "Filtering");
+      if (!rep || !t) return;
+      const errs = rep.errors ? ` ${plural(rep.errors, "row")} gave an error and ${rep.errors === 1 ? "is" : "are"} hidden.` : "";
+      say(rep.rows ? `Showing ${plural(rep.rows, "row")} where the formula is TRUE.${errs} Data › Clear filter shows every row.` : `The formula is TRUE in no shown row, so nothing is shown but the titles.${errs} Data › Clear filter or Ctrl+Z brings them back.`);
+      void tick().then(() => grid?.focus());
+      return;
+    }
     const rep = await runOp({ op: "compute", spec }, "Computing");
     if (!rep || !t) return;
     if (spec.target === null && spec.at !== null) t.columns.shift(spec.at, 1);
@@ -6144,6 +6231,7 @@
     titles={shownTitles(tab)}
     col={tab.cell.col}
     header={tab.header}
+    mode={computeMode}
     onRun={(s) => void runCompute(s)}
     onClose={() => { computeOpen = false; grid?.focus(); }}
   />
