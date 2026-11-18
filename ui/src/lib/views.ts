@@ -78,6 +78,8 @@ export interface ViewColumn {
   clip?: boolean;
   /** Display format (view only). */
   format?: DisplayFormat | null;
+  /** Protected from changes (older views have none). */
+  protect?: boolean;
 }
 export interface View {
   version: number;

@@ -171,6 +171,17 @@ impl Document {
     ) -> Result<CellPlan, Error> {
         check_block(self, spec.row, spec.rows, spec.col, spec.cols)?;
         self.ready_for_bulk()?;
+        // Shifting moves values between cells of the columns it touches:
+        // never through a protected column.
+        let touched = match spec.shift {
+            Shift::Up | Shift::Down => spec.col..spec.col + spec.cols,
+            Shift::Left | Shift::Right => spec.col..self.col_count().max(spec.col + spec.cols),
+        };
+        if touched.clone().any(|c| self.is_protected(c)) {
+            return Err(Error::Invalid(
+                "cells can't be shifted through a protected column (right-click its heading › Protect column to switch it off)".into(),
+            ));
+        }
         if self.is_filtered() {
             return Err(Error::Invalid(
                 "cells can't be shifted while a filter is on or rows are hidden; show every row first"

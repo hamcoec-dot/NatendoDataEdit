@@ -212,7 +212,24 @@
   const tab = $derived<Tab | undefined>(tabs[active]);
 
   // ---- helpers ------------------------------------------------------------------
+  /** Cells the last change left alone in protected columns, said with the
+   *  change's own message (or on its own, just after). */
+  let protectNote = 0;
+  function noteProtected(info: DocInfo): void {
+    const n = info.protected_skipped ?? 0;
+    if (!n) return;
+    protectNote = n;
+    setTimeout(() => {
+      if (protectNote) say("");
+    }, 0);
+  }
+
   function say(text: string): void {
+    if (protectNote) {
+      const n = protectNote;
+      protectNote = 0;
+      text = `${text ? `${text} ` : ""}${n.toLocaleString()} ${n === 1 ? "cell" : "cells"} in protected columns ${n === 1 ? "was" : "were"} left as ${n === 1 ? "it was" : "they were"}.`;
+    }
     message = text;
     if (text) {
       activity = [{ time: new Date().toLocaleTimeString(), text }, ...activity].slice(0, 200);
@@ -236,7 +253,9 @@
     const t = tab;
     if (!t) return false;
     try {
-      t.update(await f(t), dataChanged);
+      const info = await f(t);
+      t.update(info, dataChanged);
+      noteProtected(info);
       // Any other change after undoing an added header row ends its redo,
       // so redo can no longer switch the header back on.
       if (t.headerOffByUndo && !undoBusy.has(t)) {
@@ -638,6 +657,7 @@
         align: t.columns.aligns.get(c),
         clip: t.columns.clips.has(c) || undefined,
         format: t.columns.formats.get(c) ?? null,
+        protect: (t.info.protected ?? []).includes(c) || undefined,
       })),
       banded: t.banded,
       row_lines: t.rowLines,
@@ -780,6 +800,18 @@
       if (f) t.columns.formats.set(c, f);
       else t.columns.formats.delete(c);
     });
+    // Protected columns: as the view has them (by title).
+    const prot = v.columns.flatMap((vc, k) => {
+      const c = map[k];
+      return vc.protect === true && c !== null && c !== undefined ? [c] : [];
+    });
+    if (prot.length || (t.info.protected ?? []).length) {
+      try {
+        t.update(await backend().setProtected(t.id, prot), false);
+      } catch {
+        // Kept as it was.
+      }
+    }
     t.banded = v.banded === true;
     t.rowLines = Math.min(MAX_ROW_LINES, Math.max(1, Math.round(v.row_lines ?? 1) || 1));
     t.frozenRows = Math.min(v.freeze_rows, Math.max(0, t.info.rows - 1));
@@ -1335,6 +1367,13 @@
       tabs[i] = nt;
       active = i;
       if (fresh) void tick().then(() => guessHeader(nt));
+      // The same columns: they stay protected.
+      else if (t.info.protected?.length) {
+        void backend()
+          .setProtected(d.id, t.info.protected)
+          .then((x) => nt.update(x, false))
+          .catch(() => {});
+      }
     } catch (e) {
       say(errorText(e));
     }
@@ -1750,7 +1789,10 @@
       t.wideNext = true;
       const rep = await runJob(label, () => backend().dataOp(t.id, op));
       if (!rep) return null;
-      if (rep.info) t.update(rep.info, true);
+      if (rep.info) {
+        t.update(rep.info, true);
+        noteProtected(rep.info);
+      }
       return rep;
     } catch (e) {
       say(errorText(e));
@@ -2308,6 +2350,34 @@
     else shiftAsk = { insert: false };
   }
   let shiftAsk = $state<{ insert: boolean } | null>(null);
+
+  // ---- protected columns ----
+  /** The columns Protect acts on: the right-clicked heading, or the
+   *  selection's columns. */
+  function protectTargets(t: Tab): number[] {
+    const r = t.rect;
+    if (contextCol !== null && (contextCol < r.col || contextCol >= r.col + r.cols)) return [contextCol];
+    return Array.from({ length: Math.min(r.cols, t.info.cols) }, (_, i) => r.col + i);
+  }
+
+  async function toggleProtect(): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const cols = protectTargets(t);
+    const on = new Set(t.info.protected ?? []);
+    const all = cols.every((c) => on.has(c));
+    for (const c of cols) {
+      if (all) on.delete(c);
+      else on.add(c);
+    }
+    try {
+      t.update(await backend().setProtected(t.id, [...on].sort((a, b) => a - b)), false);
+      const names = cols.slice(0, 3).map((c) => `“${columnTitle(t, c)}”`).join(", ") + (cols.length > 3 ? ` and ${cols.length - 3} more` : "");
+      say(all ? `${names} can be changed again.` : `${names} ${cols.length === 1 ? "is" : "are"} protected: typing, paste, fill, Replace and cleaning tools pass ${cols.length === 1 ? "it" : "them"} over. Sorting and filtering still work.`);
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
 
   // ---- Go To Special ----
   let specialAsk = $state(false);
@@ -4208,6 +4278,18 @@
 
     { id: "format.autofit", label: "&AutoFit column width", run: () => { const r = tab!.rect; void grid?.fitCols(r.col, r.cols); }, enabled: hasTab },
     { id: "format.hideCols", label: "&Hide columns", keys: ["Ctrl+0"], run: hideCols, enabled: hasTab },
+    {
+      id: "format.protectCols",
+      label: "&Protect column (no changes)",
+      run: () => void toggleProtect(),
+      enabled: ready,
+      checked: () => {
+        const t = tab;
+        if (!t) return false;
+        const on = new Set(t.info.protected ?? []);
+        return protectTargets(t).every((c) => on.has(c));
+      },
+    },
     { id: "format.showCols", label: "&Unhide columns", keys: ["Ctrl+Shift+0", "Ctrl+Shift+)"], run: () => unhideCols(), enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
     { id: "format.colWidth", label: "Set column &width…", run: () => askColWidth(), enabled: hasTab },
     { id: "format.showAllCols", label: "Unhide all columns", run: () => { tab!.columns.showAll(); tab!.bump(); }, enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
@@ -4404,7 +4486,7 @@
       ],
     },
     { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.symbol"] },
-    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
+    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
     {
       label: "&Data",
       items: [
@@ -4451,7 +4533,7 @@
     tab: ["file.save", "file.saveAs", "-", "file.rename", "file.copyPath", "file.showFolder", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
-    col: ["format.renameCol", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "-", "view.panelSummary", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showAllCols"],
   };
 

@@ -311,6 +311,7 @@
 
     // Column headers.
     const lastHidden = lastBeforeHidden();
+    const locked = new Set(tab.info.protected ?? []);
     ctx.font = headerFont;
     ctx.fillStyle = colors.header;
     ctx.fillRect(0, 0, w, headH);
@@ -366,6 +367,11 @@
         ctx.rect(x + 4, 0, cw - 8 - room - arrowW - (trailing ? MARK_W + 4 : 0), headH);
         ctx.clip();
         let tx = x + 6 + (mark ? MARK_W : 0);
+        if (locked.has(c)) {
+          // A protected column: a small padlock before the title.
+          drawLock(ctx, tx, headH / 2);
+          tx += 13;
+        }
         if (prefs.data.colLetters) {
           // The column's letters first, in a quieter colour (View › Column letters).
           const letters = colLetters(c);
@@ -947,6 +953,19 @@
       ctx.strokeRect(bx, by, size, size);
     }
     ctx.lineWidth = 1;
+  }
+
+  /** A small padlock (protected column), its left edge at `x`, centred on `cy`. */
+  function drawLock(ctx: CanvasRenderingContext2D, x: number, cy: number): void {
+    ctx.save();
+    ctx.strokeStyle = colors.accent;
+    ctx.fillStyle = colors.accent;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x + 4.5, cy - 1.5, 3, Math.PI, 0);
+    ctx.stroke();
+    ctx.fillRect(x, cy - 1.5, 9, 6.5);
+    ctx.restore();
   }
 
   function drawCells(

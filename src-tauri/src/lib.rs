@@ -373,6 +373,13 @@ async fn open_recent(
     .await
 }
 
+/// Protect columns from changes (and no others).
+#[tauri::command]
+async fn set_protected(docs: DocsState<'_>, doc: u32, cols: Vec<u32>) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.set_protected(doc, cols)).await
+}
+
 /// Open tables picked from a zip file (each read-only to the zip: a tab
 /// with no file, so Save asks where to save it).
 #[tauri::command]
@@ -3221,6 +3228,7 @@ pub fn run() {
             export_preview,
             recent_files,
             zip_open,
+            set_protected,
             session_save,
             session_list,
             session_open,

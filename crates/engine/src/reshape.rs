@@ -826,6 +826,7 @@ impl Document {
             changes.push((id, out));
         }
         let mut states = self.patch_states(changes)?;
+        self.only_protected(states.is_empty() && plan.remove.is_empty() && plan.after.is_empty())?;
         let base = self.next_row_id() as usize;
         let mut gone = vec![0u64; base.div_ceil(64)];
         for &id in &plan.remove {

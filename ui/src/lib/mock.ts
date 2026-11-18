@@ -79,6 +79,8 @@ function generated(row: number, col: number): string {
 
 interface MockDoc {
   info: DocInfo;
+  /** Protected columns (physical), passed over by every change. */
+  protectedPhys?: Set<number>;
   /** Row order: original row numbers (>= 0) or inserted rows (< 0). */
   order: number[] | null;
   baseRows: number;
@@ -824,9 +826,17 @@ export class MockBackend implements Backend {
     return this.writeCells(doc, cells);
   }
 
-  /** Set cells as one undo step, any number (the engine's jobs). */
-  private writeCells(doc: number, cells: [number, number, string][]): DocInfo {
+  /** Set cells as one undo step, any number (the engine's jobs).
+   *  `guard`: pass over protected columns (a rename does not). */
+  private writeCells(doc: number, cells: [number, number, string][], guard = true): DocInfo {
     const d = this.get(doc);
+    d.info.protected_skipped = 0;
+    if (guard && d.protectedPhys?.size) {
+      const before = cells.length;
+      cells = cells.filter(([, c]) => !d.protectedPhys!.has(this.physCol(d, c)));
+      d.info.protected_skipped = before - cells.length;
+      if (before && !cells.length) throw err("invalid", "those cells are in protected columns, so nothing changed (right-click a heading › Protect column to switch it off)");
+    }
     const n = this.rowCount(d);
     let widest = 0;
     for (const [r, c] of cells) {
@@ -1611,6 +1621,12 @@ export class MockBackend implements Backend {
     }
     return { opened, place: { view: s.view, row: s.row, col: s.col, changed: false } };
   }
+  async setProtected(doc: number, cols: number[]): Promise<DocInfo> {
+    const d = this.get(doc);
+    d.protectedPhys = new Set(cols.filter((c) => c < this.colCount(d)).map((c) => this.physCol(d, c)));
+    d.info.protected = [...new Set(cols)].filter((c) => c < this.colCount(d)).sort((a, b) => a - b);
+    return { ...d.info };
+  }
   async zipOpen(_token: number, names: string[]): Promise<DocInfo[]> {
     return names.map((n) => {
       const info = this.make(`export.zip › ${n.split("/").at(-1)}`, 120, 4);
@@ -1642,7 +1658,7 @@ export class MockBackend implements Backend {
     return v.cells.slice(0, v.cols);
   }
   async setFirstRowCell(doc: number, col: number, value: string): Promise<DocInfo> {
-    return this.setCells(doc, [[0, col, value]]);
+    return this.writeCells(doc, [[0, col, value]], false);
   }
 
   async tabFolders(ids: number[]): Promise<string[]> {

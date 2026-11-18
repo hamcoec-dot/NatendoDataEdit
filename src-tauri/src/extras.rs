@@ -493,6 +493,24 @@ pub struct ViewColumn {
     /// How values show (view only; the file never changes).
     #[serde(default)]
     pub format: Option<DisplayFormat>,
+    /// Where text lines up (automatic when missing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<ColAlign>,
+    /// Long text is cut at the edge instead of spilling over.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clip: bool,
+    /// Protected from changes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protect: bool,
+}
+
+/// A column's alignment in a view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColAlign {
+    Left,
+    Center,
+    Right,
 }
 
 /// What a display format does.

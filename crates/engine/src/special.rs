@@ -352,6 +352,40 @@ mod tests {
         assert_eq!(p.cells, vec![(3, 0)]);
     }
 
+    /// Protected columns: every change passes them over (and says how many
+    /// cells it left); a change only of protected cells is refused; a rename
+    /// still works; protection follows a moved column.
+    #[test]
+    fn protected_columns_are_passed_over() {
+        let mut d = doc("id,name\n1,a\n2,\n");
+        d.set_protected(&[0]);
+        assert_eq!(d.protected_cols(), vec![0]);
+        assert!(d.set_cell(1, 0, "9".into()).is_err());
+        assert_eq!(d.cell(1, 0).unwrap(), "1");
+        d.set_cells(vec![(1, 0, "9".into()), (1, 1, "b".into())]).unwrap();
+        assert_eq!(d.protected_skipped(), 1);
+        assert_eq!(d.row_values(1).unwrap(), ["1", "b"]);
+        // A bulk fill of both columns changes only the other one.
+        let spec = SpecialSpec { kind: SpecialKind::Text, row: 1, rows: 9, cols: vec![0, 1], ..Default::default() };
+        let plan = d.plan_fill_special(&spec, "X", &Progress::default()).unwrap();
+        d.apply_cells(plan).unwrap();
+        assert_eq!(d.row_values(1).unwrap(), ["1", "X"]);
+        // Only protected cells: refused, nothing changes.
+        let spec = SpecialSpec { kind: SpecialKind::Numbers, row: 1, rows: 9, cols: vec![0], ..Default::default() };
+        let plan = d.plan_fill_special(&spec, "X", &Progress::default()).unwrap();
+        assert!(d.apply_cells(plan).is_err());
+        // A rename of the protected column works.
+        d.set_first_row_cell(0, "voter_id".into()).unwrap();
+        assert_eq!(d.cell(0, 0).unwrap(), "voter_id");
+        // Moved to the end, the column stays protected.
+        d.move_cols(0, 1, 1).unwrap();
+        assert_eq!(d.protected_cols(), vec![1]);
+        assert!(d.set_cell(1, 1, "7".into()).is_err());
+        d.set_protected(&[]);
+        d.set_cell(1, 1, "7".into()).unwrap();
+        assert_eq!(d.protected_skipped(), 0);
+    }
+
     #[test]
     fn fill_plan() {
         let mut d = doc("a,b\n1,\n,x\n,\n");

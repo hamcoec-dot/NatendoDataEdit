@@ -49,6 +49,10 @@ export interface DocInfo {
   read_only: boolean;
   /** Rows the user hid (still saved). */
   hidden_rows: number;
+  /** Protected columns (changes pass them over). */
+  protected?: number[];
+  /** Cells the last change left alone in protected columns. */
+  protected_skipped?: number;
   /** A filter is on (`filtered` is also true while rows are only hidden). */
   has_filter: boolean;
   line_break: string;
@@ -1054,6 +1058,8 @@ export interface Backend {
   sessionClear(): Promise<void>;
   /** Open tables picked from a zip file (tabs with no file). */
   zipOpen(token: number, names: string[]): Promise<DocInfo[]>;
+  /** Protect these columns from changes (and no others). */
+  setProtected(doc: number, cols: number[]): Promise<DocInfo>;
   openRecent(id: string): Promise<Opened>;
   /** Per tab: the folder telling same-named files apart ("" for the rest). */
   tabFolders(ids: number[]): Promise<string[]>;
@@ -1479,6 +1485,9 @@ class TauriBackend implements Backend {
   }
   zipOpen(token: number, names: string[]) {
     return call<DocInfo[]>("zip_open", { token, names });
+  }
+  setProtected(doc: number, cols: number[]) {
+    return call<DocInfo>("set_protected", { doc, cols });
   }
   recentFiles() {
     return call<RecentItem[]>("recent_files");

@@ -714,6 +714,7 @@ impl Document {
             })
             .collect();
         let states = self.patch_states(changes)?;
+        self.only_protected(states.is_empty() && plan.append.is_empty())?;
         let first = self.new_row_ids(plan.append.len() as u32)?;
         let append = plan
             .append
@@ -1375,6 +1376,18 @@ impl Document {
             Some((at, n)) => Some((at, self.new_col_ids(n)?)),
             None => None,
         };
+        // A quick clear of whole columns swaps them for empty ones: never
+        // a protected one.
+        if plan.swap
+            && plan
+                .remove
+                .iter()
+                .any(|&(at, n)| (at..at + n).any(|c| self.is_protected(c)))
+        {
+            return Err(Error::Invalid(
+                "a protected column can't be cleared (right-click its heading › Protect column to switch it off)".into(),
+            ));
+        }
         if plan.swap {
             if let Some((at, ids)) = &ins {
                 for (k, &id) in ids.iter().enumerate() {
@@ -1406,6 +1419,7 @@ impl Document {
             changes.push((id, out));
         }
         let states = self.patch_states(changes)?;
+        self.only_protected(states.is_empty() && ins.is_none() && plan.remove.is_empty() && plan.order.is_none())?;
         let map = match plan.order {
             Some(order) => {
                 let m = self.map_list();

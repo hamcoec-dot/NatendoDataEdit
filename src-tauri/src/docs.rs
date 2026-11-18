@@ -1129,6 +1129,10 @@ pub struct DocInfo {
     pub read_only: bool,
     /// Rows the user hid (still saved).
     pub hidden_rows: u64,
+    /// Protected columns (changes pass them over).
+    pub protected: Vec<u32>,
+    /// Cells the last change left alone in protected columns.
+    pub protected_skipped: u64,
     /// A filter is on (`filtered` is also true while rows are only hidden).
     pub has_filter: bool,
     pub line_break: &'static str,
@@ -1875,6 +1879,18 @@ impl Docs {
         }
     }
 
+    /// Protect these columns from changes (and no others). Not an undo step:
+    /// a setting of the tab, like a column's width.
+    pub fn set_protected(&self, id: u32, cols: Vec<u32>) -> CmdResult<DocInfo> {
+        if cols.len() > 100_000 {
+            return Err(CmdError::new("bad_request", "too many columns"));
+        }
+        let entry = self.get(id)?;
+        entry.write().set_protected(&cols);
+        drop(entry);
+        self.info(id)
+    }
+
     /// Name a tab that has no file yet (Rename on a new or tool-made tab);
     /// the name is also what Save suggests. Empty: back to the default.
     pub fn set_title(&self, id: u32, title: &str) -> CmdResult<DocInfo> {
@@ -2180,6 +2196,13 @@ impl Docs {
             };
             if !fits(row, col) || !fits(to_row, to_col) {
                 return Err(Error::OutOfRange);
+            }
+            // Moving out of or into a protected column would lose or
+            // half-move values: refused (a copy just skips them).
+            if !copy && (col..col + cols).chain(to_col..to_col + cols).any(|c| d.is_protected(c)) {
+                return Err(Error::Invalid(
+                    "cells can't be moved out of or into a protected column (right-click its heading › Protect column to switch it off)".into(),
+                ));
             }
             // Read in small bands, each with a character budget shared by
             // its cells (as copy does), so one band never holds more than
@@ -5562,6 +5585,8 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         layout_confidence: d.detection().map(|x| x.confidence),
         read_only: false,
         hidden_rows: d.hidden_rows(),
+        protected: d.protected_cols(),
+        protected_skipped: d.protected_skipped(),
         has_filter: d.has_filter(),
         line_break: line_break_name(f.line_break),
         mixed_line_breaks: stats.mixed_line_breaks(),

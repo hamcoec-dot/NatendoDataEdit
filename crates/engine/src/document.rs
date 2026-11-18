@@ -412,6 +412,11 @@ pub struct Document {
     /// Changes done minus changes undone (never lowered by trimming the
     /// history or saving), so a step's place in the history can be told.
     history_pos: u64,
+    /// Protected columns (physical ids, sorted): every change of cells
+    /// passes them over. Renaming a column (its title cell) still works.
+    protected: Vec<u32>,
+    /// Cells the last change left alone because their column is protected.
+    protected_skipped: AtomicU64,
 }
 
 impl Document {
@@ -550,7 +555,68 @@ impl Document {
             redo: Vec::new(),
             clean_depth: Some(0),
             history_pos: 0,
+            protected: Vec::new(),
+            protected_skipped: AtomicU64::new(0),
         })
+    }
+
+    /// Protect these columns (logical numbers) from changes, and no others.
+    /// Protection follows a column when columns move.
+    pub fn set_protected(&mut self, cols: &[u32]) {
+        let mut p: Vec<u32> = cols.iter().filter_map(|&c| self.phys(c)).collect();
+        p.sort_unstable();
+        p.dedup();
+        self.protected = p;
+    }
+
+    /// The protected columns, by logical number (in order).
+    pub fn protected_cols(&self) -> Vec<u32> {
+        if self.protected.is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<u32> = (0..self.col_count())
+            .filter(|&c| self.phys(c).is_some_and(|p| self.protected.binary_search(&p).is_ok()))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// Whether logical column `col` is protected.
+    pub fn is_protected(&self, col: u32) -> bool {
+        !self.protected.is_empty() && self.phys(col).is_some_and(|p| self.protected.binary_search(&p).is_ok())
+    }
+
+    /// Cells the last change left alone in protected columns.
+    pub fn protected_skipped(&self) -> u64 {
+        self.protected_skipped.load(Ordering::Relaxed)
+    }
+
+    /// Drop the cells of protected columns (physical ids) from a change,
+    /// counting them.
+    fn drop_protected(&self, changes: &mut Vec<(u32, Vec<(u32, String)>)>) {
+        self.protected_skipped.store(0, Ordering::Relaxed);
+        if self.protected.is_empty() {
+            return;
+        }
+        let mut skipped = 0u64;
+        for (_, cells) in changes.iter_mut() {
+            let before = cells.len();
+            cells.retain(|(c, _)| self.protected.binary_search(c).is_err());
+            skipped += (before - cells.len()) as u64;
+        }
+        changes.retain(|(_, cells)| !cells.is_empty());
+        self.protected_skipped.store(skipped, Ordering::Relaxed);
+    }
+
+    /// `Err` when a change came to nothing because every cell it would
+    /// change is in a protected column (`left`: nothing else is done).
+    pub(crate) fn only_protected(&self, left: bool) -> Result<(), Error> {
+        if left && self.protected_skipped() > 0 {
+            return Err(Error::Invalid(
+                "those cells are in protected columns, so nothing changed (right-click a heading › Protect column to switch it off)".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Index about `budget` more bytes. Returns `true` when indexing is done.
@@ -1335,10 +1401,23 @@ impl Document {
     pub fn set_first_row_cell(&mut self, col: u32, value: String) -> Result<(), Error> {
         self.ready()?;
         let id = self.doc_id_at(0).ok_or(Error::OutOfRange)?;
-        self.set_cells_by_id(vec![(id, col, value)])
+        // A rename: allowed in a protected column too.
+        self.set_cells_guarded(vec![(id, col, value)], false)
     }
 
     fn set_cells_by_id(&mut self, cells: Vec<(u32, u32, String)>) -> Result<(), Error> {
+        self.set_cells_guarded(cells, true)
+    }
+
+    fn set_cells_guarded(&mut self, mut cells: Vec<(u32, u32, String)>, guard: bool) -> Result<(), Error> {
+        self.protected_skipped.store(0, Ordering::Relaxed);
+        if guard && !self.protected.is_empty() {
+            let before = cells.len();
+            cells.retain(|(_, c, _)| !self.is_protected(*c));
+            let skipped = (before - cells.len()) as u64;
+            self.protected_skipped.store(skipped, Ordering::Relaxed);
+            self.only_protected(before > 0 && cells.is_empty())?;
+        }
         let mut widest = 0u32;
         for (_, col, _) in &cells {
             if *col > MAX_EDIT_COL {
@@ -1727,6 +1806,7 @@ impl Document {
     ) -> Result<(), Error> {
         self.ready()?;
         let states = self.patch_states(changes)?;
+        self.only_protected(states.is_empty())?;
         if !states.is_empty() {
             self.push(Op::Restore(states));
         }
@@ -1738,8 +1818,9 @@ impl Document {
     /// a row may come in any order; for a column given twice the last wins.
     pub(crate) fn patch_states(
         &self,
-        changes: Vec<(u32, Vec<(u32, String)>)>,
+        mut changes: Vec<(u32, Vec<(u32, String)>)>,
     ) -> Result<Vec<(u32, Option<Edit>)>, Error> {
+        self.drop_protected(&mut changes);
         let mut states = Vec::with_capacity(changes.len());
         for (id, mut cells) in changes {
             if !cells.windows(2).all(|w| w[0].0 < w[1].0) {
