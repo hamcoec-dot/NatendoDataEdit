@@ -210,7 +210,11 @@ impl<'a> Zip<'a> {
 
     /// Every part's name and declared (untrusted) unpacked size, by name.
     pub fn names(&self) -> Vec<(String, u64)> {
-        let mut v: Vec<(String, u64)> = self.entries.iter().map(|(n, e)| (n.clone(), e.usize)).collect();
+        let mut v: Vec<(String, u64)> = self
+            .entries
+            .iter()
+            .map(|(n, e)| (n.clone(), e.usize))
+            .collect();
         v.sort();
         v
     }

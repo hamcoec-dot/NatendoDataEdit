@@ -725,9 +725,7 @@ impl Document {
                     Test::Expr(_) => None,
                     _ => Some(c.reader_cols[c.at[i]]),
                 };
-                if mc.is_some_and(|m| !cols.contains(&m))
-                    || done.contains(&mc)
-                {
+                if mc.is_some_and(|m| !cols.contains(&m)) || done.contains(&mc) {
                     continue;
                 }
                 let ok = match &c.tests[i] {

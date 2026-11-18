@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.4.0_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.4.1_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -176,6 +176,20 @@ everything is also in command search.
   first and then moved into place.
 - **Big files:** opens files of several gigabytes; every long job shows
   progress and can be stopped.
+- **Zipped and gzipped files:** open `voters.csv.gz` or `export.zip` without
+  unpacking them first. A zip holding several tables lists them to pick from
+  (or open them all, one tab each). Everything is unpacked in memory only, so
+  no unpacked copy of the data is left on disk. A `.gz` file saves back
+  gzipped; a table from a zip opens as a new tab and Save asks where to save
+  it (the zip itself is never changed). Sizes are capped, and a file that
+  would unpack to hundreds of times its size is refused.
+- **Pick up where you left off:** at start, the app offers to reopen the
+  files that were open last time, each at the same cell with its filter,
+  hidden columns, widths and protected columns. A file changed since opens
+  fresh and says so. Only where each file is and how it was shown are kept,
+  never what is in the cells; files in private file mode, encrypted files
+  and tabs never saved are not remembered. File > Options sets it to offer
+  (the default), reopen without asking, or never remember.
 
 ### The grid
 
@@ -296,6 +310,25 @@ everything is also in command search.
 ![Dragging the city column by its heading to a new place](docs/screenshots/drag-column.png)
 *Dragging "city" by its heading: a see-through band follows the pointer and the bar shows where it will land.*
 
+- **Show invisible characters** (View > Show invisible characters,
+  Ctrl+Shift+H): spaces show as a faint `·`, tabs as `→` and line breaks as
+  `⏎`; non-breaking, zero-width and other odd spaces show in orange
+  (`°`, `¦`), the usual reason two names that look the same won't match.
+  Under the cell bar a line says what the cell holds that can't be seen
+  ("2 spaces at the end, 1 non-breaking space"). Display only: nothing in the
+  file changes.
+
+![Show invisible characters: dots for spaces and an orange mark for a non-breaking space](docs/screenshots/invisible.png)
+*Show invisible characters: a double space, a space at the end and a non-breaking space, which the line under the cell bar names.*
+
+- **Protect columns** (right-click a heading > Protect column, or Format >
+  Protect column): typing, paste, fill, Replace, Go to special, cleaning
+  tools and other changes pass a protected column over, and the status bar
+  says how many cells were left as they were; a change of only protected
+  cells is refused. Sorting, filtering and renaming still work. A small
+  padlock shows in the heading; protection follows the column when columns
+  move and is saved with views.
+
 ### Editing
 
 ![The first_name column cut (dashed outline) and the right-click menu offering Move what was cut here](docs/screenshots/cut-move.png)
@@ -309,6 +342,23 @@ everything is also in command search.
   empty column to insert or delete by hand. Esc cancels. The right-click menus
   of cells, row numbers and column headings have Cut, Copy, Paste, Move what
   was cut here and Cancel cut.
+- **Go to special** (Edit > Go to special, Ctrl+Shift+G, or right-click a
+  cell): pick the blank cells, the cells with numbers or text, the cells that
+  differ from the active cell's column in each row ("row differences"), the
+  cells changed since the file was opened or saved, or the cells that fail a
+  data check, in the selection or the whole table. Then light them up (and go
+  to the first), fill them all with one value ("fill every blank in these
+  three columns with UNKNOWN"), or clear them, in one undo step.
+
+![Go to special picking the blank cells of the selection to fill them with UNKNOWN](docs/screenshots/go-to-special.png)
+*Go to special: every blank cell in the selection gets UNKNOWN, as one undo step.*
+
+- **Tidy column titles** (Format > Tidy column titles, or right-click a
+  heading): trim and collapse spaces, one case style (Title Case,
+  lower_with_underscores, UPPER, lower), remove odd characters, and make
+  repeated titles unique (Phone, Phone 2) and empty ones named. A preview
+  lists every title that changes; data check rules follow the new names; one
+  undo step, and a recipe step.
 - **Paste into filtered rows**: while a filter is on or rows are hidden,
   Paste, Paste Special, fill, Ctrl+Enter, Delete and Copy work on the rows you
   can see, and hidden rows are left as they were (the status line says how
@@ -520,6 +570,16 @@ everything is also in command search.
 - Charts (line, bar, pie, counts), subtotals and groups, highlight rules.
 - **Compare two open files**, by a key column or by whole rows: what was
   added, removed and changed.
+- **Compare two columns** (Data > Compare two columns, or right-click a
+  heading): for each row, are the two cells the same, different, or filled in
+  only one? Light up the rows that differ, show only them, or add a column
+  saying Same, Different, Only in first or Only in second. Case, extra spaces
+  and numbers of equal value (5, 5.00, $5) count as the same unless you say
+  otherwise. "Did the mailing address change from the residence address?"
+  in one step.
+
+![Compare two columns: the mailing and residence addresses with a result column](docs/screenshots/compare-columns.png)
+*Comparing mail_address with res_address: the added column says which rows differ.*
 - Random sample into a new tab.
 - **Value editor:** every value in a column with its count; rename or merge
   values, group look-alikes ("Main St" / "Main Street"), or apply a
@@ -546,7 +606,10 @@ everything is also in command search.
   above). From a file or from the clipboard, with a preview.
 - **SQLite:** open a table or view from a SQLite database (read-only), or
   save the table into a new or existing database.
-- **Export:** Excel, JSON, XML, HTML, Markdown, fixed width, PDF, SQL
+- **JSON Lines** (`.jsonl`, `.ndjson`): open them (one record per line, read
+  as it streams) and export to them, the format web tools and databases use
+  for logs and records.
+- **Export:** Excel, JSON, JSON Lines, XML, HTML, Markdown, fixed width, PDF, SQL
   statements (standard SQL, MySQL, or SQL Server/Access style) or a template
   of your own; to a file or the clipboard, with a preview.
 - **Split one file into many** (by a column's value or a row count) and

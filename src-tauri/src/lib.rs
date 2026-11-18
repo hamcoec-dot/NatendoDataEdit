@@ -13,8 +13,8 @@ mod imports;
 mod links;
 mod recovery;
 mod session;
-mod zips;
 mod watch;
+mod zips;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -386,7 +386,11 @@ async fn tidy_titles_preview(
 
 /// Tidy every column title (one undo step).
 #[tauri::command]
-async fn tidy_titles(docs: DocsState<'_>, doc: u32, spec: natendo_engine::titles::TitleSpec) -> CmdResult<DocInfo> {
+async fn tidy_titles(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::titles::TitleSpec,
+) -> CmdResult<DocInfo> {
     let docs = docs.inner().clone();
     blocking(move || docs.tidy_titles(doc, spec)).await
 }
@@ -415,7 +419,11 @@ async fn session_save(
     session: SessionState<'_>,
     tabs: Vec<session::SessionTab>,
 ) -> CmdResult<usize> {
-    let (docs, recent, session) = (docs.inner().clone(), recent.inner().clone(), session.inner().clone());
+    let (docs, recent, session) = (
+        docs.inner().clone(),
+        recent.inner().clone(),
+        session.inner().clone(),
+    );
     blocking(move || {
         session.save(tabs, |doc| {
             if docs.encrypted_from(doc).ok().flatten().is_some() {
@@ -430,7 +438,10 @@ async fn session_save(
 
 /// The tabs open when the app last closed (names only).
 #[tauri::command]
-async fn session_list(recent: RecentState<'_>, session: SessionState<'_>) -> CmdResult<Vec<session::SessionItem>> {
+async fn session_list(
+    recent: RecentState<'_>,
+    session: SessionState<'_>,
+) -> CmdResult<Vec<session::SessionItem>> {
     let (recent, session) = (recent.inner().clone(), session.inner().clone());
     blocking(move || Ok(session.items(|p| recent.is_private(p)))).await
 }
@@ -460,7 +471,10 @@ async fn session_open(
     blocking(move || {
         let (path, place) = session.place(index)?;
         if recent.is_private(&path) {
-            return Err(CmdError::new("invalid", "that file is in private file mode, so it is not reopened"));
+            return Err(CmdError::new(
+                "invalid",
+                "that file is in private file mode, so it is not reopened",
+            ));
         }
         let opened = match docs.find_open(&path) {
             Some(doc) => Opened {
@@ -662,6 +676,17 @@ async fn find_extreme(
 ) -> CmdResult<Option<u64>> {
     let docs = docs.inner().clone();
     blocking(move || docs.find_extreme(doc, col, largest, keep_first, read)).await
+}
+
+/// Compare two columns: counts, and the rows where they differ.
+#[tauri::command]
+async fn compare_cols(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::colcompare::CompareCols,
+) -> CmdResult<natendo_engine::colcompare::CompareColsReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.compare_cols(doc, &spec)).await
 }
 
 /// Go To Special: blank, number, text or row-difference cells of an area.
@@ -3226,6 +3251,7 @@ pub fn run() {
             find_change,
             find_extreme,
             special_cells,
+            compare_cols,
             number_range,
             typeahead,
             rename_file,

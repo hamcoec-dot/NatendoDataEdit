@@ -229,6 +229,28 @@ export interface ReadOptions {
   decimal_comma: boolean;
   date_order: DateOrder;
 }
+/** Data › Compare two columns. */
+export interface CompareCols {
+  a: number;
+  b: number;
+  /** Upper and lower case count as different. */
+  case: boolean;
+  /** Spaces count. */
+  spaces: boolean;
+  /** Numbers compared by value. */
+  numbers: boolean;
+  read?: ReadOptions;
+  keep_first: boolean;
+  title: string;
+}
+export interface CompareColsReport {
+  same: number;
+  different: number;
+  only_first: number;
+  only_second: number;
+  /** Shown rows where the cells are not the same (at most 5 million). */
+  rows: number[];
+}
 /** Format › Tidy column titles. */
 export interface TitleSpec {
   spaces: boolean;
@@ -641,6 +663,8 @@ export type DataOp =
   | { op: "extract"; spec: Extract }
   | { op: "fill_rect"; spec: { row: number; rows: number; col: number; cols: number; value: string; skip_cols?: number[] } }
   | { op: "fill_special"; spec: SpecialSpec; value: string }
+  | { op: "compare_show"; spec: CompareCols }
+  | { op: "compare_column"; spec: CompareCols }
   | { op: "shift_cells"; spec: { row: number; rows: number; col: number; cols: number; shift: "up" | "left" | "down" | "right" } };
 
 /** A computed column: an expression over the row's cells. */
@@ -1037,6 +1061,8 @@ export interface Backend {
   findExtreme(doc: number, col: number, largest: boolean, keepFirst: boolean, read: ReadOptions): Promise<number | null>;
   /** Go To Special: the cells of an area of one kind (shown rows). */
   specialCells(doc: number, spec: SpecialSpec): Promise<SpecialCells>;
+  /** Compare two columns: counts and the rows that differ. */
+  compareCols(doc: number, spec: CompareCols): Promise<CompareColsReport>;
   /** Smallest and largest number of a column ("busy" while changing). */
   numberRange(doc: number, col: number, keepFirst: boolean, read: ReadOptions): Promise<[number, number] | null>;
   /** A value of the column that starts with what is typed. */
@@ -1454,6 +1480,9 @@ class TauriBackend implements Backend {
   }
   specialCells(doc: number, spec: SpecialSpec) {
     return call<SpecialCells>("special_cells", { doc, spec });
+  }
+  compareCols(doc: number, spec: CompareCols) {
+    return call<CompareColsReport>("compare_cols", { doc, spec });
   }
   numberRange(doc: number, col: number, keepFirst: boolean, read: ReadOptions) {
     return call<[number, number] | null>("number_range", { doc, col, keepFirst, read });

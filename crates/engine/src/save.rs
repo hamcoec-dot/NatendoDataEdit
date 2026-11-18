@@ -664,7 +664,10 @@ impl Document {
             let mut bw = BufWriter::with_capacity(1 << 20, &file);
             let c = if gzip {
                 let mut gz = flate2::write::GzEncoder::new(&mut bw, flate2::Compression::default());
-                let mut cw = CountingWriter { inner: &mut gz, n: 0 };
+                let mut cw = CountingWriter {
+                    inner: &mut gz,
+                    n: 0,
+                };
                 let mut c = self.write_rows(
                     &mut cw,
                     format,
@@ -1284,7 +1287,9 @@ mod tests {
         d.set_cell(1, 0, "Bea".into()).unwrap();
         assert!(d.save(SaveOptions::default()).unwrap().verified);
         let mut text = String::new();
-        flate2::read::GzDecoder::new(&fs::read(&p).unwrap()[..]).read_to_string(&mut text).unwrap();
+        flate2::read::GzDecoder::new(&fs::read(&p).unwrap()[..])
+            .read_to_string(&mut text)
+            .unwrap();
         assert_eq!(text, "name,zip\r\nBea,01234\r\n");
         assert!(!d.is_modified());
         // Saved again after another change: still gzipped, nothing left over.
@@ -1294,7 +1299,11 @@ mod tests {
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         // Save As a plain name writes plain text.
         let plain = dir.join("out.csv");
-        d.save(SaveOptions { path: Some(plain.clone()), ..Default::default() }).unwrap();
+        d.save(SaveOptions {
+            path: Some(plain.clone()),
+            ..Default::default()
+        })
+        .unwrap();
         assert_eq!(fs::read(&plain).unwrap(), b"name,zip\r\nBea,99999\r\n");
         // A bomb: a megabyte-plus of zeros per few bytes is refused.
         let bomb = dir.join("bomb.csv.gz");

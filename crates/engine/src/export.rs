@@ -1096,7 +1096,10 @@ mod tests {
             let v: serde_json::Value = serde_json::from_str(r).unwrap();
             assert!(v.is_object());
         }
-        assert_eq!(rows[0], "{\"name\":\"A \\\"q\\\"\",\"n\":\"1\",\"name 2\":\"x\"}");
+        assert_eq!(
+            rows[0],
+            "{\"name\":\"A \\\"q\\\"\",\"n\":\"1\",\"name 2\":\"x\"}"
+        );
         let x = ex(
             &d,
             ExportOptions {

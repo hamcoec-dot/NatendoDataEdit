@@ -59,7 +59,8 @@ pub struct Zips {
 pub static ZIPS: LazyLock<Zips> = LazyLock::new(Zips::default);
 
 pub fn is_zip_path(path: &Path) -> bool {
-    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
 }
 
 fn err(m: impl Into<String>) -> CmdError {
@@ -73,7 +74,10 @@ fn read_zip(path: &Path) -> CmdResult<Vec<u8>> {
         .read_to_end(&mut data)
         .map_err(|e| CmdError::new("error", e.to_string()))?;
     if data.len() as u64 > MAX_ZIP_BYTES {
-        return Err(CmdError::new("too_large", "the zip file is larger than 1 GB, too large to open"));
+        return Err(CmdError::new(
+            "too_large",
+            "the zip file is larger than 1 GB, too large to open",
+        ));
     }
     if !natendo_engine::zipread::is_zip(&data) {
         return Err(err("this is not a zip file (or it is damaged)"));
@@ -83,7 +87,8 @@ fn read_zip(path: &Path) -> CmdResult<Vec<u8>> {
 
 fn is_table(name: &str) -> bool {
     // Mac folders and hidden files are not tables.
-    if name.starts_with("__MACOSX/") || name.rsplit('/').next().is_some_and(|n| n.starts_with('.')) {
+    if name.starts_with("__MACOSX/") || name.rsplit('/').next().is_some_and(|n| n.starts_with('.'))
+    {
         return false;
     }
     name.rsplit_once('.')
@@ -91,7 +96,9 @@ fn is_table(name: &str) -> bool {
 }
 
 fn file_name(path: &Path) -> String {
-    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 impl Zips {
@@ -106,8 +113,16 @@ impl Zips {
             .map(|(name, size)| ZipEntry { name, size })
             .collect();
         match entries.len() {
-            0 => Err(err("this zip file holds no tables (.csv, .tsv or .txt files)")),
-            1 => Ok(Listed::One(entries.into_iter().next().map(|e| e.name).unwrap_or_default())),
+            0 => Err(err(
+                "this zip file holds no tables (.csv, .tsv or .txt files)",
+            )),
+            1 => Ok(Listed::One(
+                entries
+                    .into_iter()
+                    .next()
+                    .map(|e| e.name)
+                    .unwrap_or_default(),
+            )),
             _ => {
                 let token = self.next.fetch_add(1, Ordering::Relaxed) + 1;
                 let mut w = self.waiting.lock().unwrap_or_else(|p| p.into_inner());
@@ -128,12 +143,19 @@ impl Zips {
     }
 
     /// Open the tables picked from a listed zip.
-    pub fn open_picked(&self, docs: &Docs, token: u32, names: &[String]) -> CmdResult<Vec<DocInfo>> {
+    pub fn open_picked(
+        &self,
+        docs: &Docs,
+        token: u32,
+        names: &[String],
+    ) -> CmdResult<Vec<DocInfo>> {
         if names.is_empty() {
             return Ok(Vec::new());
         }
         if names.len() > MAX_PICK {
-            return Err(err(format!("open at most {MAX_PICK} tables from a zip at once")));
+            return Err(err(format!(
+                "open at most {MAX_PICK} tables from a zip at once"
+            )));
         }
         let path = self
             .waiting
@@ -186,7 +208,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nde-zip-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let one = dir.join("one.zip");
-        std::fs::write(&one, zip_of(&[("data/voters.csv", b"a,b\r\n1,2\r\n"), ("readme.md", b"hi")])).unwrap();
+        std::fs::write(
+            &one,
+            zip_of(&[("data/voters.csv", b"a,b\r\n1,2\r\n"), ("readme.md", b"hi")]),
+        )
+        .unwrap();
         let docs = Docs::default();
         let z = Zips::default();
         match z.list(&one).unwrap() {
@@ -199,8 +225,18 @@ mod tests {
             Listed::Many(_) => panic!("one table"),
         }
         let two = dir.join("two.zip");
-        std::fs::write(&two, zip_of(&[("a.csv", b"x\r\n1\r\n"), ("b.tsv", b"y\r\n2\r\n"), ("__MACOSX/._a.csv", b"")])).unwrap();
-        let Listed::Many(list) = z.list(&two).unwrap() else { panic!("two tables") };
+        std::fs::write(
+            &two,
+            zip_of(&[
+                ("a.csv", b"x\r\n1\r\n"),
+                ("b.tsv", b"y\r\n2\r\n"),
+                ("__MACOSX/._a.csv", b""),
+            ]),
+        )
+        .unwrap();
+        let Listed::Many(list) = z.list(&two).unwrap() else {
+            panic!("two tables")
+        };
         assert_eq!(list.entries.len(), 2);
         let opened = z.open_picked(&docs, list.token, &["b.tsv".into()]).unwrap();
         assert_eq!(opened.len(), 1);

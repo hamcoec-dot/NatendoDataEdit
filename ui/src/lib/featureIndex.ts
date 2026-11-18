@@ -97,6 +97,8 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "save as options": ["file.saveAs"],
   "never lose work": ["file.recover", "file.versions", "file.revert"],
   "big files": ["file.open"],
+  "zipped and gzipped files": ["file.open", "file.recent"],
+  "pick up where you left off": ["file.options", "file.recent"],
   // The grid
   "a spreadsheet style grid that stays": ["help.keys", "edit.repeat", "data.filter"],
   "tabs for each open file": [
@@ -115,8 +117,12 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "ctrl click opens web and e mail": [],
   "command search": ["help.search"],
   "custom shortcuts ctrl for the": ["help.shortcuts", "help.keys", "view.panelFiles", "view.panelActivity", "file.recent"],
+  "show invisible characters": ["view.invisible", "view.cellBar"],
+  "protect columns": ["format.protectCols"],
   // Editing
   "edit in the cell or": ["edit.cell", "view.cellBar", "edit.goto"],
+  "go to special": ["edit.gotoSpecial", "edit.goto"],
+  "tidy column titles": ["format.tidyTitles", "format.renameCol"],
   "fill handle fill series ctrl enter": ["edit.fillSeries", "edit.fillDown", "edit.fillRight", "edit.pasteSpecial", "insert.symbol"],
   "type ahead suggestions": ["view.typeahead", "edit.pickList", "view.listArrows", "edit.pickDate", "view.spellcheck"],
   "cut and paste that moves": ["edit.cut", "edit.paste", "edit.moveCut", "edit.cancelCut"],
@@ -168,6 +174,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "quick totals": ["view.panel"],
   "charts line bar pie counts": ["view.panelChart", "data.subtotals", "view.highlights"],
   "compare two open files": ["tools.compare"],
+  "compare two columns": ["data.compareCols"],
   "random sample into a new": ["tools.sample"],
   "value editor": ["data.values"],
   // Checking data
@@ -178,6 +185,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "open": ["file.import", "file.importClipboard"],
   "sqlite": ["file.openSqlite", "file.saveSqlite"],
   "export": ["file.export"],
+  "json lines": ["file.import", "file.export"],
   "split one file into many": ["tools.split", "tools.combine"],
   "append": ["data.append"],
   "encrypted copies": ["file.saveEncrypted", "file.openEncrypted"],

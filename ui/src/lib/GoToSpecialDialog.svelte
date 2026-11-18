@@ -65,7 +65,7 @@
     {#each picks as [v, label] (v)}
       <label class:off={v === "problems" && !hasChecks}>
         <input type="radio" name="pick" value={v} bind:group={pick} disabled={v === "problems" && !hasChecks} />
-        {label}{#if v === "problems" && !hasChecks}<span class="muted"> (no data checks set up)</span>{/if}
+        {label}{#if v === "problems" && !hasChecks}&nbsp;<span class="muted">(no data checks set up)</span>{/if}
       </label>
       {#if v === "row_diff" && pick === "row_diff"}
         <div class="sub">

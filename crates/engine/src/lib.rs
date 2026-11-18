@@ -17,6 +17,7 @@
 
 pub mod changes;
 pub mod clean;
+pub mod colcompare;
 pub mod crypt;
 pub mod detect;
 pub mod dialect;
@@ -51,8 +52,8 @@ pub mod scan;
 pub mod sheet;
 pub mod shift;
 pub mod sort;
-pub mod special;
 pub mod source;
+pub mod special;
 pub mod sqlite;
 pub mod stats;
 pub mod streets;

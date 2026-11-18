@@ -137,6 +137,11 @@ pub enum RecipeOp {
     TidyTitles {
         spec: crate::titles::TitleSpec,
     },
+    /// Compare two columns: a column saying Same, Different, Only in first
+    /// or Only in second.
+    CompareColumn {
+        spec: crate::colcompare::CompareCols,
+    },
 }
 
 impl RecipeOp {
@@ -189,6 +194,9 @@ impl RecipeOp {
                 format!("Rename column {} to \"{}\"", col + 1, name)
             }
             RecipeOp::TidyTitles { .. } => "Tidy column titles".into(),
+            RecipeOp::CompareColumn { spec } => {
+                format!("Compare columns {} and {}", spec.a + 1, spec.b + 1)
+            }
             RecipeOp::MapValues { .. } => "Change values from a list".into(),
             RecipeOp::GroupCalc { .. } => "Group figures".into(),
             RecipeOp::Arrange { .. } => "Arrange columns".into(),
@@ -411,6 +419,10 @@ impl Document {
             }
             RecipeOp::RenameColumn { col, name } => self.set_first_row_cell(*col, name.clone()),
             RecipeOp::TidyTitles { spec } => self.tidy_titles(spec).map(|_| ()),
+            RecipeOp::CompareColumn { spec } => {
+                let p = self.plan_compare_column(spec, progress)?;
+                self.apply_cols(p)
+            }
             RecipeOp::MapValues { spec } => {
                 let p = self.plan_map_values(spec, progress)?;
                 self.apply_cells(p)

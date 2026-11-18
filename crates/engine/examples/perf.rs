@@ -324,6 +324,114 @@ fn main() {
         .unwrap();
     assert_eq!(plan.rows, 0);
     check.budget("remove blank rows (none)", t.elapsed(), budget(3.0));
+    // v0.4.1: Go To Special, compare two columns, protected columns, gzip.
+    {
+        use natendo_engine::colcompare::CompareCols;
+        use natendo_engine::special::{SpecialKind, SpecialSpec};
+        let area = |kind| SpecialSpec {
+            kind,
+            row: 1,
+            rows: u64::MAX,
+            cols: vec![0, 1, 2],
+            ..Default::default()
+        };
+        let t = Instant::now();
+        let found = doc.special_cells(&area(SpecialKind::Blanks), &p).unwrap();
+        println!("     go to special: {} blank cells", found.total);
+        check.budget(
+            "go to special: blanks in 3 columns",
+            t.elapsed(),
+            budget(2.0),
+        );
+        let t = Instant::now();
+        let found = doc.special_cells(&area(SpecialKind::Numbers), &p).unwrap();
+        println!(
+            "     go to special: {} number cells (listed {})",
+            found.total,
+            found.cells.len()
+        );
+        check.budget(
+            "go to special: numbers in 3 columns",
+            t.elapsed(),
+            budget(3.0),
+        );
+        let spec = CompareCols {
+            a: 1,
+            b: 4,
+            ..Default::default()
+        };
+        let t = Instant::now();
+        let rep = doc.compare_cols(&spec, &p).unwrap();
+        println!(
+            "     compare columns: {} same, {} different",
+            rep.same, rep.different
+        );
+        check.budget("compare two columns", t.elapsed(), budget(2.0));
+        let t = Instant::now();
+        let plan = doc.plan_compare_column(&spec, &p).unwrap();
+        doc.apply_cols(plan).unwrap();
+        check.budget(
+            "compare two columns: add a result column",
+            t.elapsed(),
+            budget(5.0),
+        );
+        doc.undo();
+        // A protected column costs nothing measurable on a paste.
+        doc.set_protected(&[2]);
+        let block: Vec<Vec<String>> = (0..100_000)
+            .map(|i| vec![format!("q{i}"), "x".into(), "y".into()])
+            .collect();
+        let t = Instant::now();
+        let plan = doc
+            .plan_paste(
+                &PasteSpec {
+                    row: 1,
+                    col: 1,
+                    ..Default::default()
+                },
+                block,
+                &p,
+            )
+            .unwrap();
+        doc.apply_cells(plan).unwrap();
+        println!(
+            "     paste with a protected column: {} cells left",
+            doc.protected_skipped()
+        );
+        check.budget(
+            "paste 100k rows over a protected column",
+            t.elapsed(),
+            budget(1.0),
+        );
+        doc.undo();
+        doc.set_protected(&[]);
+        // A gzipped file of about a million rows opens (unpacks and reads)
+        // within a few seconds.
+        let gz = dir.join(format!("fixture-{rows}-part.csv.gz"));
+        {
+            let bytes = fs::read(&path).unwrap();
+            let mut end = bytes.len().min(220 << 20);
+            while end < bytes.len() && bytes[end - 1] != b'\n' {
+                end += 1;
+            }
+            let mut enc = flate2::write::GzEncoder::new(
+                BufWriter::new(File::create(&gz).unwrap()),
+                flate2::Compression::fast(),
+            );
+            enc.write_all(&bytes[..end]).unwrap();
+            enc.finish().unwrap().flush().unwrap();
+        }
+        let t = Instant::now();
+        let g = Document::open_indexed(&gz, OpenOptions::default(), None).unwrap();
+        println!("     gzip: {} rows", g.row_count());
+        check.budget(
+            "open a gzipped file (about 220 MB unpacked)",
+            t.elapsed(),
+            Duration::from_secs(4),
+        );
+        drop(g);
+        let _ = fs::remove_file(&gz);
+    }
     let t = Instant::now();
     let plan = doc
         .plan_split_column(

@@ -119,7 +119,11 @@ impl Session {
 
     /// Remember these tabs (`path_of` gives a tab's file, or `None` to
     /// leave it out). Returns how many were kept.
-    pub fn save(&self, tabs: Vec<SessionTab>, path_of: impl Fn(u32) -> Option<PathBuf>) -> CmdResult<usize> {
+    pub fn save(
+        &self,
+        tabs: Vec<SessionTab>,
+        path_of: impl Fn(u32) -> Option<PathBuf>,
+    ) -> CmdResult<usize> {
         if tabs.len() > 1_000 {
             return Err(CmdError::new("bad_request", "too many tabs"));
         }
@@ -129,7 +133,9 @@ impl Session {
                 break;
             }
             let Some(path) = path_of(t.doc) else { continue };
-            let Some((size, modified)) = stamp(&path) else { continue };
+            let Some((size, modified)) = stamp(&path) else {
+                continue;
+            };
             let view = t
                 .view
                 .filter(|v| serde_json::to_vec(v).is_ok_and(|b| b.len() <= MAX_VIEW_BYTES));
@@ -162,7 +168,11 @@ impl Session {
 
     /// The remembered tabs, by name (files now private are left out).
     pub fn items(&self, is_private: impl Fn(&Path) -> bool) -> Vec<SessionItem> {
-        let entries = self.entries.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let paths: Vec<PathBuf> = entries.iter().map(|e| PathBuf::from(&e.path)).collect();
         let folders = crate::extras::folder_labels(&paths);
         entries
@@ -226,9 +236,21 @@ mod tests {
         let s = Session::default();
         s.load(&dir);
         let tabs = vec![
-            SessionTab { doc: 1, view: Some(serde_json::json!({"name": "v"})), row: 5, col: 2, active: true },
+            SessionTab {
+                doc: 1,
+                view: Some(serde_json::json!({"name": "v"})),
+                row: 5,
+                col: 2,
+                active: true,
+            },
             // No file: left out.
-            SessionTab { doc: 2, view: None, row: 0, col: 0, active: false },
+            SessionTab {
+                doc: 2,
+                view: None,
+                row: 0,
+                col: 0,
+                active: false,
+            },
         ];
         let kept = s.save(tabs, |d| (d == 1).then(|| a.clone())).unwrap();
         assert_eq!(kept, 1);

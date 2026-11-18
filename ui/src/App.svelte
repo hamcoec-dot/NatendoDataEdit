@@ -45,6 +45,8 @@
   import GoToSpecialDialog, { type SpecialChoice } from "./lib/GoToSpecialDialog.svelte";
   import ZipPickDialog from "./lib/ZipPickDialog.svelte";
   import TidyTitlesDialog from "./lib/TidyTitlesDialog.svelte";
+  import CompareColsDialog, { type CompareAction } from "./lib/CompareColsDialog.svelte";
+  import type { CompareCols } from "./lib/backend";
   import type { TitleSpec } from "./lib/backend";
   import type { ZipList } from "./lib/backend";
   import type { SpecialKind, SpecialSpec } from "./lib/backend";
@@ -221,9 +223,11 @@
     const n = info.protected_skipped ?? 0;
     if (!n) return;
     protectNote = n;
+    // The change's own message usually follows at once and carries the
+    // note; if none comes, the note shows on its own.
     setTimeout(() => {
       if (protectNote) say("");
-    }, 0);
+    }, 500);
   }
 
   function say(text: string): void {
@@ -1281,7 +1285,9 @@
         if (place.view && !known) {
           active = tabs.indexOf(t);
           await tick();
-          await applyViewSteps(place.view as View, t);
+          // As View › Apply a saved view does (its look, filter and sort
+          // undo as one step).
+          await applyView(place.view as View);
         }
         active = tabs.indexOf(t);
         await tick();
@@ -1398,6 +1404,12 @@
       return ok;
     }
     if (value === t.cache.get(row, col) && !t.cache.isTruncated(row, col)) return true;
+    // A protected column: the edit closes and nothing changes (its title
+    // cell is renamed with Rename column instead).
+    if (t.info.protected?.includes(col)) {
+      say(`“${columnTitle(t, col)}” is protected, so nothing in it changes. Right-click its heading › Protect column to switch it off${t.header && row === 0 ? ", or use Rename column for its title" : ""}.`);
+      return true;
+    }
     const no = shownRowNo(t, row);
     t.whatNext = no === null ? "typing in a cell" : `typing in R${no} C${col + 1}`;
     return apply((x) => backend().setCells(x.id, [[row, col, value]]));
@@ -2352,6 +2364,66 @@
     else shiftAsk = { insert: false };
   }
   let shiftAsk = $state<{ insert: boolean } | null>(null);
+
+  // ---- compare two columns ----
+  let compareAsk = $state<{ titles: string[]; first: number; second: number } | null>(null);
+
+  function openCompareCols(): void {
+    const t = tab;
+    if (!t) return;
+    if (t.info.cols < 2) {
+      say("Comparing needs two columns.");
+      return;
+    }
+    const titles = Array.from({ length: Math.min(t.info.cols, 5_000) }, (_, c) => columnTitle(t, c));
+    const r = t.rect;
+    // Two selected columns, or the active one and the next.
+    const first = r.cols === 2 ? r.col : t.cell.col;
+    const second = r.cols === 2 ? r.col + 1 : first + 1 < t.info.cols ? first + 1 : Math.max(0, first - 1);
+    compareAsk = { titles, first: Math.min(first, titles.length - 1), second: Math.min(second, titles.length - 1) };
+  }
+
+  async function runCompareCols(spec: CompareCols, action: CompareAction): Promise<void> {
+    compareAsk = null;
+    const t = tab;
+    if (!t) return;
+    const name = (c: number) => `“${columnTitle(t, c)}”`;
+    if (action === "column") {
+      const rep = await runOp({ op: "compare_column", spec }, "Comparing");
+      if (rep) say(`Added a column comparing ${name(spec.a)} with ${name(spec.b)} (Same, Different, Only in first, Only in second). Ctrl+Z undoes it.`);
+      return;
+    }
+    if (action === "show") {
+      const rep = await runOp({ op: "compare_show", spec }, "Comparing");
+      if (rep) say(rep.rows ? `Showing ${plural(rep.rows, "row")} where ${name(spec.a)} and ${name(spec.b)} differ. Data › Clear filter shows every row.` : `${name(spec.a)} and ${name(spec.b)} are the same in every shown row.`);
+      return;
+    }
+    try {
+      const rep = await runJob("Comparing", () => backend().compareCols(t.id, spec));
+      if (!rep || t !== tab) return;
+      const differ = rep.different + rep.only_first + rep.only_second;
+      if (!differ) {
+        t.picked = new Set();
+        t.bump();
+        say(`${name(spec.a)} and ${name(spec.b)} are the same in all ${plural(rep.same, "shown row")}.`);
+        return;
+      }
+      const lit = new Set<string>();
+      for (const r of rep.rows) {
+        if (lit.size >= MAX_LIT) break;
+        lit.add(`${r}:${spec.a}`);
+        lit.add(`${r}:${spec.b}`);
+      }
+      t.picked = lit;
+      const r0 = rep.rows[0]!;
+      grid?.select({ row: r0, col: spec.a }, { row: r0, col: spec.a });
+      t.bump();
+      const parts = [rep.different ? `${rep.different.toLocaleString()} different` : "", rep.only_first ? `${rep.only_first.toLocaleString()} only in ${name(spec.a)}` : "", rep.only_second ? `${rep.only_second.toLocaleString()} only in ${name(spec.b)}` : ""].filter(Boolean);
+      say(`${plural(differ, "row")} differ (${parts.join(", ")}); ${rep.same.toLocaleString()} the same. They are lit up${lit.size >= MAX_LIT ? " (the first ones)" : ""}; any change turns the lights off.`);
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
 
   // ---- tidy column titles ----
   let tidyAsk = $state(false);
@@ -4330,6 +4402,7 @@
     { id: "format.autofit", label: "&AutoFit column width", run: () => { const r = tab!.rect; void grid?.fitCols(r.col, r.cols); }, enabled: hasTab },
     { id: "format.hideCols", label: "&Hide columns", keys: ["Ctrl+0"], run: hideCols, enabled: hasTab },
     { id: "format.tidyTitles", label: "&Tidy column titles…", run: openTidyTitles, enabled: ready },
+    { id: "data.compareCols", label: "Compare t&wo columns…", run: openCompareCols, enabled: ready },
     {
       id: "format.protectCols",
       label: "&Protect column (no changes)",
@@ -4549,7 +4622,7 @@
         "data.pivot", "data.unpivot", "data.subtotals", "data.form", "-",
         "data.compute", "data.checks", "data.fieldCheck", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
-        "data.join", "data.match", "data.street", "data.append", "-",
+        "data.join", "data.match", "data.street", "data.append", "data.compareCols", "-",
         "data.values", "data.group", "data.arrange", "data.extract", "data.build", "-",
         "find.find", "find.replace", "find.batch", "find.next", "find.prev",
       ],
@@ -4583,9 +4656,9 @@
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "file.rename", "file.copyPath", "file.showFolder", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
+    cell: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
-    col: ["format.renameCol", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.showAllCols"],
   };
 
@@ -4928,6 +5001,14 @@
       },
       get tabs() {
         return tabs;
+      },
+      /** Tests: the zip picker for a list of tables. */
+      showZip(list: ZipList) {
+        zipPick = list;
+      },
+      /** Tests: switch to tab `i`. */
+      activate(i: number) {
+        if (i >= 0 && i < tabs.length) active = i;
       },
     };
   }
@@ -6335,6 +6416,19 @@
   />
 {/if}
 
+{#if compareAsk && tab}
+  {@const c = compareAsk}
+  <CompareColsDialog
+    titles={c.titles}
+    hidden={hiddenColsOf(tab)}
+    first={c.first}
+    second={c.second}
+    header={tab.header && tab.info.rows > 0}
+    readOnly={!!tab.info.read_only}
+    onRun={(spec, action) => void runCompareCols(spec, action).then(() => grid?.focus())}
+    onClose={() => { compareAsk = null; grid?.focus(); }}
+  />
+{/if}
 {#if tidyAsk && tab}
   <TidyTitlesDialog doc={tab.id} last={lastTidy} onApply={(s) => void runTidyTitles(s).then(() => grid?.focus())} onClose={() => { tidyAsk = false; grid?.focus(); }} />
 {/if}

@@ -1419,7 +1419,9 @@ impl Document {
             changes.push((id, out));
         }
         let states = self.patch_states(changes)?;
-        self.only_protected(states.is_empty() && ins.is_none() && plan.remove.is_empty() && plan.order.is_none())?;
+        self.only_protected(
+            states.is_empty() && ins.is_none() && plan.remove.is_empty() && plan.order.is_none(),
+        )?;
         let map = match plan.order {
             Some(order) => {
                 let m = self.map_list();

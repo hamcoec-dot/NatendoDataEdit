@@ -2,8 +2,6 @@
 //! text, or differ from another column of their row. Shown rows only; the
 //! list is capped so a whole-table pick on a huge file stays bounded.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +77,12 @@ fn blank(v: &str) -> bool {
 }
 
 fn same_loose(a: &str, b: &str) -> bool {
-    let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
     a == b || norm(a) == norm(b)
 }
 
@@ -89,7 +92,12 @@ type Found = Vec<(u64, u32, Vec<u32>)>;
 impl Document {
     /// Every matching cell of the area by row, and how many there are; stops
     /// listing (but keeps counting) past `cap` cells.
-    fn special_scan(&self, spec: &SpecialSpec, cap: u64, progress: &Progress) -> Result<(Found, u64), Error> {
+    fn special_scan(
+        &self,
+        spec: &SpecialSpec,
+        cap: u64,
+        progress: &Progress,
+    ) -> Result<(Found, u64), Error> {
         self.ready_for_bulk()?;
         let ncols = self.col_count();
         let mut cols: Vec<u32> = spec.cols.iter().copied().filter(|&c| c < ncols).collect();
@@ -121,60 +129,70 @@ impl Document {
         let n = end - start;
         let kind = &spec.kind;
         let read = spec.read;
-        let listed = AtomicU64::new(0);
         progress.start(n);
-        let parts: Vec<(Found, u64)> = (0..(n as usize).div_ceil(CHUNK))
-            .into_par_iter()
-            .map(|c| -> Result<(Found, u64), Error> {
-                let s = start + (c * CHUNK) as u64;
-                let e = (s + CHUNK as u64).min(end);
-                let mut out = Vec::new();
-                let mut total = 0u64;
-                let mut buf = Vec::new();
-                for r in s..e {
-                    let id = self.id_at(r).ok_or(Error::OutOfRange)?;
-                    reader.read(self, id, &mut buf);
-                    let other = against.map(|_| reader.get(&buf, cols.len()));
-                    let mut hits = Vec::new();
-                    for (k, &col) in cols.iter().enumerate() {
-                        let v = reader.get(&buf, k);
-                        let hit = match kind {
-                            SpecialKind::Blanks => blank(v),
-                            SpecialKind::Numbers => value::parse_number(v, read).is_some(),
-                            SpecialKind::Text => !blank(v) && value::parse_number(v, read).is_none(),
-                            SpecialKind::RowDiff { exact, .. } => {
-                                let o = other.unwrap_or("");
-                                if *exact {
-                                    v != o
-                                } else {
-                                    !same_loose(v, o)
+        let nchunks = (n as usize).div_ceil(CHUNK);
+        let group = rayon::current_num_threads().max(1) * 4;
+        let mut found: Found = Vec::new();
+        let mut total = 0u64;
+        let mut listed = 0u64;
+        for g in (0..nchunks).step_by(group) {
+            let list = listed < cap;
+            let parts: Vec<(Found, u64)> = (g..(g + group).min(nchunks))
+                .into_par_iter()
+                .map(|c| -> Result<(Found, u64), Error> {
+                    let s = start + (c * CHUNK) as u64;
+                    let e = (s + CHUNK as u64).min(end);
+                    let mut out = Vec::new();
+                    let mut total = 0u64;
+                    let mut buf = Vec::new();
+                    for r in s..e {
+                        let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                        reader.read(self, id, &mut buf);
+                        let other = against.map(|_| reader.get(&buf, cols.len()));
+                        let mut hits = Vec::new();
+                        for (k, &col) in cols.iter().enumerate() {
+                            let v = reader.get(&buf, k);
+                            let hit = match kind {
+                                SpecialKind::Blanks => blank(v),
+                                SpecialKind::Numbers => value::parse_number(v, read).is_some(),
+                                SpecialKind::Text => {
+                                    !blank(v) && value::parse_number(v, read).is_none()
                                 }
+                                SpecialKind::RowDiff { exact, .. } => {
+                                    let o = other.unwrap_or("");
+                                    if *exact {
+                                        v != o
+                                    } else {
+                                        !same_loose(v, o)
+                                    }
+                                }
+                                SpecialKind::Edited | SpecialKind::Problems { .. } => false,
+                            };
+                            if hit {
+                                hits.push(col);
                             }
-                            SpecialKind::Edited | SpecialKind::Problems { .. } => false,
-                        };
-                        if hit {
-                            hits.push(col);
+                        }
+                        if !hits.is_empty() {
+                            total += hits.len() as u64;
+                            if list {
+                                out.push((r, id, hits));
+                            }
                         }
                     }
-                    if !hits.is_empty() {
-                        total += hits.len() as u64;
-                        // Listing stops once enough cells are listed anywhere
-                        // (the chunks that run first may list more than their
-                        // share; the caller trims to the cap in order).
-                        if listed.fetch_add(hits.len() as u64, Ordering::Relaxed) < cap {
-                            out.push((r, id, hits));
-                        }
+                    progress.step(e - s)?;
+                    Ok((out, total))
+                })
+                .collect::<Result<_, _>>()?;
+            for (rows, t) in parts {
+                total += t;
+                for row in rows {
+                    if listed >= cap {
+                        break;
                     }
+                    listed += row.2.len() as u64;
+                    found.push(row);
                 }
-                progress.step(e - s)?;
-                Ok((out, total))
-            })
-            .collect::<Result<_, _>>()?;
-        let mut found = Vec::new();
-        let mut total = 0;
-        for (rows, t) in parts {
-            total += t;
-            found.extend(rows);
+            }
         }
         Ok((found, total))
     }
@@ -196,7 +214,10 @@ impl Document {
                 // works that out when the caller has no recent one.
                 let run;
                 let repeats = if spec.repeats.is_empty()
-                    && checks.checks.iter().any(|c| matches!(c.kind, crate::validate::CheckKind::Unique { .. }))
+                    && checks
+                        .checks
+                        .iter()
+                        .any(|c| matches!(c.kind, crate::validate::CheckKind::Unique { .. }))
                 {
                     run = self.run_checks(checks, progress)?.repeats;
                     &run
@@ -204,9 +225,9 @@ impl Document {
                     &spec.repeats
                 };
                 self.problem_marks(rows, checks, repeats, progress)?
-                .into_iter()
-                .map(|m| (m.row, m.col))
-                .collect()
+                    .into_iter()
+                    .map(|m| (m.row, m.col))
+                    .collect()
             }
             _ => self
                 .edited_cells(rows, lo..hi + 1)?
@@ -251,8 +272,12 @@ impl Document {
     }
 
     /// The cells of the area that are of `spec.kind`.
-    pub fn special_cells(&self, spec: &SpecialSpec, progress: &Progress) -> Result<SpecialCells, Error> {
-        let (found, total) = self.special_scan(spec, u64::MAX, progress)?;
+    pub fn special_cells(
+        &self,
+        spec: &SpecialSpec,
+        progress: &Progress,
+    ) -> Result<SpecialCells, Error> {
+        let (found, total) = self.special_scan(spec, MAX_SPECIAL_CELLS as u64, progress)?;
         let mut cells = Vec::new();
         'all: for (r, _, cols) in found {
             for c in cols {
@@ -267,7 +292,12 @@ impl Document {
 
     /// Plan putting `value` in every cell Go To Special picks (an empty
     /// value clears them), one undo step. At most [`MAX_BLOCK_CELLS`].
-    pub fn plan_fill_special(&self, spec: &SpecialSpec, value: &str, progress: &Progress) -> Result<CellPlan, Error> {
+    pub fn plan_fill_special(
+        &self,
+        spec: &SpecialSpec,
+        value: &str,
+        progress: &Progress,
+    ) -> Result<CellPlan, Error> {
         if value.len() > MAX_CELL_BYTES {
             return Err(Error::Invalid("the text is too long".into()));
         }
@@ -278,13 +308,20 @@ impl Document {
             )));
         }
         if (value.len() as u64).saturating_mul(total) > MAX_BLOCK_BYTES as u64 {
-            return Err(Error::Invalid("this would create too much text at once".into()));
+            return Err(Error::Invalid(
+                "this would create too much text at once".into(),
+            ));
         }
         let mut plan = CellPlan::new(self);
         let (first, last) = (found.first().map(|f| f.0), found.last().map(|f| f.0));
         plan.changes = found
             .into_iter()
-            .map(|(_, id, cols)| (id, cols.into_iter().map(|c| (c, value.to_string())).collect()))
+            .map(|(_, id, cols)| {
+                (
+                    id,
+                    cols.into_iter().map(|c| (c, value.to_string())).collect(),
+                )
+            })
             .collect();
         plan.cells = total;
         if let (Some(a), Some(b)) = (first, last) {
@@ -300,13 +337,24 @@ mod tests {
     use crate::OpenOptions;
 
     fn doc(text: &str) -> Document {
-        let mut d = Document::from_bytes(text.as_bytes().to_vec(), OpenOptions::default(), Some("csv")).unwrap();
+        let mut d = Document::from_bytes(
+            text.as_bytes().to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
         while !d.index_step(1 << 20).unwrap() {}
         d
     }
 
     fn pick(d: &Document, kind: SpecialKind, cols: Vec<u32>) -> SpecialCells {
-        let spec = SpecialSpec { kind, row: 1, rows: u64::MAX, cols, ..Default::default() };
+        let spec = SpecialSpec {
+            kind,
+            row: 1,
+            rows: u64::MAX,
+            cols,
+            ..Default::default()
+        };
         d.special_cells(&spec, &Progress::default()).unwrap()
     }
 
@@ -321,17 +369,43 @@ mod tests {
         let t = pick(&d, SpecialKind::Text, vec![0, 1, 2]);
         assert_eq!(t.cells, vec![(1, 1), (3, 0)]);
         // Only the asked columns, and nothing past the table.
-        assert_eq!(pick(&d, SpecialKind::Blanks, vec![1, 9]).cells, vec![(3, 1)]);
+        assert_eq!(
+            pick(&d, SpecialKind::Blanks, vec![1, 9]).cells,
+            vec![(3, 1)]
+        );
     }
 
     #[test]
     fn row_differences() {
         let d = doc("a,b,c\nx,x,X\ny,Y ,y\nz,q,z\n");
-        let loose = pick(&d, SpecialKind::RowDiff { against: 0, exact: false }, vec![0, 1, 2]);
+        let loose = pick(
+            &d,
+            SpecialKind::RowDiff {
+                against: 0,
+                exact: false,
+            },
+            vec![0, 1, 2],
+        );
         assert_eq!(loose.cells, vec![(3, 1)]);
-        let exact = pick(&d, SpecialKind::RowDiff { against: 0, exact: true }, vec![0, 1, 2]);
+        let exact = pick(
+            &d,
+            SpecialKind::RowDiff {
+                against: 0,
+                exact: true,
+            },
+            vec![0, 1, 2],
+        );
         assert_eq!(exact.cells, vec![(1, 2), (2, 1), (3, 1)]);
-        let spec = SpecialSpec { kind: SpecialKind::RowDiff { against: 7, exact: true }, row: 0, rows: 9, cols: vec![0], ..Default::default() };
+        let spec = SpecialSpec {
+            kind: SpecialKind::RowDiff {
+                against: 7,
+                exact: true,
+            },
+            row: 0,
+            rows: 9,
+            cols: vec![0],
+            ..Default::default()
+        };
         assert!(d.special_cells(&spec, &Progress::default()).is_err());
     }
 
@@ -344,7 +418,14 @@ mod tests {
         assert_eq!(e.cells, vec![(2, 1)]);
         assert!(pick(&d, SpecialKind::Edited, vec![0]).cells.is_empty());
         let checks = CheckSpec {
-            checks: vec![Check { col: Some(0), kind: CheckKind::Number { min: None, max: None, whole: false } }],
+            checks: vec![Check {
+                col: Some(0),
+                kind: CheckKind::Number {
+                    min: None,
+                    max: None,
+                    whole: false,
+                },
+            }],
             keep_first: true,
             ..Default::default()
         };
@@ -362,17 +443,34 @@ mod tests {
         assert_eq!(d.protected_cols(), vec![0]);
         assert!(d.set_cell(1, 0, "9".into()).is_err());
         assert_eq!(d.cell(1, 0).unwrap(), "1");
-        d.set_cells(vec![(1, 0, "9".into()), (1, 1, "b".into())]).unwrap();
+        d.set_cells(vec![(1, 0, "9".into()), (1, 1, "b".into())])
+            .unwrap();
         assert_eq!(d.protected_skipped(), 1);
         assert_eq!(d.row_values(1).unwrap(), ["1", "b"]);
         // A bulk fill of both columns changes only the other one.
-        let spec = SpecialSpec { kind: SpecialKind::Text, row: 1, rows: 9, cols: vec![0, 1], ..Default::default() };
-        let plan = d.plan_fill_special(&spec, "X", &Progress::default()).unwrap();
+        let spec = SpecialSpec {
+            kind: SpecialKind::Text,
+            row: 1,
+            rows: 9,
+            cols: vec![0, 1],
+            ..Default::default()
+        };
+        let plan = d
+            .plan_fill_special(&spec, "X", &Progress::default())
+            .unwrap();
         d.apply_cells(plan).unwrap();
         assert_eq!(d.row_values(1).unwrap(), ["1", "X"]);
         // Only protected cells: refused, nothing changes.
-        let spec = SpecialSpec { kind: SpecialKind::Numbers, row: 1, rows: 9, cols: vec![0], ..Default::default() };
-        let plan = d.plan_fill_special(&spec, "X", &Progress::default()).unwrap();
+        let spec = SpecialSpec {
+            kind: SpecialKind::Numbers,
+            row: 1,
+            rows: 9,
+            cols: vec![0],
+            ..Default::default()
+        };
+        let plan = d
+            .plan_fill_special(&spec, "X", &Progress::default())
+            .unwrap();
         assert!(d.apply_cells(plan).is_err());
         // A rename of the protected column works.
         d.set_first_row_cell(0, "voter_id".into()).unwrap();
@@ -389,12 +487,30 @@ mod tests {
     #[test]
     fn fill_plan() {
         let mut d = doc("a,b\n1,\n,x\n,\n");
-        let spec = SpecialSpec { kind: SpecialKind::Blanks, row: 1, rows: 9, cols: vec![0, 1], ..Default::default() };
-        let plan = d.plan_fill_special(&spec, "UNKNOWN", &Progress::default()).unwrap();
+        let spec = SpecialSpec {
+            kind: SpecialKind::Blanks,
+            row: 1,
+            rows: 9,
+            cols: vec![0, 1],
+            ..Default::default()
+        };
+        let plan = d
+            .plan_fill_special(&spec, "UNKNOWN", &Progress::default())
+            .unwrap();
         assert_eq!(plan.cells, 4);
         d.apply_cells(plan).unwrap();
-        let all: Vec<Vec<String>> = (0..d.row_count()).map(|r| d.row_values(r).unwrap()).collect();
-        assert_eq!(all, [["a", "b"], ["1", "UNKNOWN"], ["UNKNOWN", "x"], ["UNKNOWN", "UNKNOWN"]]);
+        let all: Vec<Vec<String>> = (0..d.row_count())
+            .map(|r| d.row_values(r).unwrap())
+            .collect();
+        assert_eq!(
+            all,
+            [
+                ["a", "b"],
+                ["1", "UNKNOWN"],
+                ["UNKNOWN", "x"],
+                ["UNKNOWN", "UNKNOWN"]
+            ]
+        );
         d.undo();
         assert_eq!(d.cell(3, 1).unwrap(), "");
     }

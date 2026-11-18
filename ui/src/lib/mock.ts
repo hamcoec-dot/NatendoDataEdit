@@ -46,7 +46,8 @@ import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentIte
 import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, TableReport, Totals } from "./backend";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
-import type { TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
+import { compareCells } from "./colcompare";
+import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
 import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
 import { mockEval } from "./mockexpr";
 import { previewOf, simulateJoin } from "./joins";
@@ -2041,6 +2042,26 @@ export class MockBackend implements Backend {
         const info = await this.setCells(doc, cells);
         return this.report(info, { cols: 1, cells: cells.length, groups: groups.size });
       }
+      case "compare_show": {
+        const rep = await this.compareCols(doc, op.spec);
+        const keep = new Set(rep.rows.map((r) => this.rowId(d, r)));
+        if (op.spec.keep_first && this.rowCount(d) > 0) keep.add(this.rowId(d, 0));
+        return this.report(this.setView(d, keep, { columns: [], keep_first: op.spec.keep_first }), { rows: rep.rows.length });
+      }
+      case "compare_column": {
+        const s = op.spec;
+        const at = Math.max(s.a, s.b) + 1;
+        const title = (c: number) => this.value(d, 0, c) || `Column ${c + 1}`;
+        const labels = { same: "Same", different: "Different", first: "Only in first", second: "Only in second" } as const;
+        const vals: string[] = [];
+        for (let r = s.keep_first ? 1 : 0; r < this.rowCount(d); r++) vals.push(labels[compareCells(this.value(d, r, s.a), this.value(d, r, s.b), s)]);
+        await this.change(doc, { op: "insert_cols", at, count: 1 });
+        const cells: [number, number, string][] = [];
+        if (s.keep_first) cells.push([0, at, s.title || `${title(s.a)} vs ${title(s.b)}`]);
+        vals.forEach((v, i) => cells.push([i + (s.keep_first ? 1 : 0), at, v]));
+        const info = this.writeCells(doc, cells);
+        return this.report(info, { cols: 1, cells: cells.length });
+      }
       case "fill_special": {
         const found = await this.specialCells(doc, op.spec);
         if (found.total > 5_000_000) throw err("invalid", `${found.total} cells were found; one fill changes at most 5000000. Pick fewer columns or rows.`);
@@ -2456,6 +2477,23 @@ export class MockBackend implements Backend {
       if (x !== null && (!best || (largest ? x > best[0] : x < best[0]))) best = [x, r];
     }
     return best ? best[1] : null;
+  }
+
+  async compareCols(doc: number, spec: CompareCols): Promise<CompareColsReport> {
+    const d = this.get(doc);
+    const rep: CompareColsReport = { same: 0, different: 0, only_first: 0, only_second: 0, rows: [] };
+    if (spec.a === spec.b) throw err("invalid", "pick two different columns");
+    for (let r = spec.keep_first ? 1 : 0; r < this.rowCount(d); r++) {
+      const k = compareCells(this.value(d, r, spec.a), this.value(d, r, spec.b), spec);
+      if (k === "same") rep.same++;
+      else {
+        if (k === "different") rep.different++;
+        else if (k === "first") rep.only_first++;
+        else rep.only_second++;
+        rep.rows.push(r);
+      }
+    }
+    return rep;
   }
 
   async specialCells(doc: number, spec: SpecialSpec): Promise<SpecialCells> {

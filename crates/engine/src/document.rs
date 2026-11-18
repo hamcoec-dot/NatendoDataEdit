@@ -575,7 +575,10 @@ impl Document {
             return Vec::new();
         }
         let mut out: Vec<u32> = (0..self.col_count())
-            .filter(|&c| self.phys(c).is_some_and(|p| self.protected.binary_search(&p).is_ok()))
+            .filter(|&c| {
+                self.phys(c)
+                    .is_some_and(|p| self.protected.binary_search(&p).is_ok())
+            })
             .collect();
         out.sort_unstable();
         out
@@ -583,7 +586,10 @@ impl Document {
 
     /// Whether logical column `col` is protected.
     pub fn is_protected(&self, col: u32) -> bool {
-        !self.protected.is_empty() && self.phys(col).is_some_and(|p| self.protected.binary_search(&p).is_ok())
+        !self.protected.is_empty()
+            && self
+                .phys(col)
+                .is_some_and(|p| self.protected.binary_search(&p).is_ok())
     }
 
     /// Cells the last change left alone in protected columns.
@@ -1417,7 +1423,11 @@ impl Document {
         self.set_cells_guarded(cells.into_iter().map(|(c, v)| (id, c, v)).collect(), false)
     }
 
-    fn set_cells_guarded(&mut self, mut cells: Vec<(u32, u32, String)>, guard: bool) -> Result<(), Error> {
+    fn set_cells_guarded(
+        &mut self,
+        mut cells: Vec<(u32, u32, String)>,
+        guard: bool,
+    ) -> Result<(), Error> {
         self.protected_skipped.store(0, Ordering::Relaxed);
         if guard && !self.protected.is_empty() {
             let before = cells.len();

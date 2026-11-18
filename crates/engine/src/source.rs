@@ -32,8 +32,7 @@ pub fn is_gzip(data: &[u8]) -> bool {
 pub fn gunzip(data: &[u8]) -> io::Result<Vec<u8>> {
     let cap = (data.len() as u64)
         .saturating_mul(MAX_GZ_RATIO)
-        .max(1 << 20)
-        .min(MAX_GZ_OUTPUT);
+        .clamp(1 << 20, MAX_GZ_OUTPUT);
     let mut out = Vec::new();
     let mut r = flate2::read::MultiGzDecoder::new(data).take(cap + 1);
     r.read_to_end(&mut out)?;

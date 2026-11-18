@@ -109,7 +109,11 @@ pub fn tidy_title(s: &str, spec: &TitleSpec) -> String {
                 out
             }
         }
-        TitleCase::Snake => words(&t).iter().map(|w| w.to_lowercase()).collect::<Vec<_>>().join("_"),
+        TitleCase::Snake => words(&t)
+            .iter()
+            .map(|w| w.to_lowercase())
+            .collect::<Vec<_>>()
+            .join("_"),
     };
     t.chars().take(MAX_TITLE_CHARS).collect()
 }
@@ -121,7 +125,11 @@ pub fn tidy_titles(titles: &[String], spec: &TitleSpec) -> Vec<String> {
     if !spec.unique {
         return out;
     }
-    let sep = if spec.case == TitleCase::Snake { "_" } else { " " };
+    let sep = if spec.case == TitleCase::Snake {
+        "_"
+    } else {
+        " "
+    };
     for (i, t) in out.iter_mut().enumerate() {
         if t.is_empty() {
             *t = match spec.case {
@@ -193,31 +201,66 @@ mod tests {
 
     #[test]
     fn styles() {
-        let spec = |case| TitleSpec { case, ..Default::default() };
-        assert_eq!(tidy_title("  First   NAME ", &spec(TitleCase::Keep)), "First NAME");
-        assert_eq!(tidy_title("first  name", &spec(TitleCase::Title)), "First Name");
-        assert_eq!(tidy_title("First Name-2 ", &spec(TitleCase::Snake)), "first_name_2");
+        let spec = |case| TitleSpec {
+            case,
+            ..Default::default()
+        };
+        assert_eq!(
+            tidy_title("  First   NAME ", &spec(TitleCase::Keep)),
+            "First NAME"
+        );
+        assert_eq!(
+            tidy_title("first  name", &spec(TitleCase::Title)),
+            "First Name"
+        );
+        assert_eq!(
+            tidy_title("First Name-2 ", &spec(TitleCase::Snake)),
+            "first_name_2"
+        );
         assert_eq!(tidy_title("Zip code", &spec(TitleCase::Upper)), "ZIP CODE");
-        let odd = TitleSpec { odd: true, ..Default::default() };
+        let odd = TitleSpec {
+            odd: true,
+            ..Default::default()
+        };
         assert_eq!(tidy_title("Amount ($)#", &odd), "Amount");
         assert_eq!(tidy_title("Résumé ✓", &odd), "Résumé");
-        let keep = TitleSpec { spaces: false, ..Default::default() };
+        let keep = TitleSpec {
+            spaces: false,
+            ..Default::default()
+        };
         assert_eq!(tidy_title(" a  b ", &keep), " a  b ");
     }
 
     #[test]
     fn unique_and_blank() {
-        let t = tidy_titles(&s(&["Phone", "phone", "", "Phone 2", "Phone"]), &TitleSpec::default());
+        let t = tidy_titles(
+            &s(&["Phone", "phone", "", "Phone 2", "Phone"]),
+            &TitleSpec::default(),
+        );
         assert_eq!(t, ["Phone", "phone 3", "Column 3", "Phone 2", "Phone 4"]);
-        let snake = TitleSpec { case: TitleCase::Snake, ..Default::default() };
-        assert_eq!(tidy_titles(&s(&["Phone", "PHONE", ""]), &snake), ["phone", "phone_2", "column_3"]);
-        let off = TitleSpec { unique: false, ..Default::default() };
+        let snake = TitleSpec {
+            case: TitleCase::Snake,
+            ..Default::default()
+        };
+        assert_eq!(
+            tidy_titles(&s(&["Phone", "PHONE", ""]), &snake),
+            ["phone", "phone_2", "column_3"]
+        );
+        let off = TitleSpec {
+            unique: false,
+            ..Default::default()
+        };
         assert_eq!(tidy_titles(&s(&["a", "a", ""]), &off), ["a", "a", ""]);
     }
 
     #[test]
     fn one_undo_step_and_protected_columns_still_rename() {
-        let mut d = Document::from_bytes(b" a ,a,\n1,2,3\n".to_vec(), OpenOptions::default(), Some("csv")).unwrap();
+        let mut d = Document::from_bytes(
+            b" a ,a,\n1,2,3\n".to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
         d.set_protected(&[0]);
         let plan = d.plan_tidy_titles(&TitleSpec::default()).unwrap();
         assert_eq!(plan.len(), 3);
@@ -227,6 +270,14 @@ mod tests {
         d.undo();
         assert_eq!(d.row_values(0).unwrap(), [" a ", "a", ""]);
         // Nothing to tidy: nothing changes.
-        assert_eq!(d.tidy_titles(&TitleSpec { unique: false, spaces: false, ..Default::default() }).unwrap(), 0);
+        assert_eq!(
+            d.tidy_titles(&TitleSpec {
+                unique: false,
+                spaces: false,
+                ..Default::default()
+            })
+            .unwrap(),
+            0
+        );
     }
 }

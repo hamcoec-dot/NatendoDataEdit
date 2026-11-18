@@ -718,6 +718,15 @@ pub enum DataOp {
     FillRect {
         spec: natendo_engine::shift::RectFill,
     },
+    /// Compare two columns: show only the rows where they differ.
+    CompareShow {
+        spec: natendo_engine::colcompare::CompareCols,
+    },
+    /// Compare two columns: a column saying Same, Different, Only in first
+    /// or Only in second.
+    CompareColumn {
+        spec: natendo_engine::colcompare::CompareCols,
+    },
     /// One value into every cell Go To Special picks (empty: clear them).
     FillSpecial {
         spec: natendo_engine::special::SpecialSpec,
@@ -904,6 +913,12 @@ fn recipe_step(op: &DataOp) -> Logged {
         DataOp::ShowDuplicates { .. } | DataOp::ShowProblems { .. } => {
             return Logged::LeftOut("showing duplicates or problems (a view, not a change)".into())
         }
+        DataOp::CompareShow { .. } => {
+            return Logged::LeftOut(
+                "showing rows where two columns differ (a view, not a change)".into(),
+            )
+        }
+        DataOp::CompareColumn { spec } => RecipeOp::CompareColumn { spec: spec.clone() },
         DataOp::Join { .. } => return Logged::LeftOut("a join with another tab or a list".into()),
         DataOp::Append { .. } => return Logged::LeftOut("appending another tab".into()),
     };
@@ -935,6 +950,7 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
         RecipeOp::FillExample { spec } => DataOp::FillExample { spec },
         RecipeOp::Compute { spec } => DataOp::Compute { spec },
         RecipeOp::FillBlanks { spec } => DataOp::FillBlanks { spec },
+        RecipeOp::CompareColumn { spec } => DataOp::CompareColumn { spec },
         RecipeOp::CountRepeats { spec } => DataOp::CountRepeats { spec },
         RecipeOp::BlankRepeats { spec } => DataOp::BlankRepeats { spec },
         RecipeOp::Breaks { spec } => DataOp::Breaks { spec },
@@ -2011,7 +2027,11 @@ impl Docs {
     }
 
     /// Tidy every column title, as one undo step (and a recipe step).
-    pub fn tidy_titles(&self, id: u32, spec: natendo_engine::titles::TitleSpec) -> CmdResult<DocInfo> {
+    pub fn tidy_titles(
+        &self,
+        id: u32,
+        spec: natendo_engine::titles::TitleSpec,
+    ) -> CmdResult<DocInfo> {
         let step = RecipeOp::TidyTitles { spec: spec.clone() };
         self.recorded(id, Logged::Step(step), || {
             self.edit(id, |d| d.tidy_titles(&spec).map(|_| ()))
@@ -3925,6 +3945,7 @@ impl Docs {
             DataOp::Compute { .. } => "Computing",
             // Showing rows changes no data, so a locked file allows it.
             DataOp::ShowProblems { .. } => "Filtering",
+            DataOp::CompareShow { .. } | DataOp::CompareColumn { .. } => "Comparing",
             DataOp::SortProblems { .. } | DataOp::CheckColumn { .. } => "Checking",
             DataOp::FillBlanks { .. } => "Filling blanks",
             DataOp::CountRepeats { .. } | DataOp::BlankRepeats { .. } => "Looking for repeats",
@@ -4080,6 +4101,8 @@ impl Docs {
                     Planned::Cols(d.plan_check_column(spec, &rep, title, p)?)
                 }
                 DataOp::FillBlanks { spec } => Planned::Rows(d.plan_fill_blanks(spec, p)?),
+                DataOp::CompareShow { spec } => Planned::Rows(d.plan_compare_show(spec, p)?),
+                DataOp::CompareColumn { spec } => Planned::Cols(d.plan_compare_column(spec, p)?),
                 DataOp::CountRepeats { spec } => Planned::Cols(d.plan_count_repeats(spec, p)?),
                 DataOp::BlankRepeats { spec } => Planned::Rows(d.plan_blank_repeats(spec, p)?),
                 DataOp::Breaks { spec } => Planned::Rows(d.plan_breaks(spec, p)?),
@@ -5128,6 +5151,18 @@ impl Docs {
         Ok(d.find_extreme(col, largest, keep_first, read, &job.progress)?)
     }
 
+    /// Compare two columns: counts, and the rows where they differ.
+    pub fn compare_cols(
+        &self,
+        id: u32,
+        spec: &natendo_engine::colcompare::CompareCols,
+    ) -> CmdResult<natendo_engine::colcompare::CompareColsReport> {
+        let entry = self.get(id)?;
+        let job = entry.start("Comparing")?;
+        let d = entry.read();
+        Ok(d.compare_cols(spec, &job.progress)?)
+    }
+
     /// Go To Special: the cells of an area that are blank, numbers, text or
     /// differ from another column of their row.
     pub fn special_cells(
@@ -5142,7 +5177,12 @@ impl Docs {
         // same checks on this version of the table.
         if let natendo_engine::special::SpecialKind::Problems { checks } = &spec.kind {
             let key = serde_json::to_string(&checks.checks).unwrap_or_default();
-            if let Some((k, rev, reps)) = entry.checks.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+            if let Some((k, rev, reps)) = entry
+                .checks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+            {
                 if *k == key && *rev == d.revision() {
                     spec.repeats = reps.clone();
                 }
