@@ -1081,15 +1081,19 @@
     }
   }
 
-  /** Column titles of an open document (first row, or "Column N"). */
-  async function titlesOf(id: number, header: boolean): Promise<string[]> {
+  /** Column titles of an open document (first row, or "Column N"); the
+   *  first 2,000, or with `all` every one (read 2,000 at a time). */
+  async function titlesOf(id: number, header: boolean, all = false): Promise<string[]> {
     const t = tabs.find((x) => x.id === id);
-    const cols = Math.min(t?.info.cols ?? 1, 2000);
-    let first: string[] = [];
+    const cols = all ? (t?.info.cols ?? 1) : Math.min(t?.info.cols ?? 1, 2000);
+    const first: string[] = [];
     if (header) {
       try {
-        const v = await backend().viewport(id, 0, 1, 0, cols, 60);
-        first = v.cells.slice(0, v.cols);
+        for (let c0 = 0; c0 < cols; c0 += 2000) {
+          const n = Math.min(2000, cols - c0);
+          const v = await backend().viewport(id, 0, 1, c0, n, 60);
+          first.push(...v.cells.slice(0, v.cols));
+        }
       } catch {
         // Numbers only.
       }
@@ -2273,7 +2277,7 @@
     if (id === null || !t) return;
     pivotDone(spec);
     try {
-      const titles = await titlesOf(id, spec.keep_first);
+      const titles = await titlesOf(id, spec.keep_first, true);
       const d = await runJob("Building the pivot table", () => backend().pivotTable(id, spec));
       if (!d) return;
       addTab(d, false);
@@ -2308,7 +2312,7 @@
       if (a !== "go") return;
     }
     try {
-      const now = await titlesOf(from.source, from.spec.keep_first);
+      const now = await titlesOf(from.source, from.spec.keep_first, true);
       const spec = followColumns(from.spec, from.titles, now);
       if (typeof spec === "string") {
         say(spec);

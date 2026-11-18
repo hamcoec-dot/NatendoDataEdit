@@ -269,10 +269,11 @@ fn id_title(title: &str) -> bool {
         "isbn",
         "ein",
         "npi",
+        "num",
     ];
     const QUANTITY: &[&str] = &[
         "count", "counts", "votes", "ballots", "total", "totals", "amount", "amounts", "balance",
-        "sum", "qty", "quantity", "paid", "num",
+        "sum", "qty", "quantity", "paid",
     ];
     let quantity = words.iter().enumerate().any(|(i, w)| {
         QUANTITY.contains(&w.as_str())
@@ -853,6 +854,7 @@ mod tests {
             "Cell count",
             "Account total",
             "Number of ZIP codes",
+            "Votes num",
         ] {
             assert_eq!(kind_of(t, &["120", "7"]), Kind::Number(None), "{t}");
         }
@@ -865,6 +867,8 @@ mod tests {
             "Phone",
             "Phone number",
             "Account",
+            "Account num",
+            "Phone num",
         ] {
             assert_eq!(kind_of(t, &["120", "7"]), Kind::Text, "{t}");
         }
