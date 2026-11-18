@@ -479,6 +479,7 @@
     prefs.data.savedSearches = [...list, s].sort((a, b) => a.name.localeCompare(b.name));
     prefs.save();
     saveName = "";
+    savedOpen = false;
     status = `Saved "${name}". It is kept on this computer until you delete it.`;
   }
   function useSearch(s: SavedSearch): void {
@@ -915,6 +916,17 @@
               <tr><td><code>*</code></td><td>any text: <code>Sm*th</code> finds Smith, Smyth</td></tr>
               <tr><td><code>?</code></td><td>one character: <code>B?b</code> finds Bob, Bib</td></tr>
               <tr><td><code>~*</code> <code>~?</code></td><td>a real * or ?</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <b>By value</b>
+          <table>
+            <tbody>
+              <tr><td><code>5</code></td><td>Numbers: 5, 5.00, $5 (not 15)</td></tr>
+              <tr><td><code>10..20</code> <code>&gt;5</code> <code>&lt;=100</code></td><td>a range or a comparison (numbers and dates)</td></tr>
+              <tr><td><code>1/5/2024</code></td><td>Dates: 2024-01-05, Jan 5 2024</td></tr>
+              <tr><td><code>Jon Smyth</code></td><td>Similar spelling: John Smith</td></tr>
             </tbody>
           </table>
         </div>

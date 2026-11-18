@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.3.9_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.4.0_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -444,6 +444,23 @@ everything is also in command search.
 - **Untick changes and show changed rows**: in the Replace all preview, untick
   any change to leave that cell as it is. After Replace all, "Show changed
   rows" shows only the rows that changed.
+- **Find numbers, dates and similar spellings by value**: "Numbers by value"
+  finds `5` as 5, 5.00 or $5 (not 15), and takes ranges and comparisons
+  (`10..20`, `>5`, `<=100`); "Dates by value" finds `1/5/2024` as 2024-01-05
+  or Jan 5 2024, with ranges such as `1/1/2024..3/31/2024`; "Similar
+  spelling" finds whole cells a letter or two apart ("Jon Smyth" finds "John
+  Smith"), case, accents and punctuation aside. Replace puts the replacement
+  in the whole cell.
+- **Preserve case, hidden rows and search by columns**: with Preserve case,
+  replacing "smith" with "jones" turns SMITH into JONES and Smith into Jones.
+  "Include hidden" also counts, lists and replaces in rows a filter or you
+  hid (Find next stays on shown rows), and the Replace all preview says how
+  many hidden cells change. "By columns" makes Find next go down each column
+  before moving right.
+- **Copy the list and saved searches**: Copy list puts Find all's matches
+  (row, column, cell) on the clipboard as tab-separated text (after the
+  privacy check). Saved ▾ keeps a search, its replacement and its options by
+  name on this computer, until you delete it.
 - **Find tips and recent searches**: the ? button lists wildcard and pattern
   examples and the keys; Up and Down in the boxes bring back earlier searches,
   kept only until the app closes (Clear search history forgets them).
@@ -462,6 +479,12 @@ everything is also in command search.
 
 ![Replace from a list: pasted pairs, whole cells only, and a preview of the two cells that change](docs/screenshots/replace-from-list.png)
 *Replace from a list: many pairs at once, shown before anything changes.*
+
+![Numbers by value: 10..21 finds 15 and 20.5 in the amount column](docs/screenshots/find-numbers.png)
+*Numbers by value: a range finds every amount in it, however it is written.*
+
+![Similar spelling: Jon Smyth finds John Smith and Jon Smyth](docs/screenshots/find-similar.png)
+*Similar spelling finds names a letter or two apart.*
 - **Search a whole folder** of table files (Ctrl+Shift+F), including Excel and
   JSON files and subfolders; click a hit to open that file at that cell.
 - Sort by several columns, numbers and dates in the right order, natural text

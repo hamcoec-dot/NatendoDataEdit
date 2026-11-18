@@ -1046,6 +1046,9 @@ pub struct Change {
     pub hidden: bool,
 }
 
+/// A changed cell's logical column, its matches and whether it is hidden.
+type CellAt = (u32, u32, bool);
+
 /// A computed replace-all, applied with [`Document::apply_replace`].
 #[derive(Debug, Clone)]
 pub struct ReplacePlan {
@@ -1054,7 +1057,7 @@ pub struct ReplacePlan {
     /// For each entry of `changes`: its row number in the document and, for
     /// each changed cell, the logical column, its matches and whether it is
     /// hidden (for paging through the preview and unticking).
-    at: Vec<(u64, Vec<(u32, u32, bool)>)>,
+    at: Vec<(u64, Vec<CellAt>)>,
     /// Cells that change.
     pub cells: u64,
     /// Of them, cells in hidden rows or columns.
@@ -2048,7 +2051,7 @@ impl Document {
         let created = AtomicUsize::new(0);
         type Part = (
             Vec<(u32, Vec<(u32, String)>)>,
-            Vec<(u64, Vec<(u32, u32, bool)>)>,
+            Vec<(u64, Vec<CellAt>)>,
             Vec<Change>,
             u64,
             u64,
