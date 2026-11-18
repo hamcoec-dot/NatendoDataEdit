@@ -2421,7 +2421,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "natendo-cli"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "natendo-engine",
  "serde",
@@ -2430,7 +2430,7 @@ dependencies = [
 
 [[package]]
 name = "natendo-data-edit"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "getrandom 0.3.4",
  "natendo-engine",
@@ -2446,7 +2446,7 @@ dependencies = [
 
 [[package]]
 name = "natendo-engine"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "aho-corasick",
  "chacha20poly1305",

@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.4.5_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.4.6_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -163,6 +163,10 @@ everything is also in command search.
   too few fields are fixed, and each repair is listed.
 - **Title row or not:** the app guesses whether the first row holds titles;
   one switch changes it, and files without titles get column numbers.
+  A file opened again keeps the choice you made for it (or had when you
+  saved it). Only a fingerprint of the file's path and the choice are
+  kept, on this PC, for the 1,000 files used last; nothing is kept for
+  files in private mode.
   Rename a column by double-clicking its heading, right-clicking it, or
   Format > Rename column (a file without titles gets a title row). Data
   check rules that name the column ([first_name]) follow the new name (or

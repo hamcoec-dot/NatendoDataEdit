@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { recallHeader, rememberHeader } from "./lib/headerMemory";
   import { onMount, tick } from "svelte";
   import { backend, errorText, isCmdError, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
   import { Tab } from "./lib/tab.svelte";
@@ -479,9 +480,39 @@
     }
   }
 
+  /** Remember this file's "first row holds the column names" for the next
+   *  time it opens: when the user chose it (or saved), never for a file in
+   *  private mode (whose earlier choice is forgotten instead). */
+  async function rememberTab(t: Tab, saved = false): Promise<void> {
+    const path = t.info.path;
+    if (!path || !(t.headerTouched || saved)) return;
+    try {
+      const p = await backend().privateState(t.id);
+      await rememberHeader(path, t.header, p.file || p.folder);
+    } catch {
+      // Not remembered this time.
+    }
+  }
+
   /** Set "First row is header" from a look at the first rows (the file is
    *  not changed; the user can flip the switch any time). */
   async function guessHeader(t: Tab): Promise<void> {
+    // The choice made for this file before wins over a guess.
+    if (t.info.path && !t.headerTouched) {
+      try {
+        const p = await backend().privateState(t.id);
+        const kept = p.file || p.folder ? null : await recallHeader(t.info.path);
+        if (kept !== null && !t.headerTouched) {
+          t.header = kept;
+          t.headerTouched = true;
+          if (kept && t.cell.row === 0) t.sel = { anchor: { row: 1, col: 0 }, focus: { row: 1, col: 0 } };
+          t.bump();
+          return;
+        }
+      } catch {
+        // Guess instead.
+      }
+    }
     try {
       // A file opened from Windows can arrive before its first rows are
       // read; wait briefly (up to 2 s) for them, or the guess sees nothing.
@@ -1207,6 +1238,7 @@
           if (!d) return false; // dialog cancelled
           t.update(d, true);
           if (!d.can_undo) t.afterSave();
+          void rememberTab(t, true);
           say(`Saved ${d.name}.`);
           return true;
         } catch (e) {
@@ -1257,6 +1289,7 @@
   async function closeTab(i = active): Promise<boolean> {
     const t = tabs[i];
     if (!t) return false;
+    await rememberTab(t);
     if (t.info.modified) {
       active = i;
       const a = await ask(
@@ -1394,6 +1427,7 @@
       );
       if (a !== "quit") return;
     }
+    await Promise.all(tabs.map((t) => rememberTab(t)));
     await saveSession();
     await backend().quitApp();
   }
@@ -4010,6 +4044,7 @@
     t.headerOffByUndo = false;
     t.header = !t.header;
     t.headerTouched = true;
+    void rememberTab(t);
     grid?.select(t.sel.anchor, t.sel.focus, true, t.sel.active);
   }
 
