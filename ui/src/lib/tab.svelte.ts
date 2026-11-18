@@ -178,10 +178,18 @@ export class Tab {
   findCount = $state<number | null>(null);
   findHits = new Set<string>();
 
-  /** Set by the grid showing this tab: draw again now. */
-  onRedraw: (() => void) | null = null;
+  /** The grids showing this tab (two in a split view): draw again now. */
+  redraws = new Set<() => void>();
+  onRedraw = (): void => {
+    for (const f of this.redraws) f();
+  };
   scrollX = 0;
   scrollY = 0;
+  /** View › Split: two panes of this tab, top and bottom or side by side;
+   *  `at`: the first pane's share of the space. */
+  split = $state<{ dir: "rows" | "cols"; at: number } | null>(null);
+  /** Where the split view's second pane is scrolled to. */
+  splitScroll = { scrollX: 0, scrollY: 0 };
   columns: Columns;
   cache: CellCache;
 

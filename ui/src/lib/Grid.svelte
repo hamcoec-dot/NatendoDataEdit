@@ -69,8 +69,13 @@
     readOnly: boolean;
     /** The file is locked (File > Read-only): nothing may change. */
     locked?: boolean;
+    /** The second pane of a split view: it scrolls on its own. */
+    pane?: "main" | "split";
   }
-  let { tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onInsight, onActivate, onJump, onFillClear, readOnly, locked = false }: Props = $props();
+  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onInsight, onActivate, onJump, onFillClear, readOnly, locked = false }: Props = $props();
+  // Where this pane is scrolled to (a split view's second pane keeps its own).
+  const view = $derived(pane === "split" ? tab.splitScroll : tab);
+
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -139,8 +144,8 @@
     return Math.max(0, content - (viewW() - bodyLeft()) + 40);
   }
   function clampScroll(): void {
-    tab.scrollY = Math.min(Math.max(0, tab.scrollY), maxScrollY());
-    tab.scrollX = Math.min(Math.max(0, tab.scrollX), maxScrollX());
+    view.scrollY = Math.min(Math.max(0, view.scrollY), maxScrollY());
+    view.scrollX = Math.min(Math.max(0, view.scrollX), maxScrollX());
   }
 
   // ---- theme colours (read from CSS so themes and accents just work) ----
@@ -233,24 +238,24 @@
     let start = fc;
     let end = fc;
     if (tab.info.cols > fc) {
-      start = Math.max(fc, tab.columns.at(base + tab.scrollX));
+      start = Math.max(fc, tab.columns.at(base + view.scrollX));
       end = start;
-      const right = base + tab.scrollX + (viewW() - bodyLeft());
+      const right = base + view.scrollX + (viewW() - bodyLeft());
       while (end < tab.info.cols && tab.columns.x(end) < right) end++;
     }
-    return { frozen, body: { start, end, pos: bodyLeft() + tab.columns.x(start) - base - tab.scrollX } };
+    return { frozen, body: { start, end, pos: bodyLeft() + tab.columns.x(start) - base - view.scrollX } };
   }
 
   function visibleRows(): { frozen: Span; body: Span } {
     const off = tab.firstRow;
     const fr = frozenRows();
     const frozen = { start: off, end: off + fr, pos: headH };
-    const first = off + fr + Math.floor(tab.scrollY / rowH);
+    const first = off + fr + Math.floor(view.scrollY / rowH);
     const count = Math.ceil((viewH() - bodyTop()) / rowH) + 1;
     const end = Math.min(tab.info.rows, first + count);
     return {
       frozen,
-      body: { start: Math.min(first, end), end, pos: bodyTop() - (tab.scrollY % rowH) },
+      body: { start: Math.min(first, end), end, pos: bodyTop() - (view.scrollY % rowH) },
     };
   }
 
@@ -1367,7 +1372,7 @@
     let col = -1;
     if (px >= rowHeaderW) {
       const inFrozen = px < bodyLeft();
-      const base = inFrozen ? 0 : tab.columns.x(frozenCols()) + tab.scrollX;
+      const base = inFrozen ? 0 : tab.columns.x(frozenCols()) + view.scrollX;
       const rel = inFrozen ? px - rowHeaderW : px - bodyLeft();
       col = tab.columns.at(base + rel);
       if (!inFrozen && col < frozenCols()) col = frozenCols();
@@ -1526,15 +1531,15 @@
     if (c.row >= off + fr) {
       const y = (c.row - off - fr) * rowH;
       const vis = viewH() - bodyTop();
-      if (y < tab.scrollY) tab.scrollY = y;
-      else if (y + rowH > tab.scrollY + vis) tab.scrollY = y + rowH - vis;
+      if (y < view.scrollY) view.scrollY = y;
+      else if (y + rowH > view.scrollY + vis) view.scrollY = y + rowH - vis;
     }
     if (c.col >= frozenCols()) {
       const x = tab.columns.x(c.col) - tab.columns.x(frozenCols());
       const vis = viewW() - bodyLeft();
       const cw = tab.columns.width(c.col);
-      if (x < tab.scrollX) tab.scrollX = x;
-      else if (x + cw > tab.scrollX + vis) tab.scrollX = Math.min(x, x + cw - vis);
+      if (x < view.scrollX) view.scrollX = x;
+      else if (x + cw > view.scrollX + vis) view.scrollX = Math.min(x, x + cw - vis);
     }
     clampScroll();
     redraw();
@@ -1712,8 +1717,8 @@
     const fz = onFreezeEdge(x, y);
     if (fz) {
       // Frozen rows and columns count from the top-left of the file.
-      if (fz === "rows") tab.scrollY = 0;
-      else tab.scrollX = 0;
+      if (fz === "rows") view.scrollY = 0;
+      else view.scrollX = 0;
       clampScroll();
       freezing = { kind: fz, n: fz === "rows" ? frozenRows() : frozenCols() };
       onMessage(`Drag to choose how many ${fz} stay in view; Esc cancels.`);
@@ -1871,12 +1876,12 @@
       cursor = m.kind === "cells" && e.ctrlKey ? "copy" : "grabbing";
       // Scroll when the pointer leaves the body, along the axis that moves.
       if (m.kind !== "cols") {
-        if (y > viewH() - 4) tab.scrollY += rowH;
-        if (y < bodyTop() && tab.scrollY > 0) tab.scrollY -= rowH;
+        if (y > viewH() - 4) view.scrollY += rowH;
+        if (y < bodyTop() && view.scrollY > 0) view.scrollY -= rowH;
       }
       if (m.kind !== "rows") {
-        if (x > viewW() - 4) tab.scrollX += 40;
-        if (x < bodyLeft() && tab.scrollX > 0) tab.scrollX -= 40;
+        if (x > viewW() - 4) view.scrollX += 40;
+        if (x < bodyLeft() && view.scrollX > 0) view.scrollX -= 40;
       }
       clampScroll();
       m.px = x;
@@ -1926,10 +1931,10 @@
       return;
     }
     // Drag-select, scrolling when the pointer leaves the body.
-    if (y > viewH() - 4) tab.scrollY += rowH;
-    if (y < bodyTop() && tab.scrollY > 0) tab.scrollY -= rowH;
-    if (x > viewW() - 4) tab.scrollX += 40;
-    if (x < bodyLeft() && tab.scrollX > 0) tab.scrollX -= 40;
+    if (y > viewH() - 4) view.scrollY += rowH;
+    if (y < bodyTop() && view.scrollY > 0) view.scrollY -= rowH;
+    if (x > viewW() - 4) view.scrollX += 40;
+    if (x < bodyLeft() && view.scrollX > 0) view.scrollX -= 40;
     clampScroll();
     const h = hit(Math.min(Math.max(x, rowHeaderW), viewW() - 1), Math.min(Math.max(y, headH), viewH() - 1));
     if (h.area !== "cell") return;
@@ -1960,10 +1965,10 @@
       freezing = null;
       if (f.kind === "rows") {
         tab.frozenRows = f.n;
-        tab.scrollY = 0;
+        view.scrollY = 0;
       } else {
         tab.frozenCols = f.n;
-        tab.scrollX = 0;
+        view.scrollX = 0;
       }
       cursor = "default";
       clampScroll();
@@ -2043,10 +2048,10 @@
     }
     e.preventDefault();
     const unit = e.deltaMode === 1 ? rowH : e.deltaMode === 2 ? viewH() : 1;
-    if (e.shiftKey && e.deltaX === 0) tab.scrollX += e.deltaY * unit;
+    if (e.shiftKey && e.deltaX === 0) view.scrollX += e.deltaY * unit;
     else {
-      tab.scrollY += e.deltaY * unit;
-      tab.scrollX += e.deltaX * unit;
+      view.scrollY += e.deltaY * unit;
+      view.scrollX += e.deltaX * unit;
     }
     clampScroll();
     redraw();
@@ -2059,7 +2064,7 @@
     const max = maxScrollY();
     const visible = Math.max(1, viewH() - bodyTop());
     const size = max <= 0 ? track : Math.max(28, (track * visible) / (visible + max));
-    const pos = max <= 0 ? 0 : ((track - size) * tab.scrollY) / max;
+    const pos = max <= 0 ? 0 : ((track - size) * view.scrollY) / max;
     return { size, pos, track, max };
   });
   const hThumb = $derived.by(() => {
@@ -2068,7 +2073,7 @@
     const max = maxScrollX();
     const visible = Math.max(1, viewW() - bodyLeft());
     const size = max <= 0 ? track : Math.max(28, (track * visible) / (visible + max));
-    const pos = max <= 0 ? 0 : ((track - size) * tab.scrollX) / max;
+    const pos = max <= 0 ? 0 : ((track - size) * view.scrollX) / max;
     return { size, pos, track, max };
   });
 
@@ -2077,14 +2082,14 @@
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture(e.pointerId);
     const start = axis === "y" ? e.clientY : e.clientX;
-    const startScroll = axis === "y" ? tab.scrollY : tab.scrollX;
+    const startScroll = axis === "y" ? view.scrollY : view.scrollX;
     const t = axis === "y" ? vThumb : hThumb;
     const move = (ev: PointerEvent) => {
       const delta = (axis === "y" ? ev.clientY : ev.clientX) - start;
       const free = Math.max(1, t.track - t.size);
       const value = startScroll + (delta / free) * t.max;
-      if (axis === "y") tab.scrollY = Math.round(value / rowH) * rowH;
-      else tab.scrollX = value;
+      if (axis === "y") view.scrollY = Math.round(value / rowH) * rowH;
+      else view.scrollX = value;
       clampScroll();
       redraw();
     };
@@ -2103,8 +2108,8 @@
     const at = axis === "y" ? e.clientY - r.top : e.clientX - r.left;
     const page = axis === "y" ? viewH() - bodyTop() : viewW() - bodyLeft();
     const dir = at < t.pos ? -1 : 1;
-    if (axis === "y") tab.scrollY += dir * page;
-    else tab.scrollX += dir * page;
+    if (axis === "y") view.scrollY += dir * page;
+    else view.scrollX += dir * page;
     clampScroll();
     redraw();
   }
@@ -2502,9 +2507,9 @@
 
   $effect(() => {
     const t = tab;
-    t.onRedraw = redraw;
+    t.redraws.add(redraw);
     return () => {
-      if (t.onRedraw === redraw) t.onRedraw = null;
+      t.redraws.delete(redraw);
     };
   });
 

@@ -2265,6 +2265,45 @@
     }
   }
 
+  /** Data › Refresh pivot table: build this pivot again from its source
+   *  tab (after edits there), in the same place. */
+  async function pivotRefresh(): Promise<void> {
+    const t = tab;
+    const from = t ? pivotOf.get(t.id) : undefined;
+    if (!t || !from) return;
+    if (!tabs.some((x) => x.id === from.source)) {
+      say("The tab this pivot table came from is closed; open it again, then make the pivot table again.");
+      return;
+    }
+    if (t.info.can_undo) {
+      const a = await ask("Refresh the pivot table?", "Refreshing builds it again from its source and replaces this tab, so changes made in it are lost.", [
+        { id: "go", label: "Refresh", primary: true },
+        { id: "cancel", label: "Cancel" },
+      ], "cancel");
+      if (a !== "go") return;
+    }
+    try {
+      const d = await runJob("Refreshing the pivot table", () => backend().pivotTable(from.source, from.spec));
+      if (!d) return;
+      const nt = new Tab(d, DEFAULT_COL_WIDTH);
+      nt.header = true;
+      nt.headerTouched = true;
+      nt.private = t.private;
+      const i = tabs.indexOf(t);
+      if (i < 0) return;
+      tabs[i] = nt;
+      active = i;
+      pivotOf.delete(t.id);
+      pivotOf.set(nt.id, from);
+      await backend().closeDocument(t.id).catch(() => {});
+      nt.bump();
+      say(`Refreshed from ${tabs.find((x) => x.id === from.source)?.info.name ?? "its source"}: ${plural(d.rows, "row")} and ${plural(d.cols, "column")}.${t.info.path ? " Save it again (Ctrl+S) to keep it." : ""}`);
+      void tick().then(() => grid?.focus());
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
   async function pivotCopy(spec: PivotSpec): Promise<void> {
     const id = pivotDoc;
     if (id === null) return;
@@ -3939,6 +3978,48 @@
     grid?.select(t.sel.anchor, t.sel.focus, true, t.sel.active);
   }
 
+  let splitEl = $state<HTMLDivElement | null>(null);
+  /** View › Split: two panes of the tab, each scrolling on its own; again
+   *  (or the other way) changes or closes it. */
+  function toggleSplit(dir: "rows" | "cols"): void {
+    const t = tab;
+    if (!t) return;
+    if (t.split?.dir === dir) {
+      t.split = null;
+      say("Split closed.");
+    } else {
+      if (!t.split) t.splitScroll = { scrollX: t.scrollX, scrollY: t.scrollY };
+      t.split = { dir, at: t.split?.at ?? 0.5 };
+      say(dir === "rows" ? "Split top and bottom: each pane scrolls on its own. Drag the bar to the edge to close it." : "Split side by side: each pane scrolls on its own. Drag the bar to the edge to close it.");
+    }
+    void tick().then(() => grid?.focus());
+  }
+  /** Drag the split bar: resize, or close at an edge. */
+  function splitDrag(e: PointerEvent): void {
+    const t = tab;
+    const box = splitEl?.getBoundingClientRect();
+    if (!t?.split || !box) return;
+    e.preventDefault();
+    const bar = e.currentTarget as HTMLElement;
+    bar.setPointerCapture(e.pointerId);
+    const dir = t.split.dir;
+    const at = (ev: PointerEvent) => (dir === "cols" ? (ev.clientX - box.left) / box.width : (ev.clientY - box.top) / box.height);
+    const move = (ev: PointerEvent) => {
+      if (t.split) t.split = { dir, at: Math.min(0.97, Math.max(0.03, at(ev))) };
+    };
+    const up = (ev: PointerEvent) => {
+      bar.removeEventListener("pointermove", move);
+      bar.removeEventListener("pointerup", up);
+      const f = at(ev);
+      if (f < 0.05 || f > 0.95) {
+        t.split = null;
+        say("Split closed.");
+      }
+    };
+    bar.addEventListener("pointermove", move);
+    bar.addEventListener("pointerup", up);
+  }
+
   function freezeAtCursor(): void {
     const t = tab;
     if (!t) return;
@@ -4669,6 +4750,8 @@
     { id: "format.renameCol", label: "Re&name column…", run: () => void askRename(menuCol ?? undefined), enabled: () => ready() && !tab?.info.read_only && (tab?.info.cols ?? 0) > 0 },
 
     { id: "view.freeze", label: "&Freeze panes at cursor", run: freezeAtCursor, enabled: hasTab },
+    { id: "view.splitRows", label: "Split top and &bottom", keys: ["Ctrl+Alt+S"], run: () => toggleSplit("rows"), enabled: hasTab, checked: () => tab?.split?.dir === "rows" },
+    { id: "view.splitCols", label: "Split si&de by side", run: () => toggleSplit("cols"), enabled: hasTab, checked: () => tab?.split?.dir === "cols" },
     { id: "view.freezeRow", label: "Freeze top &row", run: () => { tab!.frozenRows = 1; tab!.frozenCols = 0; }, enabled: hasTab },
     { id: "view.freezeCol", label: "Freeze first &column", run: () => { tab!.frozenCols = 1; tab!.frozenRows = 0; }, enabled: hasTab },
     { id: "view.unfreeze", label: "&Unfreeze panes", run: () => { tab!.frozenRows = 0; tab!.frozenCols = 0; }, enabled: () => !!tab && (tab.frozenRows > 0 || tab.frozenCols > 0) },
@@ -4799,6 +4882,7 @@
     { id: "data.sortColsAsc", label: "Sort columns by title A → Z", run: () => sortColumns(false), enabled: ready, repeatable: true },
     { id: "data.sortColsDesc", label: "Sort columns by title Z → A", run: () => sortColumns(true), enabled: ready, repeatable: true },
     { id: "data.pivot", label: "&Pivot table…", run: openPivot, enabled: ready },
+    { id: "data.pivotRefresh", label: "Refres&h pivot table", keys: ["Alt+F5"], run: () => void pivotRefresh(), enabled: () => ready() && !!tab && pivotOf.has(tab.id) },
     { id: "data.unpivot", label: "U&npivot…", run: () => openOp("unpivot"), enabled: ready },
     { id: "data.join", label: "&Join with another table…", run: () => { joinKind = "join"; }, enabled: ready },
     { id: "data.street", label: "Look up by &street range (precinct, district)…", run: () => { streetOpen = true; }, enabled: ready },
@@ -4861,7 +4945,7 @@
     {
       label: "&View",
       items: [
-        "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze", "-", "view.zoomIn", "view.zoomOut", "view.zoomReset", "-",
+        "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze", "-", "view.splitRows", "view.splitCols", "-", "view.zoomIn", "view.zoomOut", "view.zoomReset", "-",
         "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
@@ -4878,7 +4962,7 @@
         "data.filter", "data.filterMenu", "data.filterBySel", "data.filterFormula", "view.panelFilters", "data.clearFilter", "data.reapply", "-",
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
-        "data.pivot", "data.unpivot", "data.subtotals", "data.form", "-",
+        "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
         "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.fieldCheck", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "-",
@@ -4914,7 +4998,7 @@
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
-    tab: ["file.save", "file.saveAs", "-", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
+    tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "format.tidyTitles", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
@@ -5697,7 +5781,7 @@
     const cutItems = new Set(["edit.moveCut", "edit.cancelCut"]);
     // The counts items (and their line) only in a counts tab.
     const counts = !!tab?.countsOf;
-    let items = (contextItems[area] ?? []).filter((i) => (tab?.cut || !cutItems.has(i)) && (counts || (i !== "data.countsShow" && i !== "data.countsHide")));
+    let items = (contextItems[area] ?? []).filter((i) => (tab?.cut || !cutItems.has(i)) && (counts || (i !== "data.countsShow" && i !== "data.countsHide")) && (i !== "data.pivotRefresh" || (!!tab && pivotOf.has(tab.id))));
     if (!counts && items[0] === "-") items = items.slice(1);
     // Nothing is picked until the pointer or an arrow key moves onto an item.
     context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items, index: -1 };
@@ -6007,6 +6091,66 @@
   <main class="body" class:with-panel={!!prefs.data.panel}>
     {#if tab}
       {#key tab.id}
+        {#if tab.split}
+          {@const sp = tab.split}
+          <div class="splitview" class:cols={sp.dir === "cols"} bind:this={splitEl} style={sp.dir === "cols" ? `grid-template-columns: minmax(0, ${sp.at}fr) 6px minmax(0, ${1 - sp.at}fr)` : `grid-template-rows: minmax(0, ${sp.at}fr) 6px minmax(0, ${1 - sp.at}fr)`}>
+            <div class="pane">
+            <Grid
+                  bind:this={grid}
+                  {tab}
+                  readOnly={!tab.info.indexed || tab.peeking}
+                  locked={tab.info.read_only}
+                  onCommit={commitCell}
+                  onContext={openContext}
+                  onRenameCol={(c) => void askRename(c)}
+                  onInsight={(c) => (profileCol = c)}
+                  onActivate={() => {
+                    if (!tab?.countsOf) return false;
+                    void countsShow(false);
+                    return true;
+                  }}
+                  onMessage={say}
+                  onFilterButton={(col, x, y) => (filterMenu = { col, x, y })}
+                  onFill={(dir, count, swap) => void fillHandle(dir, count, swap)}
+                  onFillClear={(r) => void clearRect(r)}
+                  onFillAuto={() => void fillHandleAuto()}
+                  onOpenLink={(url) => void openLink(url)}
+                  onMoveCols={(at, count, to) => void dragCols(at, count, to)}
+                  onMoveRows={(at, count, to) => void dragRows(at, count, to)}
+                  onMoveCells={(from, row, col, copy) => void dragCells(from, row, col, copy)}
+                  onJump={(dir, extend) => void jump(dir, extend)}
+                />
+            </div>
+            <div class="divider" role="separator" aria-orientation={sp.dir === "cols" ? "vertical" : "horizontal"} aria-label="Split: drag to resize, or to the edge to close" title="Drag to resize; drag to the edge to close the split" onpointerdown={splitDrag}></div>
+            <div class="pane">
+            <Grid
+                  pane="split"
+                  {tab}
+                  readOnly={!tab.info.indexed || tab.peeking}
+                  locked={tab.info.read_only}
+                  onCommit={commitCell}
+                  onContext={openContext}
+                  onRenameCol={(c) => void askRename(c)}
+                  onInsight={(c) => (profileCol = c)}
+                  onActivate={() => {
+                    if (!tab?.countsOf) return false;
+                    void countsShow(false);
+                    return true;
+                  }}
+                  onMessage={say}
+                  onFilterButton={(col, x, y) => (filterMenu = { col, x, y })}
+                  onFill={(dir, count, swap) => void fillHandle(dir, count, swap)}
+                  onFillClear={(r) => void clearRect(r)}
+                  onFillAuto={() => void fillHandleAuto()}
+                  onOpenLink={(url) => void openLink(url)}
+                  onMoveCols={(at, count, to) => void dragCols(at, count, to)}
+                  onMoveRows={(at, count, to) => void dragRows(at, count, to)}
+                  onMoveCells={(from, row, col, copy) => void dragCells(from, row, col, copy)}
+                  onJump={(dir, extend) => void jump(dir, extend)}
+                />
+            </div>
+          </div>
+        {:else}
         <Grid
           bind:this={grid}
           {tab}
@@ -6032,6 +6176,7 @@
           onMoveCells={(from, row, col, copy) => void dragCells(from, row, col, copy)}
           onJump={(dir, extend) => void jump(dir, extend)}
         />
+        {/if}
       {/key}
     {:else}
       <div class="empty">
@@ -7127,6 +7272,27 @@
   }
   .body.with-panel {
     grid-template-columns: minmax(0, 1fr) 320px;
+  }
+  .splitview {
+    display: grid;
+    min-height: 0;
+    min-width: 0;
+  }
+  .splitview .pane {
+    display: grid;
+    min-height: 0;
+    min-width: 0;
+  }
+  .splitview .divider {
+    background: var(--border, #c8c8c8);
+    cursor: row-resize;
+    touch-action: none;
+  }
+  .splitview.cols .divider {
+    cursor: col-resize;
+  }
+  .splitview .divider:hover {
+    background: var(--accent, #2f6fde);
   }
   .card h2 {
     font-size: 14px;
