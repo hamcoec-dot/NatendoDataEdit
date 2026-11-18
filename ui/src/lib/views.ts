@@ -97,6 +97,8 @@ export interface View {
   banded?: boolean;
   /** Lines of text per row (1 to 10). */
   row_lines?: number;
+  /** The filter panel's cards (older views have none). */
+  facets?: { col: number; kind: "values" | "numbers" | "dates" }[];
 }
 /** A view as "Pick up where you left off" keeps it on disk: only how the
  *  table is laid out. Filters, highlight rules and data checks can hold

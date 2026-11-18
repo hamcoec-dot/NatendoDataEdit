@@ -357,6 +357,29 @@ export interface FilterSpec {
   keep_first: boolean;
   read?: ReadOptions;
 }
+/** One card of the filter panel. */
+export interface FacetCard {
+  col: number;
+  kind: "values" | "numbers" | "dates";
+  /** Numbers and dates: the range the bars cover (null: the column's own). */
+  range: [number, number] | null;
+  search: string | null;
+}
+export interface Facet {
+  col: number;
+  values: { value: string; count: number }[];
+  distinct: number;
+  complete: boolean;
+  bins: number[];
+  range: [number, number] | null;
+  other: number;
+  blanks: number;
+  rows: number;
+}
+export interface Facets {
+  cards: Facet[];
+  shown: number;
+}
 export interface ValueList {
   values: { value: string; count: number }[];
   blanks: number;
@@ -1206,6 +1229,8 @@ export interface Backend {
   quitApp(): Promise<void>;
   onCloseRequested(handler: () => void): void;
   computePreview(doc: number, spec: ComputeSpec): Promise<ComputePreview>;
+  /** The filter panel's counts (an older count still running is cancelled). */
+  facetCounts(doc: number, cards: FacetCard[], spec: FilterSpec): Promise<Facets>;
   /** A column's profile (shapes, histogram, odd values). */
   columnProfile(doc: number, spec: ProfileSpec): Promise<Profile>;
   /** Run a formula typed in a cell; its results are one undo step. */
@@ -1692,6 +1717,9 @@ class TauriBackend implements Backend {
   }
   onCloseRequested(handler: () => void) {
     void import("@tauri-apps/api/event").then(({ listen }) => listen("close-requested", handler));
+  }
+  facetCounts(doc: number, cards: FacetCard[], spec: FilterSpec) {
+    return call<Facets>("facet_counts", { doc, cards, spec });
   }
   columnProfile(doc: number, spec: ProfileSpec) {
     return call<Profile>("column_profile", { doc, spec });

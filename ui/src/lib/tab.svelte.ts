@@ -138,6 +138,8 @@ export class Tab {
   /** Cells Go To Special lit up ("row:col", shown rows); gone with the
    *  next change or change of shown rows. */
   picked = new Set<string>();
+  /** The filter panel's cards (kept with views). */
+  facetCards = $state<{ col: number; kind: "values" | "numbers" | "dates"; range: [number, number] | null }[]>([]);
   /** A counts tab: the tab and columns it counts (a line can show its
    *  rows there). */
   countsOf: { source: number; cols: number[] } | null = null;

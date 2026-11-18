@@ -91,6 +91,33 @@ const url = process.argv[3] || "http://localhost:5202";
   ok(await p.evaluate(() => window.__nde.tab.info.filtered), "clicking an odd shape shows its rows");
   await command("Clear filter");
 
+  // ---- Filter panel ----
+  await sel(1, 1);
+  await p.keyboard.press("Alt+Shift+L");
+  await wait(500);
+  const panel = p.locator(".fp");
+  ok(await panel.isVisible(), "Alt+Shift+L opens the filter panel");
+  await panel.locator("select").selectOption({ label: "party" });
+  await wait(700);
+  await panel.locator("select").selectOption({ label: "precinct" });
+  await wait(900);
+  const cardP = panel.locator("section[aria-label='Filter card for party']");
+  const cardQ = panel.locator("section[aria-label='Filter card for precinct']");
+  ok(/D\s*60/.test(await cardP.textContent()), `the party card counts D (${(await cardP.textContent()).replace(/\s+/g, " ").slice(0, 80)})`);
+  const bars = () => cardQ.locator("button.hb").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")).join("|"));
+  const before = await bars();
+  await cardP.locator("label:has-text('D') input[type=checkbox]").first().check();
+  await wait(1000);
+  ok(await p.evaluate(() => window.__nde.tab.info.filtered), "ticking D filters the table");
+  const after = await bars();
+  ok(after !== before, "the precinct card's bars follow the pick");
+  ok(/R\s*36/.test(await cardP.textContent()), "the party card still counts every party");
+  if (out) await p.screenshot({ path: path.join(out, "filter-panel.png"), clip: { x: 900, y: 60, width: 460, height: 560 } });
+  await sel(1, 1);
+  await p.keyboard.press("Control+z");
+  await wait(800);
+  ok(!(await p.evaluate(() => window.__nde.tab.info.filtered)), "one undo takes the pick back");
+
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   console.log(failed ? `${failed} FAILED` : "ALL PASS");
   await b.close();

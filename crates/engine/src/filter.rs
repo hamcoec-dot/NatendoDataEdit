@@ -676,6 +676,363 @@ impl Document {
     }
 }
 
+/// What a filter-panel card shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FacetKind {
+    /// Each value with its count (most common first).
+    #[default]
+    Values,
+    /// A histogram of the numbers.
+    Numbers,
+    /// A histogram of the dates (days since 1970).
+    Dates,
+}
+
+/// One card of the filter panel.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FacetCard {
+    pub col: u32,
+    pub kind: FacetKind,
+    /// Numbers and dates: the range the bars cover (the column's smallest
+    /// and largest over every row, so the bars stay put as filters change).
+    pub range: Option<(f64, f64)>,
+    /// Values: only values containing this (any case).
+    pub search: Option<String>,
+}
+
+/// Bars in a card's histogram.
+pub const FACET_BINS: usize = 24;
+/// Values listed on a card at most (most common first).
+pub const FACET_VALUES: usize = 1_000;
+
+/// One card's counts: over the rows every other rule lets through, so a
+/// card shows what picking in it would leave.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Facet {
+    pub col: u32,
+    /// Values: most common first, at most [`FACET_VALUES`].
+    pub values: Vec<ValueCount>,
+    /// Different values seen (capped at [`MAX_LIST_VALUES`]).
+    pub distinct: u64,
+    pub complete: bool,
+    /// Numbers and dates: counts per bar over `range`.
+    pub bins: Vec<u64>,
+    /// Numbers and dates: the range the bars cover (as given, or the
+    /// column's smallest and largest over every row when not given).
+    pub range: Option<(f64, f64)>,
+    /// Cells that are not numbers (or dates), or outside the range.
+    pub other: u64,
+    pub blanks: u64,
+    /// Rows counted for this card.
+    pub rows: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Facets {
+    pub cards: Vec<Facet>,
+    /// Rows the whole filter lets through (not the title row).
+    pub shown: u64,
+}
+
+/// One card's running counts.
+#[derive(Default)]
+struct FacetAcc {
+    map: HashMap<String, u64>,
+    over: bool,
+    bins: Vec<u64>,
+    other: u64,
+    blanks: u64,
+    rows: u64,
+}
+
+impl Document {
+    /// Cards for numbers or dates without a range get the column's smallest
+    /// and largest over every data row (one parallel pass for all of them).
+    fn facet_ranges(
+        &self,
+        cards: &[FacetCard],
+        keep_first: bool,
+        read: ReadOptions,
+    ) -> Result<Vec<FacetCard>, Error> {
+        let mut out = cards.to_vec();
+        let need: Vec<usize> = (0..out.len())
+            .filter(|&k| out[k].kind != FacetKind::Values && out[k].range.is_none())
+            .filter(|&k| out[k].col < self.col_count())
+            .collect();
+        if need.is_empty() {
+            return Ok(out);
+        }
+        let cols: Vec<u32> = need.iter().map(|&k| out[k].col).collect();
+        let reader = crate::ops::Cols::new(self, &cols);
+        let total = self.total_rows();
+        let first = u64::from(keep_first && total > 0);
+        let n = need.len();
+        let chunks = ((total - first) as usize).div_ceil(CHUNK);
+        let lim = (0..chunks)
+            .into_par_iter()
+            .map(|c| {
+                let s = first + (c * CHUNK) as u64;
+                let e = (s + CHUNK as u64).min(total);
+                let mut lim = vec![(f64::INFINITY, f64::NEG_INFINITY); n];
+                let mut buf = Vec::new();
+                for p in s..e {
+                    let Some(id) = self.doc_id_at(p) else {
+                        continue;
+                    };
+                    reader.read(self, id, &mut buf);
+                    for (i, &k) in need.iter().enumerate() {
+                        let v = reader.get(&buf, i);
+                        let x = if out[k].kind == FacetKind::Numbers {
+                            value::parse_number(v, read)
+                        } else {
+                            value::parse_date(v, read).map(f64::floor)
+                        };
+                        if let Some(x) = x {
+                            lim[i].0 = lim[i].0.min(x);
+                            lim[i].1 = lim[i].1.max(x);
+                        }
+                    }
+                }
+                lim
+            })
+            .reduce(
+                || vec![(f64::INFINITY, f64::NEG_INFINITY); n],
+                |mut a, b| {
+                    for (x, y) in a.iter_mut().zip(b) {
+                        x.0 = x.0.min(y.0);
+                        x.1 = x.1.max(y.1);
+                    }
+                    a
+                },
+            );
+        for (i, &k) in need.iter().enumerate() {
+            let (lo, hi) = lim[i];
+            out[k].range = (lo <= hi).then_some((lo, hi));
+        }
+        Ok(out)
+    }
+}
+
+fn facet_accs(cards: &[FacetCard]) -> Vec<FacetAcc> {
+    cards
+        .iter()
+        .map(|c| FacetAcc {
+            bins: if c.kind == FacetKind::Values {
+                Vec::new()
+            } else {
+                vec![0; FACET_BINS]
+            },
+            ..Default::default()
+        })
+        .collect()
+}
+
+impl Document {
+    /// Counts for every card of the filter panel in one pass over the rows
+    /// (in parallel): a row counts for a card when it passes every rule, or
+    /// fails only the rule on the card's own column.
+    pub fn facet_counts(
+        &self,
+        cards: &[FacetCard],
+        spec: &FilterSpec,
+        progress: &Progress,
+    ) -> Result<Facets, Error> {
+        self.ready_for_bulk()?;
+        if cards.len() > 32 {
+            return Err(Error::Invalid(
+                "a filter panel holds at most 32 cards".into(),
+            ));
+        }
+        let cards = &self.facet_ranges(cards, spec.keep_first, spec.read)?;
+        let spec = self.to_physical_spec(spec)?;
+        let compiled = Compiled::new(&spec.columns, spec.read)?;
+        let read = spec.read;
+        // Each card's physical column (None: past the map, all blank).
+        let card_phys: Vec<Option<u32>> = cards
+            .iter()
+            .map(|c| {
+                (c.col < self.col_count())
+                    .then(|| self.phys(c.col))
+                    .flatten()
+            })
+            .collect();
+        let mut wanted = compiled.wanted.clone();
+        for p in card_phys.iter().flatten() {
+            if let Err(i) = wanted.binary_search(p) {
+                wanted.insert(i, *p);
+            }
+        }
+        let remap: Vec<usize> = compiled
+            .wanted
+            .iter()
+            .map(|p| wanted.binary_search(p).expect("listed"))
+            .collect();
+        let rule_col: Vec<u32> = compiled
+            .tests
+            .iter()
+            .map(|(slot, _)| compiled.wanted[*slot])
+            .collect();
+        let card_slot: Vec<Option<usize>> = card_phys
+            .iter()
+            .map(|p| p.map(|p| wanted.binary_search(&p).expect("listed")))
+            .collect();
+        let needles: Vec<Option<String>> = cards
+            .iter()
+            .map(|c| {
+                c.search
+                    .as_deref()
+                    .map(str::to_lowercase)
+                    .filter(|s| !s.is_empty())
+            })
+            .collect();
+        let total = self.total_rows();
+        progress.start(total);
+        let first = usize::from(spec.keep_first && total > 0);
+        let chunks = (total as usize).div_ceil(CHUNK);
+        let bin_of = |c: &FacetCard, x: f64| -> Option<usize> {
+            let (lo, hi) = c.range?;
+            if !(x >= lo && x <= hi) {
+                return None;
+            }
+            Some(if hi > lo {
+                (((x - lo) / (hi - lo) * FACET_BINS as f64) as usize).min(FACET_BINS - 1)
+            } else {
+                0
+            })
+        };
+        let parts: Vec<(Vec<FacetAcc>, u64)> = (0..chunks)
+            .into_par_iter()
+            .map(|c| -> Result<(Vec<FacetAcc>, u64), Error> {
+                let s = c * CHUNK;
+                let e = (s + CHUNK).min(total as usize);
+                let mut acc = facet_accs(cards);
+                let mut shown = 0u64;
+                let mut buf = Vec::new();
+                for pos in s.max(first)..e {
+                    let id = self.doc_id_at(pos as u64).expect("in range");
+                    self.read_cells(id, &wanted, &mut buf);
+                    // The rules this row fails: none, one (on which column),
+                    // or more.
+                    let mut fails = 0u32;
+                    let mut failed_col = u32::MAX;
+                    for (k, (slot, t)) in compiled.tests.iter().enumerate() {
+                        if !t.test(&buf[remap[*slot]], compiled.read) {
+                            fails += 1;
+                            failed_col = rule_col[k];
+                            if fails > 1 {
+                                break;
+                            }
+                        }
+                    }
+                    if fails == 0 {
+                        shown += 1;
+                    }
+                    if fails > 1 {
+                        continue;
+                    }
+                    for (k, card) in cards.iter().enumerate() {
+                        if fails == 1 && card_phys[k] != Some(failed_col) {
+                            continue;
+                        }
+                        let a = &mut acc[k];
+                        a.rows += 1;
+                        let v: &str = card_slot[k].map_or("", |sl| buf[sl].as_ref());
+                        if v.trim().is_empty() {
+                            a.blanks += 1;
+                            continue;
+                        }
+                        match card.kind {
+                            FacetKind::Values => {
+                                if let Some(n) = &needles[k] {
+                                    if !v.to_lowercase().contains(n.as_str()) {
+                                        continue;
+                                    }
+                                }
+                                if let Some(n) = a.map.get_mut(v) {
+                                    *n += 1;
+                                } else if a.map.len() < MAX_LIST_VALUES
+                                    && v.len() <= MAX_LIST_VALUE_BYTES
+                                {
+                                    a.map.insert(v.to_string(), 1);
+                                } else {
+                                    a.over = true;
+                                }
+                            }
+                            FacetKind::Numbers | FacetKind::Dates => {
+                                let x = if card.kind == FacetKind::Numbers {
+                                    value::parse_number(v, read)
+                                } else {
+                                    value::parse_date(v, read).map(f64::floor)
+                                };
+                                match x.and_then(|x| bin_of(card, x)) {
+                                    Some(b) => a.bins[b] += 1,
+                                    None => a.other += 1,
+                                }
+                            }
+                        }
+                    }
+                }
+                progress.step((e - s) as u64)?;
+                Ok((acc, shown))
+            })
+            .collect::<Result<_, _>>()?;
+        let mut all = facet_accs(cards);
+        let mut shown = 0;
+        for (accs, n) in parts {
+            shown += n;
+            for (a, b) in all.iter_mut().zip(accs) {
+                a.rows += b.rows;
+                a.blanks += b.blanks;
+                a.other += b.other;
+                a.over |= b.over;
+                a.bins.iter_mut().zip(b.bins).for_each(|(x, y)| *x += y);
+                for (k, n) in b.map {
+                    if let Some(x) = a.map.get_mut(&k) {
+                        *x += n;
+                    } else if a.map.len() < MAX_LIST_VALUES {
+                        a.map.insert(k, n);
+                    } else {
+                        a.over = true;
+                    }
+                }
+            }
+        }
+        let cards = cards
+            .iter()
+            .zip(all)
+            .map(|(c, a)| {
+                let distinct = a.map.len() as u64;
+                let mut values: Vec<ValueCount> = a
+                    .map
+                    .into_iter()
+                    .map(|(value, count)| ValueCount { value, count })
+                    .collect();
+                values.sort_unstable_by(|x, y| {
+                    y.count
+                        .cmp(&x.count)
+                        .then_with(|| value::natural_cmp(x.value.as_bytes(), y.value.as_bytes()))
+                });
+                let complete = !a.over && values.len() <= FACET_VALUES;
+                values.truncate(FACET_VALUES);
+                Facet {
+                    col: c.col,
+                    values,
+                    distinct,
+                    complete,
+                    bins: a.bins,
+                    range: c.range,
+                    other: a.other,
+                    blanks: a.blanks,
+                    rows: a.rows,
+                }
+            })
+            .collect();
+        Ok(Facets { cards, shown })
+    }
+}
+
 /// Numbers by value if all are numbers, dates by date if all are dates,
 /// else natural text order.
 fn sort_values(values: &mut [ValueCount], read: ReadOptions) {
@@ -1138,6 +1495,69 @@ mod tests {
         let again = d.filter_spec().unwrap();
         d.set_filter(&again).unwrap();
         assert_eq!(d.row_count(), 2);
+    }
+
+    #[test]
+    fn facets_count_what_the_other_cards_leave() {
+        let d = doc("party,precinct,age\nD,12,20\nR,12,30\nD,3,40\nD,12,\nI,3,25\n");
+        let cards = vec![
+            FacetCard {
+                col: 0,
+                ..Default::default()
+            },
+            FacetCard {
+                col: 1,
+                ..Default::default()
+            },
+            FacetCard {
+                col: 2,
+                kind: FacetKind::Numbers,
+                range: Some((20.0, 40.0)),
+                ..Default::default()
+            },
+        ];
+        // Party D picked: the precinct card counts D's rows; the party card
+        // still counts every party (its own rule left out).
+        let spec = rule(
+            0,
+            Rule::Values {
+                values: vec!["D".into()],
+                blanks: false,
+            },
+        );
+        let f = d.facet_counts(&cards, &spec, &Progress::new()).unwrap();
+        assert_eq!(f.shown, 3);
+        let party: Vec<(&str, u64)> = f.cards[0]
+            .values
+            .iter()
+            .map(|v| (v.value.as_str(), v.count))
+            .collect();
+        assert_eq!(party, vec![("D", 3), ("I", 1), ("R", 1)]);
+        let precinct: Vec<(&str, u64)> = f.cards[1]
+            .values
+            .iter()
+            .map(|v| (v.value.as_str(), v.count))
+            .collect();
+        assert_eq!(precinct, vec![("12", 2), ("3", 1)]);
+        assert_eq!(f.cards[2].bins.iter().sum::<u64>(), 2);
+        assert_eq!(f.cards[2].blanks, 1);
+        assert_eq!(f.cards[2].bins[0], 1);
+        assert_eq!(f.cards[2].bins[FACET_BINS - 1], 1);
+        // Searching a card.
+        let mut c = cards.clone();
+        c[0].search = Some("r".into());
+        let f = d
+            .facet_counts(
+                &c,
+                &FilterSpec {
+                    keep_first: true,
+                    ..Default::default()
+                },
+                &Progress::new(),
+            )
+            .unwrap();
+        assert_eq!(f.cards[0].values.len(), 1);
+        assert_eq!(f.shown, 5);
     }
 
     #[test]

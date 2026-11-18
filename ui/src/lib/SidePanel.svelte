@@ -4,11 +4,12 @@
   // the engine in bounded passes; text is shown as text (no HTML).
   import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
-  import { backend, type Opened, type ReadOptions } from "./backend";
+  import { backend, type Opened, type ReadOptions, type Rule } from "./backend";
+  import FilterPanel from "./FilterPanel.svelte";
   import type { Tab } from "./tab.svelte";
   import { TYPE_NAMES, fmt, type ColType, type ChartData, type ChartKind, type Listing, type Summary } from "./views";
 
-  export type PanelTab = "summary" | "chart" | "files" | "activity";
+  export type PanelTab = "summary" | "chart" | "files" | "activity" | "filters";
 
   interface Props {
     tab: Tab | undefined;
@@ -19,9 +20,11 @@
     onOpened: (o: Opened) => void;
     /** `cut`: `value` is a shortened value ending in "…" (filter on its start). */
     onFilterValue: (col: number, value: string, cut: boolean) => void;
+    /** The filter panel sets one column's rule (null: none). */
+    onSetRule: (col: number, rule: Rule | null) => Promise<void>;
     onClose: () => void;
   }
-  let { tab, which = $bindable(), titles, activity, read, onOpened, onFilterValue, onClose }: Props = $props();
+  let { tab, which = $bindable(), titles, activity, read, onOpened, onFilterValue, onSetRule, onClose }: Props = $props();
 
   // ---- summary ----
   let summary = $state<Summary | null>(null);
@@ -196,7 +199,7 @@
 
 <aside class="panel" aria-label="Side panel">
   <div class="tabs" role="tablist">
-    {#each [["summary", "Summary"], ["chart", "Chart"], ["files", "Files"], ["activity", "Activity"]] as [id, name] (id)}
+    {#each [["summary", "Summary"], ["filters", "Filters"], ["chart", "Chart"], ["files", "Files"], ["activity", "Activity"]] as [id, name] (id)}
       <button type="button" role="tab" aria-selected={which === id} class:on={which === id} onclick={() => (which = id as PanelTab)}>{name}</button>
     {/each}
     <span class="spacer"></span>
@@ -205,6 +208,8 @@
   <div class="content">
     {#if !tab}
       <p class="note">Open a file to see its summary and charts.</p>
+    {:else if which === "filters"}
+      <FilterPanel {tab} {titles} {read} {onSetRule} />
     {:else if which === "summary"}
       <h3>{titles[col] ?? `Column ${col + 1}`}</h3>
       {#if summary && summary.col === col}

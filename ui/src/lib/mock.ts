@@ -47,12 +47,13 @@ import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, Spli
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
-import type { CellFormula, FormulaReport, Profile, ProfileSpec } from "./backend";
+import type { CellFormula, FacetCard, Facets, FormulaReport, Profile, ProfileSpec } from "./backend";
 import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
 import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
 import { mockEval } from "./mockexpr";
 import { rewriteA1 } from "./cellformula";
 import { stubProfile } from "./profile";
+import { stubFacets } from "./facets";
 import { previewOf, simulateJoin } from "./joins";
 
 const FIRST = ["Ada", "Bo", "Cy", "Dee", "Eli", "Fay", "Gus", "Hal", "Ivy", "Jo"];
@@ -3177,6 +3178,15 @@ export class MockBackend implements Backend {
   private table(d: MockDoc): string[][] {
     const cols = this.colCount(d);
     return Array.from({ length: Math.min(this.rowCount(d), 5000) }, (_, r) => Array.from({ length: cols }, (_, c) => this.value(d, r, c)));
+  }
+
+  async facetCounts(doc: number, cards: FacetCard[], spec: FilterSpec): Promise<Facets> {
+    const d = this.get(doc);
+    const first = spec.keep_first ? 1 : 0;
+    const rows: string[][] = [];
+    const cols = this.colCount(d);
+    for (let r = first; r < this.totalRows(d); r++) rows.push(Array.from({ length: cols }, (_, c) => this.valueAt(d, r, c)));
+    return stubFacets(rows, cards, spec, testRule);
   }
 
   async columnProfile(doc: number, spec: ProfileSpec): Promise<Profile> {

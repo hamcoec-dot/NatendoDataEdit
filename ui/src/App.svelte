@@ -673,6 +673,7 @@
       })),
       banded: t.banded,
       row_lines: t.rowLines,
+      facets: t.facetCards.map((c) => ({ col: c.col, kind: c.kind })),
       freeze_rows: t.frozenRows,
       freeze_cols: t.frozenCols,
       sort: t.sort ? $state.snapshot(t.sort) : null,
@@ -825,6 +826,10 @@
       }
     }
     t.banded = v.banded === true;
+    t.facetCards = (v.facets ?? []).slice(0, 32).flatMap((f) => {
+      const c = to(f.col);
+      return c === null || c === undefined || c < 0 ? [] : [{ col: c, kind: f.kind === "numbers" || f.kind === "dates" ? f.kind : "values", range: null }];
+    });
     t.rowLines = Math.min(MAX_ROW_LINES, Math.max(1, Math.round(v.row_lines ?? 1) || 1));
     t.frozenRows = Math.min(v.freeze_rows, Math.max(0, t.info.rows - 1));
     t.frozenCols = Math.min(v.freeze_cols, Math.max(0, t.info.cols - 1));
@@ -4747,6 +4752,7 @@
     { id: "find.allInColumn", label: "Find all &like this in the column", run: () => findValue("column"), enabled: hasTab },
     { id: "view.panel", label: "Side &panel", keys: ["Ctrl+F1"], run: () => showPanel(prefs.data.panel ? null : panelTab), checked: () => !!prefs.data.panel },
     { id: "view.panelSummary", label: "Column summary", run: () => showPanel("summary"), checked: () => prefs.data.panel === "summary" },
+    { id: "view.panelFilters", label: "Filter panel", keys: ["Alt+Shift+L"], run: () => showPanel("filters"), checked: () => prefs.data.panel === "filters" },
     { id: "view.panelChart", label: "Chart", run: () => showPanel("chart"), checked: () => prefs.data.panel === "chart" },
     { id: "view.panelFiles", label: "Files in this folder", run: () => showPanel("files"), checked: () => prefs.data.panel === "files" },
     { id: "view.panelActivity", label: "Activity", run: () => showPanel("activity"), checked: () => prefs.data.panel === "activity" },
@@ -4783,7 +4789,7 @@
       label: "&View",
       items: [
         "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze", "-", "view.zoomIn", "view.zoomOut", "view.zoomReset", "-",
-        "view.panel", "view.panelSummary", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
+        "view.panel", "view.panelSummary", "view.panelFilters", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
         "view.cellBar", "view.gridLines", "view.invisible", "view.colLetters", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
@@ -4796,7 +4802,7 @@
       label: "&Data",
       items: [
         "data.sortAsc", "data.sortDesc", "data.sort", "data.sortColsAsc", "data.sortColsDesc", "data.shuffle", "-",
-        "data.filter", "data.filterMenu", "data.filterBySel", "data.filterFormula", "data.clearFilter", "data.reapply", "-",
+        "data.filter", "data.filterMenu", "data.filterBySel", "data.filterFormula", "view.panelFilters", "data.clearFilter", "data.reapply", "-",
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.unpivot", "data.subtotals", "data.form", "-",
@@ -5975,6 +5981,7 @@
         {activity}
         read={READ}
         onOpened={opened}
+        onSetRule={(col, rule) => setRule(col, rule)}
         onFilterValue={(col, value, cut) => void setRule(col, cut ? { type: "conditions", first: { type: "text", op: "begins_with", text: value.replace(/…$/, ""), match_case: true } } : value === "" ? { type: "values", values: [], blanks: true } : { type: "values", values: [value], blanks: false })}
         onClose={() => showPanel(null)}
       />

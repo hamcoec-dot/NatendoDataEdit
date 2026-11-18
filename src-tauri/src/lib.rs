@@ -2800,6 +2800,18 @@ async fn data_edge(
     blocking(move || docs.data_edge(doc, row, col, dir)).await
 }
 
+/// The filter panel's counts, every card in one pass.
+#[tauri::command]
+async fn facet_counts(
+    docs: DocsState<'_>,
+    doc: u32,
+    cards: Vec<natendo_engine::filter::FacetCard>,
+    spec: natendo_engine::filter::FilterSpec,
+) -> CmdResult<natendo_engine::filter::Facets> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.facet_counts(doc, &cards, &spec)).await
+}
+
 /// A column's profile: shapes, histogram, odd values.
 #[tauri::command]
 async fn column_profile(
@@ -3348,6 +3360,7 @@ pub fn run() {
             cell_formula,
             cell_formula_of,
             column_profile,
+            facet_counts,
             join_preview,
             value_tally,
             join_list,

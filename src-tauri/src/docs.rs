@@ -59,6 +59,8 @@ use serde::{Deserialize, Serialize};
 pub const MAX_DOCS: usize = 64;
 /// Label of pivot jobs (a newer preview cancels an older one).
 const PIVOT_JOB: &str = "Pivot";
+/// The filter panel's counting job (a newer count replaces it).
+const FACET_JOB: &str = "Counting for the filter panel";
 /// Rows and value columns a pivot preview shows.
 pub const PIVOT_PREVIEW_ROWS: usize = 2_000;
 pub const PIVOT_PREVIEW_COLS: usize = 400;
@@ -4735,11 +4737,21 @@ impl Docs {
     /// Start a pivot job: a pivot already running on this tab (an older
     /// preview) is cancelled first; anything else makes this "busy".
     fn start_pivot<'a>(&self, entry: &'a Entry) -> CmdResult<JobGuard<'a>> {
+        self.start_replacing(entry, PIVOT_JOB)
+    }
+
+    /// Start job `label`, cancelling an older one of the same label first
+    /// (a newer pivot preview, or filter-panel count, replaces it).
+    fn start_replacing<'a>(
+        &self,
+        entry: &'a Entry,
+        label: &'static str,
+    ) -> CmdResult<JobGuard<'a>> {
         for _ in 0..200 {
-            match entry.start(PIVOT_JOB) {
+            match entry.start(label) {
                 Ok(j) => return Ok(j),
                 Err(e) => {
-                    let ours = entry.jobs().as_ref().is_some_and(|j| j.label == PIVOT_JOB);
+                    let ours = entry.jobs().as_ref().is_some_and(|j| j.label == label);
                     if !ours {
                         return Err(e);
                     }
@@ -4750,10 +4762,21 @@ impl Docs {
                 }
             }
         }
-        Err(CmdError::new(
-            "busy",
-            "the pivot is still working; try again",
-        ))
+        Err(CmdError::new("busy", "still working; try again"))
+    }
+
+    /// The filter panel's counts (an older count still running is
+    /// cancelled: each click asks again).
+    pub fn facet_counts(
+        &self,
+        id: u32,
+        cards: &[natendo_engine::filter::FacetCard],
+        spec: &FilterSpec,
+    ) -> CmdResult<natendo_engine::filter::Facets> {
+        let entry = self.get(id)?;
+        let job = self.start_replacing(&entry, FACET_JOB)?;
+        let d = entry.read();
+        Ok(d.facet_counts(cards, spec, &job.progress)?)
     }
 
     /// The cube for `spec` (read again only when the file or the fields
