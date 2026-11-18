@@ -191,7 +191,9 @@ export function describeRule(r: Rule): string {
   return r.second ? `${one(r.first)} ${r.or ? "or" : "and"} ${one(r.second)}` : one(r.first);
 }
 
-export type ScopeChoice = "all" | "selection" | "column";
+/** Where Find looks: the whole file, the selected block, the selected
+ *  columns, columns picked by name, or every open tab. */
+export type ScopeChoice = "all" | "selection" | "column" | "pick" | "tabs";
 
 export interface FindOptions {
   text: string;
@@ -208,6 +210,14 @@ export interface FindOptions {
   /** Search hidden columns too (they are skipped otherwise, as in Excel). */
   includeHidden: boolean;
   scope: ScopeChoice;
+  /** Find empty cells (the text box is not used). */
+  blank: boolean;
+  /** Search the column titles too (the first row when it holds titles). */
+  titles: boolean;
+  /** Look in the cells or in the row notes. */
+  lookIn: "cells" | "notes";
+  /** The columns picked by name (scope "pick"). */
+  cols: number[];
 }
 
 export const FIND_DEFAULTS: FindOptions = {
@@ -220,6 +230,10 @@ export const FIND_DEFAULTS: FindOptions = {
   escapes: false,
   includeHidden: false,
   scope: "all",
+  blank: false,
+  titles: false,
+  lookIn: "cells",
+  cols: [],
 };
 
 /** The search the find bar describes, for a selection and header setting. */
@@ -229,17 +243,21 @@ export function findSpecOf(
   header: boolean,
   hidden: number[] = [],
 ): FindSpec {
-  const pattern: Pattern = {
-    text: o.text,
-    kind: o.kind,
-    match_case: o.matchCase,
-    whole_cell: o.wholeCell,
-    whole_word: o.wholeWord,
-    ignore_accents: o.ignoreAccents,
-    escapes: o.escapes,
-  };
+  // Empty cells: a regular expression the engine matches specially.
+  const pattern: Pattern = o.blank
+    ? { text: "^$", kind: "regex", match_case: false, whole_cell: false }
+    : {
+        text: o.text,
+        kind: o.kind,
+        match_case: o.matchCase,
+        whole_cell: o.wholeCell,
+        whole_word: o.wholeWord,
+        ignore_accents: o.ignoreAccents,
+        escapes: o.escapes,
+      };
   let scope: Scope = { kind: "all" };
   if (o.scope === "selection") scope = { kind: "range", ...sel };
   else if (o.scope === "column") scope = { kind: "columns", cols: Array.from({ length: sel.cols }, (_, i) => sel.col + i) };
-  return { pattern, scope, skip_first: header, skip_cols: o.includeHidden ? [] : hidden };
+  else if (o.scope === "pick") scope = { kind: "columns", cols: [...(o.cols ?? [])].sort((a, b) => a - b) };
+  return { pattern, scope, skip_first: header && !o.titles, skip_cols: o.includeHidden ? [] : hidden };
 }

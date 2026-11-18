@@ -158,6 +158,8 @@ export class Tab {
    *  up), its version (bumped on each change) and the lit cells "row:col". */
   findSpec: FindSpec | null = null;
   findVersion = 0;
+  /** How many cells match while the find bar is open (the status bar). */
+  findCount = $state<number | null>(null);
   findHits = new Set<string>();
 
   /** Set by the grid showing this tab: draw again now. */

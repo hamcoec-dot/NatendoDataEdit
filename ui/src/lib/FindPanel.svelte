@@ -1,8 +1,11 @@
 <script lang="ts">
   // Find and replace bar. Searches run in the engine (safe regular
   // expressions, whole files of any size); results select cells in the grid.
-  import { backend, errorText, type DocInfo, type FindAll, type FindCount, type FindSpec, type ReplaceReport } from "./backend";
+  import { backend, errorText, type DocInfo, type FindAll, type FindCount, type FindRowsAction, type FindSpec, type ReplaceReport } from "./backend";
   import { onDestroy, untrack } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
+  import AllNone from "./AllNone.svelte";
+  import { FLAG_NAMES, type NoteMark } from "./notes";
   import { cellDiff } from "./textDiff";
   import { clearFindHistory, findHistory, rememberFind, rememberReplace, stepHistory } from "./findHistory.svelte";
   import type { Tab } from "./tab.svelte";
@@ -21,10 +24,21 @@
      *  when Find opened (or the scope was picked): a hit selects one cell,
      *  so the live selection can't be used after the first Find next. */
     block: Rect | null;
-    onChanged: (info: DocInfo) => void;
+    /** Every open tab ("All open tabs" searches them all). */
+    tabs: Tab[];
+    /** A change to a tab (the one shown unless `t` says another). */
+    onChanged: (info: DocInfo, t?: Tab) => void;
+    /** Go to a cell of another tab (a match found there). */
+    onGoTab: (t: Tab, row: number, col: number) => void;
+    /** A new tab made from the matching rows. */
+    onNewTab: (info: DocInfo) => void;
+    /** Rename columns of the shown tab (replacing in column titles). */
+    onRenameColumns: (renames: [number, string][]) => Promise<void>;
+    /** Open "Replace from a list…". */
+    onBatch: () => void;
     onClose: () => void;
   }
-  let { tab, replace = $bindable(), options = $bindable(), block = $bindable(), run, onSelect, onChanged, onClose }: Props = $props();
+  let { tab, tabs, replace = $bindable(), options = $bindable(), block = $bindable(), run, onSelect, onChanged, onGoTab, onNewTab, onRenameColumns, onBatch, onClose }: Props = $props();
 
   // Picking "Selection" or "Selected columns" while the box is open takes
   // the block selected then; "Whole file" lets it go.
@@ -33,7 +47,7 @@
     const s = options.scope;
     if (s === lastScope) return;
     lastScope = s;
-    if (s === "all") block = null;
+    if (s === "all" || s === "pick" || s === "tabs") block = null;
     else {
       const r = rectOf(tab.sel);
       block = r.rows * r.cols > 1 ? { ...r } : null;
@@ -48,8 +62,27 @@
   let replaceInput = $state<HTMLInputElement>();
   let replacement = $state("");
   let status = $state("");
-  let results = $state<FindAll | null>(null);
+  /** Find all's matches, a group per tab searched. */
+  let results = $state<{ t: Tab; r: FindAll }[] | null>(null);
+  /** The search Find all ran on the shown tab (for acting on the rows). */
+  let resultsSpec: FindSpec | null = null;
+  /** Row notes that match ("Look in: Notes"). */
+  let notes = $state<NoteMark[] | null>(null);
   let pending = $state<ReplaceReport | null>(null);
+  /** Column titles the open preview renames: [column, old, new]. */
+  let titleChanges = $state<[number, string, string][]>([]);
+  /** All open tabs: each tab's part of the open preview. */
+  let tabParts = $state<{ t: Tab; spec: FindSpec; r: ReplaceReport }[]>([]);
+  /** Changes unticked in the preview ("row:col"); they are left as they are. */
+  const unticked = new SvelteSet<string>();
+  /** The last Replace all changed rows here: "Show changed rows" is offered. */
+  let canShowChanged = $state(false);
+  let deleteAsk = $state(false);
+  let flag = $state(1);
+  /** Looking across every open tab. */
+  const allTabs = $derived(options.scope === "tabs" && options.lookIn === "cells");
+  /** Column titles are searched too (and replaced by renaming). */
+  const withTitles = $derived(options.titles && tab.header && options.lookIn === "cells");
 
   // ---- the count ("3 of 1,204") and matches lit up in the grid ----
   let count = $state<FindCount | null>(null);
@@ -64,8 +97,9 @@
     const seq = ++countSeq;
     countTimer = setTimeout(() => {
       countTimer = null;
-      if (!options.text) {
+      if (!searching()) {
         count = null;
+        tab.findCount = null;
         return;
       }
       const s = spec();
@@ -76,20 +110,24 @@
           if (seq !== countSeq) return;
           count = c;
           countAt = at;
+          tab.findCount = c.cells;
         })
         .catch((e: unknown) => {
           if (seq !== countSeq) return;
           const kind = (e as { kind?: string } | null)?.kind;
           // Busy or cancelled: try once more shortly; a bad pattern: no count.
           if (kind === "busy" || kind === "cancelled") recount(600);
-          else count = null;
+          else {
+            count = null;
+            tab.findCount = null;
+          }
         });
     }, delay);
   }
 
   /** What the count says now. */
   const countText = $derived.by(() => {
-    if (!count || !options.text) return "";
+    if (!count || !searching()) return "";
     if (count.cells === 0) return "No matches";
     const total = count.cells.toLocaleString();
     const at = countAt;
@@ -100,8 +138,8 @@
   // Whatever changes the search (text, options, block, the file) counts
   // again and lights up the matches on screen.
   $effect(() => {
-    void [options.text, options.kind, options.matchCase, options.wholeCell, options.wholeWord, options.ignoreAccents, options.escapes, options.includeHidden, options.scope, block, tab.version];
-    const s = options.text ? $state.snapshot(spec()) : null;
+    void [options.text, options.kind, options.matchCase, options.wholeCell, options.wholeWord, options.ignoreAccents, options.escapes, options.includeHidden, options.scope, options.blank, options.titles, options.lookIn, options.cols.length, block, tab.version];
+    const s = searching() ? $state.snapshot(spec()) : null;
     tab.findSpec = s;
     tab.findVersion++;
     tab.onRedraw?.();
@@ -113,6 +151,7 @@
     countSeq++;
     void backend().findCountCancel(tab.id).catch(() => {});
     tab.findSpec = null;
+    tab.findCount = null;
     tab.findVersion++;
     tab.onRedraw?.();
   });
@@ -134,13 +173,69 @@
     focus();
   });
 
+  /** There is something to look for (in the cells, not the notes). */
+  function searching(): boolean {
+    return options.lookIn === "cells" && (options.blank || options.text !== "") && !(options.scope === "pick" && options.cols.length === 0);
+  }
+
   /** The search as set up now. A one-cell "selection" scope searches all. */
   function spec(): FindSpec {
     const r = options.scope !== "all" && block ? block : rectOf(tab.sel);
-    const o = { ...options };
+    const o = { ...options, cols: [...options.cols] };
     if (o.scope === "selection" && r.rows * r.cols <= 1) o.scope = "all";
+    if (o.scope === "tabs") o.scope = "all";
     return findSpecOf(o, { row: r.row, rows: r.rows, col: r.col, cols: r.cols }, tab.header, tab.columns.hiddenList());
   }
+
+  /** The search for another tab (all of it). */
+  function specFor(t: Tab): FindSpec {
+    if (t === tab) return spec();
+    return findSpecOf({ ...options, cols: [], scope: "all" }, { row: 0, rows: 0, col: 0, cols: 0 }, t.header, t.columns.hiddenList());
+  }
+
+  /** The tabs searched: every open one, or the shown one. */
+  function targets(): Tab[] {
+    return allTabs ? [tab, ...tabs.filter((t) => t !== tab)] : [tab];
+  }
+
+  // ---- Special… : characters that are hard to type or to see ----
+  let special = $state(false);
+  const SPECIALS: { label: string; plain: string; regex: string; regexOnly?: boolean }[] = [
+    { label: "Non-breaking space", plain: "\\u{A0}", regex: "\\x{A0}" },
+    { label: "Zero-width space", plain: "\\u{200B}", regex: "\\x{200B}" },
+    { label: "Tab", plain: "\\t", regex: "\\t" },
+    { label: "Line break", plain: "\\n", regex: "\\n" },
+    { label: "Curly quotes \u201c \u201d", plain: "\u201c", regex: "[\u201c\u201d]" },
+    { label: "Curly apostrophe \u2019", plain: "\u2019", regex: "\u2019" },
+    { label: "Any digit", plain: "", regex: "\\d", regexOnly: true },
+    { label: "Any letter", plain: "", regex: "\\pL", regexOnly: true },
+  ];
+  function insertSpecial(i: number): void {
+    const s = SPECIALS[i]!;
+    const regex = options.kind === "regex";
+    if (s.regexOnly && !regex) return;
+    const text = regex ? s.regex : s.plain;
+    // \u{..} and \t stand for the character only with escapes on.
+    if (!regex && text.startsWith("\\")) options.escapes = true;
+    options.blank = false;
+    const el = findInput;
+    const at = el?.selectionStart ?? options.text.length;
+    const end = el?.selectionEnd ?? at;
+    options.text = options.text.slice(0, at) + text + options.text.slice(end);
+    special = false;
+    void Promise.resolve().then(() => {
+      el?.focus();
+      el?.setSelectionRange(at + text.length, at + text.length);
+    });
+  }
+
+  // ---- the column picker (scope "Columns…") ----
+  let picking = $state(false);
+  const pickTitles = $derived(Array.from({ length: Math.min(tab.info.cols, 2000) }, (_, c) => (tab.header ? (heads[c] || tab.cache.get(0, c) || `Column ${c + 1}`) : `Column ${c + 1}`)));
+  $effect(() => {
+    if (options.scope === "pick") untrack(() => (picking = options.cols.length === 0));
+    else untrack(() => (picking = false));
+  });
 
 
   /** Alt+C / Alt+W / Alt+R / Alt+L while the bar has focus (as in VS Code):
@@ -159,6 +254,12 @@
   }
 
   function ready(): boolean {
+    if (options.scope === "pick" && options.cols.length === 0 && options.lookIn === "cells") {
+      status = "Tick the columns to search in.";
+      picking = true;
+      return false;
+    }
+    if (options.blank && options.lookIn === "cells") return true;
     if (options.text === "") {
       status = "Type what to look for.";
       focus();
@@ -186,9 +287,36 @@
     }
   }
 
+  /** Row notes that match the text. */
+  async function matchingNotes(): Promise<NoteMark[] | null> {
+    const pattern = spec().pattern;
+    try {
+      return await backend().findNotes(tab.id, pattern);
+    } catch (e) {
+      status = errorText(e);
+      return null;
+    }
+  }
+
   export async function next(backward = false): Promise<void> {
     if (!ready()) return;
     const f = tab.cell;
+    if (options.lookIn === "notes") {
+      const list = await matchingNotes();
+      if (!list) return;
+      if (!list.length) {
+        status = "No notes match.";
+        return;
+      }
+      const rows = list.map((n) => n.row).sort((a, b) => a - b);
+      let to = backward ? [...rows].reverse().find((r) => r < f.row) : rows.find((r) => r > f.row);
+      const wrapped = to === undefined;
+      if (wrapped) to = backward ? rows[rows.length - 1] : rows[0];
+      onSelect(to!, f.col);
+      const n = list.find((x) => x.row === to);
+      status = `${wrapped ? "Started over. " : ""}Note: ${(n?.text ?? "").slice(0, 120)}`;
+      return;
+    }
     try {
       const hit = await run("Searching", () => backend().findNext(tab.id, spec(), [f.row, f.col], backward));
       if (hit === null) return;
@@ -206,15 +334,72 @@
 
   export async function findAll(): Promise<void> {
     if (!ready()) return;
+    deleteAsk = false;
+    if (options.lookIn === "notes") {
+      const list = await matchingNotes();
+      if (!list) return;
+      notes = list;
+      results = null;
+      status = list.length ? "" : "No notes match.";
+      return;
+    }
+    notes = null;
+    const groups: { t: Tab; r: FindAll }[] = [];
+    const skipped: string[] = [];
+    for (const t of targets()) {
+      const s = specFor(t);
+      try {
+        const r = await run(allTabs ? `Searching ${t.info.name}` : "Searching", () => backend().findAll(t.id, s));
+        if (!r) return;
+        if (t === tab) resultsSpec = s;
+        if (r.cells > 0) groups.push({ t, r });
+      } catch (e) {
+        if (!allTabs) {
+          status = errorText(e);
+          return;
+        }
+        skipped.push(`${t.info.name} (${errorText(e)})`);
+      }
+    }
+    results = groups;
+    const n = groups.reduce((a, g) => a + g.r.cells, 0);
+    status = (n === 0 ? "No matches." : "") + (skipped.length ? ` Not searched: ${skipped.join("; ")}.` : "");
+  }
+
+  /** Act on the rows Find all found in the shown tab. */
+  async function actOnRows(action: FindRowsAction): Promise<void> {
+    const s = resultsSpec;
+    if (!s) return;
+    deleteAsk = false;
+    const label = action.kind === "delete" ? "Deleting rows" : action.kind === "copy" ? "Copying rows" : action.kind === "show" ? "Filtering" : "Flagging rows";
     try {
-      const r = await run("Searching", () => backend().findAll(tab.id, spec()));
-      if (!r) return;
-      results = r;
-      status = r.cells === 0 ? "No matches." : "";
+      const info = await run(label, () => backend().findRows(tab.id, s, action));
+      if (!info) return;
+      if (action.kind === "copy") {
+        onNewTab(info);
+        status = `Copied ${info.rows.toLocaleString()} row${info.rows === 1 ? "" : "s"} to a new tab (not saved yet).`;
+        return;
+      }
+      onChanged(info);
+      results = null;
+      if (action.kind === "show") status = "Showing only the rows with a match. Show all rows from the status bar, or undo.";
+      else if (action.kind === "delete") status = "Deleted the rows with a match. Ctrl+Z puts them back.";
+      else {
+        tab.notesVersion++;
+        tab.bump();
+        status = `Flagged the rows with a match ${FLAG_NAMES[action.flag]?.[1]?.toLowerCase() ?? ""}.`;
+      }
     } catch (e) {
       status = errorText(e);
     }
   }
+
+  /** How many rows Find all's list holds (when it lists every match). */
+  const matchRows = $derived.by(() => {
+    const g = results?.length === 1 && results[0]!.t === tab ? results[0]!.r : null;
+    if (!g || g.hits.length < g.cells) return null;
+    return new Set(g.hits.map((h) => h.row)).size;
+  });
 
   /** Replace in the active cell if it matches, then go to the next match. */
   async function replaceOne(): Promise<void> {
@@ -223,7 +408,7 @@
     const f = tab.cell;
     const one: FindSpec = { ...spec(), scope: { kind: "range", row: f.row, rows: 1, col: f.col, cols: 1 }, skip_first: false };
     try {
-      const r = await backend().replaceAll(tab.id, one, replacement);
+      const r = await backend().replaceCell(tab.id, one, replacement);
       if (r.info) onChanged(r.info);
     } catch (e) {
       status = errorText(e);
@@ -238,14 +423,47 @@
 
   async function previewAll(): Promise<void> {
     if (!ready()) return;
+    if (options.lookIn === "notes") {
+      status = "Replace works on cells. Set Look in to Cells.";
+      return;
+    }
     rememberReplace(replacement);
+    unticked.clear();
+    titleChanges = [];
+    tabParts = [];
+    canShowChanged = false;
+    const rep = replacement;
     try {
-      const s = spec();
-      const rep = replacement;
+      if (allTabs) {
+        const parts: { t: Tab; spec: FindSpec; r: ReplaceReport }[] = [];
+        for (const t of targets()) {
+          const s = specFor(t);
+          const r = await run(`Looking in ${t.info.name}`, () => backend().replacePreview(t.id, s, rep));
+          if (!r) return;
+          if (r.cells > 0) parts.push({ t, spec: s, r });
+        }
+        previewed = null;
+        if (!parts.length) {
+          status = "Nothing to replace.";
+          pending = null;
+          return;
+        }
+        tabParts = parts;
+        pending = { cells: parts.reduce((a, p) => a + p.r.cells, 0), hits: parts.reduce((a, p) => a + p.r.hits, 0), preview: [], info: null };
+        status = "";
+        return;
+      }
+      const all = spec();
+      // Titles are renamed (so formulas and views follow), not replaced as cells.
+      const s = withTitles ? { ...all, skip_first: true } : all;
       const r = await run("Looking for matches", () => backend().replacePreview(tab.id, s, rep));
       if (!r) return;
+      if (withTitles) {
+        const t = await backend().replaceTitles(tab.id, all, rep);
+        titleChanges = t.map(([c, n]) => [c, heads[c] ?? tab.cache.get(0, c) ?? "", n]);
+      }
       previewed = { spec: s, replacement: rep };
-      if (r.cells === 0) {
+      if (r.cells === 0 && titleChanges.length === 0) {
         status = "Nothing to replace.";
         pending = null;
         return;
@@ -264,26 +482,76 @@
   // preview's Replace all also sends the search it showed (hidden columns
   // as they were then), and the backend refuses it if that no longer fits.
   $effect(() => {
-    void [options.text, options.kind, options.matchCase, options.wholeCell, options.wholeWord, options.ignoreAccents, options.escapes, options.includeHidden, options.scope, block, replacement, tab.version];
+    void [options.text, options.kind, options.matchCase, options.wholeCell, options.wholeWord, options.ignoreAccents, options.escapes, options.includeHidden, options.scope, options.blank, options.titles, options.lookIn, options.cols.length, block, replacement, tab.version];
     untrack(() => {
       if (!pending) return;
       pending = null;
       previewed = null;
+      tabParts = [];
+      titleChanges = [];
       status = "The search changed, so the preview was closed: press Replace all… to see the changes again.";
     });
   });
 
+  const plural = (n: number, one: string, many = `${one}s`): string => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
   async function replaceAll(): Promise<void> {
     const what = previewed;
+    const parts = tabParts;
+    const titles = titleChanges;
+    const skip = [...unticked].map((k) => k.split(":").map(Number) as [number, number]);
+    const cells = pending?.cells ?? 0;
     pending = null;
     previewed = null;
+    tabParts = [];
+    titleChanges = [];
+    results = null;
+    if (parts.length) {
+      // Every open tab: one undo step in each.
+      const done: string[] = [];
+      let hits = 0;
+      for (const p of parts) {
+        try {
+          const r = await run(`Replacing in ${p.t.info.name}`, () => backend().replaceConfirm(p.t.id, p.spec, replacement));
+          if (!r) break;
+          if (r.info) onChanged(r.info, p.t);
+          hits += r.hits;
+          done.push(p.t.info.name);
+        } catch (e) {
+          status = `${done.length ? `Replaced in ${done.join(", ")}. ` : ""}${p.t.info.name}: ${errorText(e)}`;
+          return;
+        }
+      }
+      status = `Replaced ${plural(hits, "match", "matches")} in ${plural(done.length, "tab")}. Undo (Ctrl+Z) in each tab reverts it there.`;
+      return;
+    }
     if (!what) return;
     try {
-      const r = await run("Replacing", () => backend().replaceConfirm(tab.id, what.spec, what.replacement));
-      if (!r) return;
-      if (r.info) onChanged(r.info);
-      status = `Replaced ${r.hits.toLocaleString()} match${r.hits === 1 ? "" : "es"} in ${r.cells.toLocaleString()} cell${r.cells === 1 ? "" : "s"}. Undo (Ctrl+Z) reverts it all.`;
-      results = null;
+      let msg = "";
+      if (cells - skip.length > 0) {
+        const r = await run("Replacing", () => backend().replaceConfirm(tab.id, what.spec, what.replacement, skip));
+        if (!r) return;
+        if (r.info) onChanged(r.info);
+        msg = `Replaced in ${plural(r.cells, "cell")}${skip.length ? ` (${plural(skip.length, "change")} left out)` : ""}.`;
+        canShowChanged = r.cells > 0;
+      }
+      if (titles.length) {
+        await onRenameColumns(titles.map(([c, , n]) => [c, n]));
+        msg += ` Renamed ${plural(titles.length, "column")}.`;
+      }
+      status = `${msg.trim()} Undo (Ctrl+Z) reverts it.`;
+    } catch (e) {
+      status = errorText(e);
+    }
+  }
+
+  async function showChanged(): Promise<void> {
+    try {
+      const info = await run("Filtering", () => backend().showChanged(tab.id, tab.header));
+      if (!info) return;
+      onChanged(info);
+      canShowChanged = false;
+      status = "Showing only the rows the last Replace all changed. Show all rows from the status bar, or undo.";
     } catch (e) {
       status = errorText(e);
     }
@@ -327,12 +595,19 @@
   let cursor = $state(-1);
   let order = $state<"rows" | "cols">("rows");
   let onlyCol = $state<number | null>(null);
+  /** One group: per-column counts and the order menu apply. */
+  const single = $derived(results?.length === 1 ? results[0]! : null);
+  const totalCells = $derived(results?.reduce((a, g) => a + g.r.cells, 0) ?? 0);
+  const listed = $derived(results?.reduce((a, g) => a + g.r.hits.length, 0) ?? 0);
   const shown = $derived.by(() => {
     if (!results) return [];
-    let h = results.hits;
-    if (onlyCol !== null) h = h.filter((x) => x.col === onlyCol);
-    if (order === "cols") h = [...h].sort((a, b) => a.col - b.col || a.row - b.row);
-    return h;
+    if (single) {
+      let h = single.r.hits;
+      if (onlyCol !== null) h = h.filter((x) => x.col === onlyCol);
+      if (order === "cols") h = [...h].sort((a, b) => a.col - b.col || a.row - b.row);
+      return h.map((x) => ({ t: single.t, h: x }));
+    }
+    return results.flatMap((g) => g.r.hits.map((x) => ({ t: g.t, h: x })));
   });
   const first = $derived(Math.max(0, Math.floor(listTop / ROW_H) - 5));
   const last = $derived(Math.min(shown.length, Math.ceil((listTop + listH) / ROW_H) + 5));
@@ -348,8 +623,9 @@
   function go(i: number): void {
     if (!shown.length) return;
     cursor = Math.max(0, Math.min(shown.length - 1, i));
-    const h = shown[cursor]!;
-    onSelect(h.row, h.col);
+    const { t, h } = shown[cursor]!;
+    if (t === tab) onSelect(h.row, h.col);
+    else onGoTab(t, h.row, h.col);
     const box = listBox;
     if (box) {
       const y = cursor * ROW_H;
@@ -377,7 +653,7 @@
   // the cell cache after scrolling far down).
   let heads = $state<string[]>([]);
   $effect(() => {
-    if ((!results && !pending) || !tab.header) return;
+    if ((!results && !pending && !picking) || !tab.header) return;
     const t = tab;
     const cols = Math.min(t.info.cols, 2000);
     untrack(() => {
@@ -388,8 +664,8 @@
     });
   });
 
-  function title(c: number): string {
-    const t = tab.header ? (heads[c] || tab.cache.get(0, c)) : undefined;
+  function title(c: number, of: Tab = tab): string {
+    const t = of.header ? (of === tab ? heads[c] || of.cache.get(0, c) : of.cache.get(0, c)) : undefined;
     return t ? `${t} (column ${c + 1})` : `Column ${c + 1}`;
   }
 </script>
@@ -398,7 +674,17 @@
 <div class="find" role="search" aria-label="Find and replace" onkeydown={onBarKey}>
   <div class="line">
     <button type="button" class="twist" aria-label={replace ? "Hide replace" : "Show replace"} title="Replace (Ctrl+H)" onclick={() => (replace = !replace)}>{replace ? "▾" : "▸"}</button>
-    <input bind:this={findInput} class="text" aria-label="Find" placeholder="Find" bind:value={options.text} onkeydown={(e) => onKey(e, false)} oninput={() => { results = null; pending = null; status = ""; }} />
+    <input bind:this={findInput} class="text" aria-label="Find" placeholder={options.blank ? "Empty cells (Blank cells is picked below)" : options.lookIn === "notes" ? "Find in row notes" : "Find"} disabled={options.blank && options.lookIn === "cells"} bind:value={options.text} onkeydown={(e) => onKey(e, false)} oninput={() => { results = null; notes = null; pending = null; status = ""; }} />
+    <span class="menuwrap">
+      <button type="button" title="Insert a character that is hard to type or to see" aria-haspopup="menu" aria-expanded={special} onclick={() => (special = !special)}>Special…</button>
+      {#if special}
+        <div class="menu" role="menu" aria-label="Special characters">
+          {#each SPECIALS as s, i (s.label)}
+            <button type="button" role="menuitem" disabled={s.regexOnly && options.kind !== "regex"} title={s.regexOnly && options.kind !== "regex" ? "Pick Regular expression first" : ""} onclick={() => insertSpecial(i)}>{s.label}</button>
+          {/each}
+        </div>
+      {/if}
+    </span>
     {#if countText}<span class="count" aria-live="polite">{countText}</span>{/if}
     <button type="button" title="Find previous (Shift+F3, Shift+Enter)" aria-label="Find previous" onclick={() => void next(true)}>↑</button>
     <button type="button" title="Find next (F3, Enter)" aria-label="Find next" onclick={() => void next(false)}>↓</button>
@@ -407,7 +693,10 @@
       <option value="all">Whole file</option>
       <option value="selection">{blockCells && options.scope === "selection" ? `Selection ${blockCells}` : "Selection"}</option>
       <option value="column">{blockCols && options.scope === "column" ? `Selected columns ${blockCols}` : "Selected columns"}</option>
+      <option value="pick">{options.scope === "pick" && options.cols.length ? `Columns: ${options.cols.length} picked` : "Columns…"}</option>
+      <option value="tabs">All open tabs</option>
     </select>
+    {#if options.scope === "pick" && !picking}<button type="button" onclick={() => (picking = true)}>Change columns</button>{/if}
     <span class="spacer"></span>
     <button type="button" class="x" aria-label="Find tips" title="Wildcards, patterns and keys" aria-expanded={help} onclick={() => (help = !help)}>?</button>
     <button type="button" class="x" aria-label="Close find" title="Close (Esc)" onclick={onClose}>✕</button>
@@ -416,16 +705,34 @@
     <div class="line">
       <span class="twist"></span>
       <input bind:this={replaceInput} class="text" aria-label="Replace with" placeholder={options.kind === "regex" ? "Replace with ($1 = first group)" : "Replace with"} bind:value={replacement} onkeydown={(e) => onKey(e, true)} />
-      <button type="button" onclick={() => void replaceOne()}>Replace</button>
+      <button type="button" disabled={allTabs} title={allTabs ? "Replace one at a time works in the shown tab: pick Whole file" : ""} onclick={() => void replaceOne()}>Replace</button>
       <button type="button" title="Replace all (Ctrl+Alt+Enter)" onclick={() => void previewAll()}>Replace all…</button>
+      <button type="button" title="Many find-and-replace pairs at once, from a pasted list or another tab" onclick={onBatch}>From a list…</button>
+    </div>
+  {/if}
+  {#if picking}
+    <div class="picker" role="group" aria-label="Columns to search">
+      <AllNone count={pickTitles.length} picked={options.cols} onChange={(v) => (options.cols = v)} />
+      <div class="plist">
+        {#each pickTitles as t, c (c)}
+          <label><input type="checkbox" checked={options.cols.includes(c)} onchange={() => (options.cols = options.cols.includes(c) ? options.cols.filter((x) => x !== c) : [...options.cols, c])} /> {t}</label>
+        {/each}
+      </div>
+      <div class="line"><button type="button" class="primary" disabled={!options.cols.length} onclick={() => { picking = false; focus(); }}>Done</button><span class="muted">{options.cols.length ? `${options.cols.length} picked` : "Tick the columns to search in."}</span></div>
     </div>
   {/if}
   <div class="line opts">
-    <select aria-label="Pattern kind" title="Alt+R: regular expression on or off" bind:value={options.kind}>
+    <select aria-label="Pattern kind" title="Alt+R: regular expression on or off" value={options.blank ? "blank" : options.kind} onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; options.blank = v === "blank"; if (v !== "blank") options.kind = v as typeof options.kind; results = null; pending = null; }}>
       <option value="plain">Plain text</option>
       <option value="wildcard">Wildcards (* ? ~)</option>
       <option value="regex">Regular expression</option>
+      <option value="blank">Blank cells</option>
     </select>
+    <select aria-label="Look in" title="Search the cells or the notes on rows" bind:value={options.lookIn}>
+      <option value="cells">In cells</option>
+      <option value="notes">In row notes</option>
+    </select>
+    {#if tab.header}<label title="Search the first row (the column titles) too; replacing there renames the column"><input type="checkbox" bind:checked={options.titles} /> Column titles</label>{/if}
     <label title="Alt+C"><input type="checkbox" bind:checked={options.matchCase} /> Match case</label>
     <label title="Alt+W: &quot;Ann&quot; finds &quot;Ann Lee&quot;, not &quot;Annette&quot;"><input type="checkbox" bind:checked={options.wholeWord} /> Whole word</label>
     <label><input type="checkbox" bind:checked={options.wholeCell} /> Whole cell</label>
@@ -456,6 +763,8 @@
               <tr><td><code>^</code> <code>$</code></td><td>start, end of the cell</td></tr>
               <tr><td><code>a|b</code></td><td>either</td></tr>
               <tr><td><code>(\d&#123;3&#125;)-(\d&#123;4&#125;)</code></td><td>groups; replace with <code>$2-$1</code> (or <code>$&#123;1&#125;a</code>)</td></tr>
+              <tr><td><code>\U$1</code> <code>\L$1</code></td><td>in the replacement: upper or lower case until <code>\E</code></td></tr>
+              <tr><td><code>\u$1</code> <code>\l$1</code></td><td>first letter upper or lower: <code>(\w+)</code> → <code>\u$1</code> makes "smith" "Smith"</td></tr>
             </tbody>
           </table>
         </div>
@@ -473,7 +782,7 @@
         </div>
       </div>
       <div class="line">
-        <span class="muted">With <code>\t \n</code> ticked, <code>\t</code> is a tab and <code>\n</code> a line break (in Replace with too). In a regular expression's replacement <code>\n</code> and <code>\t</code> always work that way, so write <code>\\</code> for a backslash. Whole word needs spaces or punctuation around a word, so it does not split Chinese or Japanese text. Recent searches are kept only until you close the app.</span>
+        <span class="muted">Special… inserts characters that are hard to see, such as a non-breaking space. Blank cells finds empty cells. With <code>\t \n</code> ticked, <code>\t</code> is a tab and <code>\n</code> a line break (in Replace with too). In a regular expression's replacement <code>\n</code> and <code>\t</code> always work that way, so write <code>\\</code> for a backslash. Whole word needs spaces or punctuation around a word, so it does not split Chinese or Japanese text. Recent searches are kept only until you close the app.</span>
         <button type="button" onclick={() => { clearFindHistory(); status = "Search history cleared."; }}>Clear search history</button>
       </div>
     </div>
@@ -481,16 +790,52 @@
   {#if pending}
     <div class="confirm" role="alert">
       <div>
-        Replace {pending.hits.toLocaleString()} match{pending.hits === 1 ? "" : "es"} in {pending.cells.toLocaleString()} cell{pending.cells === 1 ? "" : "s"}?
-        It is one step to undo.
+        {#if tabParts.length}
+          Replace {plural(pending.hits, "match", "matches")} in {plural(pending.cells, "cell")} across {plural(tabParts.length, "tab")}? Each tab can undo its part in one step.
+        {:else}
+          Replace {plural(pending.hits, "match", "matches")} in {plural(pending.cells - unticked.size, "cell")}{titleChanges.length ? ` and rename ${plural(titleChanges.length, "column")}` : ""}?
+          It is one step to undo.{unticked.size ? ` ${plural(unticked.size, "change")} unticked will be left as they are.` : ""}
+        {/if}
       </div>
+      {#if titleChanges.length}
+        <div class="pv">
+          <table>
+            <thead><tr><th>Column</th><th>Title now</th><th>New title</th></tr></thead>
+            <tbody>
+              {#each titleChanges as [c, before, after] (c)}
+                {@const d = cellDiff(before, after)}
+                <tr><td class="where">{c + 1}</td><td class="cell">{d.head}<del>{d.del}</del>{d.tail}</td><td class="cell">{d.head}<ins>{d.ins}</ins>{d.tail}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+      {#if tabParts.length}
+        <div class="pv">
+          <table>
+            <thead><tr><th>Tab</th><th>Cells</th><th>First change</th></tr></thead>
+            <tbody>
+              {#each tabParts as p (p.t.id)}
+                {@const c = p.r.preview[0]}
+                <tr>
+                  <td class="where">{p.t.info.name}</td>
+                  <td>{p.r.cells.toLocaleString()}</td>
+                  <td class="cell">{#if c}{@const d = cellDiff(c.before, c.after)}{d.head}<del>{d.del}</del><ins>{d.ins}</ins>{d.tail}{/if}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {:else if pending.cells > 0}
       <div class="pv">
         <table>
-          <thead><tr><th>Where</th><th>Before</th><th>After</th></tr></thead>
+          <thead><tr><th><span class="sr">Replace</span></th><th>Where</th><th>Before</th><th>After</th></tr></thead>
           <tbody>
             {#each pageRows as c, i (page * PAGE + i)}
               {@const d = cellDiff(c.before, c.after)}
-              <tr>
+              {@const key = `${c.row}:${c.col}`}
+              <tr class:off={unticked.has(key)}>
+                <td><input type="checkbox" aria-label="Replace this one" title="Untick to leave this cell as it is" checked={!unticked.has(key)} onchange={() => (unticked.has(key) ? unticked.delete(key) : unticked.add(key))} /></td>
                 <td class="where"><button type="button" class="link" title="Go to this cell" onclick={() => onSelect(c.row, c.col)}>{title(c.col)}, row {c.number + 1}</button></td>
                 <td class="cell">{d.head}<del>{d.del}</del>{d.tail}</td>
                 <td class="cell">{d.head}<ins>{d.ins}</ins>{d.tail}</td>
@@ -506,23 +851,63 @@
           <button type="button" aria-label="Next changes" disabled={page >= pages - 1} onclick={() => void showPage(page + 1)}>›</button>
         </div>
       {/if}
+      {/if}
       <div class="line">
-        <button type="button" class="primary" onclick={() => void replaceAll()}>Replace all</button>
+        <button type="button" class="primary" disabled={!tabParts.length && pending.cells - unticked.size <= 0 && !titleChanges.length} onclick={() => void replaceAll()}>Replace all</button>
         <button type="button" onclick={() => (pending = null)}>Cancel</button>
       </div>
     </div>
   {/if}
-  {#if status}<div class="status" role="status">{status}</div>{/if}
-  {#if results && results.cells > 0}
+  {#if status || canShowChanged}
+    <div class="status" role="status">
+      {status}
+      {#if canShowChanged}<button type="button" onclick={() => void showChanged()}>Show changed rows</button>{/if}
+    </div>
+  {/if}
+  {#if notes}
     <div class="results">
       <div class="rhead">
-        {results.cells.toLocaleString()} cell{results.cells === 1 ? "" : "s"} match{results.cells === 1 ? "es" : ""}{results.hits.length < results.cells ? ` (first ${results.hits.length.toLocaleString()} listed)` : ""}
+        {notes.length ? `${plural(notes.length, "note")} match` : "No notes match"}
+        <button type="button" class="x" aria-label="Close results" onclick={() => (notes = null)}>✕</button>
+      </div>
+      <div class="nlist" aria-label="Matching notes">
+        {#each notes.slice(0, 2000) as n (n.row)}
+          <button type="button" class="hit note" onclick={() => onSelect(n.row, tab.cell.col)}>
+            <span class="where">Row {n.row + 1}{n.flag ? ` · ${FLAG_NAMES[n.flag]?.[1] ?? ""} flag` : ""}</span>
+            <span class="snip">{n.text}</span>
+          </button>
+        {/each}
+      </div>
+    </div>
+  {/if}
+  {#if results && totalCells > 0}
+    <div class="results">
+      <div class="rhead">
+        <span>{plural(totalCells, "cell")} match{totalCells === 1 ? "es" : ""}{results.length > 1 ? ` in ${plural(results.length, "tab")}` : ""}{listed < totalCells ? ` (first ${listed.toLocaleString()} listed)` : ""}</span>
         <button type="button" class="x" aria-label="Close results" onclick={() => (results = null)}>✕</button>
       </div>
-      {#if results.per_col && results.per_col.length > 1}
+      {#if single && single.t === tab && !allTabs}
+        <div class="acts" role="group" aria-label="Rows with a match">
+          <span class="muted">Rows with a match{matchRows !== null ? ` (${matchRows.toLocaleString()})` : ""}:</span>
+          <button type="button" title="Hide the other rows (undo, or Show all rows, brings them back)" onclick={() => void actOnRows({ kind: "show" })}>Show only these</button>
+          <button type="button" title="Put these rows in a new tab; this file does not change" onclick={() => void actOnRows({ kind: "copy" })}>Copy to new tab</button>
+          <span class="flagpick">
+            <select aria-label="Flag colour" bind:value={flag}>
+              {#each FLAG_NAMES.slice(1) as [n, name] (n)}<option value={n}>{name}</option>{/each}
+            </select>
+            <button type="button" title="Flag these rows (a row note); needs the columns that identify rows" onclick={() => void actOnRows({ kind: "flag", flag })}>Flag</button>
+          </span>
+          {#if deleteAsk}
+            <span class="ask" role="alert">Delete {matchRows !== null ? plural(matchRows, "row") : "every row with a match"}? <button type="button" class="danger" onclick={() => void actOnRows({ kind: "delete" })}>Delete rows</button> <button type="button" onclick={() => (deleteAsk = false)}>Cancel</button></span>
+          {:else}
+            <button type="button" onclick={() => (deleteAsk = true)}>Delete rows…</button>
+          {/if}
+        </div>
+      {/if}
+      {#if single && single.r.per_col && single.r.per_col.length > 1}
         <div class="percol" aria-label="Matches per column">
           <button type="button" class:on={onlyCol === null} onclick={() => (onlyCol = null)}>All columns</button>
-          {#each results.per_col.slice(0, 40) as [c, n] (c)}
+          {#each single.r.per_col.slice(0, 40) as [c, n] (c)}
             <button type="button" class:on={onlyCol === c} title="Show only this column's matches" onclick={() => (onlyCol = onlyCol === c ? null : c)}>{title(c)}: {n.toLocaleString()}</button>
           {/each}
           <label class="order">Order <select aria-label="Order of matches" bind:value={order}><option value="rows">by row</option><option value="cols">by column</option></select></label>
@@ -531,11 +916,11 @@
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <div class="rlist" role="listbox" aria-label="Matches" tabindex="0" bind:this={listBox} bind:clientHeight={listH} onscroll={(e) => (listTop = (e.currentTarget as HTMLDivElement).scrollTop)} onkeydown={onListKey}>
         <div style:height="{shown.length * ROW_H}px" style:position="relative">
-          {#each shown.slice(first, last) as h, j (first + j)}
+          {#each shown.slice(first, last) as { t, h }, j (first + j)}
             {@const i = first + j}
             {@const chars = [...h.text]}
             <div class="hit" class:cur={i === cursor} role="option" aria-selected={i === cursor} tabindex="-1" style:top="{i * ROW_H}px" onclick={() => go(i)} onkeydown={() => {}}>
-              <span class="where">{title(h.col)}, row {h.number + 1}</span>
+              <span class="where">{results.length > 1 ? `${t.info.name}: ` : ""}{title(h.col, t)}, row {h.number + 1}</span>
               <span class="snip">{chars.slice(0, h.start).join("")}<mark>{chars.slice(h.start, h.start + h.len).join("")}</mark>{chars.slice(h.start + h.len).join("")}</span>
             </div>
           {/each}
@@ -748,6 +1133,101 @@
   .order {
     margin-left: auto;
     color: var(--muted);
+  }
+  .menuwrap {
+    position: relative;
+  }
+  .menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    min-width: 200px;
+    box-shadow: 0 4px 14px rgb(0 0 0 / 0.18);
+  }
+  .menu button {
+    border: none;
+    background: none;
+    text-align: left;
+  }
+  .menu button:hover:not(:disabled) {
+    background: var(--bg);
+  }
+  .menu button:disabled {
+    color: var(--muted);
+    cursor: default;
+  }
+  .picker {
+    margin-left: 30px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .plist {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    max-height: 160px;
+    overflow: auto;
+    font-size: 12px;
+  }
+  .plist label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .acts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    padding: 2px 8px 4px;
+    font-size: 12px;
+  }
+  .acts button,
+  .acts select {
+    padding: 0 6px;
+  }
+  .ask {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+  }
+  button.danger {
+    background: #e5484d;
+    border-color: #e5484d;
+    color: #fff;
+  }
+  .nlist {
+    max-height: 200px;
+    overflow: auto;
+  }
+  .hit.note {
+    position: static;
+    width: 100%;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    background: none;
+  }
+  tr.off td.cell {
+    opacity: 0.45;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
   }
   .snip {
     overflow: hidden;

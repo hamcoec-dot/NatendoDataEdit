@@ -52,6 +52,7 @@
   import ShortcutsDialog from "./lib/ShortcutsDialog.svelte";
   import HighlightDialog from "./lib/HighlightDialog.svelte";
   import SubtotalDialog from "./lib/SubtotalDialog.svelte";
+  import BatchReplaceDialog from "./lib/BatchReplaceDialog.svelte";
   import PivotDialog from "./lib/PivotDialog.svelte";
   import type { PivotSpec } from "./lib/pivot";
   import PromptDialog from "./lib/PromptDialog.svelte";
@@ -171,6 +172,7 @@
   /** The Tools dialog that is open, if any. */
   let toolsKind = $state<ToolKind | null>(null);
   let subtotalOpen = $state(false);
+  let batchOpen = $state(false);
   /** The tab the pivot builder works on (null: closed). */
   let pivotDoc = $state<number | null>(null);
   /** Each tab's last pivot layout, and which tab each pivot tab came from. */
@@ -4120,6 +4122,7 @@
     ...TOOLS.map((tl) => ({ id: `clean.tool.${tl.id}`, label: `${tl.label}…`, run: () => { cleanTool = tl.id; }, enabled: ready })),
     { id: "find.find", label: "&Find…", keys: ["Ctrl+F", "Shift+F5"], run: () => openFind(false), enabled: hasTab },
     { id: "find.replace", label: "&Replace…", keys: ["Ctrl+H"], run: () => openFind(true), enabled: ready },
+    { id: "find.batch", label: "Replace from a &list…", run: () => { batchOpen = true; }, enabled: ready },
     { id: "find.next", label: "Find &next", keys: ["F3", "Shift+F4"], run: () => findAgain(false), enabled: hasTab },
     { id: "find.prev", label: "Find &previous", keys: ["Shift+F3"], run: () => findAgain(true), enabled: hasTab },
     { id: "find.thisValue", label: "Find this &value", run: () => findValue("find"), enabled: hasTab },
@@ -4184,7 +4187,7 @@
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "-",
         "data.values", "data.group", "data.arrange", "data.extract", "data.build", "-",
-        "find.find", "find.replace", "find.next", "find.prev",
+        "find.find", "find.replace", "find.batch", "find.next", "find.prev",
       ],
     },
     {
@@ -4380,7 +4383,7 @@
 
   function onKeyDown(e: KeyboardEvent): void {
     if (dialog || sortDialog || filterMenu || opDialog || formRow !== null || symbols || saveAsReq || exportOpen || importing || joinKind) return;
-    if (cleanTool || splitNameOpen || insertAsk || search !== null || shortcutsOpen || highlightOpen || subtotalOpen || pivotDoc !== null || prompt) return;
+    if (cleanTool || splitNameOpen || insertAsk || search !== null || shortcutsOpen || highlightOpen || subtotalOpen || batchOpen || pivotDoc !== null || prompt) return;
     if ((openMenu !== null || context) && menuKey(e)) return;
     altAlone = e.key === "Alt";
     // The find bar's own keys (Alt+C, Alt+W, Alt+R, Alt+L, Alt+Enter) are
@@ -5189,7 +5192,21 @@
             grid?.scrollIntoView({ row, col });
           } else grid?.select({ row, col });
         }}
-        onChanged={(d) => tab?.update(d, true)}
+        {tabs}
+        onChanged={(d, t) => (t ?? tab)?.update(d, true)}
+        onGoTab={(t, row, col) => {
+          const i = tabs.indexOf(t);
+          if (i < 0) return;
+          active = i;
+          void tick().then(() => { grid?.select({ row, col }); grid?.scrollIntoView({ row, col }); });
+        }}
+        onNewTab={(d) => addTab(d)}
+        onRenameColumns={async (list) => {
+          const t = tab;
+          if (!t) return;
+          for (const [c, name] of list) await renameColumn(t.id, c, name, true, shownTitles(t));
+        }}
+        onBatch={() => { batchOpen = true; }}
         onClose={() => { findOpen = false; findBlock = null; grid?.focus(); }}
       />
     {/if}
@@ -5306,6 +5323,7 @@
       <span>Ready</span>
     {/if}
     <span class="spacer"></span>
+    {#if findOpen && tab && tab.findCount !== null}<span class="muted" title="Cells that match the find bar's search">Find: {tab.findCount.toLocaleString()}</span>{/if}
     {#if extendMode}<button type="button" class="small" title="Arrow keys grow the selection. Click to end (or F8, or Esc)." onclick={() => toggleExtend()}>Extend selection</button>{/if}
     {#if status}
       {#if tab}<QuickTotals {tab} />{/if}
@@ -5864,6 +5882,23 @@
     onSay={say}
     onConfirmSave={(n) => pivotSaveAsk(pt, n)}
     onClose={pivotDone}
+  />
+{/if}
+
+{#if batchOpen && tab}
+  <BatchReplaceDialog
+    {tab}
+    {tabs}
+    titles={shownTitles(tab)}
+    sel={{ col: tab.rect.col, cols: tab.rect.cols }}
+    run={runJob}
+    onDone={(r) => {
+      batchOpen = false;
+      if (r.info) tab?.update(r.info, true);
+      say(`Replaced ${plural(r.cells, "cell")} from the list. Undo (Ctrl+Z) reverts it.`);
+      grid?.focus();
+    }}
+    onClose={() => { batchOpen = false; grid?.focus(); }}
   />
 {/if}
 

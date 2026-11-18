@@ -418,6 +418,32 @@ everything is also in command search.
   `$1a` for `${1}a`) is caught before anything changes.
 - **Right-click a cell to find its value**: Find this value, Replace this
   value, or Find all like this in the column.
+- **Find blanks, special characters, column titles and notes**: pick "Blank
+  cells" to find empty cells; Special… puts in characters that are hard to
+  type or see (a non-breaking space, a zero-width space, curly quotes, any
+  digit or letter in a regular expression); "Column titles" searches the
+  first row too, and replacing there renames the column so views and checks
+  follow; "In row notes" searches the notes on rows. In a regular
+  expression's replacement, `\U$1` and `\L$1` change case until `\E`, and
+  `\u$1` makes just the first letter a capital.
+- **Search all open tabs or chosen columns**: Search in "All open tabs" finds
+  in every open file at once (each match says its tab) and Replace all shows
+  every tab's part before changing anything, one undo step per tab.
+  "Columns…" picks columns by name, with Select all and Unselect all. While
+  the find bar is open the status bar shows "Find: 1,204".
+- **Act on the rows Find all found**: show only those rows, copy them to a
+  new tab, flag them with a coloured note flag, or delete them (it asks
+  first, and Ctrl+Z puts them back).
+- **Replace from a list** (Find › Replace from a list…, or "From a list…" in
+  the find bar): paste two columns (what to find, what to put instead) or
+  take them from two columns of another open tab, up to 100,000 pairs.
+  Whole cells only (fast, for codes like TN → Tennessee) or text inside
+  cells, where the longest match wins. Every pair applies at once, so "A to
+  B" and "B to C" never chain, and you see what changes before anything
+  does.
+- **Untick changes and show changed rows**: in the Replace all preview, untick
+  any change to leave that cell as it is. After Replace all, "Show changed
+  rows" shows only the rows that changed.
 - **Find tips and recent searches**: the ? button lists wildcard and pattern
   examples and the keys; Up and Down in the boxes bring back earlier searches,
   kept only until the app closes (Clear search history forgets them).
