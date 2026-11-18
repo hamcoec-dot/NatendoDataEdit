@@ -32,6 +32,8 @@ pub const MAX_TEMPLATE_CHARS: usize = 1 << 20;
 pub enum ExportFormat {
     #[default]
     Json,
+    /// JSON Lines (`.jsonl`): one JSON record per line.
+    JsonLines,
     Xml,
     Html,
     Markdown,
@@ -61,6 +63,7 @@ impl ExportFormat {
     pub fn extension(self) -> &'static str {
         match self {
             ExportFormat::Json => "json",
+            ExportFormat::JsonLines => "jsonl",
             ExportFormat::Xml => "xml",
             ExportFormat::Html => "html",
             ExportFormat::Markdown => "md",
@@ -516,7 +519,8 @@ impl Document {
             None
         };
         let xml_names: Vec<String> = names.iter().map(|n| xml_name(n)).collect();
-        let (nl, ind, ind2) = if opts.pretty {
+        let lines = opts.format == ExportFormat::JsonLines;
+        let (nl, ind, ind2) = if opts.pretty && !lines {
             ("\n", "  ", "    ")
         } else {
             ("", "", "")
@@ -527,6 +531,7 @@ impl Document {
         // Opening.
         match opts.format {
             ExportFormat::Json => s.push('['),
+            ExportFormat::JsonLines => {}
             ExportFormat::Xml => {
                 s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<");
                 s.push_str(&xml_name(&opts.root));
@@ -574,8 +579,8 @@ impl Document {
             let cell = |k: usize| reader.get(&buf, k);
             s.clear();
             match opts.format {
-                ExportFormat::Json => {
-                    if i > 0 {
+                ExportFormat::Json | ExportFormat::JsonLines => {
+                    if i > 0 && !lines {
                         s.push(',');
                     }
                     s.push_str(nl);
@@ -599,7 +604,7 @@ impl Document {
                             s.push_str(ind2);
                             json_str(name, &mut s);
                             s.push(':');
-                            if opts.pretty {
+                            if opts.pretty && !lines {
                                 s.push(' ');
                             }
                             json_str(cell(k), &mut s);
@@ -607,6 +612,9 @@ impl Document {
                         s.push_str(nl);
                         s.push_str(ind);
                         s.push('}');
+                    }
+                    if lines {
+                        s.push('\n');
                     }
                 }
                 ExportFormat::Xml => {
@@ -674,6 +682,7 @@ impl Document {
                 s.push_str(nl);
                 s.push_str("]\n");
             }
+            ExportFormat::JsonLines => {}
             ExportFormat::Xml => {
                 s.push_str(nl);
                 s.push_str("</");
@@ -1072,6 +1081,22 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&ex(&d, ExportOptions::default())).unwrap();
         assert_eq!(parsed[1]["n"], "<2>");
+        // JSON Lines: one record per line, never indented, each line valid JSON.
+        let jl = ex(
+            &d,
+            ExportOptions {
+                format: ExportFormat::JsonLines,
+                ..o.clone()
+            },
+        );
+        let rows: Vec<&str> = jl.lines().collect();
+        assert_eq!(rows.len(), 2);
+        assert!(jl.ends_with("}\n"));
+        for r in &rows {
+            let v: serde_json::Value = serde_json::from_str(r).unwrap();
+            assert!(v.is_object());
+        }
+        assert_eq!(rows[0], "{\"name\":\"A \\\"q\\\"\",\"n\":\"1\",\"name 2\":\"x\"}");
         let x = ex(
             &d,
             ExportOptions {

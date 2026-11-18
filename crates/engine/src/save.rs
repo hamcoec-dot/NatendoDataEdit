@@ -651,22 +651,45 @@ impl Document {
             return Err(Error::ChangedOnDisk);
         }
 
+        // A gzip file is saved gzipped (as is any file saved under a .gz
+        // name); reading it back for the check below unpacks it again.
+        let gzip = target
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("gz"))
+            || (same_file && self.source.is_gzipped());
+
         // 1. Write and flush the temp file next to the target.
         let (temp, file) = create_temp(&target)?;
         let written = (|| -> Result<Counts, Error> {
             let mut bw = BufWriter::with_capacity(1 << 20, &file);
-            let mut cw = CountingWriter {
-                inner: &mut bw,
-                n: 0,
+            let c = if gzip {
+                let mut gz = flate2::write::GzEncoder::new(&mut bw, flate2::Compression::default());
+                let mut cw = CountingWriter { inner: &mut gz, n: 0 };
+                let mut c = self.write_rows(
+                    &mut cw,
+                    format,
+                    opts.convert_line_breaks,
+                    opts.allow_lossy,
+                    opts.quoting,
+                )?;
+                c.bytes = cw.n;
+                gz.finish()?;
+                c
+            } else {
+                let mut cw = CountingWriter {
+                    inner: &mut bw,
+                    n: 0,
+                };
+                let mut c = self.write_rows(
+                    &mut cw,
+                    format,
+                    opts.convert_line_breaks,
+                    opts.allow_lossy,
+                    opts.quoting,
+                )?;
+                c.bytes = cw.n;
+                c
             };
-            let mut c = self.write_rows(
-                &mut cw,
-                format,
-                opts.convert_line_breaks,
-                opts.allow_lossy,
-                opts.quoting,
-            )?;
-            c.bytes = cw.n;
             bw.flush()?;
             file.sync_all()?;
             Ok(c)
@@ -1244,6 +1267,42 @@ mod tests {
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    /// A .gz file opens unpacked in memory and saves back gzipped; a crafted
+    /// file that unpacks to far more than its size is refused.
+    #[test]
+    fn gzip_files_open_and_save_back_gzipped() {
+        use std::io::{Read, Write};
+        let dir = tmpdir("gz");
+        let p = dir.join("voters.csv.gz");
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(b"name,zip\r\nAnn,01234\r\n").unwrap();
+        fs::write(&p, enc.finish().unwrap()).unwrap();
+        let mut d = Document::open_indexed(&p, OpenOptions::default(), None).unwrap();
+        assert_eq!(d.row_values(1).unwrap(), ["Ann", "01234"]);
+        d.set_cell(1, 0, "Bea".into()).unwrap();
+        assert!(d.save(SaveOptions::default()).unwrap().verified);
+        let mut text = String::new();
+        flate2::read::GzDecoder::new(&fs::read(&p).unwrap()[..]).read_to_string(&mut text).unwrap();
+        assert_eq!(text, "name,zip\r\nBea,01234\r\n");
+        assert!(!d.is_modified());
+        // Saved again after another change: still gzipped, nothing left over.
+        d.set_cell(1, 1, "99999".into()).unwrap();
+        d.save(SaveOptions::default()).unwrap();
+        assert!(crate::source::is_gzip(&fs::read(&p).unwrap()));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        // Save As a plain name writes plain text.
+        let plain = dir.join("out.csv");
+        d.save(SaveOptions { path: Some(plain.clone()), ..Default::default() }).unwrap();
+        assert_eq!(fs::read(&plain).unwrap(), b"name,zip\r\nBea,99999\r\n");
+        // A bomb: a megabyte-plus of zeros per few bytes is refused.
+        let bomb = dir.join("bomb.csv.gz");
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        enc.write_all(&vec![b'a'; 64 << 20]).unwrap();
+        fs::write(&bomb, enc.finish().unwrap()).unwrap();
+        assert!(Document::open(&bomb, OpenOptions::default()).is_err());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

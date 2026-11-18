@@ -338,11 +338,7 @@ mod tests {
     #[test]
     fn edited_and_failing_cells() {
         use crate::validate::{Check, CheckKind};
-        let mut d = doc("a,b
-1,x
-2,y
-q,z
-");
+        let mut d = doc("a,b\n1,x\n2,y\nq,z\n");
         d.set_cells(vec![(2, 1, "Y".into())]).unwrap();
         let e = pick(&d, SpecialKind::Edited, vec![0, 1]);
         assert_eq!(e.cells, vec![(2, 1)]);
@@ -358,11 +354,7 @@ q,z
 
     #[test]
     fn fill_plan() {
-        let mut d = doc("a,b
-1,
-,x
-,
-");
+        let mut d = doc("a,b\n1,\n,x\n,\n");
         let spec = SpecialSpec { kind: SpecialKind::Blanks, row: 1, rows: 9, cols: vec![0, 1], ..Default::default() };
         let plan = d.plan_fill_special(&spec, "UNKNOWN", &Progress::default()).unwrap();
         assert_eq!(plan.cells, 4);

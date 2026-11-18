@@ -208,6 +208,25 @@ impl<'a> Zip<'a> {
         })
     }
 
+    /// Every part's name and declared (untrusted) unpacked size, by name.
+    pub fn names(&self) -> Vec<(String, u64)> {
+        let mut v: Vec<(String, u64)> = self.entries.iter().map(|(n, e)| (n.clone(), e.usize)).collect();
+        v.sort();
+        v
+    }
+
+    /// A whole part, unpacked (at most `cap` bytes; the archive's own caps
+    /// and checks apply too).
+    pub fn read_bytes(&self, name: &str, cap: u64) -> Result<Vec<u8>, Error> {
+        let mut r = self.reader(name)?;
+        let mut v = Vec::new();
+        (&mut r).take(cap + 1).read_to_end(&mut v).map_err(io_err)?;
+        if v.len() as u64 > cap {
+            return Err(Error::Invalid(format!("{name} is too large to open")));
+        }
+        Ok(v)
+    }
+
     pub fn has(&self, name: &str) -> bool {
         self.entry(name).is_some()
     }

@@ -573,6 +573,10 @@ export class MockBackend implements Backend {
         const v = o.arrays ? rows : rows.map((r) => Object.fromEntries(names.map((n, i) => [n, r[i] ?? ""])));
         return JSON.stringify(v, null, o.pretty ? 2 : undefined) + "\n";
       }
+      case "json_lines": {
+        const v = o.arrays ? rows : rows.map((r) => Object.fromEntries(names.map((n, i) => [n, r[i] ?? ""])));
+        return v.map((x) => JSON.stringify(x) + "\n").join("");
+      }
       case "xml":
         return `<?xml version="1.0" encoding="UTF-8"?>\n<${o.root}>${rows.map((r) => `<${o.record}>${names.map((n, i) => `<${n}>${esc(r[i] ?? "")}</${n}>`).join("")}</${o.record}>`).join("")}</${o.root}>\n`;
       case "html":
@@ -1606,6 +1610,12 @@ export class MockBackend implements Backend {
       opened = { doc: { ...this.get(info.id).info }, import: null };
     }
     return { opened, place: { view: s.view, row: s.row, col: s.col, changed: false } };
+  }
+  async zipOpen(_token: number, names: string[]): Promise<DocInfo[]> {
+    return names.map((n) => {
+      const info = this.make(`export.zip › ${n.split("/").at(-1)}`, 120, 4);
+      return { ...this.get(info.id).info };
+    });
   }
   async sessionClear(): Promise<void> {
     this.lastTabs = [];

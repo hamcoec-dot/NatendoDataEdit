@@ -43,6 +43,8 @@
   import RenameColumn from "./lib/RenameColumn.svelte";
   import ShiftCellsDialog, { type ShiftChoice } from "./lib/ShiftCellsDialog.svelte";
   import GoToSpecialDialog, { type SpecialChoice } from "./lib/GoToSpecialDialog.svelte";
+  import ZipPickDialog from "./lib/ZipPickDialog.svelte";
+  import type { ZipList } from "./lib/backend";
   import type { SpecialKind, SpecialSpec } from "./lib/backend";
   import { localDays } from "./lib/m8";
   import { remapChecks, renameInChecks } from "./lib/rename";
@@ -445,7 +447,21 @@
   function opened(o: Opened | null): void {
     if (o?.doc) addTab(o.doc);
     else if (o?.import) importing = o.import;
+    else if (o?.zip) zipPick = o.zip;
     if (o) void loadRecent();
+  }
+
+  /** A zip file with several tables, waiting for a pick. */
+  let zipPick = $state<ZipList | null>(null);
+  async function openFromZip(list: ZipList, names: string[]): Promise<void> {
+    zipPick = null;
+    try {
+      const docs = await runJob("Opening", () => backend().zipOpen(list.token, names));
+      for (const d of docs ?? []) addTab(d);
+      if (docs?.length) say(`Opened ${plural(docs.length, "table")} from ${list.name}. To keep changes, save each as a file of its own (File › Save as); the zip is never changed.`);
+    } catch (e) {
+      say(errorText(e));
+    }
   }
 
   async function loadRecent(): Promise<void> {
@@ -484,7 +500,7 @@
         return "open";
       }
       opened(o);
-      return o.import ? "import" : o.doc ? "opened" : "failed";
+      return o.import || o.zip ? "import" : o.doc ? "opened" : "failed";
     } catch (e) {
       say(errorText(e));
       void loadRecent();
@@ -983,6 +999,7 @@
         d = await backend().importFinish(s.id, { format: s.info.format, part: Math.max(0, s.info.hidden.indexOf(false)), raw_dates: false, record: "" });
         void backend().importClose(s.id).catch(() => {});
       }
+      if (!d && o?.zip) say(`${o.zip.name} holds ${o.zip.entries.length} tables: open the one you want with File › Open first, then pick it here.`);
       if (!d) return null;
       addTab(d);
       const nt = tabs[tabs.length - 1]!;
@@ -6184,6 +6201,10 @@
   />
 {/if}
 
+{#if zipPick}
+  {@const z = zipPick}
+  <ZipPickDialog list={z} onOpen={(names) => void openFromZip(z, names)} onClose={() => (zipPick = null)} />
+{/if}
 {#if specialAsk && tab}
   {@const t = tab}
   <GoToSpecialDialog

@@ -15,6 +15,36 @@ use std::time::SystemTime;
 
 /// Files at least this large are mapped instead of read (Windows only).
 pub const MAP_THRESHOLD: u64 = 32 << 20;
+/// Largest gzip file read.
+pub const MAX_GZ_INPUT: u64 = 2 << 30;
+/// Most bytes a gzip file may unpack to.
+pub const MAX_GZ_OUTPUT: u64 = 8 << 30;
+/// A gzip file may unpack to at most this many times its size (once past
+/// 1 MB): a "zip bomb" is refused instead of filling the memory.
+pub const MAX_GZ_RATIO: u64 = 250;
+
+/// True when `data` starts like a gzip file.
+pub fn is_gzip(data: &[u8]) -> bool {
+    data.starts_with(&[0x1f, 0x8b])
+}
+
+/// Unpack gzip bytes (every member, as `gzip -d` does), within the caps.
+pub fn gunzip(data: &[u8]) -> io::Result<Vec<u8>> {
+    let cap = (data.len() as u64)
+        .saturating_mul(MAX_GZ_RATIO)
+        .max(1 << 20)
+        .min(MAX_GZ_OUTPUT);
+    let mut out = Vec::new();
+    let mut r = flate2::read::MultiGzDecoder::new(data).take(cap + 1);
+    r.read_to_end(&mut out)?;
+    if out.len() as u64 > cap {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the gzip file unpacks to far more than its size (a damaged or crafted file); it was not opened",
+        ));
+    }
+    Ok(out)
+}
 
 /// Size and modified time, used to notice changes made by other programs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +82,9 @@ pub struct Source {
     /// file (so a change by another program can be noticed even when its
     /// size and modified time were kept).
     hash: Option<u64>,
+    /// The file is gzip-compressed: `bytes` are unpacked, `hash` is of the
+    /// file as stored.
+    gz: bool,
 }
 
 const HASH_CHUNK: usize = 1 << 20;
@@ -97,6 +130,7 @@ impl Source {
             path: None,
             stamp: None,
             hash: None,
+            gz: false,
         }
     }
 
@@ -104,6 +138,13 @@ impl Source {
     /// against writers); everything else is read into memory and hashed.
     pub fn open(path: &Path) -> io::Result<Source> {
         let stamp = FileStamp::of(path)?;
+        // A gzip file is read whole and unpacked in memory (no unpacked
+        // copy is ever written to disk).
+        let mut magic = [0u8; 2];
+        let got = File::open(path)?.read(&mut magic)?;
+        if is_gzip(&magic[..got]) {
+            return Source::open_gz(path, stamp);
+        }
         #[cfg(windows)]
         if stamp.len >= MAP_THRESHOLD && on_fixed_drive(path) {
             if let Some(bytes) = map_exclusive(path)? {
@@ -112,6 +153,7 @@ impl Source {
                     path: Some(path.to_owned()),
                     stamp: Some(stamp),
                     hash: None,
+                    gz: false,
                 });
             }
         }
@@ -132,6 +174,31 @@ impl Source {
             path: Some(path.to_owned()),
             stamp: Some(stamp),
             hash,
+            gz: false,
+        })
+    }
+
+    fn open_gz(path: &Path, stamp: FileStamp) -> io::Result<Source> {
+        if stamp.len > MAX_GZ_INPUT {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "the gzip file is too large to open (at most 2 GB)",
+            ));
+        }
+        let packed = std::fs::read(path)?;
+        if FileStamp::of(path)? != stamp || packed.len() as u64 != stamp.len {
+            return Err(io::Error::other(
+                "the file changed while it was being read; try again",
+            ));
+        }
+        let hash = Some(hash_bytes(&packed));
+        let bytes = gunzip(&packed)?;
+        Ok(Source {
+            bytes: Bytes::Owned(bytes),
+            path: Some(path.to_owned()),
+            stamp: Some(stamp),
+            hash,
+            gz: true,
         })
     }
 
@@ -171,6 +238,7 @@ impl Source {
             path: self.path,
             stamp: self.stamp,
             hash,
+            gz: self.gz,
         }
     }
 
@@ -186,6 +254,11 @@ impl Source {
     /// Hash of the file as it was read (in-memory sources only).
     pub(crate) fn file_hash(&self) -> Option<u64> {
         self.hash
+    }
+
+    /// The file was gzip-compressed (its bytes here are unpacked).
+    pub fn is_gzipped(&self) -> bool {
+        self.gz
     }
 
     /// True when the file on disk no longer matches what was opened.

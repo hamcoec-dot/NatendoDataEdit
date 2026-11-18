@@ -877,9 +877,16 @@ export interface ImportStart {
 export interface Opened {
   doc: DocInfo | null;
   import: ImportStart | null;
+  /** A zip file holding several tables: pick which to open. */
+  zip?: ZipList;
+}
+export interface ZipList {
+  token: number;
+  name: string;
+  entries: { name: string; size: number }[];
 }
 
-export type ExportFormat = "json" | "xml" | "html" | "markdown" | "template" | "xlsx" | "pdf" | "fixed_width" | "sql";
+export type ExportFormat = "json" | "json_lines" | "xml" | "html" | "markdown" | "template" | "xlsx" | "pdf" | "fixed_width" | "sql";
 export interface ExportOptions {
   format: ExportFormat;
   header: boolean;
@@ -1045,6 +1052,8 @@ export interface Backend {
   /** Reopen a remembered tab, with where it was. */
   sessionOpen(index: number): Promise<{ opened: Opened; place: SessionPlace }>;
   sessionClear(): Promise<void>;
+  /** Open tables picked from a zip file (tabs with no file). */
+  zipOpen(token: number, names: string[]): Promise<DocInfo[]>;
   openRecent(id: string): Promise<Opened>;
   /** Per tab: the folder telling same-named files apart ("" for the rest). */
   tabFolders(ids: number[]): Promise<string[]>;
@@ -1467,6 +1476,9 @@ class TauriBackend implements Backend {
   }
   sessionClear() {
     return call<void>("session_clear");
+  }
+  zipOpen(token: number, names: string[]) {
+    return call<DocInfo[]>("zip_open", { token, names });
   }
   recentFiles() {
     return call<RecentItem[]>("recent_files");

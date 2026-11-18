@@ -13,6 +13,7 @@ mod imports;
 mod links;
 mod recovery;
 mod session;
+mod zips;
 mod watch;
 
 use std::path::PathBuf;
@@ -77,6 +78,8 @@ async fn blocking<T: Send + 'static>(
 
 const FILE_TYPES: &[&str] = &["csv", "tsv", "tab", "txt", "psv", "dat", "ssv"];
 const SHEET_TYPES: &[&str] = &["xlsx", "xlsm", "ods"];
+/// Zipped and gzipped tables (opened without unpacking to disk).
+const PACKED_TYPES: &[&str] = &["gz", "zip"];
 const OTHER_TYPES: &[&str] = &[
     "json", "jsonl", "ndjson", "xml", "html", "htm", "md", "log", "prn", "fwf",
 ];
@@ -93,6 +96,9 @@ fn is_import_type(path: &std::path::Path) -> bool {
 struct Opened {
     doc: Option<DocInfo>,
     import: Option<ImportStart>,
+    /// A zip file holding several tables: pick which to open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zip: Option<zips::ZipList>,
 }
 
 /// Open a path the shell chose (dialog, recent list, folder listing):
@@ -113,16 +119,32 @@ fn open_any(
             "this file is encrypted: open it with File > Open an encrypted file, which asks for its password",
         ));
     }
-    let opened = if is_import_type(path) {
+    let opened = if zips::is_zip_path(path) {
+        // A zip of tables: one opens at once; several are listed to pick.
+        match zips::ZIPS.list(path)? {
+            zips::Listed::One(name) => Opened {
+                doc: zips::ZIPS.open_entry(docs, path, &name)?.into_iter().next(),
+                import: None,
+                zip: None,
+            },
+            zips::Listed::Many(list) => Opened {
+                doc: None,
+                import: None,
+                zip: Some(list),
+            },
+        }
+    } else if is_import_type(path) {
         Opened {
             doc: None,
             import: Some(imports.open_path(path)?),
+            zip: None,
         }
     } else {
         let info = docs.open_path(path, false)?;
         Opened {
             doc: Some(info),
             import: None,
+            zip: None,
         }
     };
     recent.add(path);
@@ -339,6 +361,7 @@ async fn open_recent(
             return Ok(Opened {
                 doc: Some(docs.info(doc)?),
                 import: None,
+                zip: None,
             });
         }
         let r = open_any(&docs, &imports, &recent, &path);
@@ -348,6 +371,14 @@ async fn open_recent(
         r
     })
     .await
+}
+
+/// Open tables picked from a zip file (each read-only to the zip: a tab
+/// with no file, so Save asks where to save it).
+#[tauri::command]
+async fn zip_open(docs: DocsState<'_>, token: u32, names: Vec<String>) -> CmdResult<Vec<DocInfo>> {
+    let docs = docs.inner().clone();
+    blocking(move || zips::ZIPS.open_picked(&docs, token, &names)).await
 }
 
 /// Remember the open tabs for next time (paths and views only; private,
@@ -410,6 +441,7 @@ async fn session_open(
             Some(doc) => Opened {
                 doc: Some(docs.info(doc)?),
                 import: None,
+                zip: None,
             },
             None => open_any(&docs, &imports, &recent, &path)?,
         };
@@ -884,6 +916,7 @@ async fn open_file(
             .iter()
             .chain(SHEET_TYPES)
             .chain(OTHER_TYPES)
+            .chain(PACKED_TYPES)
             .copied()
             .collect();
         let Some(path) = rfd::FileDialog::new()
@@ -891,6 +924,7 @@ async fn open_file(
             .add_filter("Tables", &all)
             .add_filter("Delimited text", FILE_TYPES)
             .add_filter("Spreadsheets", SHEET_TYPES)
+            .add_filter("Zipped tables (.gz, .zip)", PACKED_TYPES)
             .add_filter("All files", &["*"])
             .set_parent(&window)
             .pick_file()
@@ -1341,6 +1375,7 @@ async fn open_folder_hit(
             return Ok(Opened {
                 doc: Some(docs.info(id)?),
                 import: None,
+                zip: None,
             });
         }
         open_any(&docs, &imports, &recent, &path)
@@ -3185,6 +3220,7 @@ pub fn run() {
             import_close,
             export_preview,
             recent_files,
+            zip_open,
             session_save,
             session_list,
             session_open,

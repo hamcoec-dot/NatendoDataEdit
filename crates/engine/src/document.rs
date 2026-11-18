@@ -419,7 +419,15 @@ impl Document {
     /// it returns `true` (or use [`Document::open_indexed`]).
     pub fn open(path: &Path, opts: OpenOptions) -> Result<Document, Error> {
         let source = Source::open(path)?;
-        let ext = path.extension().and_then(|e| e.to_str());
+        let mut ext = path.extension().and_then(|e| e.to_str());
+        // voters.tsv.gz: the type is the one before ".gz".
+        if ext.is_some_and(|e| e.eq_ignore_ascii_case("gz")) {
+            ext = path
+                .file_stem()
+                .map(Path::new)
+                .and_then(|s| s.extension())
+                .and_then(|e| e.to_str());
+        }
         Document::from_source(source, opts, ext)
     }
 

@@ -26,6 +26,7 @@
   const FORMATS: [ExportFormat, string][] = [
     ["xlsx", "Excel workbook (.xlsx)"],
     ["json", "JSON"],
+    ["json_lines", "JSON Lines (.jsonl, one record per line)"],
     ["xml", "XML"],
     ["html", "Web page table (HTML)"],
     ["markdown", "Markdown table"],
@@ -90,6 +91,9 @@
   {:else if o.format === "json"}
     <label class="row"><input type="checkbox" bind:checked={o.arrays} /> Rows as lists of values (instead of name: value)</label>
     <label class="row"><input type="checkbox" bind:checked={o.pretty} /> Indented</label>
+  {:else if o.format === "json_lines"}
+    <label class="row"><input type="checkbox" bind:checked={o.arrays} /> Rows as lists of values (instead of name: value)</label>
+    <p class="note">One record per line, as databases and web tools read and write logs and records. Open such a file with File › Open.</p>
   {:else if o.format === "xml"}
     <div class="grid2">
       <label class="row">Outer element <input type="text" bind:value={o.root} maxlength="100" /></label>
