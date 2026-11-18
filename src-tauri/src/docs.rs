@@ -578,6 +578,8 @@ pub struct ReplaceReport {
     pub preview: Vec<Change>,
     /// After "Replace all": the document's new state.
     pub info: Option<DocInfo>,
+    /// Of the cells, those in hidden rows or columns (the preview says so).
+    pub hidden_cells: u64,
 }
 
 /// A data operation from the Data and Edit menus (Milestone 4b). Every
@@ -2707,6 +2709,7 @@ impl Docs {
             hits: plan.hits,
             preview: plan.preview.clone(),
             info: None,
+            hidden_cells: plan.hidden_cells,
         };
         *entry.replace.lock().unwrap_or_else(|p| p.into_inner()) = Some((key, plan));
         Ok(report)
@@ -2992,6 +2995,7 @@ impl Docs {
             hits: plan.hits,
             preview: plan.preview.clone(),
             info: None,
+            hidden_cells: plan.hidden_cells,
         };
         *entry.replace.lock().unwrap_or_else(|p| p.into_inner()) = Some((key, plan));
         Ok(report)
@@ -3057,6 +3061,7 @@ impl Docs {
             hits,
             preview: Vec::new(),
             info: Some(info),
+            hidden_cells: 0,
         })
     }
 
@@ -3112,7 +3117,7 @@ impl Docs {
     }
 
     /// [`Docs::replace_confirm`] leaving out the changes the user unticked
-    /// (shown row, column).
+    /// (row number in the document, column).
     pub fn replace_confirm_except(
         &self,
         id: u32,
@@ -3174,6 +3179,7 @@ impl Docs {
                 hits,
                 preview: Vec::new(),
                 info: Some(info),
+                hidden_cells: 0,
             })
         };
         let changed = || {
@@ -7336,6 +7342,7 @@ ca,California
             scope: natendo_engine::find::Scope::All,
             skip_first: true,
             skip_cols: Vec::new(),
+            ..Default::default()
         };
         let t = docs
             .find_rows(id, spec.clone(), FindRowsAction::Copy, None)
@@ -7437,6 +7444,7 @@ ca,California
             scope: natendo_engine::find::Scope::All,
             skip_first: false,
             skip_cols: Vec::new(),
+            ..Default::default()
         };
         // Previewed one thing, confirmed another: refused, nothing changes.
         docs.replace_preview(id, spec("zzq"), "yy".into()).unwrap();
@@ -7849,6 +7857,7 @@ B,y
             scope: Scope::All,
             skip_first: true,
             skip_cols: Vec::new(),
+            ..Default::default()
         };
         let hit = docs
             .find_next(id, find.clone(), None, false)
@@ -7879,6 +7888,7 @@ B,y
             scope: Scope::All,
             skip_first: false,
             skip_cols: Vec::new(),
+            ..Default::default()
         };
         assert_eq!(docs.find_all(id, bad).unwrap_err().kind, "bad_pattern");
         assert_eq!(

@@ -247,6 +247,7 @@ fn main() {
         scope: Scope::Columns { cols: vec![col] },
         skip_first: true,
         skip_cols: Vec::new(),
+        ..Default::default()
     };
     let t = Instant::now();
     let all = doc

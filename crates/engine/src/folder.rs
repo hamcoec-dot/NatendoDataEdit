@@ -130,6 +130,7 @@ pub fn search_folder(
         scope: Scope::All,
         skip_first: false,
         skip_cols: Vec::new(),
+        ..Default::default()
     };
     for path in files {
         progress.step(0)?;

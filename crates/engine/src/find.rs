@@ -15,6 +15,7 @@ use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Progress};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Longest pattern, in characters.
@@ -78,6 +79,15 @@ pub enum PatternKind {
     Wildcard,
     /// A regular expression; the replacement may use `$1`, `${name}`, `$$`.
     Regex,
+    /// Cells holding a number by its value: `5` finds 5, 5.00, $5;
+    /// `10..20`, `>5`, `>=5`, `<5`, `<=5`. The whole cell is replaced.
+    Number,
+    /// Cells holding a date by its value: `1/5/2024` finds 2024-01-05 and
+    /// Jan 5 2024; ranges and comparisons as for numbers.
+    Date,
+    /// Whole cells spelled nearly the same (a letter or two different,
+    /// case, accents and punctuation aside): "Jon Smyth" finds "John Smith".
+    Similar,
 }
 
 /// What to look for.
@@ -97,6 +107,188 @@ pub struct Pattern {
     /// stand for a tab, a line break, a carriage return, a backslash and
     /// any character (also in the replacement).
     pub escapes: bool,
+    /// A replacement takes the case of what it replaces: "smith" → "jones"
+    /// turns SMITH into JONES and Smith into Jones.
+    pub preserve_case: bool,
+    /// How numbers and dates are read (Number and Date patterns).
+    pub read: ReadOptions,
+}
+
+/// A test on the whole cell (Number, Date and Similar patterns).
+#[derive(Debug, Clone)]
+enum Test {
+    /// A number (or a date as days) between two bounds (value, inclusive).
+    Value {
+        date: bool,
+        lo: Option<(f64, bool)>,
+        hi: Option<(f64, bool)>,
+        read: ReadOptions,
+    },
+    /// Spelled within `max` letters of `want` (both normalized).
+    Similar { want: Vec<char>, max: usize },
+}
+
+impl Test {
+    fn new(p: &Pattern) -> Result<Option<Test>, Error> {
+        let date = match p.kind {
+            PatternKind::Number => false,
+            PatternKind::Date => true,
+            PatternKind::Similar => {
+                let want: Vec<char> = similar_key(&p.text).chars().collect();
+                if want.is_empty() {
+                    return Err(Error::BadPattern("enter a name or word to look for".into()));
+                }
+                let max = match want.len() {
+                    0..=4 => 1,
+                    5..=10 => 2,
+                    _ => 3,
+                };
+                return Ok(Some(Test::Similar { want, max }));
+            }
+            _ => return Ok(None),
+        };
+        let read = p.read;
+        let what = if date { "date" } else { "number" };
+        // A value, and whether it is a whole day (a date with no time).
+        let val = |s: &str| -> Result<(f64, bool), Error> {
+            let s = s.trim();
+            let v = if date {
+                crate::value::parse_date(s, read)
+            } else {
+                crate::value::parse_number(s, read)
+            };
+            v.map(|v| (v, date && v.fract() == 0.0)).ok_or_else(|| {
+                Error::BadPattern(if s.is_empty() {
+                    format!("enter a {what}, a range such as 10..20, or >5")
+                } else if date {
+                    format!("\"{s}\" is not a date (try 1/5/2024 or 2024-01-05)")
+                } else {
+                    format!("\"{s}\" is not a number")
+                })
+            })
+        };
+        let t = p.text.trim();
+        let (lo, hi) = if let Some(r) = t.strip_prefix(">=") {
+            (Some((val(r)?.0, true)), None)
+        } else if let Some(r) = t.strip_prefix("<=") {
+            let (v, day) = val(r)?;
+            (None, Some(if day { (v + 1.0, false) } else { (v, true) }))
+        } else if let Some(r) = t.strip_prefix('>') {
+            let (v, day) = val(r)?;
+            (Some(if day { (v + 1.0, true) } else { (v, false) }), None)
+        } else if let Some(r) = t.strip_prefix('<') {
+            (None, Some((val(r)?.0, false)))
+        } else if let Some((a, b)) = t.split_once("..") {
+            let (a, _) = val(a)?;
+            let (b, day) = val(b)?;
+            if b < a {
+                return Err(Error::BadPattern(format!(
+                    "the range ends before it starts: write the smaller {what} first"
+                )));
+            }
+            (
+                Some((a, true)),
+                Some(if day { (b + 1.0, false) } else { (b, true) }),
+            )
+        } else {
+            let (v, day) = val(t)?;
+            if day {
+                (Some((v, true)), Some((v + 1.0, false)))
+            } else {
+                (Some((v, true)), Some((v, true)))
+            }
+        };
+        Ok(Some(Test::Value { date, lo, hi, read }))
+    }
+
+    fn matches(&self, s: &str) -> bool {
+        match self {
+            Test::Value { date, lo, hi, read } => {
+                let v = if *date {
+                    crate::value::parse_date(s, *read)
+                } else {
+                    crate::value::parse_number(s, *read)
+                };
+                let Some(v) = v else { return false };
+                lo.is_none_or(|(l, inc)| if inc { v >= l } else { v > l })
+                    && hi.is_none_or(|(h, inc)| if inc { v <= h } else { v < h })
+            }
+            Test::Similar { want, max } => {
+                // Cheap checks first: most cells differ a lot in length.
+                let n = s.chars().count();
+                if n + max < want.len() || n > (want.len() + max) * 3 + 8 {
+                    return false;
+                }
+                let got: Vec<char> = similar_key(s).chars().collect();
+                within(want, &got, *max)
+            }
+        }
+    }
+}
+
+/// Text for "similar" matching: accents and case dropped, anything that is
+/// not a letter or digit one space, trimmed.
+fn similar_key(s: &str) -> String {
+    let folded = crate::clean::fold_accents(s).to_lowercase();
+    let mut out = String::with_capacity(folded.len());
+    let mut space = false;
+    for c in folded.chars() {
+        if c.is_alphanumeric() {
+            if space && !out.is_empty() {
+                out.push(' ');
+            }
+            space = false;
+            out.push(c);
+        } else {
+            space = true;
+        }
+    }
+    out
+}
+
+/// `a` and `b` are at most `max` edits apart (insert, delete, change).
+fn within(a: &[char], b: &[char], max: usize) -> bool {
+    if a.len().abs_diff(b.len()) > max {
+        return false;
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, &x) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        let mut best = cur[0];
+        for (j, &y) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(x != y);
+            cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
+            best = best.min(cur[j + 1]);
+        }
+        if best > max {
+            return false;
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()] <= max
+}
+
+/// A replacement in the case of the text it replaces: all capitals, all
+/// small letters, or a capital first; otherwise as typed.
+fn keep_case(found: &str, rep: &str) -> String {
+    let letters: Vec<char> = found.chars().filter(|c| c.is_alphabetic()).collect();
+    if letters.is_empty() || rep.is_empty() {
+        return rep.to_string();
+    }
+    let upper = letters.iter().all(|c| c.is_uppercase());
+    if upper && letters.len() > 1 {
+        return rep.to_uppercase();
+    }
+    if letters.iter().all(|c| c.is_lowercase()) {
+        return rep.to_lowercase();
+    }
+    if letters[0].is_uppercase() && letters[1..].iter().all(|c| c.is_lowercase()) {
+        let mut cs = rep.chars();
+        let first = cs.next().expect("not empty");
+        return first.to_uppercase().collect::<String>() + cs.as_str();
+    }
+    rep.to_string()
 }
 
 /// A compiled pattern.
@@ -107,6 +299,10 @@ pub struct Matcher {
     literal: bool,
     /// `\n`, `\t` ... in the replacement stand for those characters.
     rep_escapes: bool,
+    /// Number, Date and Similar patterns: a test on the whole cell.
+    test: Option<Test>,
+    /// The replacement takes the case of what it replaces.
+    preserve: bool,
 }
 
 /// One literal character of a pattern as regex source: escaped, or with
@@ -486,6 +682,16 @@ impl Matcher {
                 "a pattern can be at most {MAX_PATTERN_CHARS} characters"
             )));
         }
+        if let Some(test) = Test::new(p)? {
+            return Ok(Matcher {
+                // Never used: the test decides.
+                re: build(r"[^\s\S]", true)?,
+                literal: true,
+                rep_escapes: p.escapes,
+                test: Some(test),
+                preserve: false,
+            });
+        }
         let text = if p.escapes && p.kind != PatternKind::Regex {
             unescape(&p.text)
         } else {
@@ -493,6 +699,9 @@ impl Matcher {
         };
         let accents = p.ignore_accents;
         let body = match p.kind {
+            PatternKind::Number | PatternKind::Date | PatternKind::Similar => {
+                unreachable!("a test")
+            }
             PatternKind::Plain if accents => text.chars().map(|c| lit(c, true)).collect(),
             PatternKind::Plain => regex::escape(&text),
             PatternKind::Wildcard => wildcard_to_regex(&text, accents),
@@ -517,6 +726,8 @@ impl Matcher {
             })?,
             literal: p.kind != PatternKind::Regex,
             rep_escapes: p.escapes || p.kind == PatternKind::Regex,
+            test: None,
+            preserve: p.preserve_case,
         })
     }
 
@@ -537,16 +748,24 @@ impl Matcher {
             re: build(&source, match_case)?,
             literal: true,
             rep_escapes: false,
+            test: None,
+            preserve: false,
         })
     }
 
     pub fn is_match(&self, s: &str) -> bool {
-        self.re.is_match(s)
+        match &self.test {
+            Some(t) => t.matches(s),
+            None => self.re.is_match(s),
+        }
     }
 
     /// Byte range of the first match.
     pub fn find(&self, s: &str) -> Option<Range<usize>> {
-        self.re.find(s).map(|m| m.range())
+        match &self.test {
+            Some(t) => t.matches(s).then_some(0..s.len()),
+            None => self.re.find(s).map(|m| m.range()),
+        }
     }
 
     /// `s` with every match replaced, and the number of matches replaced, or
@@ -561,6 +780,18 @@ impl Matcher {
             Cow::Borrowed(rep)
         };
         let rep = rep.as_ref();
+        if let Some(t) = &self.test {
+            // The whole cell is replaced.
+            if !t.matches(s) {
+                return Ok(None);
+            }
+            if rep.len() > MAX_RESULT_CELL_BYTES {
+                return Err(Error::OutOfMemory(
+                    "a replacement would make a cell too large",
+                ));
+            }
+            return Ok(Some((rep.to_string(), 1)));
+        }
         let mut out = String::new();
         let mut last = 0;
         let mut hits = 0u64;
@@ -579,7 +810,11 @@ impl Matcher {
                     continue;
                 }
                 push(&mut out, &s[last..m.start()])?;
-                push(&mut out, rep)?;
+                if self.preserve {
+                    push(&mut out, &keep_case(m.as_str(), rep))?;
+                } else {
+                    push(&mut out, rep)?;
+                }
                 last = m.end();
                 hits += 1;
             }
@@ -594,6 +829,9 @@ impl Matcher {
                 push(&mut out, &s[last..m.start()])?;
                 piece.clear();
                 template.expand(&caps, &mut piece);
+                if self.preserve {
+                    piece = keep_case(m.as_str(), &piece);
+                }
                 push(&mut out, &piece)?;
                 last = m.end();
                 hits += 1;
@@ -610,7 +848,7 @@ impl Matcher {
     /// group, or `$1a`, read as a group called "1a"), which would quietly
     /// put nothing there.
     pub fn check_replacement(&self, rep: &str) -> Result<(), Error> {
-        if self.literal {
+        if self.literal || self.test.is_some() {
             return Ok(());
         }
         let names: Vec<&str> = self.re.capture_names().flatten().collect();
@@ -685,6 +923,13 @@ impl Matcher {
     /// Matches in a piece of text (the edit panel), as UTF-16 offsets
     /// `(start, end)`, at most `limit`. Empty matches are skipped.
     pub fn find_in_text(&self, text: &str, limit: usize) -> Vec<(u32, u32)> {
+        if let Some(t) = &self.test {
+            return if limit > 0 && !text.is_empty() && t.matches(text) {
+                vec![(0, text.encode_utf16().count() as u32)]
+            } else {
+                Vec::new()
+            };
+        }
         let mut out = Vec::new();
         let mut byte = 0usize;
         let mut unit = 0u32;
@@ -727,7 +972,7 @@ pub enum Scope {
 }
 
 /// A search: what and where.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FindSpec {
     pub pattern: Pattern,
     pub scope: Scope,
@@ -738,6 +983,17 @@ pub struct FindSpec {
     /// asks to include them).
     #[serde(default)]
     pub skip_cols: Vec<u32>,
+    /// Count, list and replace in rows a filter or the user hid too (Find
+    /// next, the lit-up matches and row actions stay on shown rows).
+    #[serde(default)]
+    pub hidden_rows: bool,
+    /// Hidden columns that are searched (to say how many hidden cells a
+    /// replace changes).
+    #[serde(default)]
+    pub hidden_cols: Vec<u32>,
+    /// Find next goes down each column before moving right.
+    #[serde(default)]
+    pub by_columns: bool,
 }
 
 /// A cell found by find-next: `((row, col), wrapped)`.
@@ -756,6 +1012,8 @@ pub struct Hit {
     /// The match within `text`, in characters.
     pub start: u32,
     pub len: u32,
+    /// In a hidden row (`row` is then the nearest shown row).
+    pub hidden: bool,
 }
 
 /// Result of find-all.
@@ -783,6 +1041,9 @@ pub struct Change {
     pub col: u32,
     pub before: String,
     pub after: String,
+    /// In a hidden row (`row` is then the nearest shown row) or a hidden
+    /// column.
+    pub hidden: bool,
 }
 
 /// A computed replace-all, applied with [`Document::apply_replace`].
@@ -790,11 +1051,14 @@ pub struct Change {
 pub struct ReplacePlan {
     revision: u64,
     changes: Vec<(u32, Vec<(u32, String)>)>,
-    /// For each entry of `changes`: its shown row and the logical column of
-    /// each changed cell (for paging through the preview).
-    at: Vec<(u64, Vec<(u32, u32)>)>,
+    /// For each entry of `changes`: its row number in the document and, for
+    /// each changed cell, the logical column, its matches and whether it is
+    /// hidden (for paging through the preview and unticking).
+    at: Vec<(u64, Vec<(u32, u32, bool)>)>,
     /// Cells that change.
     pub cells: u64,
+    /// Of them, cells in hidden rows or columns.
+    pub hidden_cells: u64,
     /// Matches replaced.
     pub hits: u64,
     /// The first changes, for showing before applying.
@@ -807,19 +1071,20 @@ impl ReplacePlan {
         self.changes.iter().map(|(id, _)| *id).collect()
     }
 
-    /// Leave these cells (shown row, logical column) out of the plan: the
-    /// changes the user unticked in the preview.
+    /// Leave these cells (row number in the document, logical column) out
+    /// of the plan: the changes the user unticked in the preview.
     pub fn exclude(&mut self, cells: &[(u64, u32)]) {
         if cells.is_empty() {
             return;
         }
         let skip: std::collections::HashSet<(u64, u32)> = cells.iter().copied().collect();
-        let (mut removed, mut hits) = (0u64, 0u64);
+        let (mut removed, mut hits, mut hidden) = (0u64, 0u64, 0u64);
         for ((_, row), (r, cols)) in self.changes.iter_mut().zip(self.at.iter_mut()) {
             let mut k = 0;
             while k < cols.len() {
                 if skip.contains(&(*r, cols[k].0)) {
                     hits += u64::from(cols[k].1);
+                    hidden += u64::from(cols[k].2);
                     cols.remove(k);
                     row.remove(k);
                     removed += 1;
@@ -841,6 +1106,7 @@ impl ReplacePlan {
         });
         self.cells = self.cells.saturating_sub(removed);
         self.hits = self.hits.saturating_sub(hits);
+        self.hidden_cells = self.hidden_cells.saturating_sub(hidden);
     }
 }
 
@@ -876,7 +1142,11 @@ pub struct FindCount {
 
 /// The cells a search covers, resolved against the document.
 pub(crate) struct Area {
+    /// Shown rows, or with `all` document positions (hidden rows too).
     pub(crate) rows: Range<u64>,
+    all: bool,
+    /// Hidden columns that are searched, sorted (for counting).
+    hidden_cols: Vec<u32>,
     /// Logical columns in search order.
     pub(crate) cols: Vec<u32>,
     /// Physical columns to read, sorted, and for each logical column the
@@ -943,7 +1213,13 @@ pub(crate) fn short(s: &str) -> String {
 
 impl Document {
     pub(crate) fn area(&self, spec: &FindSpec) -> Result<Area, Error> {
-        let n = self.row_count();
+        // Hidden rows too: document positions instead of shown rows.
+        let all = spec.hidden_rows && self.is_filtered();
+        let n = if all {
+            self.total_rows()
+        } else {
+            self.row_count()
+        };
         let first = u64::from(spec.skip_first && n > 0);
         let (rows, cols): (Range<u64>, Vec<u32>) = match &spec.scope {
             Scope::All => (first..n, (0..self.col_count()).collect()),
@@ -960,9 +1236,23 @@ impl Document {
                 col,
                 cols,
             } => {
-                let r0 = (*row).min(n);
-                let r1 = row.saturating_add(*rows).min(n);
                 let c1 = col.saturating_add(*cols).min(self.col_count());
+                let (r0, r1) = if all {
+                    // The positions the shown rows span (hidden ones between).
+                    let shown = self.row_count();
+                    let a = (*row).min(shown);
+                    let b = row.saturating_add(*rows).min(shown);
+                    if a >= b {
+                        (0, 0)
+                    } else {
+                        (
+                            self.row_number(a).unwrap_or(a),
+                            self.row_number(b - 1).map_or(b, |x| x + 1),
+                        )
+                    }
+                } else {
+                    ((*row).min(n), row.saturating_add(*rows).min(n))
+                };
                 (r0..r1, (*col..c1).collect())
             }
         };
@@ -982,12 +1272,57 @@ impl Document {
                     .map(|p| wanted.binary_search(&p).expect("listed"))
             })
             .collect();
+        let mut hidden_cols: Vec<u32> = spec
+            .hidden_cols
+            .iter()
+            .copied()
+            .filter(|c| cols.contains(c))
+            .collect();
+        hidden_cols.sort_unstable();
         Ok(Area {
             rows,
+            all,
+            hidden_cols,
             cols,
             wanted,
             slot,
         })
+    }
+
+    /// The area of shown rows only (Find next, lit-up matches, row actions).
+    pub(crate) fn shown_area(&self, spec: &FindSpec) -> Result<Area, Error> {
+        if !spec.hidden_rows {
+            return self.area(spec);
+        }
+        self.area(&FindSpec {
+            hidden_rows: false,
+            ..spec.clone()
+        })
+    }
+
+    /// Row `r` of an area: its id, its shown row (the nearest one when it
+    /// is hidden), its number in the document and whether it is hidden.
+    pub(crate) fn area_row(&self, area: &Area, r: u64) -> Option<(u32, u64, u64, bool)> {
+        if !area.all {
+            return Some((self.id_at(r)?, r, self.row_number(r).unwrap_or(r), false));
+        }
+        let id = self.id_of_pos(r)?;
+        let (shown, exact) = self.shown_row_of(r).unwrap_or((0, false));
+        Some((id, shown, r, !exact))
+    }
+
+    /// A one-column area of `area`'s `k`th column.
+    fn one_col(area: &Area, k: usize) -> Area {
+        Area {
+            rows: area.rows.clone(),
+            all: area.all,
+            hidden_cols: area.hidden_cols.clone(),
+            cols: vec![area.cols[k]],
+            wanted: area.slot[k]
+                .map(|s| vec![area.wanted[s]])
+                .unwrap_or_default(),
+            slot: vec![area.slot[k].map(|_| 0)],
+        }
     }
 
     /// Run `f` on every searched cell of shown row `row` (in column order,
@@ -1000,7 +1335,11 @@ impl Document {
         buf: &mut Vec<Cow<'a, str>>,
         mut f: impl FnMut(usize, &str) -> Option<T>,
     ) -> Option<T> {
-        let id = self.id_at(row)?;
+        let id = if area.all {
+            self.id_of_pos(row)?
+        } else {
+            self.id_at(row)?
+        };
         self.read_cells(id, &area.wanted, buf);
         let n = area.cols.len();
         for i in 0..n {
@@ -1025,10 +1364,13 @@ impl Document {
         progress: &Progress,
     ) -> Result<Option<Found>, Error> {
         let m = Matcher::new(&spec.pattern)?;
-        let area = self.area(spec)?;
+        let area = self.shown_area(spec)?;
         let (r0, r1) = (area.rows.start, area.rows.end);
         if r0 >= r1 || area.cols.is_empty() {
             return Ok(None);
+        }
+        if spec.by_columns {
+            return self.find_next_by_columns(&m, &area, from, backward, progress);
         }
         progress.start(r1 - r0);
         let ncols = area.cols.len();
@@ -1079,6 +1421,84 @@ impl Document {
             0..scol.clamp(0, ncols as i64) as usize
         };
         Ok(hit_in_row(srow, before, backward).map(|c| ((srow, c), true)))
+    }
+
+    /// [`Document::find_next`] going down each column before moving right
+    /// (or up, and left, with `backward`).
+    fn find_next_by_columns(
+        &self,
+        m: &Matcher,
+        area: &Area,
+        from: Option<(u64, u32)>,
+        backward: bool,
+        progress: &Progress,
+    ) -> Result<Option<Found>, Error> {
+        let (r0, r1) = (area.rows.start, area.rows.end);
+        let ncols = area.cols.len();
+        progress.start((r1 - r0).saturating_mul(ncols as u64));
+        // The start: a column index and the first row to try in it.
+        let (sk, srow) = match from {
+            Some((r, c)) if (r0..r1).contains(&r) => {
+                match (area.cols.iter().position(|&x| x == c), backward) {
+                    (Some(k), false) => (k, r + 1),
+                    (Some(k), true) => (k, r),
+                    (None, false) => (area.cols.partition_point(|&x| x < c), r0),
+                    (None, true) => (area.cols.partition_point(|&x| x < c), r1),
+                }
+            }
+            _ if backward => (ncols - 1, r1),
+            _ => (0, r0),
+        };
+        let column = |k: usize, span: Range<u64>| -> Result<Option<(u64, u32)>, Error> {
+            if k >= ncols {
+                return Ok(None);
+            }
+            let one = Self::one_col(area, k);
+            let hit = |r: u64, _: Range<usize>, rev: bool| -> Option<u32> {
+                let mut buf = Vec::new();
+                self.each_cell(&one, r, rev, &mut buf, |_, t| {
+                    m.is_match(t).then_some(one.cols[0])
+                })
+            };
+            self.first_row_hit(span, backward, progress, &hit)
+        };
+        // 1. The rest of the start column.
+        let rest = if backward {
+            r0..srow.min(r1)
+        } else {
+            srow.min(r1)..r1
+        };
+        if let Some(h) = column(sk.min(ncols - 1), rest)? {
+            return Ok(Some((h, false)));
+        }
+        // 2. The columns after (before) it, then 3. wrap round.
+        let after: Vec<usize> = if backward {
+            (0..sk.min(ncols)).rev().collect()
+        } else {
+            (sk + 1..ncols).collect()
+        };
+        for k in after {
+            if let Some(h) = column(k, r0..r1)? {
+                return Ok(Some((h, false)));
+            }
+        }
+        let wrap: Vec<usize> = if backward {
+            (sk + 1..ncols).rev().collect()
+        } else {
+            (0..sk.min(ncols)).collect()
+        };
+        for k in wrap {
+            if let Some(h) = column(k, r0..r1)? {
+                return Ok(Some((h, true)));
+            }
+        }
+        // 4. The start column's other rows.
+        let before = if backward {
+            srow.min(r1)..r1
+        } else {
+            r0..srow.min(r1)
+        };
+        Ok(column(sk.min(ncols - 1), before)?.map(|h| (h, true)))
     }
 
     /// The first (or last) row in `span` with a hit, searched in parallel
@@ -1153,18 +1573,23 @@ impl Document {
                 let mut count = vec![0u64; ncols];
                 let mut buf = Vec::new();
                 for r in s..e {
+                    let mut place = None;
                     self.each_cell(&area, r, false, &mut buf, |k, t| {
                         if let Some(range) = m.find(t) {
                             count[k] += 1;
                             if hits.len() < limit {
+                                let (_, row, number, hidden) = *place.get_or_insert_with(|| {
+                                    self.area_row(&area, r).unwrap_or((0, r, r, false))
+                                });
                                 let (text, start, len) = snippet(t, range);
                                 hits.push(Hit {
-                                    row: r,
-                                    number: self.row_number(r).unwrap_or(r),
+                                    row,
+                                    number,
                                     col: area.cols[k],
                                     text,
                                     start,
                                     len,
+                                    hidden,
                                 });
                             }
                         }
@@ -1230,7 +1655,16 @@ impl Document {
         if r0 >= r1 || area.cols.is_empty() {
             return Ok(FindCount::default());
         }
-        // The cell's place in the column order (columns are in order).
+        // The cell's place in the column order (columns are in order); with
+        // hidden rows its row is a document position.
+        let at = at.map(|(r, c)| {
+            if area.all {
+                (self.row_number(r).unwrap_or(r), c)
+            } else {
+                (r, c)
+            }
+        });
+        let cols_first = spec.by_columns;
         let (ar, ak, exact) = match at {
             Some((r, c)) => {
                 let k = area.cols.partition_point(|&x| x < c);
@@ -1249,7 +1683,12 @@ impl Document {
                 self.each_cell(&area, r, false, &mut buf, |k, t| {
                     if m.is_match(t) {
                         out.cells += 1;
-                        if r < ar || (r == ar && k < ak) {
+                        let earlier = if cols_first {
+                            k < ak || (k == ak && r < ar)
+                        } else {
+                            r < ar || (r == ar && k < ak)
+                        };
+                        if earlier {
                             out.before += 1;
                         } else if r == ar && k == ak && exact {
                             out.here = true;
@@ -1261,7 +1700,11 @@ impl Document {
             progress.step(e - s)?;
             Ok(out)
         };
-        if let Some(kept) = blocks.as_ref().filter(|k| k.len() as u64 == nblocks) {
+        // Kept counts work in row order only.
+        if let Some(kept) = blocks
+            .as_ref()
+            .filter(|k| k.len() as u64 == nblocks && !cols_first)
+        {
             let cells = kept.iter().sum();
             // Blocks wholly before the cell count in full; only the cell's
             // own block is read again.
@@ -1309,7 +1752,7 @@ impl Document {
     ) -> Result<Vec<(u64, u32)>, Error> {
         const MAX_WINDOW: u64 = 1_000;
         let m = Matcher::new(&spec.pattern)?;
-        let area = self.area(spec)?;
+        let area = self.shown_area(spec)?;
         let r0 = row.max(area.rows.start);
         let r1 = row.saturating_add(rows.min(MAX_WINDOW)).min(area.rows.end);
         let c1 = col.saturating_add(cols.min(MAX_WINDOW as u32));
@@ -1378,6 +1821,7 @@ impl Document {
             scope: spec.scope.clone(),
             skip_first: spec.skip_first,
             skip_cols: spec.skip_cols.clone(),
+            ..Default::default()
         };
         let area = self.area(&find)?;
         let key = |s: &str| -> String {
@@ -1454,7 +1898,7 @@ impl Document {
     /// Shown rows with at least one match (in order).
     pub fn matching_rows(&self, spec: &FindSpec, progress: &Progress) -> Result<Vec<u64>, Error> {
         let m = Matcher::new(&spec.pattern)?;
-        let area = self.area(spec)?;
+        let area = self.shown_area(spec)?;
         let (r0, r1) = (area.rows.start, area.rows.end);
         progress.start(r1.saturating_sub(r0));
         let blocks = r1.saturating_sub(r0).div_ceil(BLOCK);
@@ -1604,8 +2048,9 @@ impl Document {
         let created = AtomicUsize::new(0);
         type Part = (
             Vec<(u32, Vec<(u32, String)>)>,
-            Vec<(u64, Vec<(u32, u32)>)>,
+            Vec<(u64, Vec<(u32, u32, bool)>)>,
             Vec<Change>,
+            u64,
             u64,
             u64,
         );
@@ -1618,11 +2063,13 @@ impl Document {
                 let mut changes = Vec::new();
                 let mut at = Vec::new();
                 let mut shown = Vec::new();
-                let (mut cells, mut hits) = (0u64, 0u64);
+                let (mut cells, mut hits, mut hidden_cells) = (0u64, 0u64, 0u64);
                 let mut buf = Vec::new();
                 for r in s..e {
-                    let Some(id) = self.id_at(r) else { continue };
-                    let mut row: Vec<(u32, String, u32, u32)> = Vec::new();
+                    let Some((id, shown_row, number, row_hidden)) = self.area_row(area, r) else {
+                        continue;
+                    };
+                    let mut row: Vec<(u32, String, u32, u32, bool)> = Vec::new();
                     let mut err = None;
                     self.each_cell(area, r, false, &mut buf, |k, t| {
                         let phys = self.phys(area.cols[k])?;
@@ -1634,22 +2081,27 @@ impl Document {
                                     ));
                                     return Some(());
                                 }
+                                let hidden = row_hidden
+                                    || area.hidden_cols.binary_search(&area.cols[k]).is_ok();
                                 if shown.len() < preview {
                                     shown.push(Change {
-                                        row: r,
-                                        number: self.row_number(r).unwrap_or(r),
+                                        row: shown_row,
+                                        number,
                                         col: area.cols[k],
                                         before: short(t),
                                         after: short(&new),
+                                        hidden,
                                     });
                                 }
                                 cells += 1;
                                 hits += n;
+                                hidden_cells += u64::from(hidden);
                                 row.push((
                                     phys,
                                     new,
                                     area.cols[k],
                                     u32::try_from(n).unwrap_or(u32::MAX),
+                                    hidden,
                                 ));
                                 None
                             }
@@ -1665,12 +2117,12 @@ impl Document {
                     }
                     if !row.is_empty() {
                         row.sort_unstable_by_key(|c| c.0);
-                        at.push((r, row.iter().map(|c| (c.2, c.3)).collect()));
-                        changes.push((id, row.into_iter().map(|(p, s, _, _)| (p, s)).collect()));
+                        at.push((number, row.iter().map(|c| (c.2, c.3, c.4)).collect()));
+                        changes.push((id, row.into_iter().map(|(p, s, _, _, _)| (p, s)).collect()));
                     }
                 }
                 progress.step(e - s)?;
-                Ok((changes, at, shown, cells, hits))
+                Ok((changes, at, shown, cells, hits, hidden_cells))
             })
             .collect::<Result<_, _>>()?;
         let mut plan = ReplacePlan {
@@ -1678,10 +2130,12 @@ impl Document {
             changes: Vec::new(),
             at: Vec::new(),
             cells: 0,
+            hidden_cells: 0,
             hits: 0,
             preview: Vec::new(),
         };
-        for (c, a, p, cells, hits) in parts {
+        for (c, a, p, cells, hits, hidden) in parts {
+            plan.hidden_cells += hidden;
             plan.changes.extend(c);
             plan.at.extend(a);
             if plan.preview.len() < preview {
@@ -1709,7 +2163,7 @@ impl Document {
         let mut out = Vec::new();
         let mut skip = offset;
         let mut buf = Vec::new();
-        for ((id, cells), (row, cols)) in plan.changes.iter().zip(&plan.at) {
+        for ((id, cells), (number, cols)) in plan.changes.iter().zip(&plan.at) {
             let n = cells.len() as u64;
             if skip >= n {
                 skip -= n;
@@ -1721,12 +2175,14 @@ impl Document {
                 if out.len() >= count {
                     return Ok(out);
                 }
+                let (row, shown) = self.shown_row_of(*number).unwrap_or((0, false));
                 out.push(Change {
-                    row: *row,
-                    number: self.row_number(*row).unwrap_or(*row),
+                    row,
+                    number: *number,
                     col: col.0,
                     before: short(&buf[k]),
                     after: short(new),
+                    hidden: col.2 || !shown,
                 });
             }
             skip = 0;
@@ -1778,6 +2234,7 @@ mod tests {
             scope: Scope::All,
             skip_first: false,
             skip_cols: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -1997,6 +2454,174 @@ mod tests {
         assert_eq!(d.row_count(), 2);
         assert!(d.undo());
         assert_eq!(d.row_count(), 4);
+    }
+
+    #[test]
+    fn numbers_and_dates_by_value() {
+        let m = |t: &str| with(t, PatternKind::Number, |_| {});
+        let five = m("5");
+        for s in ["5", "5.00", "$5", " 5 ", "5.0"] {
+            assert!(five.is_match(s), "{s}");
+        }
+        for s in ["15", "5a", "", "five"] {
+            assert!(!five.is_match(s), "{s}");
+        }
+        assert!(m("10..20").is_match("$12.50") && !m("10..20").is_match("20.01"));
+        assert!(m(">5").is_match("5.01") && !m(">5").is_match("5"));
+        assert!(m(">=5").is_match("5") && m("<=5").is_match("5") && !m("<5").is_match("5"));
+        assert!(m("(3)").is_match("-3"));
+        for bad in ["abc", "20..10", "", ">"] {
+            let p = pat(bad, PatternKind::Number);
+            assert!(Matcher::new(&p).is_err(), "{bad}");
+        }
+        let d = |t: &str| with(t, PatternKind::Date, |_| {});
+        let jan5 = d("1/5/2024");
+        for s in ["2024-01-05", "Jan 5 2024", "1/5/2024 14:30"] {
+            assert!(jan5.is_match(s), "{s}");
+        }
+        assert!(!jan5.is_match("2024-01-06") && !jan5.is_match("x"));
+        assert!(d("1/1/2024..1/31/2024").is_match("2024-01-31 23:00"));
+        assert!(!d("1/1/2024..1/31/2024").is_match("2024-02-01"));
+        assert!(
+            d(">1/5/2024").is_match("2024-01-06") && !d(">1/5/2024").is_match("2024-01-05 18:00")
+        );
+        assert!(d("<=1/5/2024").is_match("2024-01-05 18:00"));
+        assert!(Matcher::new(&pat("13/45/2024", PatternKind::Date)).is_err());
+        // The whole cell is replaced, and only matching cells.
+        assert_eq!(five.replace("$5.00", "6").unwrap().unwrap().0, "6");
+        assert!(five.replace("7", "6").unwrap().is_none());
+    }
+
+    #[test]
+    fn similar_names_and_preserve_case() {
+        let s = with("Jon Smyth", PatternKind::Similar, |_| {});
+        for y in ["John Smith", "jon smyth", "Jon-Smyth", "Jön Smyth"] {
+            assert!(s.is_match(y), "{y}");
+        }
+        for n in ["Jane Smithers", "Smith", "Jon Smyth Jr Esq the Third", ""] {
+            assert!(!s.is_match(n), "{n}");
+        }
+        assert!(with("Ann", PatternKind::Similar, |_| {}).is_match("Anne"));
+        assert!(!with("Ann", PatternKind::Similar, |_| {}).is_match("Annette"));
+        let m = with("smith", PatternKind::Plain, |p| p.preserve_case = true);
+        assert_eq!(
+            m.replace("SMITH, Smith, smith, sMITh", "jones")
+                .unwrap()
+                .unwrap()
+                .0,
+            "JONES, Jones, jones, jones"
+        );
+        let m = with("smith", PatternKind::Plain, |p| p.preserve_case = false);
+        assert_eq!(m.replace("SMITH", "jones").unwrap().unwrap().0, "jones");
+    }
+
+    fn filter_a(d: &mut Document) {
+        use crate::filter::{ColumnFilter, FilterSpec, Rule};
+        d.set_filter(&FilterSpec {
+            columns: vec![ColumnFilter {
+                col: 0,
+                rule: Rule::Values {
+                    values: vec!["a".into()],
+                    blanks: false,
+                },
+            }],
+            keep_first: true,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn hidden_rows_are_counted_listed_and_replaced_when_asked() {
+        let mut d = doc("k,v\na,x\nb,x\na,x\nb,y\n");
+        filter_a(&mut d);
+        let p = Progress::new();
+        let mut s = spec(pat("x", PatternKind::Plain));
+        s.skip_first = true;
+        assert_eq!(d.find_count(&s, None, &p).unwrap().cells, 2);
+        s.hidden_rows = true;
+        // Shown row 2 is document row 3: one hidden match (row 2) before it.
+        let c = d.find_count(&s, Some((2, 1)), &p).unwrap();
+        assert_eq!((c.cells, c.before, c.here), (3, 2, true));
+        let all = d.find_all(&s, 10, &p).unwrap();
+        let got: Vec<(u64, u64, bool)> = all
+            .hits
+            .iter()
+            .map(|h| (h.row, h.number, h.hidden))
+            .collect();
+        assert_eq!(got, vec![(1, 1, false), (2, 2, true), (2, 3, false)]);
+        // Find next and the lit-up matches stay on shown rows.
+        assert_eq!(
+            d.find_next(&s, Some((1, 1)), false, &p).unwrap(),
+            Some(((2, 1), false))
+        );
+        assert_eq!(
+            d.find_marks(&s, 0, 10, 0, 10).unwrap(),
+            vec![(1, 1), (2, 1)]
+        );
+        let mut plan = d.plan_replace(&s, "z", 10, &p).unwrap();
+        assert_eq!((plan.cells, plan.hidden_cells), (3, 1));
+        assert!(plan.preview[1].hidden && plan.preview[1].number == 2);
+        assert_eq!(d.replace_page(&plan, 1, 1).unwrap()[0].number, 2);
+        // Unticking goes by row number in the document.
+        plan.exclude(&[(2, 1)]);
+        assert_eq!((plan.cells, plan.hidden_cells), (2, 0));
+        d.apply_replace(plan).unwrap();
+        d.clear_filter();
+        assert_eq!(
+            all_cells(&d),
+            vec![
+                vec!["k", "v"],
+                vec!["a", "z"],
+                vec!["b", "x"],
+                vec!["a", "z"],
+                vec!["b", "y"]
+            ]
+        );
+        // Hidden columns that are searched are counted as hidden.
+        let mut s = spec(pat("z", PatternKind::Plain));
+        s.hidden_cols = vec![1];
+        assert_eq!(d.plan_replace(&s, "q", 0, &p).unwrap().hidden_cells, 2);
+    }
+
+    #[test]
+    fn find_next_by_columns() {
+        let d = doc("a,b\nx,x\nx,.\n.,x\n");
+        let p = Progress::new();
+        let mut s = spec(pat("x", PatternKind::Plain));
+        s.by_columns = true;
+        let mut at = None;
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let ((r, c), wrapped) = d.find_next(&s, at, false, &p).unwrap().unwrap();
+            seen.push((r, c, wrapped));
+            at = Some((r, c));
+        }
+        assert_eq!(
+            seen,
+            vec![
+                (1, 0, false),
+                (2, 0, false),
+                (1, 1, false),
+                (3, 1, false),
+                (1, 0, true)
+            ]
+        );
+        let back = d.find_next(&s, Some((1, 1)), true, &p).unwrap().unwrap();
+        assert_eq!(back, ((2, 0), false));
+        // "3 of 4" in column order.
+        let c = d.find_count(&s, Some((1, 1)), &p).unwrap();
+        assert_eq!((c.before, c.here), (2, true));
+    }
+
+    fn all_cells(d: &Document) -> Vec<Vec<String>> {
+        (0..d.row_count())
+            .map(|r| {
+                (0..d.col_count())
+                    .map(|c| d.cell(r, c).unwrap_or_default())
+                    .collect()
+            })
+            .collect()
     }
 
     #[test]

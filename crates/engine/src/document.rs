@@ -2007,6 +2007,14 @@ impl Document {
     }
 
     /// Iterate row ids in document order.
+    /// The id of the row at document position `pos` (shown or not).
+    pub(crate) fn id_of_pos(&self, pos: u64) -> Option<u32> {
+        match &self.order {
+            Some(o) => o.get(usize::try_from(pos).ok()?).copied(),
+            None => (pos < self.index.rows()).then_some(pos as u32),
+        }
+    }
+
     pub(crate) fn ids(&self) -> Box<dyn Iterator<Item = u32> + '_> {
         match &self.order {
             Some(o) => Box::new(o.iter().copied()),

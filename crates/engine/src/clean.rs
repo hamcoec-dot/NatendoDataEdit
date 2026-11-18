@@ -2865,6 +2865,7 @@ impl Document {
             scope: spec.scope.clone(),
             skip_first: spec.skip_first,
             skip_cols: Vec::new(),
+            ..Default::default()
         })?;
         let (r0, r1) = (area.rows.start, area.rows.end);
         progress.start(r1.saturating_sub(r0));
@@ -2915,6 +2916,7 @@ impl Document {
                                         col,
                                         before: short(t),
                                         after: short(&new),
+                                        hidden: false,
                                     });
                                 }
                                 cells += 1;
@@ -2974,6 +2976,7 @@ impl Document {
             scope: spec.scope.clone(),
             skip_first: spec.skip_first,
             skip_cols: Vec::new(),
+            ..Default::default()
         })?;
         let mut out = CleanPreview::default();
         let mut buf = Vec::new();
@@ -3004,6 +3007,7 @@ impl Document {
                                     col,
                                     before: short(t),
                                     after: short(&new),
+                                    hidden: false,
                                 });
                             }
                         }
@@ -4430,6 +4434,7 @@ mod review_tests {
             scope: Scope::All,
             skip_first: false,
             skip_cols: Vec::new(),
+            ..Default::default()
         };
         let e = d.plan_replace(&find, "x", 0, &Progress::new()).unwrap_err();
         assert!(e.to_string().contains("too much at once"), "{e}");

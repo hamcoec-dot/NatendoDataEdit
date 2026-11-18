@@ -1998,6 +1998,7 @@ mod tests {
                         scope: Scope::All,
                         skip_first: b % 2 == 0,
                         skip_cols: Vec::new(),
+                        ..Default::default()
                     }, "R").map(|_| ()),
                     4 if rows > 0 => d.set_cell(a as u64 % rows, b, v),
                     5 if rows > 0 => d.delete_rows(a as u64 % rows, 1),
