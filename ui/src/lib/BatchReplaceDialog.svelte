@@ -32,7 +32,7 @@
   let withCol = $state(1);
   let wholeCell = $state(true);
   let matchCase = $state(false);
-  let where = $state<"all" | "cols">(untrack(() => (sel.cols > 0 && sel.cols < tab.info.cols ? "cols" : "all")));
+  let where = $state<"all" | "cols">("all");
   let problem = $state("");
   let preview = $state<ReplaceReport | null>(null);
   let previewed: BatchReplace | null = null;

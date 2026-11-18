@@ -1117,11 +1117,11 @@ export class MockBackend implements Backend {
     return { changes, preview, hits };
   }
 
-  private previewKey = "";
+  private previewKey = new Map<number, string>();
   async replaceConfirm(doc: number, spec: FindSpec, replacement: string, exclude: [number, number][] = []): Promise<ReplaceReport> {
     const key = JSON.stringify([spec, replacement]);
-    const ok = key === this.previewKey;
-    this.previewKey = "";
+    const ok = key === this.previewKey.get(doc);
+    this.previewKey.delete(doc);
     if (!ok) throw err("changed", "the search or the file changed since the preview; nothing was replaced. Look at the changes again (Replace all…)");
     const p = this.planReplace(this.get(doc), spec, replacement);
     const skip = new Set(exclude.map(([r, c]) => `${r}:${c}`));
@@ -1159,13 +1159,9 @@ export class MockBackend implements Backend {
         for (const r of rows) await this.noteSet(doc, r, action.flag, "");
         return this.refresh(d);
       case "delete":
-        for (const r of [...rows].reverse()) await this.change(doc, { op: "delete_rows", at: r, count: 1 });
-        return this.refresh(d);
-      case "show": {
-        const keep = new Set(rows);
-        for (let r = this.rowCount(d) - 1; r >= (spec.skip_first ? 1 : 0); r--) if (!keep.has(r)) await this.change(doc, { op: "hide_rows", at: r, count: 1 });
-        return this.refresh(d);
-      }
+        return this.removeRows(d, rows);
+      case "show":
+        return this.showOnly(d, new Set(rows.map((r) => this.rowId(d, r))), spec.skip_first);
     }
   }
 
@@ -1194,9 +1190,25 @@ export class MockBackend implements Backend {
   async showChanged(doc: number, keepFirst: boolean): Promise<DocInfo> {
     const d = this.get(doc);
     if (!this.changedRows.length) throw err("invalid", "nothing was replaced yet");
-    const keep = new Set(this.changedRows);
-    for (let r = this.rowCount(d) - 1; r >= (keepFirst ? 1 : 0); r--) if (!keep.has(this.rowId(d, r))) await this.change(doc, { op: "hide_rows", at: r, count: 1 });
-    return this.refresh(d);
+    return this.showOnly(d, new Set(this.changedRows), keepFirst);
+  }
+
+  /** Hide every shown row but these (ids) as one undo step. */
+  private showOnly(d: MockDoc, keep: Set<number>, keepFirst: boolean): DocInfo {
+    const before = d.hidden;
+    const next = new Set(before ?? []);
+    for (let r = keepFirst ? 1 : 0; r < this.rowCount(d); r++) {
+      const id = this.rowId(d, r);
+      if (!keep.has(id)) next.add(id);
+    }
+    return this.push(d, () => {
+      d.hidden = next.size ? next : null;
+      d.visible = null;
+      return () => {
+        d.hidden = before;
+        d.visible = null;
+      };
+    });
   }
 
   async columnPairs(doc: number, findCol: number, withCol: number, skipFirst: boolean): Promise<[string, string][]> {
@@ -1264,7 +1276,7 @@ export class MockBackend implements Backend {
   async replacePreview(doc: number, spec: FindSpec, replacement: string): Promise<ReplaceReport> {
     const p = this.planReplace(this.get(doc), spec, replacement);
     const d = this.get(doc);
-    this.previewKey = JSON.stringify([spec, replacement]);
+    this.previewKey.set(doc, JSON.stringify([spec, replacement]));
     this.lastReplace = p.changes.slice(0, 100_000).map(([r, c, after]) => ({ row: r, number: this.pos(d, r), col: c, before: this.value(d, r, c), after }));
     return { cells: p.changes.length, hits: p.hits, preview: p.preview, info: null };
   }

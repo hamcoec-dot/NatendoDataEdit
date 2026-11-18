@@ -456,6 +456,12 @@ everything is also in command search.
 
 ![Replace all preview: every change a page at a time, with the added text marked in green](docs/screenshots/find-replace-preview.png)
 *Replace all shows every change first, with what it adds and removes marked in each cell.*
+
+![Find all with buttons for the rows it found: show only these, copy to a new tab, flag, delete](docs/screenshots/find-row-actions.png)
+*Find all can show only the rows with a match, copy them to a new tab, flag them or delete them.*
+
+![Replace from a list: pasted pairs, whole cells only, and a preview of the two cells that change](docs/screenshots/replace-from-list.png)
+*Replace from a list: many pairs at once, shown before anything changes.*
 - **Search a whole folder** of table files (Ctrl+Shift+F), including Excel and
   JSON files and subfolders; click a hit to open that file at that cell.
 - Sort by several columns, numbers and dates in the right order, natural text

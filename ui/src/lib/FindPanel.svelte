@@ -864,7 +864,7 @@
       {#if canShowChanged}<button type="button" onclick={() => void showChanged()}>Show changed rows</button>{/if}
     </div>
   {/if}
-  {#if notes}
+  {#if notes && notes.length}
     <div class="results">
       <div class="rhead">
         {notes.length ? `${plural(notes.length, "note")} match` : "No notes match"}
