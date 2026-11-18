@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.4.4_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.4.5_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -123,7 +123,9 @@ Bigger jobs
 | Share-safe copy of 10M rows (mask, scramble, age band) | 2.5 s |
 | Search a folder holding the 10M- and 1M-row files | 10.3 s |
 | Recipe of 3 column steps on 10M rows | 1.1 s |
-| Export 1M rows to Excel / read them back | 4.4 s / 9.1 s |
+| Export 1M rows to Excel / read them back | 0.7 s / 10.6 s |
+| Export all 10M rows to Excel (10 files of parts, 2 GB) | 6.9 s |
+| Audit sample: 10 rows from each of 311 groups of 10M rows | 0.33 s |
 | Save 1M rows to SQLite and open them again | 3.0 s |
 | Encrypt 1M rows and open them again | 1.3 s |
 | PDF of 100,000 rows | 1.8 s |
@@ -276,6 +278,9 @@ everything is also in command search.
   side): two panes of the same tab, each scrolling on its own, to copy from
   row 3 to row 1,800,000 or compare rows far apart. Drag the bar to resize
   it, or to the edge to close it.
+
+![Split view: rows 1 to 13 above, rows 26 to 37 below](docs/screenshots/split-view.png)
+*Two panes of one tab, each scrolled on its own.*
 - **Name your tabs.** Tabs made by a tool are named after what made them,
   for example "Pivot – city by party (voters)", "Subtotals (voters)" or
   "Compare voters with voters-2024" (a drill-down tab is named after the
@@ -658,7 +663,15 @@ everything is also in command search.
   again, so anyone can check the sample. A record opens beside it with the
   seed, the method (a published one, so others can reproduce it), the file's
   SHA-256 fingerprint and the rows in and taken per group. A Row column gives
-  each row's number in the table.
+  each row's number in the table. The method, to draw the same sample with
+  any tool: number a group's rows 0 up in table order (all shown rows when
+  there are no groups); seed SplitMix64 with the seed, or for a group with
+  the seed XOR the FNV-1a 64-bit hash of the group's value (its UTF-8
+  bytes); for each draw i, take the next 64-bit number z and swap row i with
+  row i + floor(z × (n − i) / 2^64); the first k rows are the sample.
+
+![The record of an audit sample: seed, method and rows taken per precinct](docs/screenshots/sample-record.png)
+*Two rows from each precinct with seed 2024: the record beside the sample.*
 - **Value editor:** every value in a column with its count; rename or merge
   values, group look-alikes ("Main St" / "Main Street"), or apply a
   translation list.
@@ -701,6 +714,9 @@ everything is also in command search.
   row, as separate files ("voters (1 of 10).xlsx") or as sheets of one
   workbook; the choice is remembered. Choose your own rows per part too.
 - **All open tabs as one workbook:** each tab on a sheet named after it.
+
+![Exporting to Excel: made for Excel users, in four parts as separate files](docs/screenshots/excel-export.png)
+*A table cut into parts of 10 rows, each part a file of its own with the title row.*
 - **Split one file into many** (by a column's value or a row count) and
   **combine many files into one**.
 - **Append** the rows of another file.
@@ -808,6 +824,8 @@ preview:
 - **Refresh** (Data > Refresh pivot table, Alt+F5, or right-click the pivot's
   tab): build the pivot again from its source after edits there, in the same
   tab.
+
+![Right-click on a pivot's tab: Refresh pivot table](docs/screenshots/pivot-refresh.png)
 - **Use the result:** open it as a new tab (save or export it like any file)
   or copy it; save the layout and reuse it on next month's file (columns are
   found by their titles; a title not found, after a rename say, is offered

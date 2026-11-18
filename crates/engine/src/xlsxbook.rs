@@ -474,14 +474,20 @@ pub fn write_book(
     progress: &Progress,
 ) -> Result<ExportReport, Error> {
     progress.start(sheets.iter().map(|s| s.rows.end - s.rows.start).sum());
-    write_book_on(out, sheets, progress)
+    write_book_on(out, sheets, progress, &mut Plans::default())
 }
+
+/// Each document's column plan, worked out once (also across several
+/// files of parts).
+#[derive(Default)]
+pub(crate) struct Plans(HashMap<*const Document, (Plan, Vec<String>)>);
 
 /// As [`write_book`], counting on in `progress` (one of several files).
 pub(crate) fn write_book_on(
     out: &mut impl Write,
     sheets: &[BookSheet<'_>],
     progress: &Progress,
+    cache: &mut Plans,
 ) -> Result<ExportReport, Error> {
     if sheets.is_empty() {
         return Err(Error::Invalid("nothing to write".into()));
@@ -489,7 +495,7 @@ pub(crate) fn write_book_on(
     let mut names: Vec<String> = sheets.iter().map(|s| s.name.clone()).collect();
     unique_names(&mut names);
     // Each document's plan, once.
-    let mut plans: HashMap<*const Document, (Plan, Vec<String>)> = HashMap::new();
+    let plans = &mut cache.0;
     for s in sheets {
         if s.doc.col_count() > XLSX_MAX_COLS {
             return Err(Error::Invalid(format!(

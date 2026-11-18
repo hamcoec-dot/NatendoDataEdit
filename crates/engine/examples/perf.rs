@@ -1756,7 +1756,7 @@ fn main() {
     check.budget(
         "audit sample: 10 rows from each city",
         t.elapsed(),
-        budget(4.0),
+        budget(2.0),
     );
     assert_eq!((s.rows, r.groups.len()), (3_111, 311));
     drop(s);
@@ -1785,7 +1785,7 @@ fn main() {
     check.budget(
         "export .xlsx of every row, in parts (files)",
         t.elapsed(),
-        budget(15.0),
+        budget(12.0),
     );
     let _ = fs::remove_dir_all(&xdir);
     let t = Instant::now();

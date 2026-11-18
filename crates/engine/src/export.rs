@@ -755,6 +755,7 @@ impl Document {
             .unwrap_or_else(|| "export".into());
         let mut report = ExportReport::default();
         progress.start(parts.iter().map(|r| r.end - r.start).sum());
+        let mut plans = crate::xlsxbook::Plans::default();
         for (i, rows) in parts.into_iter().enumerate() {
             let name = format!("{stem} ({} of {n}).xlsx", i + 1);
             let p = path.with_file_name(&name);
@@ -765,7 +766,12 @@ impl Document {
                 rows,
             };
             let r = write_atomic(&p, |w| {
-                crate::xlsxbook::write_book_on(w, std::slice::from_ref(&sheet), progress)
+                crate::xlsxbook::write_book_on(
+                    w,
+                    std::slice::from_ref(&sheet),
+                    progress,
+                    &mut plans,
+                )
             })?;
             report.rows += r.rows;
             report.sheets += r.sheets;

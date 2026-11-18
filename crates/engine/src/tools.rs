@@ -954,26 +954,55 @@ impl Document {
                 }
                 // The rows of each value, in table order; groups in the
                 // order first seen.
+                // Each part groups its rows (in parallel); the parts are
+                // then joined in order, so groups keep table order.
                 let reader = Cols::new(self, &[col]);
-                let mut buf = Vec::new();
-                let mut index: HashMap<String, usize> = HashMap::new();
-                let mut groups: Vec<(String, Vec<u32>)> = Vec::new();
-                for r in rows.clone() {
-                    let id = self.id_at(r).ok_or(Error::OutOfRange)?;
-                    reader.read(self, id, &mut buf);
-                    let v = reader.get(&buf, 0);
-                    let g = match index.get(v) {
-                        Some(&g) => g,
-                        None => {
-                            if groups.len() >= 1_000_000 {
-                                return Err(bad("more than 1,000,000 groups"));
-                            }
-                            index.insert(v.to_string(), groups.len());
-                            groups.push((v.to_string(), Vec::new()));
-                            groups.len() - 1
+                const PART: u64 = 1 << 16;
+                let parts = (rows.end - rows.start).div_ceil(PART);
+                type Groups = Vec<(String, Vec<u32>)>;
+                let found: Vec<Groups> = (0..parts)
+                    .into_par_iter()
+                    .map(|c| -> Result<Groups, Error> {
+                        let s = rows.start + c * PART;
+                        let e = (s + PART).min(rows.end);
+                        let mut buf = Vec::new();
+                        let mut index: HashMap<String, usize> = HashMap::new();
+                        let mut groups: Groups = Vec::new();
+                        for r in s..e {
+                            let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                            reader.read(self, id, &mut buf);
+                            let v = reader.get(&buf, 0);
+                            let g = match index.get(v) {
+                                Some(&g) => g,
+                                None => {
+                                    if groups.len() >= 1_000_000 {
+                                        return Err(bad("more than 1,000,000 groups"));
+                                    }
+                                    index.insert(v.to_string(), groups.len());
+                                    groups.push((v.to_string(), Vec::new()));
+                                    groups.len() - 1
+                                }
+                            };
+                            groups[g].1.push((r - rows.start) as u32);
                         }
-                    };
-                    groups[g].1.push((r - rows.start) as u32);
+                        Ok(groups)
+                    })
+                    .collect::<Result<_, _>>()?;
+                let mut index: HashMap<String, usize> = HashMap::new();
+                let mut groups: Groups = Vec::new();
+                for part in found {
+                    for (v, members) in part {
+                        match index.get(&v) {
+                            Some(&g) => groups[g].1.extend(members),
+                            None => {
+                                if groups.len() >= 1_000_000 {
+                                    return Err(bad("more than 1,000,000 groups"));
+                                }
+                                index.insert(v.clone(), groups.len());
+                                groups.push((v, members));
+                            }
+                        }
+                    }
                 }
                 report.method = format!(
                     "{size_words} at random from each group of the column's values, seed {}. Each group's rows are numbered 0 up in table order and drawn on their own with the seed XOR the FNV-1a 64-bit hash of the group's value: a partial Fisher-Yates shuffle driven by SplitMix64 picks row i + floor(z x (n - i) / 2^64) for each draw i.",
