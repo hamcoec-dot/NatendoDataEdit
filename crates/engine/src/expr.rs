@@ -128,7 +128,8 @@ funcs! {
 
 /// Every function name, for the help list and the editor.
 pub fn function_names() -> Vec<&'static str> {
-    FUNCS.iter().map(|f| f.0).collect()
+    // Not the stand-ins a cell formula uses for its references.
+    FUNCS.iter().map(|f| f.0).filter(|n| !n.ends_with('_')).collect()
 }
 
 #[derive(Debug)]
