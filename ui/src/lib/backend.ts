@@ -225,6 +225,26 @@ export interface ReadOptions {
   decimal_comma: boolean;
   date_order: DateOrder;
 }
+/** Go To Special: which cells to pick. */
+export type SpecialKind =
+  | { kind: "blanks" }
+  | { kind: "numbers" }
+  | { kind: "text" }
+  | { kind: "row_diff"; against: number; exact: boolean }
+  | { kind: "edited" }
+  | { kind: "problems"; checks: CheckSpec };
+export interface SpecialSpec {
+  kind: SpecialKind;
+  row: number;
+  rows: number;
+  cols: number[];
+  read?: ReadOptions;
+}
+export interface SpecialCells {
+  /** (shown row, column), at most 5 million. */
+  cells: [number, number][];
+  total: number;
+}
 export type SortKind = "auto" | "text" | "natural" | "number" | "date" | "length" | "last_word" | { list: number };
 export interface SortKey {
   col: number;
@@ -585,6 +605,7 @@ export type DataOp =
   | { op: "arrange"; spec: Arrange }
   | { op: "extract"; spec: Extract }
   | { op: "fill_rect"; spec: { row: number; rows: number; col: number; cols: number; value: string; skip_cols?: number[] } }
+  | { op: "fill_special"; spec: SpecialSpec; value: string }
   | { op: "shift_cells"; spec: { row: number; rows: number; col: number; cols: number; shift: "up" | "left" | "down" | "right" } };
 
 /** A computed column: an expression over the row's cells. */
@@ -972,6 +993,8 @@ export interface Backend {
   findChange(doc: number, row: number, col: number, up: boolean): Promise<number | null>;
   /** The row with the column's largest (or smallest) number. */
   findExtreme(doc: number, col: number, largest: boolean, keepFirst: boolean, read: ReadOptions): Promise<number | null>;
+  /** Go To Special: the cells of an area of one kind (shown rows). */
+  specialCells(doc: number, spec: SpecialSpec): Promise<SpecialCells>;
   /** Smallest and largest number of a column ("busy" while changing). */
   numberRange(doc: number, col: number, keepFirst: boolean, read: ReadOptions): Promise<[number, number] | null>;
   /** A value of the column that starts with what is typed. */
@@ -1371,6 +1394,9 @@ class TauriBackend implements Backend {
   }
   findExtreme(doc: number, col: number, largest: boolean, keepFirst: boolean, read: ReadOptions) {
     return call<number | null>("find_extreme", { doc, col, largest, keepFirst, read });
+  }
+  specialCells(doc: number, spec: SpecialSpec) {
+    return call<SpecialCells>("special_cells", { doc, spec });
   }
   numberRange(doc: number, col: number, keepFirst: boolean, read: ReadOptions) {
     return call<[number, number] | null>("number_range", { doc, col, keepFirst, read });

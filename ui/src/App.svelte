@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import { backend, errorText, isCmdError, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
   import { Tab } from "./lib/tab.svelte";
+  import { invisibleNote } from "./lib/invisible";
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
@@ -41,6 +42,9 @@
   import InsertDialog from "./lib/InsertDialog.svelte";
   import RenameColumn from "./lib/RenameColumn.svelte";
   import ShiftCellsDialog, { type ShiftChoice } from "./lib/ShiftCellsDialog.svelte";
+  import GoToSpecialDialog, { type SpecialChoice } from "./lib/GoToSpecialDialog.svelte";
+  import type { SpecialKind, SpecialSpec } from "./lib/backend";
+  import { localDays } from "./lib/m8";
   import { remapChecks, renameInChecks } from "./lib/rename";
   import { TOOLS, localNow, type Cleaner, type CleanSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
@@ -2190,6 +2194,68 @@
   }
   let shiftAsk = $state<{ insert: boolean } | null>(null);
 
+  // ---- Go To Special ----
+  let specialAsk = $state(false);
+  let lastSpecial = $state<SpecialChoice | null>(null);
+  /** Most cells Go To Special lights up at once. */
+  const MAX_LIT = 100_000;
+
+  /** The shown rows and columns Go To Special looks through. */
+  function specialArea(t: Tab, inSelection: boolean): { row: number; rows: number; cols: number[] } {
+    const hidden = new Set(hiddenColsOf(t));
+    const first = t.firstRow;
+    if (inSelection && cellCount(t.rect) > 1) {
+      const r = t.rect;
+      const row = Math.max(r.row, first);
+      const cols: number[] = [];
+      for (let c = r.col; c < r.col + r.cols; c++) if (!hidden.has(c)) cols.push(c);
+      return { row, rows: Math.max(0, r.row + r.rows - row), cols };
+    }
+    const cols: number[] = [];
+    for (let c = 0; c < t.info.cols; c++) if (!hidden.has(c)) cols.push(c);
+    return { row: first, rows: Math.max(0, t.info.rows - first), cols };
+  }
+
+  async function runSpecial(c: SpecialChoice): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    lastSpecial = c;
+    const read = { decimal_comma: false, date_order: "mdy" as const };
+    const kind: SpecialKind =
+      c.pick === "row_diff"
+        ? { kind: "row_diff", against: t.cell.col, exact: c.exact }
+        : c.pick === "problems"
+          ? { kind: "problems", checks: { checks: $state.snapshot(t.checks) as Check[], keep_first: t.header, read, now: localDays() } }
+          : { kind: c.pick };
+    const area = specialArea(t, c.inSelection);
+    const spec: SpecialSpec = { kind, ...area, read };
+    if (c.action === "light") {
+      try {
+        const res = await runJob("Looking", () => backend().specialCells(t.id, spec));
+        if (!res || t !== tab) return;
+        if (!res.total) {
+          t.picked = new Set();
+          t.bump();
+          say("No cells like that here.");
+          return;
+        }
+        t.picked = new Set(res.cells.slice(0, MAX_LIT).map(([r, col]) => `${r}:${col}`));
+        const [r0, c0] = res.cells[0]!;
+        grid?.select({ row: r0, col: c0 }, { row: r0, col: c0 });
+        t.bump();
+        const more = res.total > MAX_LIT ? ` The first ${MAX_LIT.toLocaleString()} are lit up.` : "";
+        say(`${plural(res.total, "cell")} found and lit up.${more} Go to special again (Ctrl+Shift+G) to fill or clear them; any change turns the lights off.`);
+      } catch (e) {
+        say(errorText(e));
+      }
+      return;
+    }
+    const value = c.action === "fill" ? c.value : "";
+    const rep = await runOp({ op: "fill_special", spec, value }, value ? "Filling" : "Clearing");
+    if (!rep) return;
+    say(rep.cells ? `${value ? "Filled" : "Cleared"} ${plural(rep.cells, "cell")}.${hiddenNote(rep)} Undo (Ctrl+Z) takes it back.` : "No cells like that here; nothing changed.");
+  }
+
   /** What the Insert or Delete box chose. */
   async function runShift(insert: boolean, choice: ShiftChoice): Promise<void> {
     const t = tab;
@@ -3988,6 +4054,15 @@
     { id: "edit.nextCorner", label: "Move the active cell to the next corner of the selection", keys: ["Ctrl+."], run: () => nextCorner(), enabled: hasTab },
     { id: "edit.extendMode", label: "Extend the selection with the arrow keys (on or off)", keys: ["F8"], run: () => toggleExtend(), enabled: hasTab, checked: () => extendMode },
     {
+      id: "edit.gotoSpecial",
+      label: "Go to s&pecial…",
+      keys: ["Ctrl+Shift+G"],
+      run: () => {
+        if (tab) specialAsk = true;
+      },
+      enabled: hasTab,
+    },
+    {
       id: "edit.goto",
       label: "&Go to…",
       keys: ["Ctrl+G", "F5"],
@@ -4034,6 +4109,7 @@
     { id: "view.zoomReset", label: "&Zoom 100%", keys: ["Ctrl+Alt+0"], run: () => prefs.setZoom(1) },
     { id: "view.cellBar", label: "&Expand cell bar", keys: ["Ctrl+Shift+U"], run: () => { cellBarExpanded = !cellBarExpanded; }, checked: () => cellBarExpanded },
     { id: "view.gridLines", label: "&Gridlines", run: () => { prefs.data.gridLines = !prefs.data.gridLines; prefs.save(); }, checked: () => prefs.data.gridLines },
+    { id: "view.invisible", label: "Show &invisible characters", keys: ["Ctrl+Shift+H"], run: () => { prefs.data.showInvisible = !prefs.data.showInvisible; prefs.save(); }, checked: () => prefs.data.showInvisible },
     { id: "view.fontBigger", label: "Larger te&xt", run: () => { prefs.data.fontSize = Math.min(28, prefs.data.fontSize + 1); prefs.save(); } },
     { id: "view.fontSmaller", label: "Smaller tex&t", run: () => { prefs.data.fontSize = Math.max(9, prefs.data.fontSize - 1); prefs.save(); } },
     { id: "view.themeSystem", label: "Theme: &system", run: setTheme("system"), checked: () => prefs.data.theme === "system" },
@@ -4197,7 +4273,7 @@
       label: "&Edit",
       items: [
         "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-",
-        "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "-", "edit.note", "edit.changes", "-",
+        "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "edit.gotoSpecial", "-", "edit.note", "edit.changes", "-",
         "edit.deleteRows", "edit.deleteCols", "edit.moveRowsUp", "edit.moveRowsDown", "edit.moveColsLeft", "edit.moveColsRight",
       ],
     },
@@ -4208,7 +4284,7 @@
         "view.panel", "view.panelSummary", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.colLetters", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.invisible", "view.colLetters", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
@@ -5164,7 +5240,7 @@
         bind:this={gotoInput}
         class="goto"
         aria-label="Go to row and column"
-        title="Go to: type a row, or row and column (Ctrl+G)"
+        title="Go to: type a row, or row and column (Ctrl+G). Go to special (Ctrl+Shift+G) picks blank, number, text, changed or failing cells."
         bind:value={gotoText}
         onkeydown={(e) => {
           e.stopPropagation();
@@ -5201,6 +5277,9 @@
         >{cellBarExpanded ? "▴" : "▾"}</button
       >
     </div>
+    {#if prefs.data.showInvisible && invisibleNote(cellBarText)}
+      <div class="invnote" role="status">Can't be seen in this cell: {invisibleNote(cellBarText)}</div>
+    {/if}
     {#if cellFind && cellBarExpanded}
       <div class="cellfind" role="search" aria-label="Find in this cell">
         <input
@@ -6001,6 +6080,18 @@
   />
 {/if}
 
+{#if specialAsk && tab}
+  {@const t = tab}
+  <GoToSpecialDialog
+    selected={cellCount(t.rect)}
+    against={t.header && t.info.rows > 0 ? t.cache.get(0, t.cell.col) || `column ${t.cell.col + 1}` : `column ${t.cell.col + 1}`}
+    hasChecks={t.checks.length > 0}
+    readOnly={!!t.info.read_only}
+    last={lastSpecial}
+    onRun={(c) => { specialAsk = false; void runSpecial(c).then(() => grid?.focus()); }}
+    onClose={() => { specialAsk = false; grid?.focus(); }}
+  />
+{/if}
 {#if shiftAsk && tab}
   {@const s = shiftAsk}
   <ShiftCellsDialog
@@ -6183,6 +6274,13 @@
     align-items: flex-start;
     gap: 6px;
     padding: 4px 8px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .invnote {
+    padding: 2px 8px 3px 136px;
+    font-size: 12px;
+    color: #c2410c;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
   }

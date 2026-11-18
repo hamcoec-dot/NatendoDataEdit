@@ -135,6 +135,9 @@ export class Tab {
   checksMarked = $state(false);
   /** "Show my edits": cells that differ from the file get a corner mark. */
   showEdits = $state(false);
+  /** Cells Go To Special lit up ("row:col", shown rows); gone with the
+   *  next change or change of shown rows. */
+  picked = new Set<string>();
   /** Those cells on screen ("row:col"). */
   edits = new Set<string>();
   /** Bumped when the checks change. */
@@ -491,6 +494,7 @@ export class Tab {
     if (dataChanged || after !== before || structural || info.has_filter !== this.info.has_filter || info.hidden_rows !== this.info.hidden_rows) {
       this.cut = null;
       this.copied = null;
+      this.picked = new Set();
     }
     if (after < before) {
       // Only undo lowers the position: take back every move undone, newest first.

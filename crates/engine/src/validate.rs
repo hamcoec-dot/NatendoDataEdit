@@ -670,10 +670,53 @@ impl Document {
         let n = self.row_count();
         let r0 = row.max(u64::from(spec.keep_first && n > 0));
         let r1 = row.saturating_add(rows).min(n);
+        Ok(self.marks_in(&c, r0..r1, col..col.saturating_add(cols), spec, repeats))
+    }
+
+    /// Problem marks of shown rows `rows` (the whole of it, in parallel), for
+    /// Go To Special: row checks have `col: None`.
+    pub fn problem_marks(
+        &self,
+        rows: std::ops::Range<u64>,
+        spec: &CheckSpec,
+        repeats: &[(u32, Vec<u64>)],
+        progress: &Progress,
+    ) -> Result<Vec<CheckMark>, Error> {
+        self.ready_for_bulk()?;
+        let c = compile(self, spec)?;
+        let n = self.row_count();
+        let r0 = rows.start.max(u64::from(spec.keep_first && n > 0));
+        let r1 = rows.end.min(n);
+        if r0 >= r1 {
+            return Ok(Vec::new());
+        }
+        progress.start(r1 - r0);
+        let chunk = crate::ops::CHUNK as u64;
+        let parts: Vec<Vec<CheckMark>> = (0..(r1 - r0).div_ceil(chunk))
+            .into_par_iter()
+            .map(|k| -> Result<Vec<CheckMark>, Error> {
+                let s = r0 + k * chunk;
+                let e = (s + chunk).min(r1);
+                let out = self.marks_in(&c, s..e, 0..u32::MAX, spec, repeats);
+                progress.step(e - s)?;
+                Ok(out)
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(parts.into_iter().flatten().collect())
+    }
+
+    fn marks_in(
+        &self,
+        c: &Compiled,
+        rows: std::ops::Range<u64>,
+        cols: std::ops::Range<u32>,
+        spec: &CheckSpec,
+        repeats: &[(u32, Vec<u64>)],
+    ) -> Vec<CheckMark> {
         let reader = Cols::new(self, &c.reader_cols);
         let mut out = Vec::new();
         let mut buf = Vec::new();
-        for r in r0..r1 {
+        for r in rows {
             let Some(id) = self.id_at(r) else { continue };
             reader.read(self, id, &mut buf);
             let mut done: Vec<Option<u32>> = Vec::new();
@@ -682,7 +725,7 @@ impl Document {
                     Test::Expr(_) => None,
                     _ => Some(c.reader_cols[c.at[i]]),
                 };
-                if mc.is_some_and(|m| !(col..col.saturating_add(cols)).contains(&m))
+                if mc.is_some_and(|m| !cols.contains(&m))
                     || done.contains(&mc)
                 {
                     continue;
@@ -704,7 +747,7 @@ impl Document {
                 }
             }
         }
-        Ok(out)
+        out
     }
 }
 

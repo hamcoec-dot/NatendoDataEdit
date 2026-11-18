@@ -531,6 +531,17 @@ async fn find_extreme(
     blocking(move || docs.find_extreme(doc, col, largest, keep_first, read)).await
 }
 
+/// Go To Special: blank, number, text or row-difference cells of an area.
+#[tauri::command]
+async fn special_cells(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::special::SpecialSpec,
+) -> CmdResult<natendo_engine::special::SpecialCells> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.special_cells(doc, spec)).await
+}
+
 /// Smallest and largest number of a column.
 #[tauri::command]
 async fn number_range(
@@ -3076,6 +3087,7 @@ pub fn run() {
             table_report,
             find_change,
             find_extreme,
+            special_cells,
             number_range,
             typeahead,
             rename_file,

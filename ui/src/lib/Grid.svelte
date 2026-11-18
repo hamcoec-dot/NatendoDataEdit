@@ -15,6 +15,9 @@
   import { formatCell, linkOf, MAX_ROW_LINES, pickMatches, readNumber, tickOf, toggled, wrapLines } from "./m9";
   import { barSpan, completion, scaleColour, scalePos, valueType } from "./m10";
   import { colLetters } from "./goto";
+  import { invisibleRuns } from "./invisible";
+  /** Odd spaces with View › Show invisible characters on. */
+  const ODD_COLOR = "#f76b15";
   /** Mark value for a data-check problem (drawn red). */
   const PROBLEM = 255;
   const PROBLEM_COLOR = "#e5484d";
@@ -172,6 +175,7 @@
     void listCols;
     void font;
     void prefs.data.gridLines;
+    void prefs.data.showInvisible;
     void prefs.data.alignNumbers;
     void prefs.data.colLetters;
     void prefs.data.listArrows;
@@ -1027,6 +1031,15 @@
           ctx.fillRect(x, y, cw, rowH);
           ctx.globalAlpha = 1;
         }
+        if (tab.picked.size && tab.picked.has(`${r}:${c}`)) {
+          // Cells Go To Special picked.
+          ctx.fillStyle = colors.accent;
+          ctx.globalAlpha = 0.3;
+          ctx.fillRect(x, y, cw, rowH);
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = colors.accent;
+          ctx.strokeRect(x + 1.5, y + 1.5, cw - 3, rowH - 3);
+        }
         const mark = tab.marks.size ? (tab.marks.get(`${r}:${c}`) ?? tab.marks.get(`${r}:*`)) : undefined;
         if (mark !== undefined) {
           ctx.fillStyle = mark === PROBLEM ? PROBLEM_COLOR : (PALETTE[mark]?.color ?? colors.accent);
@@ -1071,7 +1084,8 @@
           drawTick(ctx, x, y, cw, tick);
         } else if (t !== "") {
           const header = tab.header && r === 0;
-          const shown = fmt && !header ? formatCell(t, fmt) : t;
+          const invisible = prefs.data.showInvisible && !header;
+          const shown = invisible ? t : fmt && !header ? formatCell(t, fmt) : t;
           const link = !fmt && !header && /[.@:]/.test(t) ? linkOf(t) : null;
           const kind = tab.valueTypes && !header && !link ? typeOf(t) : "text";
           // Text on a colour-scale fill is always dark, so it reads on every shade.
@@ -1085,7 +1099,32 @@
           const side = align ?? (auto || (fmt && shown !== t && fmt.kind !== "date" && !header) ? "right" : "left");
           const at = (w: number): number =>
             side === "right" ? Math.max(x + pad, x + cw - pad - w) : side === "center" ? Math.max(x + pad, x + (cw - w) / 2) : x + pad;
-          if (wrap) {
+          if (invisible && !filled) {
+            // Show invisible characters: faint marks for spaces, tabs and
+            // line breaks; odd spaces in the warning colour. Clipped to the
+            // cell (no spilling), so every mark belongs to this cell.
+            const runs = invisibleRuns(shown);
+            let text = runs.map((r) => r.text).join("");
+            if (cut) text += "…";
+            let tx = at(measure(text));
+            const ty = y + rowH / 2 + 0.5;
+            const plain = ctx.fillStyle;
+            for (const run of runs) {
+              const w = measure(run.text);
+              if (run.kind === "odd") {
+                ctx.fillStyle = ODD_COLOR;
+                ctx.globalAlpha = 0.25;
+                ctx.fillRect(tx, y + 3, w, rowH - 6);
+                ctx.globalAlpha = 1;
+              }
+              ctx.fillStyle = run.kind === "odd" ? ODD_COLOR : run.kind === "mark" ? colors.muted : plain;
+              ctx.fillText(run.text, tx, ty);
+              tx += w;
+              if (tx > x + cw) break;
+            }
+            ctx.fillStyle = plain;
+            if (cut) ctx.fillText("…", tx, ty);
+          } else if (wrap) {
             const out = wrapLines(shown, Math.max(8, cw - 2 * pad), measure, lines);
             if (cut && out.length) out[out.length - 1] += "…";
             // The block of lines sits in the middle of the row, as one-line text does.

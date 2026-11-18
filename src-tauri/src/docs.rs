@@ -718,6 +718,11 @@ pub enum DataOp {
     FillRect {
         spec: natendo_engine::shift::RectFill,
     },
+    /// One value into every cell Go To Special picks (empty: clear them).
+    FillSpecial {
+        spec: natendo_engine::special::SpecialSpec,
+        value: String,
+    },
     /// Insert or delete cells, moving the others up, left, down or right.
     ShiftCells {
         spec: natendo_engine::shift::ShiftCells,
@@ -888,6 +893,9 @@ fn recipe_step(op: &DataOp) -> Logged {
             return Logged::LeftOut("clearing or filling the selection".into())
         }
         DataOp::ShiftCells { .. } => return Logged::LeftOut("inserting or deleting cells".into()),
+        DataOp::FillSpecial { .. } => {
+            return Logged::LeftOut("filling the cells Go To Special picked".into())
+        }
         DataOp::SortProblems { spec } => RecipeOp::SortProblems { spec: spec.clone() },
         DataOp::CheckColumn { spec, title } => RecipeOp::CheckColumn {
             spec: spec.clone(),
@@ -3884,6 +3892,8 @@ impl Docs {
             DataOp::Extract { .. } => "Extracting",
             DataOp::FillRect { spec } if spec.value.is_empty() => "Clearing",
             DataOp::FillRect { .. } => "Filling",
+            DataOp::FillSpecial { value, .. } if value.is_empty() => "Clearing",
+            DataOp::FillSpecial { .. } => "Filling",
             DataOp::ShiftCells { .. } => "Moving cells",
         };
         if let DataOp::Clean { spec, now } = &op {
@@ -4049,6 +4059,9 @@ impl Docs {
                     None => Planned::Cells(d.plan_fill_rect(spec, p)?),
                 },
                 DataOp::ShiftCells { spec } => Planned::Cells(d.plan_shift_cells(spec, p)?),
+                DataOp::FillSpecial { spec, value } => {
+                    Planned::Cells(d.plan_fill_special(spec, value, p)?)
+                }
             };
             let mut r = report.borrow_mut();
             *r = OpReport::default();
@@ -5069,6 +5082,29 @@ impl Docs {
         let job = entry.start("Looking")?;
         let d = entry.read();
         Ok(d.find_extreme(col, largest, keep_first, read, &job.progress)?)
+    }
+
+    /// Go To Special: the cells of an area that are blank, numbers, text or
+    /// differ from another column of their row.
+    pub fn special_cells(
+        &self,
+        id: u32,
+        mut spec: natendo_engine::special::SpecialSpec,
+    ) -> CmdResult<natendo_engine::special::SpecialCells> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking")?;
+        let d = entry.read();
+        // Failing cells: the repeats of the last check run, when it ran the
+        // same checks on this version of the table.
+        if let natendo_engine::special::SpecialKind::Problems { checks } = &spec.kind {
+            let key = serde_json::to_string(&checks.checks).unwrap_or_default();
+            if let Some((k, rev, reps)) = entry.checks.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+                if *k == key && *rev == d.revision() {
+                    spec.repeats = reps.clone();
+                }
+            }
+        }
+        Ok(d.special_cells(&spec, &job.progress)?)
     }
 
     /// Smallest and largest number of a column (colour scales, data bars).

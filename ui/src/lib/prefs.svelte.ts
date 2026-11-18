@@ -13,6 +13,8 @@ export interface PrefsData {
   zoom: number;
   editPanel: boolean;
   gridLines: boolean;
+  /** View › Show invisible characters (display only). */
+  showInvisible: boolean;
   /** Numbers and dates line up on the right (as in Excel), unless a column
    *  has its own alignment. */
   alignNumbers: boolean;
@@ -121,6 +123,7 @@ const DEFAULTS: PrefsData = {
   zoom: 1,
   editPanel: false,
   gridLines: true,
+  showInvisible: false,
   alignNumbers: true,
   colLetters: false,
   enterMove: "down",
@@ -163,6 +166,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       zoom: typeof p.zoom === "number" ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, p.zoom)) : 1,
       editPanel: p.editPanel === true,
       gridLines: p.gridLines !== false,
+      showInvisible: p.showInvisible === true,
       alignNumbers: p.alignNumbers !== false,
       colLetters: p.colLetters === true,
       listArrows: p.listArrows === true,

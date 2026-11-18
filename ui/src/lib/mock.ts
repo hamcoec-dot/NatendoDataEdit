@@ -45,7 +45,7 @@ import { runCleaner, type Cleaner, type CleanPreview, type CleanSpec } from "./c
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, Summary, View } from "./views";
 import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, TableReport, Totals } from "./backend";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
-import type { AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
+import type { SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
 import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
 import { mockEval } from "./mockexpr";
 import { previewOf, simulateJoin } from "./joins";
@@ -1974,6 +1974,14 @@ export class MockBackend implements Backend {
         const info = await this.setCells(doc, cells);
         return this.report(info, { cols: 1, cells: cells.length, groups: groups.size });
       }
+      case "fill_special": {
+        const found = await this.specialCells(doc, op.spec);
+        if (found.total > 5_000_000) throw err("invalid", `${found.total} cells were found; one fill changes at most 5000000. Pick fewer columns or rows.`);
+        const info = this.writeCells(doc, found.cells.map(([r, c]) => [r, c, op.value] as [number, number, string]));
+        const first = found.cells[0]?.[0] ?? 0;
+        const last = found.cells[found.cells.length - 1]?.[0] ?? 0;
+        return this.report(info, { cells: found.total, hidden_rows: found.total ? this.hiddenBetween_(d, first, last + 1) : 0 });
+      }
       case "fill_rect": {
         const s = op.spec;
         // No size limit here (as the engine): one undo step, any size.
@@ -2381,6 +2389,54 @@ export class MockBackend implements Backend {
       if (x !== null && (!best || (largest ? x > best[0] : x < best[0]))) best = [x, r];
     }
     return best ? best[1] : null;
+  }
+
+  async specialCells(doc: number, spec: SpecialSpec): Promise<SpecialCells> {
+    const d = this.get(doc);
+    const k = spec.kind;
+    const against = k.kind === "row_diff" ? k.against : -1;
+    const cols = [...new Set(spec.cols)].filter((c) => c < this.colCount(d) && c !== against).sort((a, b) => a - b);
+    const out: SpecialCells = { cells: [], total: 0 };
+    const end = Math.min(this.rowCount(d), spec.row + spec.rows);
+    const loose = (s: string) => s.split(/\s+/).filter(Boolean).join(" ").toLowerCase();
+    // Changed or failing cells: from the stub's change list or checks.
+    let marks: Set<string> | null = null;
+    if (k.kind === "edited" || k.kind === "problems") {
+      const c0 = Math.min(...cols);
+      const c1 = Math.max(...cols) + 1;
+      const list =
+        k.kind === "edited"
+          ? (await this.editedCells(doc, spec.row, end - spec.row, c0, c1 - c0)).map(([r, c]) => `${r}:${c}`)
+          : (await this.checkMarks(doc, spec.row, end - spec.row, c0, c1 - c0, k.checks)).flatMap((m) => (m.col === null ? cols.map((c) => `${m.row}:${c}`) : [`${m.row}:${m.col}`]));
+      marks = new Set(list);
+    }
+    for (let r = spec.row; r < end; r++) {
+      for (const c of cols) {
+        if (marks) {
+          if (marks.has(`${r}:${c}`)) {
+            out.total++;
+            out.cells.push([r, c]);
+          }
+          continue;
+        }
+        const v = this.value(d, r, c);
+        const blank = v.trim() === "";
+        let hit: boolean;
+        if (k.kind === "blanks") hit = blank;
+        else if (k.kind === "numbers") hit = numberOf(v) !== null;
+        else if (k.kind === "text") hit = !blank && numberOf(v) === null;
+        else if (k.kind !== "row_diff") hit = false;
+        else {
+          const o = this.value(d, r, k.against);
+          hit = k.exact ? v !== o : v !== o && loose(v) !== loose(o);
+        }
+        if (hit) {
+          out.total++;
+          if (out.cells.length < 5_000_000) out.cells.push([r, c]);
+        }
+      }
+    }
+    return out;
   }
 
   async numberRange(doc: number, col: number, keepFirst: boolean): Promise<[number, number] | null> {

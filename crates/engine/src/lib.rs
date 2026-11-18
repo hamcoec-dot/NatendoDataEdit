@@ -51,6 +51,7 @@ pub mod scan;
 pub mod sheet;
 pub mod shift;
 pub mod sort;
+pub mod special;
 pub mod source;
 pub mod sqlite;
 pub mod stats;
