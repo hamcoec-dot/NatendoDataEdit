@@ -445,6 +445,7 @@ pub fn sample(args: &[&str]) -> Result<(), String> {
                 size,
                 seed,
                 keep_first: o.header(),
+                ..Default::default()
             },
             &Progress::new(),
         )

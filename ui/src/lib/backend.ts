@@ -185,6 +185,12 @@ export interface Sample {
   size: SampleSize;
   seed: number;
   keep_first: boolean;
+  /** Draw from each group of this column's values on its own. */
+  per?: number | null;
+  /** Rows in the order drawn instead of table order. */
+  drawn_order?: boolean;
+  /** A first column "Row" with each row's number. */
+  row_numbers?: boolean;
 }
 export interface CompareSpec {
   keys: number[];
@@ -203,6 +209,8 @@ export interface CompareReport {
 export interface TableReport {
   info: DocInfo;
   compare: CompareReport | null;
+  /** A sample's audit record (seed, method, file fingerprint, groups). */
+  record?: DocInfo | null;
 }
 export interface SplitParts {
   col: number | null;

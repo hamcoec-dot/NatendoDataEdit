@@ -3199,11 +3199,24 @@
           nt.headerTouched = true;
           nt.bump();
         }
+        // A sample's record opens beside it; the sample stays in front.
+        if (rep.record) {
+          addTab(rep.record, false);
+          const rt = tabs[tabs.length - 1];
+          if (rt) {
+            rt.header = true;
+            rt.headerTouched = true;
+            rt.bump();
+          }
+          if (nt) active = tabs.indexOf(nt);
+        }
         const c = rep.compare;
         say(
           c
             ? `Compared: ${plural(c.changed, "changed row")} (${plural(c.cells, "cell")}), ${plural(c.added, "added row")}, ${plural(c.removed, "removed row")}, ${plural(c.same, "row")} the same. The list opened as a new tab.`
-            : `The new table has ${plural(rep.info.rows, "row")} and ${plural(rep.info.cols, "column")}. It is not saved yet (Ctrl+S).`,
+            : rep.record
+              ? `Drew ${plural(Math.max(0, rep.info.rows - (header ? 1 : 0)), "row")}${req.op === "sample" ? ` with seed ${req.spec.seed}` : ""}. The sample and its record (seed, method, file fingerprint, counts) opened as new tabs; save both with the audit.`
+              : `The new table has ${plural(rep.info.rows, "row")} and ${plural(rep.info.cols, "column")}. It is not saved yet (Ctrl+S).`,
         );
         return;
       }

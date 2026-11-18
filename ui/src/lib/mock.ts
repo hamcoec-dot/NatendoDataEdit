@@ -2506,8 +2506,59 @@ export class MockBackend implements Backend {
     }
   }
 
+  private gridTab(out: string[][], name: string): DocInfo {
+    const info = this.make(name, out.length, Math.max(1, ...out.map((l) => l.length)));
+    const nd = this.get(info.id);
+    out.forEach((line, r) => line.forEach((v, c) => nd.edits.set(`${r}:${c}`, v)));
+    nd.clean = -1;
+    return this.refresh(nd);
+  }
   async tableReport(doc: number, op: TableOp): Promise<TableReport> {
-    return { info: await this.newTable(doc, op), compare: null };
+    if (op.op !== "sample") return { info: await this.newTable(doc, op), compare: null };
+    // A seeded sample (a simple stand-in for the app's method) and its record.
+    const d = this.get(doc);
+    const s = op.spec;
+    const first = s.keep_first ? 1 : 0;
+    const rows = this.rowCount(d);
+    const cols = this.colCount(d);
+    let state = s.seed || 1;
+    const rand = () => (state = (state * 1103515245 + 12345) % 2147483648) / 2147483648;
+    const groups = new Map<string, number[]>();
+    for (let r = first; r < rows; r++) {
+      const g = s.per != null ? this.value(d, r, s.per) : "(all rows)";
+      groups.set(g, [...(groups.get(g) ?? []), r]);
+    }
+    const picked: number[] = [];
+    const counts: [string, number, number][] = [];
+    for (const [g, members] of groups) {
+      const k = s.size.kind === "percent" ? Math.round((members.length * s.size.p) / 100) : s.size.kind === "rows" ? Math.min(s.size.n, members.length) : 0;
+      const pool = [...members];
+      for (let i = 0; i < k; i++) {
+        const j = i + Math.floor(rand() * (pool.length - i));
+        [pool[i], pool[j]] = [pool[j]!, pool[i]!];
+      }
+      picked.push(...pool.slice(0, k));
+      counts.push([g, members.length, k]);
+    }
+    if (!s.drawn_order) picked.sort((a, b) => a - b);
+    const line = (r: number) => [...(s.row_numbers ? [String(r + 1)] : []), ...Array.from({ length: cols }, (_, c) => this.value(d, r, c))];
+    const out = [...(first ? [[...(s.row_numbers ? ["Row"] : []), ...Array.from({ length: cols }, (_, c) => this.value(d, 0, c))]] : []), ...picked.map(line)];
+    const stem = d.info.name.replace(/\.[^.]*$/, "");
+    const info = this.gridTab(out, `Sample (${stem}, seed ${s.seed})`);
+    const record = this.gridTab(
+      [
+        ["What", "Value", "Rows"],
+        ["Drawn from", d.info.name, String(rows - first)],
+        ["File SHA-256", "(not saved to a file)", ""],
+        ["Seed", String(s.seed), ""],
+        ...(s.per != null ? [["Per group of", this.value(d, 0, s.per), ""]] : []),
+        ["Method", `${s.size.kind === "percent" ? `${s.size.p}% of the rows` : `${s.size.kind === "rows" ? s.size.n : 0} rows`} at random${s.per != null ? " from each group" : ""}, seed ${s.seed}`, ""],
+        ["Rows taken", "", String(picked.length)],
+        ...counts.map(([g, n, k]) => ["Group", g || "(blank)", `${k} of ${n}`]),
+      ],
+      `Sample record (${stem})`,
+    );
+    return { info, compare: null, record };
   }
 
   async findChange(doc: number, row: number, col: number, up: boolean): Promise<number | null> {

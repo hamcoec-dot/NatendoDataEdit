@@ -173,6 +173,110 @@ pub struct Sample {
     /// The same seed picks the same rows of the same table.
     pub seed: u64,
     pub keep_first: bool,
+    /// Draw from each group of this column's values on its own ("10 per
+    /// precinct"): rows or percent per group.
+    pub per: Option<u32>,
+    /// Rows in the order drawn (group by group) instead of table order.
+    pub drawn_order: bool,
+    /// A first column "Row" with each row's number in the table.
+    pub row_numbers: bool,
+}
+
+/// What a sample drew, for the audit record.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SampleReport {
+    pub seed: u64,
+    /// The method, in words (with how to draw it again).
+    pub method: String,
+    /// Rows drawn from, and rows taken.
+    pub rows: u64,
+    pub taken: u64,
+    /// Per group: its value, rows in it, rows taken.
+    pub groups: Vec<(String, u64, u64)>,
+}
+
+/// The SHA-256 of a file, in hex (read in pieces; `progress` can stop it).
+pub fn file_sha256(path: &std::path::Path, progress: &Progress) -> Result<String, Error> {
+    use sha2::Digest;
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut h = sha2::Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+        progress.step(0)?;
+    }
+    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The audit record of a sample as a table: what was drawn and how, then
+/// the rows in and taken per group.
+pub fn sample_record(
+    r: &SampleReport,
+    source: &str,
+    column: Option<&str>,
+    fingerprint: &str,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    let line = |out: &mut Vec<u8>, cells: &[String]| crate::reshape::push_line(out, cells);
+    line(&mut out, &["What".into(), "Value".into(), "Rows".into()]);
+    line(&mut out, &["Drawn from".into(), source.into(), r.rows.to_string()]);
+    line(&mut out, &["File SHA-256".into(), fingerprint.into(), String::new()]);
+    line(&mut out, &["Seed".into(), r.seed.to_string(), String::new()]);
+    if let Some(c) = column {
+        line(&mut out, &["Per group of".into(), c.into(), String::new()]);
+    }
+    line(&mut out, &["Method".into(), r.method.clone(), String::new()]);
+    line(&mut out, &["Rows taken".into(), String::new(), r.taken.to_string()]);
+    for (v, n, k) in &r.groups {
+        line(
+            &mut out,
+            &[
+                "Group".into(),
+                if v.is_empty() { "(blank)".into() } else { v.clone() },
+                format!("{k} of {n}"),
+            ],
+        );
+    }
+    out
+}
+
+/// SplitMix64: the next number and state.
+fn split_mix(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// FNV-1a over a group's value (its seed is the sample's seed XOR this).
+fn fnv64(v: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in v.as_bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// `k` of `items` at random, in the order drawn: a partial Fisher-Yates
+/// shuffle driven by SplitMix64 from `seed`, each pick `i + floor(z * (n -
+/// i) / 2^64)`.
+fn draw(items: &mut [u32], k: usize, seed: u64) -> &[u32] {
+    let n = items.len();
+    let k = k.min(n);
+    let mut state = seed;
+    for i in 0..k {
+        let z = split_mix(&mut state);
+        let span = (n - i) as u64;
+        let j = i + ((z as u128 * span as u128) >> 64) as usize;
+        items.swap(i, j);
+    }
+    &items[..k]
 }
 
 // ---- compare ----
@@ -764,58 +868,130 @@ impl Document {
         })
     }
 
-    /// The shown positions a sample takes, in table order.
-    fn sample_positions(&self, spec: &Sample) -> Result<(std::ops::Range<u64>, Vec<u64>), Error> {
+    /// The shown positions a sample takes (in table order, or as drawn),
+    /// and what it drew.
+    fn sample_positions(
+        &self,
+        spec: &Sample,
+    ) -> Result<(std::ops::Range<u64>, Vec<u64>, SampleReport), Error> {
         let rows = self.data_rows(spec.keep_first);
         let n = rows.end - rows.start;
-        let take = |k: u64| -> Vec<u64> {
-            // Partial Fisher-Yates over positions, seeded (SplitMix64).
-            let mut idx: Vec<u32> = (0..n as u32).collect();
-            let mut state = spec.seed;
-            let k = k.min(n) as usize;
-            for i in 0..k {
-                state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-                let mut z = state;
-                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-                z ^= z >> 31;
-                let span = (n as usize - i) as u64;
-                let j = i + ((z as u128 * span as u128) >> 64) as usize;
-                idx.swap(i, j);
-            }
-            let mut v: Vec<u64> = idx[..k].iter().map(|&p| rows.start + p as u64).collect();
-            v.sort_unstable();
-            v
-        };
         if n > u32::MAX as u64 {
             return Err(Error::TooManyRows);
         }
-        let pos = match spec.size {
-            SampleSize::Rows { n: k } => take(k),
-            SampleSize::Percent { p } => {
-                if !p.is_finite() || !(0.0..=100.0).contains(&p) {
-                    return Err(bad("choose a percent from 0 to 100"));
+        let how_many = |size: u64| -> Result<usize, Error> {
+            Ok(match spec.size {
+                SampleSize::Rows { n: k } => k.min(size) as usize,
+                SampleSize::Percent { p } => {
+                    if !p.is_finite() || !(0.0..=100.0).contains(&p) {
+                        return Err(bad("choose a percent from 0 to 100"));
+                    }
+                    ((size as f64 * p / 100.0).round() as u64).min(size) as usize
                 }
-                take((n as f64 * p / 100.0).round() as u64)
-            }
-            SampleSize::Every { n: k } => {
+                SampleSize::Every { .. } => 0,
+            })
+        };
+        let size_words = match spec.size {
+            SampleSize::Rows { n: k } => format!("{k} rows"),
+            SampleSize::Percent { p } => format!("{p}% of the rows (rounded)"),
+            SampleSize::Every { n: k } => format!("every {k}th row"),
+        };
+        let mut report = SampleReport {
+            seed: spec.seed,
+            rows: n,
+            ..Default::default()
+        };
+        let mut pos: Vec<u64> = match (spec.size, spec.per) {
+            (SampleSize::Every { n: k }, None) => {
                 if k == 0 {
                     return Err(bad("choose how often to take a row"));
                 }
+                report.method = format!("Every {k}th shown row, starting with the first.");
                 (rows.start..rows.end)
                     .step_by(k.min(u64::from(u32::MAX)) as usize)
                     .collect()
             }
+            (SampleSize::Every { .. }, Some(_)) => {
+                return Err(bad("a sample per group takes a number or a percent of rows"))
+            }
+            (_, None) => {
+                let mut idx: Vec<u32> = (0..n as u32).collect();
+                let k = how_many(n)?;
+                report.method = format!(
+                    "{size_words} at random from the {n} shown rows, seed {}. Rows are numbered 0 up in table order; a partial Fisher-Yates shuffle driven by SplitMix64 from the seed picks row i + floor(z x (n - i) / 2^64) for each draw i.",
+                    spec.seed
+                );
+                report.groups.push(("(all rows)".into(), n, k as u64));
+                draw(&mut idx, k, spec.seed)
+                    .iter()
+                    .map(|&p| rows.start + u64::from(p))
+                    .collect()
+            }
+            (_, Some(col)) => {
+                if col >= self.col_count() {
+                    return Err(Error::OutOfRange);
+                }
+                // The rows of each value, in table order; groups in the
+                // order first seen.
+                let reader = Cols::new(self, &[col]);
+                let mut buf = Vec::new();
+                let mut index: HashMap<String, usize> = HashMap::new();
+                let mut groups: Vec<(String, Vec<u32>)> = Vec::new();
+                for r in rows.clone() {
+                    let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                    reader.read(self, id, &mut buf);
+                    let v = reader.get(&buf, 0);
+                    let g = match index.get(v) {
+                        Some(&g) => g,
+                        None => {
+                            if groups.len() >= 1_000_000 {
+                                return Err(bad("more than 1,000,000 groups"));
+                            }
+                            index.insert(v.to_string(), groups.len());
+                            groups.push((v.to_string(), Vec::new()));
+                            groups.len() - 1
+                        }
+                    };
+                    groups[g].1.push((r - rows.start) as u32);
+                }
+                report.method = format!(
+                    "{size_words} at random from each group of the column's values, seed {}. Each group's rows are numbered 0 up in table order and drawn on their own with the seed XOR the FNV-1a 64-bit hash of the group's value: a partial Fisher-Yates shuffle driven by SplitMix64 picks row i + floor(z x (n - i) / 2^64) for each draw i.",
+                    spec.seed
+                );
+                let mut out = Vec::new();
+                for (v, mut members) in groups {
+                    let size = members.len() as u64;
+                    let k = how_many(size)?;
+                    let picked = draw(&mut members, k, spec.seed ^ fnv64(&v));
+                    out.extend(picked.iter().map(|&p| rows.start + u64::from(p)));
+                    report.groups.push((v, size, k as u64));
+                }
+                out
+            }
         };
-        Ok((rows, pos))
+        if !spec.drawn_order {
+            pos.sort_unstable();
+        }
+        report.taken = pos.len() as u64;
+        Ok((rows, pos, report))
     }
 
     /// A new table of a sample of shown rows (all columns), with the title
     /// row first when kept.
     pub fn sample(&self, spec: &Sample, progress: &Progress) -> Result<Table, Error> {
+        Ok(self.sample_report(spec, progress)?.0)
+    }
+
+    /// As [`Document::sample`], with what it drew (for an audit record).
+    pub fn sample_report(
+        &self,
+        spec: &Sample,
+        progress: &Progress,
+    ) -> Result<(Table, SampleReport), Error> {
         self.ready_for_bulk()?;
-        let (rows, pos) = self.sample_positions(spec)?;
+        let (rows, pos, report) = self.sample_positions(spec)?;
         let cols = self.col_count();
+        let numbers = spec.row_numbers;
         if (pos.len() as u64 + 1) * cols as u64 > MAX_TABLE_CELLS {
             return Err(too_big());
         }
@@ -824,9 +1000,12 @@ impl Document {
         let mut out = Vec::new();
         let mut buf = Vec::new();
         let mut line: Vec<String> = Vec::with_capacity(cols as usize);
-        let mut write = |id: u32, out: &mut Vec<u8>| -> Result<(), Error> {
+        let mut write = |id: u32, row: Option<u64>, out: &mut Vec<u8>| -> Result<(), Error> {
             reader.read(self, id, &mut buf);
             line.clear();
+            if numbers {
+                line.push(row.map_or_else(|| "Row".to_string(), |r| (r + 1).to_string()));
+            }
             line.extend((0..all.len()).map(|k| reader.get(&buf, k).to_string()));
             push_line(out, &line);
             if out.len() > MAX_TABLE_BYTES {
@@ -835,20 +1014,23 @@ impl Document {
             Ok(())
         };
         if rows.start == 1 {
-            write(self.id_at(0).expect("a first row"), &mut out)?;
+            write(self.id_at(0).expect("a first row"), None, &mut out)?;
         }
         progress.start(pos.len() as u64);
         for (i, &p) in pos.iter().enumerate() {
-            write(self.id_at(p).ok_or(Error::OutOfRange)?, &mut out)?;
+            write(self.id_at(p).ok_or(Error::OutOfRange)?, Some(p), &mut out)?;
             if i % 65_536 == 65_535 {
                 progress.step(65_536)?;
             }
         }
-        Ok(Table {
-            bytes: out,
-            rows: pos.len() as u64 + rows.start,
-            cols,
-        })
+        Ok((
+            Table {
+                bytes: out,
+                rows: pos.len() as u64 + rows.start,
+                cols: cols + u32::from(numbers),
+            },
+            report,
+        ))
     }
 
     // ---- jumps ----
@@ -1827,6 +2009,59 @@ mod tests {
     }
 
     #[test]
+    fn audit_samples_per_group() {
+        let mut csv = String::from("id,precinct
+");
+        for i in 0..300 {
+            csv.push_str(&format!("{i},P{}
+", i % 3));
+        }
+        let d = doc(&csv);
+        let spec = Sample {
+            size: SampleSize::Rows { n: 10 },
+            seed: 2024,
+            keep_first: true,
+            per: Some(1),
+            row_numbers: true,
+            ..Default::default()
+        };
+        let (t, r) = d.sample_report(&spec, &Progress::new()).unwrap();
+        assert_eq!((r.rows, r.taken, r.seed), (300, 30, 2024));
+        assert_eq!(r.groups, [("P0".into(), 100, 10), ("P1".into(), 100, 10), ("P2".into(), 100, 10)]);
+        assert!(r.method.contains("FNV-1a") && r.method.contains("seed 2024"));
+        let s = t.into_document().unwrap();
+        assert_eq!(s.row_values(0).unwrap(), ["Row", "id", "precinct"]);
+        assert_eq!(s.row_count(), 31);
+        // Ten of each precinct, in table order, with their row numbers.
+        let rows: Vec<Vec<String>> = (1..31).map(|r| s.row_values(r).unwrap()).collect();
+        for p in ["P0", "P1", "P2"] {
+            assert_eq!(rows.iter().filter(|r| r[2] == p).count(), 10);
+        }
+        assert!(rows.windows(2).all(|w| w[0][1].parse::<u32>().unwrap() < w[1][1].parse::<u32>().unwrap()));
+        assert!(rows.iter().all(|r| r[0].parse::<u32>().unwrap() == r[1].parse::<u32>().unwrap() + 2));
+        // The same seed draws the same rows; another seed others.
+        let (t2, _) = d.sample_report(&spec, &Progress::new()).unwrap();
+        assert_eq!(t2.into_document().unwrap().row_values(5).unwrap(), rows[4]);
+        let other = Sample { seed: 2025, ..spec.clone() };
+        let (t3, _) = d.sample_report(&other, &Progress::new()).unwrap();
+        let t3 = t3.into_document().unwrap();
+        assert!((1..31).any(|r| t3.row_values(r).unwrap() != rows[r as usize - 1]));
+        // A group's draw depends on its own value, not on the other groups.
+        let few = doc(&csv.lines().filter(|l| !l.ends_with("P2")).collect::<Vec<_>>().join("
+"));
+        let (t4, _) = few.sample_report(&spec, &Progress::new()).unwrap();
+        let t4 = t4.into_document().unwrap();
+        let p0: Vec<String> = (1..t4.row_count()).map(|r| t4.row_values(r).unwrap()[1].clone()).filter(|v| v.parse::<u32>().unwrap() % 3 == 0).collect();
+        let p0_all: Vec<String> = rows.iter().filter(|r| r[2] == "P0").map(|r| r[1].clone()).collect();
+        assert_eq!(p0, p0_all);
+        // Percent per group; every nth per group is refused.
+        let pct = Sample { size: SampleSize::Percent { p: 5.0 }, ..spec.clone() };
+        assert_eq!(d.sample_report(&pct, &Progress::new()).unwrap().1.taken, 15);
+        let every = Sample { size: SampleSize::Every { n: 2 }, ..spec };
+        assert!(d.sample_report(&every, &Progress::new()).is_err());
+    }
+
+    #[test]
     fn reshape_stack_sample() {
         let p = Progress::new();
         let d = doc("v,w\r\n1,a\r\n2,b\r\n3,c\r\n4,d\r\n5,e\r\n");
@@ -1870,6 +2105,7 @@ mod tests {
             size: SampleSize::Rows { n: 3 },
             seed: 7,
             keep_first: true,
+            ..Default::default()
         };
         let a = table(d.sample(&spec, &p).unwrap());
         let b = table(d.sample(&spec, &p).unwrap());
@@ -1885,6 +2121,7 @@ mod tests {
                     size: SampleSize::Every { n: 2 },
                     seed: 0,
                     keep_first: true,
+                    ..Default::default()
                 },
                 &p,
             )
@@ -1900,6 +2137,7 @@ mod tests {
                     size: SampleSize::Percent { p: 100.0 },
                     seed: 1,
                     keep_first: false,
+                    ..Default::default()
                 },
                 &p,
             )
@@ -1911,7 +2149,8 @@ mod tests {
                 &Sample {
                     size: SampleSize::Percent { p: 101.0 },
                     seed: 1,
-                    keep_first: false
+                    keep_first: false,
+                    ..Default::default()
                 },
                 &p
             )

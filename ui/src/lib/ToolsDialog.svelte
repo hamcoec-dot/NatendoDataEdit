@@ -61,6 +61,9 @@
   let sizeKind = $state<"rows" | "percent" | "every">("rows");
   let size = $state(100);
   let seed = $state(Math.floor(Math.random() * 1_000_000));
+  let per = $state(-1);
+  let drawnOrder = $state(false);
+  let rowNumbers = $state(true);
   let other = $state(untrack(() => others[0]?.id ?? -1));
   let wholeRow = $state(false);
   let showSame = $state(false);
@@ -91,6 +94,9 @@
       sizeKind,
       size,
       seed,
+      per,
+      drawnOrder,
+      rowNumbers,
       other,
       wholeRow,
       showSame,
@@ -173,7 +179,16 @@
       </select>
       <input type="number" min="0" step="any" bind:value={size} />
     </div>
-    {#if sizeKind !== "every"}<label class="row">Seed <input type="number" min="0" bind:value={seed} /> (the same seed picks the same rows again)</label>{/if}
+    {#if sizeKind !== "every"}
+      <label class="row">From <select bind:value={per} aria-label="Draw from">
+        <option value={-1}>all the rows at once</option>
+        {#each titles as t, c (c)}<option value={c}>each group of {t}</option>{/each}
+      </select>{per >= 0 ? (sizeKind === "rows" ? `: ${size} from each` : `: ${size}% of each`) : ""}</label>
+      <label class="row">Seed <input type="number" min="0" bind:value={seed} /> <button type="button" class="tiny" onclick={() => (seed = Math.floor(Math.random() * 1_000_000))}>New seed</button></label>
+      <p class="note">The same seed draws the same rows of the same table again, so anyone can check the sample. A record of the seed, the method, the file's SHA-256 fingerprint and the counts per group opens beside it.</p>
+    {/if}
+    <label class="row"><input type="checkbox" bind:checked={rowNumbers} /> Add a Row column with each row's number</label>
+    <label class="row"><input type="checkbox" bind:checked={drawnOrder} /> Keep the order drawn (otherwise as in the table)</label>
   {/if}
   {#if kind !== "combine"}<label class="row"><input type="checkbox" bind:checked={myHeader} /> The first row holds titles{kind === "split" ? " (each file gets them)" : ""}</label>{/if}
   {#if kind === "reshape" || kind === "stack" || kind === "sample" || kind === "compare"}

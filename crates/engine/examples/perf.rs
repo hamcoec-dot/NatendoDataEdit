@@ -1730,6 +1730,7 @@ fn main() {
                 size: SampleSize::Rows { n: 100_000 },
                 seed: 3,
                 keep_first: true,
+                ..Default::default()
             },
             &p,
         )

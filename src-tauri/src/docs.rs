@@ -852,6 +852,8 @@ pub const MAX_FLAG_ROWS: usize = 100_000;
 pub struct TableReport {
     pub info: DocInfo,
     pub compare: Option<CompareReport>,
+    /// A sample's audit record, opened in a tab of its own.
+    pub record: Option<DocInfo>,
 }
 
 /// What a comparison with a newer file keeps for accepting changes.
@@ -5142,6 +5144,8 @@ impl Docs {
         // its own lock, never both at once): fingerprints of the second, then
         // the first, then the second's rows that differ.
         let mut compare = None;
+        let mut sample_record: Option<Vec<u8>> = None;
+        let mut sample_seed: Option<u64> = None;
         let table: Table = if let TableOp::Compare { other, spec } = &op {
             let oe = self.get(*other)?;
             let entry = self.get(id)?;
@@ -5179,13 +5183,47 @@ impl Docs {
                 TableOp::Subtotals { spec } => d.subtotals(spec, &job.progress)?,
                 TableOp::Reshape { spec } => d.reshape_column(spec, &job.progress)?,
                 TableOp::Stack { spec } => d.stack_columns(spec, &job.progress)?,
-                TableOp::Sample { spec } => d.sample(spec, &job.progress)?,
+                TableOp::Sample { spec } => {
+                    let (t, r) = d.sample_report(spec, &job.progress)?;
+                    // The file's fingerprint, when the tab holds it unchanged.
+                    let print = match d.path() {
+                        Some(p) if !d.is_modified() => {
+                            natendo_engine::tools::file_sha256(p, &job.progress)?
+                        }
+                        Some(_) => "(the tab has changes not saved; save it first for a fingerprint)".into(),
+                        None => "(not saved to a file)".into(),
+                    };
+                    let source = d
+                        .path()
+                        .map_or_else(|| self.stem(id), |p| p.display().to_string());
+                    let column = spec
+                        .per
+                        .map(|c| d.expr_names(spec.keep_first).get(c as usize).cloned().unwrap_or_default());
+                    sample_record = Some(natendo_engine::tools::sample_record(
+                        &r,
+                        &source,
+                        column.as_deref(),
+                        &print,
+                    ));
+                    sample_seed = Some(r.seed);
+                    t
+                }
                 TableOp::Counts { spec } => d.counts_table(spec, &job.progress)?.0,
                 TableOp::Compare { .. } => unreachable!("handled above"),
             }
         };
         let doc = table.into_document()?;
         let (nid, _) = self.insert(doc, false)?;
+        let record = match sample_record {
+            Some(bytes) => {
+                let rd = Document::from_bytes(bytes, OpenOptions::default(), Some("csv"))?;
+                let (rid, _) = self.insert(rd, false)?;
+                self.inherit_private(rid, &[id], &[]);
+                self.set_title_of(rid, format!("Sample record ({})", self.stem(id)));
+                Some(self.info(rid)?)
+            }
+            None => None,
+        };
         // A sample, comparison or pivot of a private tab is private too.
         let mut from = vec![id];
         if let TableOp::Compare { other, .. } = &op {
@@ -5199,7 +5237,10 @@ impl Docs {
             TableOp::Subtotals { .. } => format!("Subtotals ({stem})"),
             TableOp::Reshape { .. } => format!("Reshaped ({stem})"),
             TableOp::Stack { .. } => format!("Stacked ({stem})"),
-            TableOp::Sample { .. } => format!("Sample ({stem})"),
+            TableOp::Sample { .. } => match sample_seed {
+                Some(seed) => format!("Sample ({stem}, seed {seed})"),
+                None => format!("Sample ({stem})"),
+            },
             TableOp::Counts { .. } => format!("Counts ({stem})"),
             TableOp::Compare { other, .. } => format!("Compare {stem} with {}", self.stem(*other)),
         };
@@ -5207,6 +5248,7 @@ impl Docs {
         Ok(TableReport {
             info: self.info(nid)?,
             compare,
+            record,
         })
     }
 
@@ -7551,6 +7593,7 @@ mod tests {
                         size: SampleSize::Rows { n: 2 },
                         seed: 1,
                         keep_first: true,
+                        ..Default::default()
                     },
                 },
             )

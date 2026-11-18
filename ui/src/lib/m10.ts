@@ -38,6 +38,10 @@ export interface ToolChoices {
   sizeKind: "rows" | "percent" | "every";
   size: number;
   seed: number;
+  /** Sample: draw from each group of this column (-1: all rows at once). */
+  per?: number;
+  drawnOrder?: boolean;
+  rowNumbers?: boolean;
   other: number;
   wholeRow: boolean;
   showSame: boolean;
@@ -87,7 +91,9 @@ export function toolsRequest(kind: ToolKind, c: ToolChoices): ToolsRequest | str
       if (c.sizeKind === "every" && c.size < 1) return "Take every 1st row or more.";
       const size = c.sizeKind === "percent" ? { kind: "percent" as const, p: c.size } : { kind: c.sizeKind, n: c.size };
       const seed = whole(c.seed) && c.seed >= 0 ? c.seed : 0;
-      return { table: { op: "sample", spec: { size, seed, keep_first: c.header } } };
+      const per = c.per !== undefined && c.per >= 0 ? c.per : null;
+      if (per !== null && c.sizeKind === "every") return "A sample per group takes a number or a percent of rows.";
+      return { table: { op: "sample", spec: { size, seed, keep_first: c.header, per, drawn_order: !!c.drawnOrder, row_numbers: !!c.rowNumbers } } };
     }
     case "compare":
       if (c.other < 0) return "Open the other file in a tab first.";
