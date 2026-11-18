@@ -1034,7 +1034,7 @@
     });
   }
 
-  async function exportRun(o: ExportOptions, to: "file" | "clipboard"): Promise<void> {
+  async function exportRun(o: ExportOptions, to: "file" | "clipboard", allTabs = false): Promise<void> {
     exportOpen = false;
     const t = tab;
     if (!t) return;
@@ -1045,9 +1045,10 @@
         await navigator.clipboard.writeText(text);
         say("Copied the export to the clipboard.");
       } else {
-        const r = await runJob("Exporting", () => backend().exportFile(t.id, o));
+        const r = await runJob("Exporting", () => (allTabs ? backend().exportBook(tabs.map((x) => x.id), o) : backend().exportFile(t.id, o)));
         if (!r) return;
-        say(`Exported ${plural(r.rows, "row")}${r.sheets > 1 ? ` on ${plural(r.sheets, "sheet")}` : ""}.`);
+        if (r.files?.length) say(`Exported ${plural(r.rows, "row")} to ${plural(r.files.length, "file")}: ${r.files[0]} to ${r.files[r.files.length - 1]}, each with the title row.`);
+        else say(`Exported ${plural(r.rows, "row")}${r.sheets > 1 ? ` on ${plural(r.sheets, "sheet")}` : ""}.`);
       }
     } catch (e) {
       say(errorText(e));
@@ -6221,7 +6222,10 @@
     header={tab.header}
     filtered={tab.info.filtered}
     titles={Array.from({ length: Math.min(tab.info.cols, 200) }, (_, c) => columnTitle(tab!, c))}
-    onExport={(o, to) => void exportRun(o, to)}
+    rows={tab.info.rows}
+    tabCount={tabs.length}
+    widths={Array.from({ length: Math.min(tab.info.cols, 16_384) }, (_, c) => tab!.columns.customWidth(c) ?? 0)}
+    onExport={(o, to, all) => void exportRun(o, to, all)}
     onClose={() => { exportOpen = false; grid?.focus(); }}
   />
 {/if}

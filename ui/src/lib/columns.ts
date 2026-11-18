@@ -58,6 +58,11 @@ export class Columns {
     return this.widths.get(c) ?? this.defaultWidth;
   }
 
+  /** A width set by the user (undefined: the default). */
+  customWidth(c: number): number | undefined {
+    return this.widths.get(c);
+  }
+
   isHidden(c: number): boolean {
     return this.widths.get(c) === 0;
   }

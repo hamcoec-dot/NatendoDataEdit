@@ -1045,6 +1045,15 @@ export interface ExportOptions {
   after: string;
   sheet: string;
   numbers: boolean;
+  /** Excel: made for Excel users (bold frozen titles with filter buttons,
+   *  widths, real dates, currency and percents, IDs and ZIP codes as text). */
+  look?: boolean;
+  /** Excel: column widths in screen pixels (0: fit the values). */
+  widths?: number[];
+  /** Excel: data rows per part (0: as many as a sheet holds). */
+  part_rows?: number;
+  /** Excel: parts as files of their own instead of sheets of one workbook. */
+  split_files?: boolean;
   /** PDF: page setup. */
   page?: PageSetup;
   /** SQL: table name, name quoting, rows per INSERT, CREATE TABLE first. */
@@ -1057,6 +1066,8 @@ export interface ExportReport {
   rows: number;
   sheets: number;
   bytes: number;
+  /** Files written when parts went to files of their own. */
+  files?: string[];
 }
 
 export interface Backend {
@@ -1076,6 +1087,8 @@ export interface Backend {
   exportPreview(doc: number, options: ExportOptions): Promise<string>;
   /** Shows the Export dialog; null when cancelled. */
   exportFile(doc: number, options: ExportOptions): Promise<ExportReport | null>;
+  /** Several tabs as the sheets of one Excel workbook (a Save dialog first). */
+  exportBook(docs: number[], options: ExportOptions): Promise<ExportReport | null>;
   exportText(doc: number, options: ExportOptions): Promise<string>;
   /** Open the document's file again; `layout` null detects it again. */
   reopen(doc: number, lineByLine: boolean, layout?: Layout | null): Promise<DocInfo>;
@@ -1437,6 +1450,9 @@ class TauriBackend implements Backend {
   }
   exportPreview(doc: number, options: ExportOptions) {
     return call<string>("export_preview", { doc, options });
+  }
+  exportBook(docs: number[], options: ExportOptions) {
+    return call<ExportReport | null>("export_book", { docsIds: docs, options });
   }
   exportFile(doc: number, options: ExportOptions) {
     return call<ExportReport | null>("export_file", { doc, options });

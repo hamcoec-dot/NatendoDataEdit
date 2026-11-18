@@ -85,6 +85,29 @@ impl<W: Write> ZipWriter<W> {
         })
     }
 
+    /// Start a part written from blocks compressed elsewhere (in parallel,
+    /// see [`Block::new`]); call [`RawPart::finish`] after the last one.
+    pub fn raw_part(&mut self, name: &str) -> Result<RawPart<'_, W>, Error> {
+        let offset = small(self.w.n)?;
+        let w = &mut self.w;
+        w.write_all(&LOCAL.to_le_bytes())?;
+        w.write_all(&[20, 0, 0x08, 0x08, 8, 0, 0, 0])?;
+        w.write_all(&DOS_DATE.to_le_bytes())?;
+        w.write_all(&[0; 12])?;
+        w.write_all(&(name.len() as u16).to_le_bytes())?;
+        w.write_all(&[0, 0])?;
+        w.write_all(name.as_bytes())?;
+        let start = w.n;
+        Ok(RawPart {
+            zip: self,
+            crc: crc32fast::Hasher::new(),
+            usize: 0,
+            name: name.to_string(),
+            offset,
+            start,
+        })
+    }
+
     /// Write the directory and return the inner writer.
     pub fn finish(mut self) -> Result<W, Error> {
         let cd = small(self.w.n)?;
@@ -181,6 +204,88 @@ impl<W: Write> Write for Part<'_, W> {
     }
 }
 
+/// Some bytes of a part, compressed on their own: deflate blocks ending
+/// in a sync flush, so blocks compressed apart join into one stream.
+pub struct Block {
+    bytes: Vec<u8>,
+    crc: crc32fast::Hasher,
+    len: u64,
+}
+
+impl Block {
+    pub fn new(plain: &[u8]) -> Result<Block, Error> {
+        let mut crc = crc32fast::Hasher::new();
+        crc.update(plain);
+        let mut enc = flate2::write::DeflateEncoder::new(
+            Vec::with_capacity(plain.len() / 4 + 64),
+            flate2::Compression::fast(),
+        );
+        enc.write_all(plain)?;
+        // A sync flush: the blocks end on a byte, none marked last.
+        enc.flush()?;
+        let bytes = std::mem::take(enc.get_mut());
+        Ok(Block {
+            bytes,
+            crc,
+            len: plain.len() as u64,
+        })
+    }
+
+    /// Bytes before compression.
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// A part written from [`Block`]s, in order.
+pub struct RawPart<'a, W: Write> {
+    zip: &'a mut ZipWriter<W>,
+    crc: crc32fast::Hasher,
+    usize: u64,
+    name: String,
+    offset: u32,
+    start: u64,
+}
+
+impl<W: Write> RawPart<'_, W> {
+    pub fn write_block(&mut self, b: Block) -> Result<(), Error> {
+        self.zip.w.write_all(&b.bytes)?;
+        self.crc.combine(&b.crc);
+        self.usize += b.len;
+        Ok(())
+    }
+
+    /// Bytes written to this part so far (before compression).
+    pub fn written(&self) -> u64 {
+        self.usize
+    }
+
+    pub fn finish(self) -> Result<(), Error> {
+        // The last block: empty, fixed codes, marked last.
+        self.zip.w.write_all(&[0x03, 0x00])?;
+        let csize = small(self.zip.w.n - self.start)?;
+        let usize = small(self.usize)?;
+        let crc = self.crc.finalize();
+        let w = &mut self.zip.w;
+        w.write_all(&DESCRIPTOR.to_le_bytes())?;
+        w.write_all(&crc.to_le_bytes())?;
+        w.write_all(&csize.to_le_bytes())?;
+        w.write_all(&usize.to_le_bytes())?;
+        self.zip.done.push(Done {
+            name: self.name,
+            crc,
+            csize,
+            usize,
+            offset: self.offset,
+        });
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +306,20 @@ mod tests {
         let zip = Zip::open(&bytes).unwrap();
         assert_eq!(zip.read_string("a/b.xml", 100).unwrap(), "<x>hello</x>");
         assert_eq!(zip.read_string("c.txt", 1 << 20).unwrap().len(), 130_000);
+    }
+
+    #[test]
+    fn blocks_compressed_apart_join() {
+        let mut z = ZipWriter::new(Vec::new());
+        let mut p = z.raw_part("x.txt").unwrap();
+        let parts: Vec<String> = (0..20).map(|i| format!("block {i} ").repeat(1000 + i)).collect();
+        for t in &parts {
+            p.write_block(Block::new(t.as_bytes()).unwrap()).unwrap();
+        }
+        p.write_block(Block::new(b"").unwrap()).unwrap();
+        p.finish().unwrap();
+        let bytes = z.finish().unwrap();
+        let zip = Zip::open(&bytes).unwrap();
+        assert_eq!(zip.read_string("x.txt", 1 << 24).unwrap(), parts.concat());
     }
 }

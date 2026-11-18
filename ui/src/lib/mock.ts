@@ -630,7 +630,16 @@ export class MockBackend implements Backend {
     const d = this.get(doc);
     const rows = Math.max(0, this.rowCount(d) - (o.header ? 1 : 0));
     if (o.format !== "xlsx") this.exportString(doc, o, 1); // template errors show
-    return { rows, sheets: o.format === "xlsx" ? Math.max(1, Math.ceil(rows / 1_048_575)) : 0, bytes: rows * 40 };
+    const per = o.part_rows || 1_048_575;
+    const parts = Math.max(1, Math.ceil(rows / per));
+    const stem = d.info.name.replace(/\.[^.]*$/, "");
+    if (o.format === "xlsx" && o.split_files && parts > 1) return { rows, sheets: parts, bytes: rows * 40, files: Array.from({ length: parts }, (_, i) => `${stem} (${i + 1} of ${parts}).xlsx`) };
+    return { rows, sheets: o.format === "xlsx" ? parts : 0, bytes: rows * 40 };
+  }
+  async exportBook(docs: number[], o: ExportOptions): Promise<ExportReport | null> {
+    let rows = 0;
+    for (const id of docs) rows += Math.max(0, this.rowCount(this.get(id)) - (o.header ? 1 : 0));
+    return { rows, sheets: docs.length, bytes: rows * 40 };
   }
   async exportText(doc: number, o: ExportOptions): Promise<string> {
     if (o.format === "xlsx") throw err("invalid", "Excel files cannot go on the clipboard");

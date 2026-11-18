@@ -693,6 +693,7 @@ impl Document {
             rows: rows.end - rows.start,
             sheets: u32::try_from(total_pages).unwrap_or(u32::MAX),
             bytes: o.n,
+            files: Vec::new(),
         })
     }
 

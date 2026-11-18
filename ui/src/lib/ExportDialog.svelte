@@ -14,12 +14,35 @@
     filtered: boolean;
     /** Column titles (first row, or "Column N"). */
     titles: string[];
-    onExport: (o: ExportOptions, to: "file" | "clipboard") => void;
+    /** Rows shown (the title row too). */
+    rows?: number;
+    /** Open tabs (several: they can go to one workbook). */
+    tabCount?: number;
+    /** Column widths set on screen (pixels; 0 for the default). */
+    widths?: number[];
+    onExport: (o: ExportOptions, to: "file" | "clipboard", allTabs?: boolean) => void;
     onClose: () => void;
   }
-  let { doc, name, header, filtered, titles, onExport, onClose }: Props = $props();
+  let { doc, name, header, filtered, titles, rows = 0, tabCount = 1, widths = [], onExport, onClose }: Props = $props();
 
-  let o = $state<ExportOptions>(untrack(() => ({ ...exportDefaults(header, name.replace(/\.[^.]*$/, "").slice(0, 31) || "Sheet1") })));
+  /** Data rows a sheet holds under the title row. */
+  const SHEET_ROWS = 1_048_575;
+  /** Remembered: big tables go to separate files or to sheets. */
+  const SPLIT_KEY = "nde.excelSplit";
+  function lastSplit(): boolean {
+    try {
+      return localStorage.getItem(SPLIT_KEY) !== "sheets";
+    } catch {
+      return true;
+    }
+  }
+  let allTabs = $state(false);
+  let partRows = $state("");
+
+  let o = $state<ExportOptions>(untrack(() => ({ ...exportDefaults(header, name.replace(/\.[^.]*$/, "").slice(0, 31) || "Sheet1"), split_files: lastSplit() })));
+  const dataRows = $derived(Math.max(0, rows - (o.header ? 1 : 0)));
+  const perPart = $derived(Math.min(SHEET_ROWS, Math.max(1, Math.floor(Number(partRows.replace(/,/g, "")) || SHEET_ROWS))));
+  const parts = $derived(Math.max(1, Math.ceil(dataRows / perPart)));
   let preview = $state("");
   let problem = $state("");
 
@@ -66,7 +89,18 @@
 
   function run(to: "file" | "clipboard"): void {
     if (problem) return;
-    onExport($state.snapshot(o), to);
+    const snap = $state.snapshot(o);
+    if (snap.format === "xlsx") {
+      snap.part_rows = partRows.trim() ? perPart : 0;
+      snap.widths = widths;
+      if (parts > 1)
+        try {
+          localStorage.setItem(SPLIT_KEY, snap.split_files ? "files" : "sheets");
+        } catch {
+          // Asked again next time.
+        }
+    }
+    onExport(snap, to, snap.format === "xlsx" && allTabs);
   }
 </script>
 
@@ -81,13 +115,34 @@
   </div>
   {#if o.format === "xlsx"}
     <div class="grid2">
-      <label class="row">Sheet name <input type="text" bind:value={o.sheet} maxlength="31" /></label>
+      <label class="row">Sheet name <input type="text" bind:value={o.sheet} maxlength="31" disabled={allTabs} /></label>
       <label class="row"><input type="checkbox" bind:checked={o.numbers} /> Store numbers as numbers</label>
     </div>
+    <label class="row"><input type="checkbox" bind:checked={o.look} /> Made for Excel users</label>
     <p class="note">
-      Numbers are stored as numbers only when Excel shows them exactly as written ("007" and "1.50" stay text). Dates stay as written. A sheet holds at most
-      1,048,576 rows; more rows continue on further sheets.
+      {#if o.look}
+        A bold title row that stays in view, with filter buttons; columns as wide as their values (or as you set them here); dates, money and percents as real
+        Excel values with their formats; IDs, ZIP codes and phone numbers kept as text, so leading zeros stay and Excel shows no warnings.
+      {:else}
+        Values exactly as written: numbers are numbers only when Excel shows them the same ("007" and "1.50" stay text); dates stay text.
+      {/if}
     </p>
+    {#if tabCount > 1}
+      <label class="row"><input type="checkbox" bind:checked={allTabs} /> All {tabCount} open tabs, each on a sheet named after it</label>
+    {/if}
+    <label class="row">Rows per part <input type="text" inputmode="numeric" bind:value={partRows} placeholder="as many as fit (1,048,575)" /></label>
+    {#if parts > 1 && !allTabs}
+      <fieldset class="split" aria-label="Parts">
+        <legend>{dataRows.toLocaleString()} rows{partRows.trim() ? "" : ", more than an Excel sheet holds"}: {parts.toLocaleString()} parts, each with the title row</legend>
+        <label class="row"><input type="radio" name="split" checked={o.split_files} onchange={() => (o.split_files = true)} /> Separate files ("{o.sheet} (1 of {parts}).xlsx" and on)</label>
+        <label class="row"><input type="radio" name="split" checked={!o.split_files} onchange={() => (o.split_files = false)} /> Sheets of one workbook</label>
+        {#if !o.split_files && dataRows > 2_000_000}
+          <p class="note warn">A workbook of several full sheets can be too much for Excel to open comfortably; separate files are easier to open and share.</p>
+        {/if}
+      </fieldset>
+    {:else if allTabs}
+      <p class="note">A tab longer than a sheet goes on over more sheets, each with the title row.</p>
+    {/if}
   {:else if o.format === "json"}
     <label class="row"><input type="checkbox" bind:checked={o.arrays} /> Rows as lists of values (instead of name: value)</label>
     <label class="row"><input type="checkbox" bind:checked={o.pretty} /> Indented</label>

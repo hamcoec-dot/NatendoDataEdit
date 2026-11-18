@@ -5877,7 +5877,65 @@ impl Docs {
         let entry = self.get(id)?;
         let job = entry.start("Exporting")?;
         let d = entry.read();
+        // Parts in files of their own: none may land on a file open here.
+        if opts.format == ExportFormat::Xlsx && opts.split_files {
+            let n = d.xlsx_parts(opts).len();
+            if n > 1 {
+                let stem = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                for i in 1..=n {
+                    self.check_writable(&path.with_file_name(format!("{stem} ({i} of {n}).xlsx")))?;
+                }
+            }
+        }
         Ok(d.export_file(path, opts, &job.progress)?)
+    }
+
+    /// Several tabs as the sheets of one Excel workbook (each tab named
+    /// after it; a tab longer than a sheet goes on over more sheets).
+    pub fn export_book(
+        &self,
+        ids: &[u32],
+        path: &Path,
+        opts: &ExportOptions,
+    ) -> CmdResult<ExportReport> {
+        check_export(opts)?;
+        self.check_writable(path)?;
+        if ids.is_empty() || ids.len() > 256 {
+            return Err(CmdError::new("invalid", "choose 1 to 256 tabs"));
+        }
+        let entries: Vec<_> = ids.iter().map(|&i| self.get(i)).collect::<CmdResult<_>>()?;
+        let job = entries[0].start("Exporting")?;
+        let names: Vec<String> = ids
+            .iter()
+            .map(|&i| {
+                self.info(i).map(|x| {
+                    x.name
+                        .rsplit_once('.')
+                        .map_or(x.name.as_str(), |(b, _)| b)
+                        .to_string()
+                })
+            })
+            .collect::<CmdResult<_>>()?;
+        let docs: Vec<_> = entries.iter().map(|e| e.read()).collect();
+        let mut sheets = Vec::new();
+        for (d, name) in docs.iter().zip(&names) {
+            let parts = d.xlsx_parts(opts);
+            let n = parts.len();
+            for (k, rows) in parts.into_iter().enumerate() {
+                sheets.push(natendo_engine::xlsxbook::BookSheet {
+                    doc: d,
+                    opts,
+                    name: natendo_engine::xlsxbook::part_sheet_name(name, k + 1, n),
+                    rows,
+                });
+            }
+        }
+        Ok(natendo_engine::export::write_atomic(path, |w| {
+            natendo_engine::xlsxbook::write_book(w, &sheets, &job.progress)
+        })?)
     }
 
     /// Export as text for the clipboard (capped; not Excel).

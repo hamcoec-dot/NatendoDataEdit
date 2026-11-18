@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Progress};
 use crate::ops::Cols;
-use crate::zipwrite::ZipWriter;
+
 use crate::Error;
 
 /// Excel's limits.
@@ -23,7 +23,7 @@ pub const XLSX_MAX_ROWS: u64 = 1_048_576;
 pub const XLSX_MAX_COLS: u32 = 16_384;
 pub const XLSX_MAX_CELL_CHARS: usize = 32_767;
 /// A sheet part this large starts a new sheet (parts stay under 4 GiB).
-const SHEET_PART_LIMIT: u64 = 3_500 << 20;
+pub(crate) const SHEET_PART_LIMIT: u64 = 3_500 << 20;
 /// Longest template.
 pub const MAX_TEMPLATE_CHARS: usize = 1 << 20;
 
@@ -97,6 +97,20 @@ pub struct ExportOptions {
     /// Excel: sheet name; numbers stored as numbers.
     pub sheet: String,
     pub numbers: bool,
+    /// Excel: made for Excel users (bold frozen title row with filter
+    /// buttons, column widths, dates, currency and percents as Excel values
+    /// with their formats, IDs and ZIP codes as text).
+    pub look: bool,
+    /// Excel: column widths in screen pixels (0 or missing: fit the values).
+    pub widths: Vec<u32>,
+    /// Excel: data rows per part (0: as many as a sheet holds). A longer
+    /// table goes on in parts, each with the title row.
+    pub part_rows: u64,
+    /// Excel: parts as separate files ("name (2 of 3).xlsx") instead of
+    /// sheets of one workbook.
+    pub split_files: bool,
+    /// How numbers and dates are read.
+    pub read: crate::value::ReadOptions,
     /// PDF: page setup.
     pub page: crate::pdf::PageSetup,
     /// SQL: the table's name, how names are quoted, rows per INSERT, and
@@ -121,6 +135,11 @@ impl Default for ExportOptions {
             after: String::new(),
             sheet: "Sheet1".into(),
             numbers: true,
+            look: true,
+            widths: Vec::new(),
+            part_rows: 0,
+            split_files: false,
+            read: Default::default(),
             page: Default::default(),
             table: "data".into(),
             dialect: SqlDialect::Standard,
@@ -136,6 +155,9 @@ pub struct ExportReport {
     pub rows: u64,
     pub sheets: u32,
     pub bytes: u64,
+    /// Files written, when parts went to files of their own.
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 enum Piece {
@@ -204,7 +226,7 @@ fn parse_template(t: &str, names: &[String]) -> Result<Vec<Piece>, Error> {
     Ok(out)
 }
 
-fn xml_escape(v: &str, out: &mut String) {
+pub(crate) fn xml_escape(v: &str, out: &mut String) {
     for c in v.chars() {
         match c {
             '&' => out.push_str("&amp;"),
@@ -223,7 +245,7 @@ fn xml_escape(v: &str, out: &mut String) {
 
 /// Excel text: XML escaping, and control characters as `_xHHHH_` (with a
 /// literal `_xHHHH_` protected as `_x005F_xHHHH_`), as spreadsheets store them.
-fn xlsx_escape(v: &str, out: &mut String) {
+pub(crate) fn xlsx_escape(v: &str, out: &mut String) {
     let b = v.as_bytes();
     for (i, c) in v.char_indices() {
         match c {
@@ -272,7 +294,7 @@ fn xml_name(n: &str) -> String {
 
 /// Text that Excel reads back as exactly the same number: no leading zeros,
 /// no trailing zeros after a point, at most 15 significant digits.
-fn excel_number(v: &str) -> bool {
+pub(crate) fn excel_number(v: &str) -> bool {
     let b = v.strip_prefix('-').unwrap_or(v).as_bytes();
     if b.is_empty() || v == "-0" {
         return false;
@@ -298,7 +320,7 @@ fn excel_number(v: &str) -> bool {
     digits <= 15
 }
 
-fn col_letters(mut c: u32) -> String {
+pub(crate) fn col_letters(mut c: u32) -> String {
     let mut s = Vec::new();
     c += 1;
     while c > 0 {
@@ -310,34 +332,10 @@ fn col_letters(mut c: u32) -> String {
     String::from_utf8(s).expect("ASCII")
 }
 
-fn sheet_name(base: &str, n: u32) -> String {
-    let clean: String = base
-        .chars()
-        .filter(|c| !matches!(c, '[' | ']' | ':' | '*' | '?' | '/' | '\\'))
-        .collect();
-    let clean = clean.trim().trim_matches('\'');
-    let clean = if clean.is_empty() { "Sheet1" } else { clean };
-    let name = if n == 1 {
-        clean.to_string()
-    } else {
-        format!("{clean} ({n})")
-    };
-    // At most 31 characters, keeping the number.
-    if name.chars().count() <= 31 {
-        name
-    } else if n == 1 {
-        name.chars().take(31).collect()
-    } else {
-        let tail = format!(" ({n})");
-        let head: String = clean.chars().take(31 - tail.chars().count()).collect();
-        format!("{head}{tail}")
-    }
-}
-
 impl Document {
     /// Column names for an export: the first shown row with `header`, else
     /// "Column N". Blank and repeated names get numbered.
-    fn export_names(&self, header: bool) -> Vec<String> {
+    pub(crate) fn export_names(&self, header: bool) -> Vec<String> {
         let cols: Vec<u32> = (0..self.col_count()).collect();
         let mut names = self.titles(&cols, header);
         let mut seen: HashMap<String, u32> = HashMap::new();
@@ -498,7 +496,24 @@ impl Document {
         progress.start(end - first);
         let mut report = ExportReport::default();
         if opts.format == ExportFormat::Xlsx {
-            return self.export_xlsx(out, opts, &names, first..end, &reader, progress);
+            drop(reader);
+            let _ = names;
+            let parts = match limit {
+                Some(_) => vec![first..end],
+                None => self.xlsx_parts(opts),
+            };
+            let n = parts.len();
+            let sheets: Vec<crate::xlsxbook::BookSheet<'_>> = parts
+                .into_iter()
+                .enumerate()
+                .map(|(i, rows)| crate::xlsxbook::BookSheet {
+                    doc: self,
+                    opts,
+                    name: crate::xlsxbook::part_sheet_name(&opts.sheet, i + 1, n),
+                    rows,
+                })
+                .collect();
+            return crate::xlsxbook::write_book(out, &sheets, progress);
         }
         if opts.format == ExportFormat::Pdf {
             return self.export_pdf(out, opts, &names, first..end, progress);
@@ -707,145 +722,6 @@ impl Document {
         Ok(report)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn export_xlsx(
-        &self,
-        out: &mut impl Write,
-        opts: &ExportOptions,
-        names: &[String],
-        rows: std::ops::Range<u64>,
-        reader: &Cols,
-        progress: &Progress,
-    ) -> Result<ExportReport, Error> {
-        if self.col_count() > XLSX_MAX_COLS {
-            return Err(Error::Invalid(format!(
-                "Excel files hold at most {XLSX_MAX_COLS} columns; this table has {}",
-                self.col_count()
-            )));
-        }
-        let mut report = ExportReport::default();
-        let mut counter = Counter { w: out, n: 0 };
-        let mut zip = ZipWriter::new(&mut counter);
-        let header = opts.header;
-        let per_sheet = XLSX_MAX_ROWS - u64::from(header);
-        let mut buf: Vec<Cow<str>> = Vec::new();
-        let mut s = String::new();
-        let mut next = rows.start;
-        let mut sheet_names = Vec::new();
-        let n = self.col_count() as usize;
-        loop {
-            let sheet = sheet_names.len() as u32 + 1;
-            sheet_names.push(sheet_name(&opts.sheet, sheet));
-            let mut part = zip.part(&format!("xl/worksheets/sheet{sheet}.xml"))?;
-            part.write_all(
-                b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>",
-            )?;
-            let mut row_no = 0u64;
-            let put_row = |s: &mut String,
-                           row_no: &mut u64,
-                           values: &mut dyn Iterator<Item = &str>,
-                           bold: bool|
-             -> Result<(), Error> {
-                *row_no += 1;
-                s.clear();
-                s.push_str(&format!("<row r=\"{row_no}\">"));
-                for (k, v) in values.enumerate() {
-                    if v.is_empty() {
-                        continue;
-                    }
-                    if v.chars().count() > XLSX_MAX_CELL_CHARS {
-                        return Err(Error::Invalid(format!(
-                            "row {row_no}, column {} holds more than {XLSX_MAX_CELL_CHARS} characters, more than an Excel cell can hold",
-                            k + 1
-                        )));
-                    }
-                    let r = format!("{}{row_no}", col_letters(k as u32));
-                    if !bold && opts.numbers && excel_number(v) {
-                        s.push_str(&format!("<c r=\"{r}\"><v>{v}</v></c>"));
-                    } else {
-                        s.push_str(&format!(
-                            "<c r=\"{r}\" t=\"inlineStr\"{}><is><t xml:space=\"preserve\">",
-                            if bold { " s=\"1\"" } else { "" }
-                        ));
-                        xlsx_escape(v, s);
-                        s.push_str("</t></is></c>");
-                    }
-                }
-                s.push_str("</row>");
-                Ok(())
-            };
-            if header {
-                put_row(
-                    &mut s,
-                    &mut row_no,
-                    &mut names.iter().map(String::as_str),
-                    true,
-                )?;
-                part.write_all(s.as_bytes())?;
-            }
-            let stop = next.saturating_add(per_sheet).min(rows.end);
-            while next < stop {
-                let id = self.id_at(next).ok_or(Error::OutOfRange)?;
-                reader.read(self, id, &mut buf);
-                put_row(
-                    &mut s,
-                    &mut row_no,
-                    &mut (0..n).map(|k| reader.get(&buf, k)),
-                    false,
-                )?;
-                part.write_all(s.as_bytes())?;
-                next += 1;
-                report.rows += 1;
-                if report.rows % 4096 == 0 {
-                    progress.step(4096)?;
-                }
-                if part.written() > SHEET_PART_LIMIT {
-                    break;
-                }
-            }
-            part.write_all(b"</sheetData></worksheet>")?;
-            part.finish()?;
-            if next >= rows.end {
-                break;
-            }
-            if sheet_names.len() >= 4096 {
-                return Err(Error::Invalid("the export needs too many sheets".into()));
-            }
-        }
-        let k = sheet_names.len();
-        let mut ct = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>");
-        let mut wb = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>");
-        let mut rels = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
-        for (i, name) in sheet_names.iter().enumerate() {
-            let i = i + 1;
-            ct.push_str(&format!("<Override PartName=\"/xl/worksheets/sheet{i}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"));
-            wb.push_str("<sheet name=\"");
-            xml_escape(name, &mut wb);
-            wb.push_str(&format!("\" sheetId=\"{i}\" r:id=\"rId{i}\"/>"));
-            rels.push_str(&format!("<Relationship Id=\"rId{i}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{i}.xml\"/>"));
-        }
-        ct.push_str("</Types>");
-        wb.push_str("</sheets></workbook>");
-        rels.push_str(&format!("<Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>", k + 1));
-        let styles = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><fonts count=\"2\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font><font><b/><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts><fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill></fills><borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs><cellXfs count=\"2\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/><xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\"/></cellXfs></styleSheet>";
-        let root_rels = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>";
-        for (name, body) in [
-            ("[Content_Types].xml", ct.as_str()),
-            ("_rels/.rels", root_rels),
-            ("xl/workbook.xml", wb.as_str()),
-            ("xl/_rels/workbook.xml.rels", rels.as_str()),
-            ("xl/styles.xml", styles),
-        ] {
-            let mut p = zip.part(name)?;
-            p.write_all(body.as_bytes())?;
-            p.finish()?;
-        }
-        zip.finish()?;
-        report.sheets = k as u32;
-        report.bytes = counter.n;
-        Ok(report)
-    }
-
     /// Export to a file: written to a temp file beside it, then moved into
     /// place (an existing file is replaced only by a complete export).
     pub fn export_file(
@@ -854,11 +730,65 @@ impl Document {
         opts: &ExportOptions,
         progress: &Progress,
     ) -> Result<ExportReport, Error> {
+        if opts.format == ExportFormat::Xlsx && opts.split_files {
+            self.ready_for_bulk()?;
+            let parts = self.xlsx_parts(opts);
+            if parts.len() > 1 {
+                return self.export_xlsx_files(path, opts, parts, progress);
+            }
+        }
+        write_atomic(path, |w| self.export(w, opts, None, progress))
+    }
+
+    /// Each part in a file of its own beside `path`: "name (1 of 3).xlsx".
+    fn export_xlsx_files(
+        &self,
+        path: &Path,
+        opts: &ExportOptions,
+        parts: Vec<std::ops::Range<u64>>,
+        progress: &Progress,
+    ) -> Result<ExportReport, Error> {
+        let n = parts.len();
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "export".into());
+        let mut report = ExportReport::default();
+        progress.start(parts.iter().map(|r| r.end - r.start).sum());
+        for (i, rows) in parts.into_iter().enumerate() {
+            let name = format!("{stem} ({} of {n}).xlsx", i + 1);
+            let p = path.with_file_name(&name);
+            let sheet = crate::xlsxbook::BookSheet {
+                doc: self,
+                opts,
+                name: crate::xlsxbook::part_sheet_name(&opts.sheet, i + 1, n),
+                rows,
+            };
+            let r = write_atomic(&p, |w| {
+                crate::xlsxbook::write_book_on(w, std::slice::from_ref(&sheet), progress)
+            })?;
+            report.rows += r.rows;
+            report.sheets += r.sheets;
+            report.bytes += r.bytes;
+            report.files.push(name);
+        }
+        Ok(report)
+    }
+}
+
+/// Write a file through a temp file beside it, moved into place only when
+/// complete.
+pub fn write_atomic(
+    path: &Path,
+    f: impl FnOnce(&mut BufWriter<&fs::File>) -> Result<ExportReport, Error>,
+) -> Result<ExportReport, Error> {
+    {
         let (temp, file) = crate::save::create_temp(path)?;
         let done = (|| -> Result<ExportReport, Error> {
             let mut w = BufWriter::with_capacity(1 << 20, &file);
-            let r = self.export(&mut w, opts, None, progress)?;
+            let r = f(&mut w)?;
             w.flush()?;
+            drop(w);
             file.sync_all()?;
             Ok(r)
         })();
@@ -988,13 +918,14 @@ impl Document {
             rows: rows.end - rows.start,
             sheets: 1,
             bytes: w.n,
+            files: Vec::new(),
         })
     }
 }
 
-struct Counter<W> {
-    w: W,
-    n: u64,
+pub(crate) struct Counter<W> {
+    pub(crate) w: W,
+    pub(crate) n: u64,
 }
 
 impl<W: Write> Write for Counter<W> {
@@ -1178,6 +1109,8 @@ mod tests {
                 &ExportOptions {
                     format: ExportFormat::Xlsx,
                     sheet: "My: data?".into(),
+                    // Values exactly as written (no Excel formats).
+                    look: false,
                     ..Default::default()
                 },
                 None,
@@ -1209,7 +1142,6 @@ mod tests {
         assert_eq!(col_letters(0), "A");
         assert_eq!(col_letters(27), "AB");
         assert_eq!(col_letters(16_383), "XFD");
-        assert_eq!(sheet_name(&"x".repeat(40), 2).chars().count(), 31);
         // Cells over Excel's limit are refused before anything is replaced.
         let long = doc(&format!("a\r\n{}\r\n", "y".repeat(40_000)));
         assert!(long
@@ -1223,6 +1155,86 @@ mod tests {
                 &Progress::new()
             )
             .is_err());
+    }
+
+    #[test]
+    fn xlsx_made_for_excel_users() {
+        let d = doc("Voter ID,zip,amount,born,share,name
+2001,02134,\"$1,234.50\",2024-01-31,12.5%,Ann
+2002,37421,$5.00,1/2/2023,3.0%,Bo
+");
+        let mut out = Vec::new();
+        d.export(
+            &mut out,
+            &ExportOptions {
+                format: ExportFormat::Xlsx,
+                sheet: "voters".into(),
+                ..Default::default()
+            },
+            None,
+            &Progress::new(),
+        )
+        .unwrap();
+        let z = crate::zipread::Zip::open(&out).unwrap();
+        let sheet = z.read_string("xl/worksheets/sheet1.xml", 1 << 20).unwrap();
+        let styles = z.read_string("xl/styles.xml", 1 << 20).unwrap();
+        let book = z.read_string("xl/workbook.xml", 1 << 20).unwrap();
+        // Frozen bold titles with filter buttons, and widths.
+        assert!(sheet.contains("state=\"frozen\"") && sheet.contains("<autoFilter ref=\"A1:F3\"/>"));
+        assert!(sheet.contains("<cols>") && sheet.contains("numberStoredAsText"));
+        assert!(book.contains("_xlnm._FilterDatabase") && book.contains("&apos;voters&apos;!$A$1:$F$3") || book.contains("'voters'!$A$1:$F$3"));
+        // IDs and ZIP codes as text, the rest as Excel values.
+        assert!(sheet.contains("<c r=\"A2\" s=\""), "{sheet}");
+        assert!(sheet.contains("<c r=\"B2\" s=\"") && sheet.contains("02134"));
+        assert!(sheet.contains("<v>1234.5</v>") && sheet.contains("<v>0.125</v>"));
+        assert!(sheet.contains("<v>45322</v>"), "2024-01-31 is day 45322");
+        assert!(styles.contains("numFmtId=\"49\"") && styles.contains("numFmtId=\"14\""));
+        assert!(styles.contains("&quot;$&quot;#,##0.00"));
+        assert!(z.read_string("docProps/app.xml", 4096).unwrap().contains("Natendo Data Edit"));
+        // Parts: two rows a part, each with the title row.
+        let mut out = Vec::new();
+        let r = d
+            .export(
+                &mut out,
+                &ExportOptions {
+                    format: ExportFormat::Xlsx,
+                    sheet: "voters".into(),
+                    part_rows: 1,
+                    ..Default::default()
+                },
+                None,
+                &Progress::new(),
+            )
+            .unwrap();
+        assert_eq!((r.rows, r.sheets), (2, 2));
+        let book = crate::sheet::Book::open(&out).unwrap();
+        assert_eq!(book.sheets()[1].name, "voters (2 of 2)");
+        // Parts as files of their own.
+        let dir = std::env::temp_dir().join(format!("nde-xlsx-parts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let r = d
+            .export_file(
+                &dir.join("voters.xlsx"),
+                &ExportOptions {
+                    format: ExportFormat::Xlsx,
+                    part_rows: 1,
+                    split_files: true,
+                    ..Default::default()
+                },
+                &Progress::new(),
+            )
+            .unwrap();
+        assert_eq!(r.files, ["voters (1 of 2).xlsx", "voters (2 of 2).xlsx"]);
+        let second = std::fs::read(dir.join("voters (2 of 2).xlsx")).unwrap();
+        let t = crate::sheet::Book::open(&second)
+            .unwrap()
+            .read(0, Default::default(), None, &Progress::new())
+            .unwrap()
+            .into_document()
+            .unwrap();
+        assert_eq!(t.row_values(0).unwrap()[0], "Voter ID", "each part has the titles");
+        assert_eq!(t.row_values(1).unwrap()[0], "2002");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     proptest::proptest! {
@@ -1244,7 +1256,7 @@ mod tests {
                 ..Default::default()
             }, None).unwrap();
             let mut out = Vec::new();
-            d.export(&mut out, &ExportOptions { format: ExportFormat::Xlsx, header: false, ..Default::default() }, None, &Progress::new()).unwrap();
+            d.export(&mut out, &ExportOptions { format: ExportFormat::Xlsx, header: false, look: false, ..Default::default() }, None, &Progress::new()).unwrap();
             let book = crate::sheet::Book::open(&out).unwrap();
             let back = book.read(0, Default::default(), None, &Progress::new()).unwrap().into_document().unwrap();
             // Trailing empty rows and cells are not stored by a spreadsheet.

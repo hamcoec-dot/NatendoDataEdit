@@ -1207,6 +1207,35 @@ async fn export_file(
     .await
 }
 
+/// Several tabs as the sheets of one Excel workbook, saved where the
+/// native Save dialog says. `None` if cancelled.
+#[tauri::command]
+async fn export_book(
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    docs_ids: Vec<u32>,
+    options: ExportOptions,
+) -> CmdResult<Option<ExportReport>> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Save the tabs as one Excel workbook")
+            .set_file_name("Workbook.xlsx")
+            .add_filter("XLSX", &["xlsx"])
+            .set_parent(&window);
+        if let Some(&first) = docs_ids.first() {
+            if let Some(dir) = docs.path_of(first)?.as_ref().and_then(|p| p.parent()) {
+                dialog = dialog.set_directory(dir);
+            }
+        }
+        let Some(path) = dialog.save_file() else {
+            return Ok(None);
+        };
+        docs.export_book(&docs_ids, &path, &options).map(Some)
+    })
+    .await
+}
+
 /// Whether a tab's file is in private file mode (itself, or its folder).
 #[tauri::command]
 fn private_state(
@@ -3509,6 +3538,7 @@ pub fn run() {
             clean_preview,
             cleaner_save,
             cleaner_open,
+            export_book,
             export_file,
             export_text,
             take_opened,
