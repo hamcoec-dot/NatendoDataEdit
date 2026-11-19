@@ -694,7 +694,11 @@ export class MockBackend implements Backend {
     return rows;
   }
   async newDocument(): Promise<DocInfo> {
-    return this.make("Untitled", 1, 1);
+    // As the backend's: one blank cell.
+    const info = this.make("Untitled", 1, 1);
+    const d = this.get(info.id);
+    d.edits.set(`${this.rowId(d, 0)}:${this.physCol(d, 0)}`, "");
+    return info;
   }
   async closeDocument(doc: number): Promise<void> {
     this.docs.delete(doc);

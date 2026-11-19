@@ -191,15 +191,20 @@ everything is also in command search.
 - **Copy column names:** Edit > Copy column names (also on the heading and
   corner right-click menus) copies the names of all shown columns, or of
   the whole columns selected, as one row split by tabs, ready to paste into
-  a spreadsheet row or another tab. Copy column names as a line of text
-  uses the file's own delimiter instead. Copy with column names
-  (Ctrl+Shift+C, also on the cell right-click menu) copies the selection
-  with its columns' names on top. Paste as column names makes copied names
-  (a row, a line of text, or a list with one name per line) the title row
-  of the file open, from the active cell's column (the first after Select
-  all), as one undo step; a file without a title row gets one (then it is
-  two steps). Names that run past the last column ask before columns are
-  added.
+  a spreadsheet row or another tab: a plain Paste fills one column per
+  name, adding columns. Copy column names as a text line (for text files)
+  uses the file's own delimiter instead; pasted into a tab here it still
+  fills one column per name. Copy with column names (Ctrl+Shift+C, also on
+  the cell right-click menu) copies the selection with its columns' names
+  on top. Paste as column names (also on the cell right-click menu) makes
+  copied names (a row, a line of text, or a list with one name per line)
+  the title row of the file open, from the active cell's column (the first
+  after Select all), as one undo step; a file without a title row gets one
+  (then it is two steps). Names that run past the last column ask before
+  columns are added, except in a new, empty file, where the names simply
+  become its title row. A line from another program that lands in one
+  cell (a comma line from Notepad, say) gets a Split into columns button
+  in the status bar.
 
 ![The box asking whether the first row holds the column names](docs/screenshots/header-ask.png)
 *A file opened the first time asks about its title row; the guess is already applied.*

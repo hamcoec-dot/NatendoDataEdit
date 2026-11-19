@@ -111,6 +111,8 @@
   let grid = $state<ReturnType<typeof Grid>>();
   let dialog = $state<DialogRequest | null>(null);
   let message = $state<string>("");
+  /** A button after the status message (cleared by the next message). */
+  let messageAction = $state<{ label: string; run: () => void } | null>(null);
   let messageTimer = 0;
   let openMenu = $state<number | null>(null);
   let menuIndex = $state(0);
@@ -286,6 +288,7 @@
       text = `${text ? `${text} ` : ""}${n.toLocaleString()} ${n === 1 ? "cell" : "cells"} in protected columns ${n === 1 ? "was" : "were"} left as ${n === 1 ? "it was" : "they were"}.`;
     }
     message = text;
+    messageAction = null;
     if (text) {
       activity = [{ time: new Date().toLocaleTimeString(), text }, ...activity].slice(0, 200);
       void backend().logEvent("info", text).catch(() => {});
@@ -1949,6 +1952,14 @@
   async function pasteText(text: string): Promise<void> {
     const t = tab;
     if (!t || !ready()) return;
+    // Names this app copied as a line of text (split by commas or the
+    // file's delimiter) paste one name per column, as a tab row does; other
+    // programs' comma text ("Dayton, OH") stays in one cell.
+    if (namesLine && text === namesLine.text && namesLine.sep !== "\t") {
+      text = namesFromText(text, namesLine.sep)
+        .map((n) => (/[\t"\r\n]/.test(n) ? `"${n.replace(/"/g, '""')}"` : n))
+        .join("\t");
+    }
     if (await pasteCut(text)) return;
     // Cut in another file: paste a copy here and leave those cells where
     // they are (a move between two files would be two undo steps).
@@ -2013,6 +2024,31 @@
     }
     if (done && afterPaste) say(afterPaste);
     afterPaste = null;
+    // One line that went into one cell but holds the file's delimiter (or
+    // commas): offer to split it across columns (as one more undo step).
+    if (done && rows.length === 1 && width === 1) offerSplit(t, r.row, r.col, text.replace(/\r?\n$/, ""));
+  }
+
+  /** After a one-cell paste of a delimited line: a "Split into columns"
+   *  button in the status bar. */
+  function offerSplit(t: Tab, row: number, col: number, line: string): void {
+    const sep = t.info.delimiter && t.info.delimiter !== "\t" && line.includes(t.info.delimiter) ? t.info.delimiter : line.includes(",") ? "," : null;
+    if (!sep) return;
+    const parts = namesFromText(line, sep);
+    if (parts.length < 2) return;
+    say(`Pasted one line into one cell. It holds ${parts.length} parts split by ${sep === "," ? "commas" : `"${sep}"`}.`);
+    messageAction = {
+      label: "Split into columns",
+      run: () =>
+        void (async () => {
+          if (tab !== t) return;
+          t.whatNext = "splitting the pasted line";
+          if (await apply((x) => backend().setCells(x.id, parts.map((v, i) => [row, col + i, v] as [number, number, string])))) {
+            grid?.select({ row, col }, { row, col: col + parts.length - 1 });
+            say(`Split into ${parts.length} columns. Ctrl+Z undoes it.`);
+          }
+        })(),
+    };
   }
 
   async function pasteFromMenu(): Promise<void> {
@@ -3290,6 +3326,10 @@
   /** Edit › Copy column names: the names in one row, split by tabs (pastes
    *  into a table, here or in a spreadsheet) or, `asText`, by this file's
    *  delimiter (a line for a text file). */
+  /** The last names line Copy column names put on the clipboard, and what
+   *  splits it (a plain Paste of it fills one column per name). */
+  let namesLine: { text: string; sep: string } | null = null;
+
   async function copyColumnNames(asText: boolean): Promise<void> {
     const t = tab;
     if (!t) return;
@@ -3304,6 +3344,7 @@
     try {
       const line = await backend().columnNamesLine(t.id, cols, sep);
       await navigator.clipboard.writeText(line);
+      namesLine = { text: line, sep };
       copiedFrom = t.id;
     } catch (e) {
       say(errorText(e));
@@ -3312,7 +3353,7 @@
     const n = cols.length === 1 ? "1 column name" : `${cols.length.toLocaleString()} column names`;
     say(
       asText
-        ? `Copied ${n} as one line split by ${sep === "\t" ? "tabs" : sep === "," ? "commas" : `"${sep}"`}.`
+        ? `Copied ${n} as one line split by ${sep === "," ? "commas" : `"${sep}"`}, for a text file. Pasted into a tab here it still fills one column per name; Paste as column names makes them its title row.`
         : `Copied ${n}. In another tab, Edit › Paste as column names makes them its title row; in a spreadsheet, paste them into a row.`,
     );
   }
@@ -3389,9 +3430,20 @@
       cells.push([c, names[i]!]);
       i++;
     }
+    // A new, empty file (one blank cell): the names are all it will hold, so
+    // no question and no extra row.
+    let empty = false;
+    if (!t.info.path && t.info.rows <= 1 && t.info.cols <= 1) {
+      try {
+        empty = (await backend().cellText(t.id, 0, 0)).text === "";
+      } catch {
+        empty = false;
+      }
+    }
     // More names than columns: widening the file changes its shape, so ask.
     const added = cells.length ? Math.max(0, cells.at(-1)![0] + 1 - t.info.cols) : 0;
-    if (added > 0) {
+    if (empty) widened = added;
+    else if (added > 0) {
       const fit = cells.filter(([c]) => c < t.info.cols).length;
       const a = await ask(
         `${added === 1 ? "1 name runs" : `${added.toLocaleString()} names run`} past the last column`,
@@ -3410,7 +3462,11 @@
     // Repeats among the names pasted (after any "Paste only" choice).
     const pasted = cells.map(([, n]) => n);
     const dupes = new Set(pasted.filter((n, i) => n !== "" && pasted.findIndex((m) => m.toLowerCase() === n.toLowerCase()) !== i).map((n) => n.toLowerCase())).size;
-    if (!t.header) {
+    if (!t.header && empty) {
+      // The blank row becomes the title row.
+      t.header = true;
+      t.headerTouched = true;
+    } else if (!t.header) {
       if (t.info.filtered) {
         say("Show all rows first (a filter or hidden rows are on), then paste the column names.");
         return;
@@ -4983,7 +5039,7 @@
     { id: "edit.moveCut", label: "&Move what was cut here", run: () => void pasteCut(null), enabled: () => ready() && !!tab?.cut },
     { id: "edit.cancelCut", label: "Ca&ncel cut", run: cancelCut, enabled: () => !!tab?.cut },
     { id: "edit.copyNames", label: "Copy column &names", run: () => void copyColumnNames(false), enabled: () => !!tab?.info.indexed },
-    { id: "edit.copyNamesText", label: "Copy column names as a line of text", run: () => void copyColumnNames(true), enabled: () => !!tab?.info.indexed },
+    { id: "edit.copyNamesText", label: "Copy column names as a text line (for text files)", run: () => void copyColumnNames(true), enabled: () => !!tab?.info.indexed },
     { id: "edit.copyWithNames", label: "Copy with column names", keys: ["Ctrl+Shift+C"], run: () => void copyWithNames(), enabled: hasTab },
     { id: "edit.pasteNames", label: "Paste as column names", run: () => void pasteColumnNames(), enabled: () => ready() && !tab?.info.read_only },
     { id: "edit.pasteSpecial", label: "Paste &special…", keys: ["Ctrl+Alt+V"], run: () => openOp("paste_special"), enabled: ready },
@@ -5353,7 +5409,7 @@
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
@@ -6653,6 +6709,7 @@
   <footer class="status">
     {#if message}
       <span class="msg">{message}</span>
+      {#if messageAction}<button type="button" class="small" onclick={() => { const run = messageAction?.run; messageAction = null; run?.(); }}>{messageAction.label}</button>{/if}
     {:else if tab?.busy}
       <span>{tab.busy}{tab.progress !== null ? ` ${Math.round(tab.progress * 100)}%` : ""}</span>
       {#if tab.busy !== "Saving…"}<button type="button" class="small" onclick={cancelJob}>Cancel</button>{/if}

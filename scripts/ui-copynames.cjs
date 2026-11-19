@@ -44,7 +44,7 @@ const url = process.argv[3] || "http://localhost:5209";
   await command("Copy column names");
   ok((await clipboard()) === ALL.join("\t"), `Copy column names: one row split by tabs (${JSON.stringify(await clipboard())})`);
   ok(/Copied 7 column names/.test(await status()), "the status says how many");
-  await command("Copy column names as a line of text");
+  await command("Copy column names as a text line");
   ok((await clipboard()) === ALL.join(","), "as a line of text: split by the file's delimiter");
 
   // 2. Whole columns selected: just theirs.
@@ -80,6 +80,74 @@ const url = process.argv[3] || "http://localhost:5209";
   await p.keyboard.press("Escape");
   await wait(200);
   if (out) await p.screenshot({ path: path.join(out, "copynames.png") });
+
+  // Nate's case: copy the names, a new file, right-click a cell, Paste.
+  const cellMenu = async () => {
+    const cv = await (await p.$("canvas")).boundingBox();
+    await p.mouse.click(cv.x + 120, cv.y + 40, { button: "right" });
+    await wait(300);
+    return p.$$eval(".context [role=menuitem]", (e) => e.map((x) => x.textContent.trim()));
+  };
+  const pasteFromCellMenu = async (label) => {
+    await cellMenu();
+    await p.click(`.context [role=menuitem]:has-text('${label}')`);
+    await wait(800);
+  };
+  const cols = () => p.evaluate(() => window.__nde.tab.info.cols);
+  const row0 = () => p.evaluate(async () => (await window.__nde.backend.viewport(window.__nde.tab.id, 0, 1, 0, window.__nde.tab.info.cols, 200)).cells);
+  for (const [what, cmd] of [["Copy column names", "Copy column names"], ["as a text line", "Copy column names as a text line"]]) {
+    await p.evaluate(() => window.__nde.activate(0));
+    await wait(300);
+    await command(cmd);
+    await p.keyboard.press("Control+n");
+    await wait(700);
+    await pasteFromCellMenu("Paste");
+    ok((await cols()) === 7 && JSON.stringify(await row0()) === JSON.stringify(ALL), `${what}, new file, right-click Paste: one name per column (${await cols()} columns)`);
+    await p.keyboard.press("Control+w");
+    await wait(400);
+    const d = p.locator(".dialog[role=alertdialog]");
+    if (await d.count()) await d.getByRole("button", { name: /Don.t save/ }).click();
+    await wait(300);
+  }
+  // The cell menu has Paste as column names; on a new, empty file it asks
+  // nothing and the names are the title row (no blank row under it).
+  await p.evaluate(() => window.__nde.activate(0));
+  await command("Copy column names");
+  await p.keyboard.press("Control+n");
+  await wait(700);
+  ok((await cellMenu()).some((t) => /Paste as column names/.test(t)), "the cell right-click menu has Paste as column names");
+  await p.keyboard.press("Escape");
+  await wait(200);
+  await pasteFromCellMenu("Paste as column names");
+  ok((await p.locator(".dialog[role=alertdialog]").count()) === 0, "a new, empty file: no question");
+  ok((await cols()) === 7 && (await p.evaluate(() => window.__nde.tab.header)) === true && (await names()).join() === ALL.join(), "7 columns, the names are its title row");
+  ok((await p.evaluate(() => window.__nde.tab.info.rows)) === 1, "and no blank row was added");
+  await p.keyboard.press("Control+w");
+  await wait(400);
+  if (await p.locator(".dialog[role=alertdialog]").count()) await p.locator(".dialog[role=alertdialog]").getByRole("button", { name: /Don.t save/ }).click();
+  await wait(300);
+
+  // Someone else's comma line pasted into one cell: offered a split.
+  await p.keyboard.press("Control+n");
+  await wait(700);
+  await setClipboard("north,south,east");
+  await p.keyboard.press("Control+v");
+  await wait(700);
+  ok((await cols()) === 1, "another program's comma line goes into one cell");
+  const split = p.locator("footer.status button:has-text('Split into columns')");
+  ok((await split.count()) === 1, "and the status offers Split into columns");
+  await split.click();
+  await wait(600);
+  ok((await cols()) === 3 && JSON.stringify(await row0()) === JSON.stringify(["north", "south", "east"]), "Split into columns: one part per column");
+  await p.keyboard.press("Control+z");
+  await wait(500);
+  ok(JSON.stringify(await row0()) === JSON.stringify(["north,south,east"]), "Ctrl+Z puts the line back in one cell");
+  await p.keyboard.press("Control+w");
+  await wait(400);
+  if (await p.locator(".dialog[role=alertdialog]").count()) await p.locator(".dialog[role=alertdialog]").getByRole("button", { name: /Don.t save/ }).click();
+  await wait(300);
+  await p.evaluate(() => window.__nde.activate(0));
+  await wait(300);
 
   // 5. Paste as column names into a new file without a title row.
   await p.keyboard.press("Control+n");
