@@ -1712,6 +1712,15 @@ export class MockBackend implements Backend {
   async setFirstRowCell(doc: number, col: number, value: string): Promise<DocInfo> {
     return this.writeCells(doc, [[0, col, value]], false);
   }
+  async columnNamesLine(doc: number, cols: number[], sep: string): Promise<string> {
+    const d = this.get(doc);
+    const v = await this.viewport(doc, 0, 1, 0, this.colCount(d), 100_000);
+    const q = (s: string) => (s.includes(sep) || /["\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+    return cols.map((c) => q(c < v.cols ? (v.cells[c] ?? "") : "")).join(sep);
+  }
+  async setColumnNames(doc: number, names: [number, string][]): Promise<DocInfo> {
+    return this.writeCells(doc, names.map(([c, v]) => [0, c, v] as [number, number, string]), false);
+  }
 
   async tabFolders(ids: number[]): Promise<string[]> {
     const paths = ids.map((id) => this.docs.get(id)?.info.path ?? null);

@@ -2148,6 +2148,47 @@ impl Docs {
         })
     }
 
+    /// Copy column names: the names (the table's first row, in full) of
+    /// columns `cols`, in that order, as one line split by `sep` and quoted
+    /// where a name holds `sep`, a quote or a line break.
+    pub fn column_names_line(&self, id: u32, cols: &[u32], sep: char) -> CmdResult<String> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        let names = d.first_row_values()?;
+        let mut out = String::new();
+        for (i, c) in cols.iter().enumerate() {
+            if i > 0 {
+                out.push(sep);
+            }
+            let v = names.get(*c as usize).map(String::as_str).unwrap_or("");
+            if v.contains([sep, '"', '\n', '\r']) {
+                out.push('"');
+                out.push_str(&v.replace('"', "\"\""));
+                out.push('"');
+            } else {
+                out.push_str(v);
+            }
+            if out.len() > MAX_COPY_BYTES {
+                return Err(CmdError::new("too_large", "the names are too long to copy"));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Paste as column names: set cells of the table's first row (column,
+    /// name) as one undo step, shown or not (protected columns too, as a
+    /// rename). Not a recipe step: the names are this file's.
+    pub fn set_column_names(&self, id: u32, names: Vec<(u32, String)>) -> CmdResult<DocInfo> {
+        check_write(names.len() as u64, names.iter().map(|c| c.1.len()))?;
+        let widest = names.iter().map(|c| c.0 as u64 + 1).max().unwrap_or(0);
+        self.recorded(id, Logged::LeftOut("Paste as column names".into()), || {
+            self.edit(id, |d| {
+                check_width(d, widest)?;
+                d.set_first_row_cells(names)
+            })
+        })
+    }
+
     /// Tidy column titles: what would change (column, now, after).
     pub fn tidy_titles_preview(
         &self,
@@ -7089,6 +7130,23 @@ mod tests {
         let paths = [a.clone(), b.clone(), c.clone()];
         assert_eq!(docs.open_or_launching(&[other], &paths), vec![true, true, false]);
         assert_eq!(docs.open_or_launching(&[], &paths), vec![true, false, false]);
+    }
+
+    /// Copy column names and Paste as column names.
+    #[test]
+    fn column_names_copy_and_paste() {
+        let p = tmp("names-copy.csv", b"id,\"last, first\",city\r\n1,\"Stone, Ada\",Dayton\r\n");
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        assert_eq!(docs.column_names_line(id, &[0, 1, 2], '\t').unwrap(), "id\tlast, first\tcity");
+        assert_eq!(docs.column_names_line(id, &[2, 0], ',').unwrap(), "city,id");
+        assert_eq!(docs.column_names_line(id, &[1], ',').unwrap(), "\"last, first\"");
+        // Past the last column: an empty name.
+        assert_eq!(docs.column_names_line(id, &[0, 9], ';').unwrap(), "id;");
+        let info = docs.set_column_names(id, vec![(0, "key".into()), (2, "town".into())]).unwrap();
+        assert!(info.can_undo);
+        assert_eq!(docs.column_names_line(id, &[0, 1, 2], ',').unwrap(), "key,\"last, first\",town");
     }
 
     #[test]

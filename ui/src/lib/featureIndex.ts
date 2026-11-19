@@ -93,6 +93,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "works out the file on its own": ["file.open", "file.layout", "file.reopenLines"],
   "text safe saving": ["file.save"],
   "repairs broken files": ["file.open"],
+  "copy column names": ["edit.copyNames", "edit.copyNamesText", "edit.copyWithNames", "edit.pasteNames"],
   "title row or not": ["format.header", "format.makeHeader", "format.renameCol", "format.forgetHeader", "format.forgetHeaders", "format.askHeader", "format.askHeaderAgain", "file.options"],
   "save as options": ["file.saveAs"],
   "never lose work": ["file.recover", "file.versions", "file.revert"],

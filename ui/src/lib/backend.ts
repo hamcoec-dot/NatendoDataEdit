@@ -1242,6 +1242,11 @@ export interface Backend {
   firstRowNames(doc: number): Promise<string[]>;
   /** Rename a column: set its cell in the table's first row (one undo step). */
   setFirstRowCell(doc: number, col: number, value: string): Promise<DocInfo>;
+  /** Copy column names: columns `cols`' names in full, one line split by
+   *  `sep` (quoted where needed). */
+  columnNamesLine(doc: number, cols: number[], sep: string): Promise<string>;
+  /** Paste as column names: set first-row cells [column, name], one undo step. */
+  setColumnNames(doc: number, names: [number, string][]): Promise<DocInfo>;
   folderList(doc: number): Promise<Listing>;
   folderOpen(doc: number, index: number): Promise<Opened>;
   viewSave(view: View): Promise<string | null>;
@@ -1719,6 +1724,12 @@ class TauriBackend implements Backend {
   }
   setFirstRowCell(doc: number, col: number, value: string) {
     return call<DocInfo>("set_first_row_cell", { doc, col, value });
+  }
+  columnNamesLine(doc: number, cols: number[], sep: string) {
+    return call<string>("column_names_line", { doc, cols, sep });
+  }
+  setColumnNames(doc: number, names: [number, string][]) {
+    return call<DocInfo>("set_column_names", { doc, names });
   }
   folderList(doc: number) {
     return call<Listing>("folder_list", { doc });

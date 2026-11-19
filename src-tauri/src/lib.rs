@@ -330,6 +330,30 @@ async fn set_first_row_cell(
     blocking(move || docs.set_first_row_cell(doc, col, value)).await
 }
 
+/// Copy column names: the names of columns `cols` as one line, split by
+/// `sep` (a tab, or the file's delimiter).
+#[tauri::command]
+async fn column_names_line(
+    docs: DocsState<'_>,
+    doc: u32,
+    cols: Vec<u32>,
+    sep: char,
+) -> CmdResult<String> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.column_names_line(doc, &cols, sep)).await
+}
+
+/// Paste as column names: set first-row cells (column, name), one undo step.
+#[tauri::command]
+async fn set_column_names(
+    docs: DocsState<'_>,
+    doc: u32,
+    names: Vec<(u32, String)>,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.set_column_names(doc, names)).await
+}
+
 /// The names of the columns (at most 20,000, each cut to 200 characters):
 /// the table's first row, shown or not.
 #[tauri::command]
@@ -3592,6 +3616,8 @@ pub fn run() {
             first_row_cell,
             first_row_names,
             set_first_row_cell,
+            column_names_line,
+            set_column_names,
             tab_folders,
             folder_list,
             folder_open,

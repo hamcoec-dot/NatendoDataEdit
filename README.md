@@ -188,6 +188,16 @@ everything is also in command search.
   both back. A saved pivot layout or view that names a column this file no
   longer has asks before using the column in the same place, and the view's
   rules follow. A rename is a recipe step, so recipes replay it.
+- **Copy column names:** Edit > Copy column names (also on the heading and
+  corner right-click menus) copies the names of all shown columns, or of
+  the whole columns selected, as one row split by tabs, ready to paste into
+  a spreadsheet row or another tab. Copy column names as a line of text
+  uses the file's own delimiter instead. Copy with column names
+  (Ctrl+Shift+C) copies the selection with its columns' names on top.
+  Paste as column names makes copied names (a row, a line of text, or a
+  list with one name per line) the title row of the file open, from the
+  selected column or the first, as one undo step; a file without a title
+  row gets one.
 
 ![The box asking whether the first row holds the column names](docs/screenshots/header-ask.png)
 *A file opened the first time asks about its title row; the guess is already applied.*
