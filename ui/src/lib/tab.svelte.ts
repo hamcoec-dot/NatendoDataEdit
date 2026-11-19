@@ -74,6 +74,8 @@ export class Tab {
   /** How sure the guess made at open was (null: not guessed), so asking
    *  again words it the same way. */
   headerSure: "yes" | "no" | "unsure" | null = null;
+  /** The question was closed without an answer (the guess is kept). */
+  headerAskClosed = $state(false);
   /** Undo position just after Rename column added a header row to a file
    *  without one (and switched "First row is header" on): undoing past it
    *  switches the setting off again. */

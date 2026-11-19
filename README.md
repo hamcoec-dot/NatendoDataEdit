@@ -164,10 +164,11 @@ everything is also in command search.
 - **Title row or not:** the app guesses whether the first row holds titles
   (sure of it when text names sit over numbers or dates, or every name is
   a column word like "id" or "first_name"), and the first time a file
-  opens a bar above the table asks whether that's right: answer Yes or No
-  (Alt+Shift+Y, Alt+Shift+N), or ignore it and keep the guess, which is
-  then kept for that file when it closes. Once answered the bar says what
-  was kept and stays put, so the table doesn't jump. One switch changes it
+  opens a small box floating over the bottom of the table asks whether
+  that's right: answer Yes or No (Alt+Shift+Y, Alt+Shift+N), or ignore or
+  close it and keep the guess, which is then kept for that file when it
+  closes. Once answered it fades away; it never takes room, so the table
+  doesn't move when it comes or goes. One switch changes it
   any time, and files without titles get column numbers. Files in private
   mode are not asked. Format > Ask about the title row when a file opens
   (also in Options) turns the question off; Format > Ask about the title
@@ -188,7 +189,7 @@ everything is also in command search.
   longer has asks before using the column in the same place, and the view's
   rules follow. A rename is a recipe step, so recipes replay it.
 
-![The bar asking whether the first row holds the column names](docs/screenshots/header-ask.png)
+![The box asking whether the first row holds the column names](docs/screenshots/header-ask.png)
 *A file opened the first time asks about its title row; the guess is already applied.*
 
 ![Renaming the first_name column after double-clicking its heading](docs/screenshots/rename-column.png)

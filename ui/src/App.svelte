@@ -2,6 +2,7 @@
   import { forgetHeaders, recallHeader, rememberedHeaders, rememberHeader } from "./lib/headerMemory";
   import { sessionToOffer } from "./lib/sessionOffer";
   import { onMount, tick } from "svelte";
+  import { fade } from "svelte/transition";
   import { backend, errorText, isCmdError, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
   import { Tab } from "./lib/tab.svelte";
   import { invisibleNote } from "./lib/invisible";
@@ -553,7 +554,7 @@
 
   /** The title-row question is showing on this tab. */
   function headerAsking(): boolean {
-    return !!tab?.headerAsk && !tab.headerTouched;
+    return !!tab?.headerAsk && !tab.headerTouched && !tab.headerAskClosed;
   }
 
   /** Format › Ask about the title row again: the bar comes back. */
@@ -562,6 +563,7 @@
     if (!t) return;
     t.dismissed = false;
     t.headerTouched = false;
+    t.headerAskClosed = false;
     t.headerAsk = t.headerSure ?? "unsure";
   }
 
@@ -623,7 +625,10 @@
       // A file with no remembered choice asks, in the bar (the guess is
       // already applied, so it can be ignored).
       // Private files remember nothing, so they are not asked either.
-      if (prefs.data.askHeader && t.info.path && !priv && sample.length >= 2) t.headerAsk = sure;
+      if (prefs.data.askHeader && t.info.path && !priv && sample.length >= 2) {
+        t.headerAsk = sure;
+        t.headerAskClosed = false;
+      }
     } catch {
       // Keep the default (no header).
     }
@@ -5981,38 +5986,32 @@
     context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items, index: -1 };
   }
 
+  /** The title-row question, floating over the grid (it takes no room, so
+   *  the table never moves); it fades out once answered in any way. */
+  const headerQuestion = $derived.by(() => {
+    const t = tab;
+    if (!t || !t.headerAsk || t.headerTouched || t.headerAskClosed) return null;
+    // Worded by how sure the guess is and what is applied now (asked again
+    // after the switch was flipped, they can differ).
+    return t.header
+      ? t.headerAsk === "yes"
+        ? "The first row looks like column names, so it is used as titles. Is that right?"
+        : t.headerAsk === "no"
+          ? "The first row looks like data, but it is used as titles for now. Is that right?"
+          : "The first row may hold column names; it is used as titles for now. Is that right?"
+      : t.headerAsk === "no"
+        ? "The first row looks like data, so the columns are numbered. Does it hold column names after all?"
+        : t.headerAsk === "yes"
+          ? "The first row looks like column names, but it is read as data for now. Does it hold column names?"
+          : "Does the first row hold column names? It is read as data for now.";
+  });
+
   const notices = $derived.by(() => {
     const t = tab;
     type Notice = { text: string; action?: string; run?: () => void; actions?: { label: string; run: () => void; title?: string }[] };
     if (!t || t.dismissed) return [] as Notice[];
     const d = t.info;
     const out: Notice[] = [];
-    if (t.headerAsk && !t.headerTouched)
-      out.push({
-        // Worded by how sure the guess is and what is applied now (asked
-        // again after the switch was flipped, they can differ).
-        text: t.header
-          ? t.headerAsk === "yes"
-            ? "The first row looks like column names, so it is used as titles. Is that right?"
-            : t.headerAsk === "no"
-              ? "The first row looks like data, but it is used as titles for now. Is that right?"
-              : "The first row may hold column names; it is used as titles for now. Is that right?"
-          : t.headerAsk === "no"
-            ? "The first row looks like data, so the columns are numbered. Does it hold column names after all?"
-            : t.headerAsk === "yes"
-              ? "The first row looks like column names, but it is read as data for now. Does it hold column names?"
-              : "Does the first row hold column names? It is read as data for now.",
-        actions: [
-          { label: "Yes, column names", run: () => void answerHeader(true), title: "Alt+Shift+Y" },
-          { label: "No, it's data", run: () => void answerHeader(false), title: "Alt+Shift+N" },
-        ],
-      });
-    // Answered (by the bar or any other way of setting the title row): the
-    // line stays and says what was kept, so the table doesn't move.
-    else if (t.headerAsk)
-      out.push({
-        text: `${t.header ? "The first row is used as the column names" : "The first row is read as data"}; ${t.info.modified ? "remembered for this file when you save" : "remembered for this file"}. Format › First row is header changes it.`,
-      });
     if (d.layout_confidence !== null && d.layout_confidence < 0.6 && d.path)
       out.push({ text: "Not sure how this file's columns are separated. Please check the layout.", action: "Choose layout…", run: chooseLayout });
     if (d.preamble_lines > 0)
@@ -6448,6 +6447,15 @@
         onFilterValue={(col, value, cut) => void setRule(col, cut ? { type: "conditions", first: { type: "text", op: "begins_with", text: value.replace(/…$/, ""), match_case: true } } : value === "" ? { type: "values", values: [], blanks: true } : { type: "values", values: [value], blanks: false })}
         onClose={() => showPanel(null)}
       />
+    {/if}
+    {#if headerQuestion && tab}
+      {@const t = tab}
+      <div class="header-ask" role="status" aria-live="polite" transition:fade={{ duration: 250 }}>
+        <span>{headerQuestion}</span>
+        <button type="button" class="small" title="Alt+Shift+Y" aria-keyshortcuts="Alt+Shift+Y" onclick={() => void answerHeader(true)}>Yes, column names</button>
+        <button type="button" class="small" title="Alt+Shift+N" aria-keyshortcuts="Alt+Shift+N" onclick={() => void answerHeader(false)}>No, it's data</button>
+        <button type="button" class="small close" aria-label="Close: keep the guess" title="Keep the guess" onclick={() => { t.headerAskClosed = true; void tick().then(() => grid?.focus()); }}><Icon name="close" size={12} /></button>
+      </div>
     {/if}
   </main>
 
@@ -7493,6 +7501,31 @@
     flex: 1;
     display: grid;
     min-height: 0;
+    position: relative;
+  }
+  /* The title-row question floats over the bottom of the table: it takes no
+     room, so nothing moves when it comes or goes. */
+  .header-ask {
+    position: absolute;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%);
+    z-index: 20;
+    width: max-content;
+    max-width: calc(100% - 32px);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 10px 8px 14px;
+    font-size: 13px;
+    background: color-mix(in srgb, #e3a008 16%, var(--surface));
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgb(0 0 0 / 0.18);
+  }
+  .header-ask .close {
+    padding: 3px 5px;
   }
   .body.with-panel {
     grid-template-columns: minmax(0, 1fr) 320px;

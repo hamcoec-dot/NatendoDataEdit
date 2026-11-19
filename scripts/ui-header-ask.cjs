@@ -1,6 +1,7 @@
-// UI test of v0.4.7: a file opened with no remembered choice asks, in a
-// bar, whether its first row holds the column names; the answer is kept,
-// the table doesn't move when it is answered, and it asks only once.
+// UI test of the title-row question (0.4.7, floating since 0.4.8): a file
+// opened with no remembered choice asks whether its first row holds the
+// column names; the answer is kept, the question goes once answered, the
+// table never moves, and it asks only once.
 // Run: (cd ui && npx vite --port 5207) then
 // NODE_PATH=<folder with playwright> node scripts/ui-header-ask.cjs [screenshot dir] [url]
 const { chromium } = require("playwright");
@@ -42,14 +43,20 @@ const url = process.argv[3] || "http://localhost:5207";
     await wait(300);
   };
   const forgetAll = () => p.evaluate(() => localStorage.removeItem("nde.headers.v1"));
-  const question = p.locator(".notices .notice:has(button:has-text('Yes, column names'))");
-  const answered = p.locator(".notices .notice:has-text('remembered for this file')");
+  const question = p.locator(".header-ask");
+  // Nothing is left behind once it is answered: no line in the notices.
+  const answered = p.locator(".notices .notice:has-text('remembered for this file'), .notices .notice:has-text('column names')");
   const gridTop = async () => (await (await p.$("canvas")).boundingBox()).y;
 
   await p.goto(url);
   await p.waitForFunction(() => window.__nde, null, { timeout: 5000 });
   await open();
   ok(await question.isVisible(), "a new file asks about its first row");
+  {
+    const q = await question.boundingBox();
+    const c = await (await p.$("canvas")).boundingBox();
+    ok(q && c && q.y > c.y + 60, "it floats over the table, clear of the headings");
+  }
   ok(/looks like column names, so it is used as titles/.test(await question.textContent()) && (await header()) === true, "with the guess applied");
   if (out) await question.screenshot({ path: path.join(out, "header-ask.png") });
   ok((await question.locator("button[aria-keyshortcuts='Alt+Shift+N']").count()) === 1, "the buttons name their keys");
@@ -58,9 +65,9 @@ const url = process.argv[3] || "http://localhost:5207";
   let top = await gridTop();
   await p.keyboard.press("Alt+Shift+N");
   await wait(400);
-  ok((await header()) === false && !(await question.count()), "Alt+Shift+N: the first row is data");
-  ok(/read as data; remembered for this file/.test((await answered.textContent()) ?? ""), "the line now says what was kept");
+  ok((await header()) === false && !(await question.count()), "Alt+Shift+N: the first row is data, and the question goes");
   ok((await gridTop()) === top, "the table did not move");
+  ok(!(await answered.count()), "and no line is left behind");
   ok(/remembered for this file/.test(await p.locator("footer").textContent()), "the status bar says the answer is kept");
   await close();
   await open();
@@ -82,14 +89,21 @@ const url = process.argv[3] || "http://localhost:5207";
   await open();
   top = await gridTop();
   await command("First row is header");
-  ok((await header()) === false && !(await question.count()) && (await answered.isVisible()), "the switch answers the question in place");
+  ok((await header()) === false && !(await question.count()) && !(await answered.count()), "the switch answers the question, which goes");
   ok((await gridTop()) === top, "and the table did not move");
   await command("Ask about the title row again");
   ok(await question.isVisible(), "Format › Ask about the title row again brings it back");
   ok(/looks like column names/.test(await question.textContent()), "worded as sure as the guess at open was");
   await p.keyboard.press("Alt+Shift+Y");
   await wait(400);
-  ok((await header()) === true && (await answered.isVisible()), "Alt+Shift+Y: column names");
+  ok((await header()) === true && !(await question.count()), "Alt+Shift+Y: column names");
+  // Closed with its X: the guess is kept, and the table didn't move.
+  await command("Ask about the title row again");
+  top = await gridTop();
+  await question.locator("button.close").click();
+  await wait(400);
+  ok(!(await question.count()) && (await header()) === true && (await gridTop()) === top, "closed with X: gone, guess kept, nothing moved");
+  ok((await p.evaluate(() => document.activeElement?.tagName)) !== "BUTTON", "focus back in the table");
 
   // Forget: the line goes, and closing doesn't remember the choice again.
   await command("Forget this file's title-row choice");

@@ -18,6 +18,9 @@ const url = process.argv[3] || "http://localhost:5194";
   await p.keyboard.press("Control+o");
   await p.waitForFunction(() => !/Loading|Indexing|Reading/i.test(document.querySelector("footer.status")?.textContent || ""), null, { timeout: 30000 }).catch(() => {});
   await p.waitForTimeout(1500);
+  // The title-row question floats over the bottom rows: close it, keeping the guess.
+  await p.locator(".header-ask button.close").click({ timeout: 2000 }).catch(() => {});
+  await p.waitForTimeout(400);
   let failed = 0;
   const ok = (cond, msg) => {
     if (!cond) failed++;
