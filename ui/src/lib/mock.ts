@@ -2975,7 +2975,11 @@ export class MockBackend implements Backend {
     return id;
   }
   async lookupClose(): Promise<void> {}
-  private privateDocs = new Map<number, PrivateState>();
+  // Kept by file (as the backend does), so a file opened again stays private.
+  private privateDocs = new Map<string, PrivateState>();
+  private privateKey(doc: number): string {
+    return this.docs.get(doc)?.info.path ?? `#${doc}`;
+  }
   async findPrivate(doc: number, header: boolean): Promise<Finding[]> {
     const d = this.get(doc);
     const n = this.rowCount(d);
@@ -3321,13 +3325,13 @@ export class MockBackend implements Backend {
     return { rows, pages: spec.kind === "labels" ? Math.ceil((rows + spec.skip) / per) : rows, bytes: 0, cut: 0 };
   }
   async privateState(doc: number): Promise<PrivateState> {
-    return this.privateDocs.get(doc) ?? { file: false, folder: false };
+    return this.privateDocs.get(this.privateKey(doc)) ?? { file: false, folder: false };
   }
   async setPrivate(doc: number, folder: boolean, on: boolean): Promise<PrivateState> {
-    const s = { ...(this.privateDocs.get(doc) ?? { file: false, folder: false }) };
+    const s = { ...(this.privateDocs.get(this.privateKey(doc)) ?? { file: false, folder: false }) };
     if (folder) s.folder = on;
     else s.file = on;
-    this.privateDocs.set(doc, s);
+    this.privateDocs.set(this.privateKey(doc), s);
     return s;
   }
   async privateLeftovers(_doc: number, _folder: boolean): Promise<[number, number]> {

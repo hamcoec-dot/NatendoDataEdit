@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.4.6_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.4.7_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -161,8 +161,18 @@ everything is also in command search.
   the file.
 - **Repairs broken files:** stray or unclosed quotes and rows with too many or
   too few fields are fixed, and each repair is listed.
-- **Title row or not:** the app guesses whether the first row holds titles;
-  one switch changes it, and files without titles get column numbers.
+- **Title row or not:** the app guesses whether the first row holds titles
+  (sure of it when text names sit over numbers or dates, or every name is
+  a column word like "id" or "first_name"), and the first time a file
+  opens a bar above the table asks whether that's right: answer Yes or No
+  (Alt+Shift+Y, Alt+Shift+N), or ignore it and keep the guess, which is
+  then kept for that file when it closes. Once answered the bar says what
+  was kept and stays put, so the table doesn't jump. One switch changes it
+  any time, and files without titles get column numbers. Files in private
+  mode are not asked. Format > Ask about the title row when a file opens
+  (also in Options) turns the question off; Format > Ask about the title
+  row again (also on the heading and corner right-click menus) brings it
+  back for the file open.
   A file opened again keeps the choice you made for it (or had when you
   saved it); a title row added and then closed with Don't save is not
   kept, and a file opened again with another layout is guessed afresh.
@@ -177,6 +187,9 @@ everything is also in command search.
   both back. A saved pivot layout or view that names a column this file no
   longer has asks before using the column in the same place, and the view's
   rules follow. A rename is a recipe step, so recipes replay it.
+
+![The bar asking whether the first row holds the column names](docs/screenshots/header-ask.png)
+*A file opened the first time asks about its title row; the guess is already applied.*
 
 ![Renaming the first_name column after double-clicking its heading](docs/screenshots/rename-column.png)
 *Double-click a heading to rename the column.*

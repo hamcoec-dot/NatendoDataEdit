@@ -59,6 +59,9 @@ export interface PrefsData {
   /** Pick up where you left off: offer the last tabs at start ("ask"),
    *  reopen them without asking, or never remember them. */
   reopenLast: "ask" | "always" | "never";
+  /** A file opened with no remembered title-row choice asks (in a bar)
+   *  whether its first row holds the column names. */
+  askHeader: boolean;
   /** Warn before private-looking data leaves the app (export, print, Save
    *  As, large copies). */
   privacyWarnings: boolean;
@@ -148,6 +151,7 @@ const DEFAULTS: PrefsData = {
   autosaveMinutes: 2,
   keepEarlierSaves: false,
   reopenLast: "ask",
+  askHeader: true,
   privacyWarnings: true,
   savedSearches: [],
 };
@@ -192,6 +196,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       autosave: p.autosave !== false,
       keepEarlierSaves: p.keepEarlierSaves === true,
       reopenLast: p.reopenLast === "always" || p.reopenLast === "never" ? p.reopenLast : "ask",
+      askHeader: p.askHeader !== false,
       privacyWarnings: p.privacyWarnings !== false,
       savedSearches: savedSearches(p.savedSearches),
       autosaveMinutes: typeof p.autosaveMinutes === "number" && Number.isFinite(p.autosaveMinutes) ? Math.min(60, Math.max(1, Math.round(p.autosaveMinutes))) : 2,

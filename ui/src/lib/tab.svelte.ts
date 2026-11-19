@@ -67,7 +67,10 @@ export class Tab {
   /** First row is shown as column titles. */
   header = $state(false);
   /** The user set the header switch, so the automatic guess stays out. */
-  headerTouched = false;
+  headerTouched = $state(false);
+  /** The title-row question in the bar (null: not asked): how sure the
+   *  guess applied is. */
+  headerAsk = $state<"yes" | "no" | "unsure" | null>(null);
   /** Undo position just after Rename column added a header row to a file
    *  without one (and switched "First row is header" on): undoing past it
    *  switches the setting off again. */

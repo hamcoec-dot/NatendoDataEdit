@@ -142,6 +142,7 @@
     <p class="note">
       Copies go to a private folder of yours, never over your files, and are removed when you save or close. If the app stops before you save, they are offered back the next time it starts (File › Recover unsaved work). Files over 200 MB get no copy.
     </p>
+    <label class="row"><input type="checkbox" bind:checked={prefs.data.askHeader} onchange={() => prefs.save()} /> When a file opens, ask whether its first row holds the column names (once per file; the answer is remembered)</label>
     <label class="row"
       >At start, the files open last time:
       <select bind:value={prefs.data.reopenLast} onchange={() => { prefs.save(); if (prefs.data.reopenLast === "never") void backend().sessionClear().catch(() => {}); }}>

@@ -11,7 +11,7 @@
   import { colLetters, parseGoto } from "./lib/goto";
   import { cellCount, type Rect } from "./lib/selection";
   import { dropIndex, MOUSE_MOVES } from "./lib/dragmove";
-  import { looksLikeHeader } from "./lib/header";
+  import { headerCertainty, looksLikeHeader } from "./lib/header";
   import { separatorName } from "./lib/layout";
   import Grid from "./lib/Grid.svelte";
   import LayoutDialog from "./lib/LayoutDialog.svelte";
@@ -493,7 +493,9 @@
     try {
       const p = await backend().privateState(t.id);
       if (p.file || p.folder) await rememberHeader(path, false, true);
-      else if (t.headerTouched || saved) await rememberHeader(path, t.header);
+      // A file that asked keeps the choice applied, answered or not, so
+      // it asks only once.
+      else if (t.headerTouched || saved || t.headerAsk !== null) await rememberHeader(path, t.header);
     } catch {
       // Not remembered this time.
     }
@@ -526,14 +528,55 @@
     say(`Forgot the title-row choices of ${plural(n, "file")}.`);
   }
 
+  /** The title-row bar answered: set it, remember it for this file. */
+  async function answerHeader(yes: boolean): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    // The bar stays, now saying what was kept, so the table doesn't move.
+    if (t.header !== yes) {
+      t.header = yes;
+      t.headerAddedAt = null;
+      t.headerOffByUndo = false;
+      grid?.select(yes && t.cell.row === 0 ? { row: 1, col: t.cell.col } : t.sel.anchor);
+      t.bump();
+    }
+    t.headerTouched = true;
+    if (!t.info.modified) await rememberTab(t);
+    say(`${yes ? "The first row holds the column names" : "The first row is data"}; ${t.info.modified ? "remembered for this file when you save" : "remembered for this file"}.`);
+    void tick().then(() => grid?.focus());
+  }
+
+  /** The title-row question is showing on this tab. */
+  function headerAsking(): boolean {
+    return !!tab?.headerAsk && !tab.headerTouched;
+  }
+
+  /** Format › Ask about the title row again: the bar comes back. */
+  function askHeaderAgain(): void {
+    const t = tab;
+    if (!t) return;
+    t.dismissed = false;
+    t.headerTouched = false;
+    t.headerAsk = "unsure";
+  }
+
+  /** Format › Ask about the title row when a file opens (as in Options). */
+  function toggleAskHeader(): void {
+    prefs.data.askHeader = !prefs.data.askHeader;
+    prefs.save();
+    say(prefs.data.askHeader ? "Files with no remembered choice ask about their first row." : "Files no longer ask about their first row; the guess is applied.");
+  }
+
   /** Set "First row is header" from a look at the first rows (the file is
    *  not changed; the user can flip the switch any time). */
   async function guessHeader(t: Tab, fresh = false): Promise<void> {
     // The choice made for this file before wins over a guess (not when it
     // was opened again with another layout: other columns).
+    let priv = false;
     if (t.info.path && !t.headerTouched) {
       try {
         const p = await backend().privateState(t.id);
+        priv = p.file || p.folder;
         // A private file keeps no choice: forget one made before.
         if (p.file || p.folder) await rememberHeader(t.info.path, false, true);
         const kept = p.file || p.folder || fresh ? null : await recallHeader(t.info.path);
@@ -563,11 +606,18 @@
       let width = 0;
       for (const r of rows) for (let c = r.length - 1; c >= width; c--) if (r[c] !== "") width = c + 1;
       const sample = rows.map((r) => r.slice(0, width));
-      if (!t.headerTouched && looksLikeHeader(sample)) {
+      if (t.headerTouched) return;
+      const sure = headerCertainty(sample);
+      const guess = sure === "unsure" ? looksLikeHeader(sample) : sure === "yes";
+      if (guess) {
         t.header = true;
         if (t.cell.row === 0) t.sel = { anchor: { row: 1, col: 0 }, focus: { row: 1, col: 0 } };
         t.bump();
       }
+      // A file with no remembered choice asks, in the bar (the guess is
+      // already applied, so it can be ignored).
+      // Private files remember nothing, so they are not asked either.
+      if (prefs.data.askHeader && t.info.path && !priv && sample.length >= 2) t.headerAsk = sure;
     } catch {
       // Keep the default (no header).
     }
@@ -4861,6 +4911,10 @@
     { id: "format.colWidth", label: "Set column &width…", run: () => askColWidth(), enabled: hasTab },
     { id: "format.showAllCols", label: "Unhide all columns", run: () => { tab!.columns.showAll(); tab!.bump(); }, enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
     { id: "format.header", label: "First row is &header", run: toggleHeader, enabled: hasTab, checked: () => !!tab?.header },
+    { id: "format.askHeader", label: "Ask about the title row when a file opens", run: toggleAskHeader, checked: () => prefs.data.askHeader },
+    { id: "format.askHeaderAgain", label: "Ask about the title row again", run: askHeaderAgain, enabled: () => !!tab?.info.path && !tab.private.file && !tab.private.folder },
+    { id: "format.headerYes", label: "Title-row question: yes, column names", keys: ["Alt+Shift+Y"], run: () => void answerHeader(true), enabled: headerAsking },
+    { id: "format.headerNo", label: "Title-row question: no, it's data", keys: ["Alt+Shift+N"], run: () => void answerHeader(false), enabled: headerAsking },
     { id: "format.forgetHeader", label: "Forget this file's title-row choice", run: () => void forgetHeaderOf(), enabled: () => !!tab?.info.path },
     { id: "format.forgetHeaders", label: "Forget remembered title rows…", run: () => void forgetAllHeaders() },
     { id: "format.makeHeader", label: "&Make this row the header", run: makeHeader, enabled: ready },
@@ -5071,7 +5125,7 @@
       ],
     },
     { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.symbol"] },
-    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "format.forgetHeader", "format.forgetHeaders", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
+    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "format.forgetHeader", "format.forgetHeaders", "format.askHeader", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
     {
       label: "&Data",
       items: [
@@ -5118,8 +5172,8 @@
     tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
-    col: ["format.renameCol", "format.tidyTitles", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
-    corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.forgetHeader", "format.showAllCols"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
+    corner: ["edit.selectAll", "edit.copy", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
 
   const toolbar: (string | "-")[] = [
@@ -5923,10 +5977,30 @@
 
   const notices = $derived.by(() => {
     const t = tab;
-    type Notice = { text: string; action?: string; run?: () => void };
+    type Notice = { text: string; action?: string; run?: () => void; actions?: { label: string; run: () => void; title?: string }[] };
     if (!t || t.dismissed) return [] as Notice[];
     const d = t.info;
     const out: Notice[] = [];
+    if (t.headerAsk && !t.headerTouched)
+      out.push({
+        text: t.header
+          ? t.headerAsk === "yes"
+            ? "The first row looks like column names, so it is used as titles. Is that right?"
+            : "The first row may hold column names; it is used as titles for now. Is that right?"
+          : t.headerAsk === "no"
+            ? "The first row looks like data, so the columns are numbered. Does it hold column names after all?"
+            : "Does the first row hold column names? It is read as data for now.",
+        actions: [
+          { label: "Yes, column names", run: () => void answerHeader(true), title: "Alt+Shift+Y" },
+          { label: "No, it's data", run: () => void answerHeader(false), title: "Alt+Shift+N" },
+        ],
+      });
+    // Answered (by the bar or any other way of setting the title row): the
+    // line stays and says what was kept, so the table doesn't move.
+    else if (t.headerAsk)
+      out.push({
+        text: `${t.header ? "The first row is used as the column names" : "The first row is read as data"}; ${t.info.modified ? "remembered for this file when you save" : "remembered for this file"}. Format › First row is header changes it.`,
+      });
     if (d.layout_confidence !== null && d.layout_confidence < 0.6 && d.path)
       out.push({ text: "Not sure how this file's columns are separated. Please check the layout.", action: "Choose layout…", run: chooseLayout });
     if (d.preamble_lines > 0)
@@ -6216,6 +6290,7 @@
         <div class="notice">
           <span>{n.text}</span>
           {#if n.action && n.run}<button type="button" class="small" onclick={n.run}>{n.action}</button>{/if}
+          {#each n.actions ?? [] as a (a.label)}<button type="button" class="small" title={a.title} aria-keyshortcuts={a.title} onclick={a.run}>{a.label}</button>{/each}
         </div>
       {/each}
       <button type="button" class="small dismiss" aria-label="Dismiss notices" onclick={() => { if (tab) tab.dismissed = true; }}><Icon name="close" size={12} /></button>
@@ -7390,6 +7465,9 @@
   .notice {
     display: flex;
     align-items: center;
+    /* As tall as a line with buttons: a line that loses its buttons (the
+       title-row question answered) doesn't move the table. */
+    min-height: 24px;
     gap: 10px;
     flex-wrap: wrap;
   }

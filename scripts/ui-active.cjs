@@ -13,7 +13,10 @@ const url = process.argv[3] || "http://localhost:5193";
   const errors = [];
   p.on("pageerror", (e) => errors.push(String(e)));
   await p.goto(url);
+  // The app listens for keys only once it has started.
+  await p.waitForFunction(() => window.__nde, null, { timeout: 10000 });
   await p.keyboard.press("Control+o");
+  await p.waitForFunction(() => window.__nde?.tab?.info?.indexed, null, { timeout: 30000 });
   await p.waitForFunction(() => !/Loading|Indexing|Reading/i.test(document.querySelector("footer.status")?.textContent || ""), null, { timeout: 30000 }).catch(() => {});
   await p.waitForTimeout(1500);
   let failed = 0;

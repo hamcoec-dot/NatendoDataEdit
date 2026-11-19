@@ -36,7 +36,12 @@ const url = process.argv[3] || "http://localhost:5193";
     }
   }
   const hx = (c) => canvas.x + left + c * W + 40; // clear of the edge and the filter button
-  const hy = canvas.y + HEAD / 2;
+  let hy = canvas.y + HEAD / 2;
+  // The grid moves when a bar above it (the title-row question) goes.
+  const remeasure = async () => {
+    Object.assign(canvas, await (await p.$("canvas")).boundingBox());
+    hy = canvas.y + HEAD / 2;
+  };
   const dialog = "[role=dialog]:has(h2:has-text('Rename column'))";
   const nameBox = `${dialog} input.name`;
 
@@ -134,6 +139,7 @@ const url = process.argv[3] || "http://localhost:5193";
   await p.click("button:has-text('Format')");
   await p.click("[role=menuitem]:has-text('First row is header')");
   await p.waitForTimeout(400);
+  await remeasure();
   await p.mouse.click(canvas.x + left + 10, canvas.y + HEAD + ROW + 12);
   await p.click("button:has-text('Format')");
   await p.click("[role=menuitem]:has-text('Rename column')");
