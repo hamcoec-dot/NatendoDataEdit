@@ -3,7 +3,9 @@
  * as one row: split by tabs (copied from a table or this app), else by the
  * file's delimiter, else by commas; quoted names may hold the separator or
  * a line break. Text with no separator on several lines is a list, one
- * name per line.
+ * name per line; so is text whose first line has commas when the next line
+ * has none ("Last, First" over other names). Names split on commas lose
+ * the spaces around them.
  */
 export function namesFromText(text: string, delimiter: string): string[] {
   const t = text.replace(/^﻿/, "");
@@ -16,7 +18,9 @@ export function namesFromText(text: string, delimiter: string): string[] {
   }
   const firstLine = t.slice(0, end);
   const sep = firstLine.includes("\t") ? "\t" : delimiter && firstLine.includes(delimiter) ? delimiter : firstLine.includes(",") ? "," : null;
-  if (sep === null) {
+  const nextLine = t.slice(end).replace(/^\r?\n/, "").split(/\r?\n/, 1)[0] ?? "";
+  const list = sep === null || (sep === "," && nextLine.trim() !== "" && !nextLine.includes(","));
+  if (list) {
     const lines = t.split(/\r?\n/).map((s) => s.trim());
     while (lines.length && lines.at(-1) === "") lines.pop();
     return lines.length > 1 ? lines : lines.length ? [lines[0]!] : [];
@@ -42,5 +46,5 @@ export function namesFromText(text: string, delimiter: string): string[] {
     else cur += ch;
   }
   out.push(cur);
-  return out;
+  return sep === "," ? out.map((n) => n.trim()) : out;
 }

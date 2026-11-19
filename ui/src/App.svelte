@@ -3277,6 +3277,19 @@
   /** Edit › Copy column names: the names in one row, split by tabs (pastes
    *  into a table, here or in a spreadsheet) or, `asText`, by this file's
    *  delimiter (a line for a text file). */
+  /** What every copy does first (as Ctrl+C): a pending cut and the copy
+   *  outlines go, on every tab. */
+  function clearCopyMarks(): void {
+    cutEpoch++;
+    for (const x of tabs) {
+      if (x.cut || x.copied) {
+        x.cut = null;
+        x.copied = null;
+        x.bump();
+      }
+    }
+  }
+
   async function copyColumnNames(asText: boolean): Promise<void> {
     const t = tab;
     if (!t) return;
@@ -3287,6 +3300,7 @@
     const cols = nameCols(t);
     if (!cols.length) return;
     const sep = asText ? t.info.delimiter || "," : "\t";
+    clearCopyMarks();
     try {
       const line = await backend().columnNamesLine(t.id, cols, sep);
       await navigator.clipboard.writeText(line);
@@ -3317,8 +3331,11 @@
     const hidden = new Set(hiddenColsOf(t));
     const cols: number[] = [];
     for (let c = r.col; c < r.col + r.cols; c++) if (!hidden.has(c)) cols.push(c);
+    if (cellCount(r) >= LARGE_COPY && !(await privacyGate("The copy goes to the clipboard, where other programs can read it.", [r.col, r.cols]))) return;
+    clearCopyMarks();
+    const epoch = cutEpoch;
+    const pos = t.info.history_pos;
     try {
-      if (cellCount(r) >= LARGE_COPY && !(await privacyGate("The copy goes to the clipboard, where other programs can read it.", [r.col, r.cols]))) return;
       const names = await backend().columnNamesLine(t.id, cols, "\t");
       const body = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols, hiddenColsOf(t));
       await navigator.clipboard.writeText(`${names}\r\n${body}`);
@@ -3327,13 +3344,19 @@
       say(errorText(e));
       return;
     }
-    say(`Copied ${cellCount(r).toLocaleString()} cell${cellCount(r) === 1 ? "" : "s"} with the column names on top.`);
+    // The copy outline, as Ctrl+C shows it.
+    if (epoch === cutEpoch && t.info.history_pos === pos) {
+      t.copied = { ...r };
+      t.bump();
+    }
+    say(`Copied ${cellCount(r).toLocaleString()} cell${cellCount(r) === 1 ? "" : "s"} with the column names on top. Esc takes the outline away.`);
   }
 
   /** Edit › Paste as column names: copied names (a row, a line of a text
-   *  file or a list) become this file's title row, from the selected
-   *  column (or the first) rightwards over shown columns; one undo step. A
-   *  file without a title row gets one. */
+   *  file or a list) become this file's title row, from the active cell's
+   *  column (the first selected one for whole columns, so the first after
+   *  Select all) rightwards over shown columns; one undo step (two when a
+   *  title row is added). Names past the last column ask first. */
   async function pasteColumnNames(): Promise<void> {
     const t = tab;
     if (!t || !ready()) return;
@@ -3359,12 +3382,32 @@
     }
     const r = t.rect;
     const hidden = new Set(hiddenColsOf(t));
-    const cells: [number, string][] = [];
-    for (let c = wholeCols(r, t) ? r.col : 0, i = 0; i < names.length; c++) {
+    let cells: [number, string][] = [];
+    let widened = 0;
+    for (let c = wholeCols(r, t) ? r.col : t.cell.col, i = 0; i < names.length; c++) {
       if (hidden.has(c)) continue;
       cells.push([c, names[i]!]);
       i++;
     }
+    // More names than columns: widening the file changes its shape, so ask.
+    const added = cells.length ? Math.max(0, cells.at(-1)![0] + 1 - t.info.cols) : 0;
+    if (added > 0) {
+      const fit = cells.filter(([c]) => c < t.info.cols).length;
+      const a = await ask(
+        `${added === 1 ? "1 name runs" : `${added.toLocaleString()} names run`} past the last column`,
+        `${plural(cells.length, "name")} from column ${cells[0]![0] + 1}, but the file has ${plural(t.info.cols, "column")}. Add ${added === 1 ? "a new column" : `${added.toLocaleString()} new columns`} at the right for ${added === 1 ? "it" : "them"}?`,
+        [
+          { id: "add", label: `Add ${added === 1 ? "1 column" : `${added.toLocaleString()} columns`}`, primary: true },
+          ...(fit ? [{ id: "fit", label: `Paste only ${plural(fit, "name")}` }] : []),
+          { id: "cancel", label: "Cancel" },
+        ],
+        "cancel",
+      );
+      if (a !== "add" && a !== "fit") return;
+      if (a === "fit") cells = cells.filter(([c]) => c < t.info.cols);
+      else widened = added;
+    }
+    const dupes = new Set(names.filter((n, i) => n !== "" && names.findIndex((m) => m.toLowerCase() === n.toLowerCase()) !== i).map((n) => n.toLowerCase())).size;
     if (!t.header) {
       if (t.info.filtered) {
         say("Show all rows first (a filter or hidden rows are on), then paste the column names.");
@@ -3377,7 +3420,9 @@
     }
     t.whatNext = "pasting column names";
     if (await apply((x) => backend().setColumnNames(x.id, cells))) {
-      say(`Pasted ${cells.length === 1 ? "1 column name" : `${cells.length.toLocaleString()} column names`} into the title row. Ctrl+Z undoes it.`);
+      const wider = widened ? ` ${widened === 1 ? "1 column was" : `${widened.toLocaleString()} columns were`} added at the right.` : "";
+      const same = dupes ? ` ${dupes === 1 ? "1 name is" : `${dupes} names are`} used twice.` : "";
+      say(`Pasted ${cells.length === 1 ? "1 column name" : `${cells.length.toLocaleString()} column names`} into the title row.${wider}${same} Ctrl+Z undoes it.`);
     }
   }
 
@@ -5306,7 +5351,7 @@
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],

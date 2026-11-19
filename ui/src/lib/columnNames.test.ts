@@ -16,5 +16,12 @@ describe("paste as column names", () => {
     expect(namesFromText("id\r\nname\r\ncity\r\n", ",")).toEqual(["id", "name", "city"]);
     expect(namesFromText("only", ",")).toEqual(["only"]);
     expect(namesFromText("", ",")).toEqual([]);
+    // A list whose first name has a comma is still a list.
+    expect(namesFromText("Stone, Ada\r\nWells\r\n", "\t")).toEqual(["Stone, Ada", "Wells"]);
+  });
+  it("trims spaces around names split on commas", () => {
+    expect(namesFromText("id, first name ,city", "\t")).toEqual(["id", "first name", "city"]);
+    // A line of a comma file over its data is a row, not a list.
+    expect(namesFromText("id,name\r\n1,Ada\r\n", ",")).toEqual(["id", "name"]);
   });
 });

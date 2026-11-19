@@ -193,11 +193,13 @@ everything is also in command search.
   the whole columns selected, as one row split by tabs, ready to paste into
   a spreadsheet row or another tab. Copy column names as a line of text
   uses the file's own delimiter instead. Copy with column names
-  (Ctrl+Shift+C) copies the selection with its columns' names on top.
-  Paste as column names makes copied names (a row, a line of text, or a
-  list with one name per line) the title row of the file open, from the
-  selected column or the first, as one undo step; a file without a title
-  row gets one.
+  (Ctrl+Shift+C, also on the cell right-click menu) copies the selection
+  with its columns' names on top. Paste as column names makes copied names
+  (a row, a line of text, or a list with one name per line) the title row
+  of the file open, from the active cell's column (the first after Select
+  all), as one undo step; a file without a title row gets one (then it is
+  two steps). Names that run past the last column ask before columns are
+  added.
 
 ![The box asking whether the first row holds the column names](docs/screenshots/header-ask.png)
 *A file opened the first time asks about its title row; the guess is already applied.*

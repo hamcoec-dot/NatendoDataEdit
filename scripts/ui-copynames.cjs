@@ -57,13 +57,19 @@ const url = process.argv[3] || "http://localhost:5209";
   await command("Copy column names");
   ok((await clipboard()) === "first_name\tlast_name", `whole columns selected: their names (${JSON.stringify(await clipboard())})`);
 
-  // 3. Copy with column names (Ctrl+Shift+C): names on top of the cells.
+  // 3. Copy with column names (Ctrl+Shift+C): names on top of the cells;
+  // like any copy, it cancels a pending cut and shows the copy outline.
+  await p.evaluate(() => window.__nde.grid.select({ row: 4, col: 1 }, { row: 5, col: 2 }));
+  await p.keyboard.press("Control+x");
+  await wait(500);
+  ok(!!(await p.evaluate(() => window.__nde.tab.cut)), "(a cut is pending)");
   await p.evaluate(() => window.__nde.grid.select({ row: 1, col: 0 }, { row: 2, col: 1 }));
   await wait(200);
   await p.keyboard.press("Control+Shift+C");
   await wait(500);
   const withNames = (await clipboard()).split(/\r?\n/).filter(Boolean);
   ok(withNames[0] === "id\tfirst_name" && withNames.length === 3, `Ctrl+Shift+C: names then the 2 rows (${JSON.stringify(withNames)})`);
+  ok(!(await p.evaluate(() => window.__nde.tab.cut)) && !!(await p.evaluate(() => window.__nde.tab.copied)), "it cancels the cut and shows the copy outline");
 
   // 4. The right-click menus have it.
   const canvas = await (await p.$("canvas")).boundingBox();
@@ -89,13 +95,39 @@ const url = process.argv[3] || "http://localhost:5209";
   ok(JSON.stringify((await names()).slice(0, 3)) === JSON.stringify(["key", "name", "place"]), `the names are the new title row (${await names()})`);
   ok((await p.evaluate(() => window.__nde.tab.info.rows)) === rowsBefore + 1, "a title row was added; no data row was written over");
 
-  // 6. A list, one name per line, over a file with titles; undo puts them back.
+  // 6. A list, one name per line, over a file with titles, from the active
+  // cell's column; undo puts them back.
+  await p.evaluate(() => window.__nde.grid.select({ row: 1, col: 1 }));
+  await setClipboard("full name\r\nplace\r\n");
+  await command("Paste as column names");
+  ok(JSON.stringify((await names()).slice(0, 3)) === JSON.stringify(["key", "full name", "place"]), `pasted from the active cell's column (${await names()})`);
+  await p.keyboard.press("Control+z");
+  await wait(500);
+  await p.evaluate(() => window.__nde.grid.select({ row: 1, col: 0 }));
   await setClipboard("id\r\nfull name\r\n");
   await command("Paste as column names");
   ok(JSON.stringify((await names()).slice(0, 3)) === JSON.stringify(["id", "full name", "place"]), `a list pastes one name per column (${await names()})`);
   await p.keyboard.press("Control+z");
   await wait(500);
   ok(JSON.stringify((await names()).slice(0, 3)) === JSON.stringify(["key", "name", "place"]), "Ctrl+Z puts the names back in one step");
+
+  // More names than columns: it asks first, and can paste only what fits.
+  await p.evaluate(() => window.__nde.grid.select({ row: 1, col: 2 }));
+  await setClipboard("c1\tc2\tc3");
+  await command("Paste as column names");
+  const dlg = p.locator(".dialog[role=alertdialog]");
+  ok((await dlg.count()) === 1 && /2 names run past the last column/.test((await dlg.textContent()) ?? ""), "more names than columns: it asks first");
+  await dlg.getByRole("button", { name: /Paste only/ }).click();
+  await wait(500);
+  ok((await p.evaluate(() => window.__nde.tab.info.cols)) === 3 && (await names())[2] === "c1", "Paste only what fits: no columns added");
+  await p.keyboard.press("Control+z");
+  await wait(400);
+  await command("Paste as column names");
+  await dlg.getByRole("button", { name: /Add 2 columns/ }).click();
+  await wait(500);
+  ok((await p.evaluate(() => window.__nde.tab.info.cols)) === 5 && /2 columns were added/.test(await status()), "Add columns: the file widens and says so");
+  await p.keyboard.press("Control+z");
+  await wait(400);
 
   // 7. No title row: nothing to copy, and it says why.
   await p.evaluate(() => {
