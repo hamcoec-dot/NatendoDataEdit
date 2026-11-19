@@ -1955,8 +1955,9 @@
     // Names this app copied as a line of text (split by commas or the
     // file's delimiter) paste one name per column, as a tab row does; other
     // programs' comma text ("Dayton, OH") stays in one cell.
-    if (namesLine && text === namesLine.text && namesLine.sep !== "\t") {
-      text = namesFromText(text, namesLine.sep)
+    // (A trailing line break, which some clipboard tools add, is ignored.)
+    if (namesLine && namesLine.sep !== "\t" && text.replace(/\r?\n$/, "") === namesLine.text) {
+      text = namesFromText(namesLine.text, namesLine.sep)
         .map((n) => (/[\t"\r\n]/.test(n) ? `"${n.replace(/"/g, '""')}"` : n))
         .join("\t");
     }
@@ -2026,25 +2027,57 @@
     afterPaste = null;
     // One line that went into one cell but holds the file's delimiter (or
     // commas): offer to split it across columns (as one more undo step).
-    if (done && rows.length === 1 && width === 1) offerSplit(t, r.row, r.col, text.replace(/\r?\n$/, ""));
+    if (done && rows.length === 1 && width === 1) void offerSplit(t, r.row, r.col, text.replace(/\r?\n$/, ""));
   }
 
   /** After a one-cell paste of a delimited line: a "Split into columns"
-   *  button in the status bar. */
-  function offerSplit(t: Tab, row: number, col: number, line: string): void {
+   *  button in the status bar. Offered for 3 or more parts, or when the
+   *  cells it would fill are blank, so an address ("Dayton, OH") pasted
+   *  next to other data doesn't bring it up every time. */
+  async function offerSplit(t: Tab, row: number, col: number, line: string): Promise<void> {
     const sep = t.info.delimiter && t.info.delimiter !== "\t" && line.includes(t.info.delimiter) ? t.info.delimiter : line.includes(",") ? "," : null;
     if (!sep) return;
     const parts = namesFromText(line, sep);
     if (parts.length < 2) return;
-    say(`Pasted one line into one cell. It holds ${parts.length} parts split by ${sep === "," ? "commas" : `"${sep}"`}.`);
+    /** The cells to the right that the parts would fill and are not blank. */
+    const filled = async (): Promise<number> => {
+      const n = Math.min(parts.length - 1, Math.max(0, t.info.cols - col - 1));
+      if (!n) return 0;
+      const v = await backend().viewport(t.id, row, 1, col + 1, n, 1);
+      return v.cells.filter((c) => c !== "").length;
+    };
+    try {
+      if (parts.length < 3 && (await filled()) > 0) return;
+    } catch {
+      return;
+    }
+    if (tab !== t) return;
+    say(`Pasted into one cell (${parts.length} parts split by ${sep === "," ? "commas" : `"${sep}"`}).`);
     messageAction = {
       label: "Split into columns",
       run: () =>
         void (async () => {
           if (tab !== t) return;
+          const at = col;
+          // Cells to the right with something in them: ask first.
+          const busy = await filled().catch(() => 0);
+          if (busy > 0) {
+            const a = await ask(
+              `Replace what is in ${busy === 1 ? "1 cell" : `${busy} cells`} to the right?`,
+              `Splitting puts ${parts.length} parts in columns ${col + 1} to ${col + parts.length} of this row, over what is there now. Insert ${parts.length - 1 === 1 ? "a new column" : `${parts.length - 1} new columns`} instead to keep it.`,
+              [
+                { id: "insert", label: `Insert ${parts.length - 1 === 1 ? "1 column" : `${parts.length - 1} columns`}`, primary: true },
+                { id: "replace", label: "Replace", danger: true },
+                { id: "cancel", label: "Cancel" },
+              ],
+              "cancel",
+            );
+            if (a !== "insert" && a !== "replace") return;
+            if (a === "insert" && !(await change({ op: "insert_cols", at: col + 1, count: parts.length - 1 }))) return;
+          }
           t.whatNext = "splitting the pasted line";
-          if (await apply((x) => backend().setCells(x.id, parts.map((v, i) => [row, col + i, v] as [number, number, string])))) {
-            grid?.select({ row, col }, { row, col: col + parts.length - 1 });
+          if (await apply((x) => backend().setCells(x.id, parts.map((v, i) => [row, at + i, v] as [number, number, string])))) {
+            grid?.select({ row, col: at }, { row, col: at + parts.length - 1 });
             say(`Split into ${parts.length} columns. Ctrl+Z undoes it.`);
           }
         })(),
