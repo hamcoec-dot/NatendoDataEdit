@@ -1635,7 +1635,21 @@ export class MockBackend implements Backend {
   async sessionList(): Promise<SessionItem[]> {
     return this.lastTabs.map((s, index) => ({ index, name: s.path.split("/").at(-1)!, folder: "C:", changed: false, missing: false, open: this.openAt(s.path) !== null, active: s.active }));
   }
+  /** Tests: last time's tabs, and a file Windows passes while the
+   *  `n`th of them reopens. */
+  seedSession(paths: string[], active: number, launchDuring: { n: number; path: string } | null = null): void {
+    this.lastTabs = paths.map((path, i) => ({ path, view: null, row: 0, col: 0, active: i === active }));
+    this.launchDuring = launchDuring;
+    this.reopened = 0;
+  }
+  private launchDuring: { n: number; path: string } | null = null;
+  private reopened = 0;
   async sessionOpen(index: number): Promise<{ opened: Opened; place: SessionPlace }> {
+    if (this.launchDuring && ++this.reopened === this.launchDuring.n) {
+      const path = this.launchDuring.path;
+      this.launchDuring = null;
+      this.osOpen(path);
+    }
     const s = this.lastTabs[index];
     if (!s) throw err("invalid", "that file is no longer in the list");
     const open = this.openAt(s.path);
@@ -3523,10 +3537,27 @@ export class MockBackend implements Backend {
   async checksOpen(): Promise<Check[] | null> {
     return [{ col: 0, kind: { type: "required" } }];
   }
-  async takeOpened(): Promise<OsOpen[]> {
-    return [];
+  // Files from Windows (tests): queued, then the window is told.
+  private osQueue: string[] = [];
+  private osListener: (() => void) | null = null;
+  /** Tests: Windows passes `path` to the running app. */
+  osOpen(path: string): void {
+    this.osQueue.push(path);
+    this.osListener?.();
   }
-  onOpened(): void {}
+  async takeOpened(): Promise<OsOpen[]> {
+    return this.osQueue.splice(0).map((path) => {
+      const name = path.split("/").at(-1)!;
+      const open = this.openAt(path);
+      if (open !== null) return { name, opened: null, existing: open, error: null };
+      const info = this.make(name, 2_001, 6);
+      this.get(info.id).info.path = path;
+      return { name, opened: { doc: { ...this.get(info.id).info }, import: null }, existing: null, error: null };
+    });
+  }
+  onOpened(f?: () => void): void {
+    this.osListener = f ?? null;
+  }
   onAgentGoto(): void {}
   private types: FileType[] = [
     ...["csv", "tsv", "tab", "psv", "ssv"].map((ext) => ({ ext, on: false, text: false })),

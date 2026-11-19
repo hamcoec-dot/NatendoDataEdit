@@ -174,7 +174,7 @@ impl Session {
     pub fn items(
         &self,
         is_private: impl Fn(&Path) -> bool,
-        is_open: impl Fn(&Path) -> bool,
+        is_open: impl FnOnce(&[PathBuf]) -> Vec<bool>,
     ) -> Vec<SessionItem> {
         let entries = self
             .entries
@@ -183,13 +183,19 @@ impl Session {
             .clone();
         let paths: Vec<PathBuf> = entries.iter().map(|e| PathBuf::from(&e.path)).collect();
         let folders = crate::extras::folder_labels(&paths);
-        entries
+        let kept: Vec<_> = entries
             .iter()
             .zip(paths.iter())
             .zip(folders)
             .enumerate()
             .filter(|(_, ((_, p), _))| !is_private(p))
-            .map(|(index, ((e, p), folder))| {
+            .collect();
+        // Open already (or being opened): one pass over the open tabs.
+        let shown: Vec<PathBuf> = kept.iter().map(|(_, ((_, p), _))| (*p).clone()).collect();
+        let open = is_open(&shown);
+        kept.into_iter()
+            .zip(open)
+            .map(|((index, ((e, p), folder)), open)| {
                 let now = stamp(p);
                 SessionItem {
                     index,
@@ -200,7 +206,7 @@ impl Session {
                     folder,
                     changed: now.is_some_and(|s| s != (e.size, e.modified)),
                     missing: now.is_none(),
-                    open: is_open(p),
+                    open,
                     active: e.active,
                 }
             })
@@ -314,18 +320,18 @@ mod tests {
         // Read back by a new run.
         let s2 = Session::default();
         s2.load(&dir);
-        let items = s2.items(|_| false, |_| false);
+        let items = s2.items(|_| false, |ps| vec![false; ps.len()]);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "a.csv");
         assert!(!items[0].changed && !items[0].missing && !items[0].open && items[0].active);
         // A file open already is marked, so the window doesn't offer it.
-        assert!(s2.items(|_| false, |p| p == a)[0].open);
+        assert!(s2.items(|_| false, |ps| ps.iter().map(|p| *p == a).collect())[0].open);
         let (p, place) = s2.place(0).unwrap();
         assert_eq!(p, a);
         assert_eq!((place.row, place.col), (5, 2));
         assert!(place.view.is_some());
         // Private files are not listed.
-        assert!(s2.items(|_| true, |_| false).is_empty());
+        assert!(s2.items(|_| true, |ps| vec![false; ps.len()]).is_empty());
         // A changed file reopens with the plain view.
         std::fs::write(&a, "x,y\n1,2\n3,4\n").unwrap();
         let (_, place) = s2.place(0).unwrap();
@@ -334,7 +340,7 @@ mod tests {
         let text = std::fs::read_to_string(dir.join("session.json")).unwrap();
         assert!(!text.contains("1,2"));
         s2.clear();
-        assert!(s2.items(|_| false, |_| false).is_empty());
+        assert!(s2.items(|_| false, |ps| vec![false; ps.len()]).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

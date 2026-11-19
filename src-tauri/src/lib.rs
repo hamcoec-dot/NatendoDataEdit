@@ -450,17 +450,13 @@ async fn session_list(
         recent.inner().clone(),
         session.inner().clone(),
     );
-    let launch: Vec<String> = launch
-        .0
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .iter()
-        .map(|p| docs::path_key(p))
-        .collect();
+    // Read once: a later call (none today) must not hide a launch file
+    // closed since.
+    let launch = std::mem::take(&mut *launch.0.lock().unwrap_or_else(|p| p.into_inner()));
     blocking(move || {
         Ok(session.items(
             |p| recent.is_private(p),
-            |p| docs.find_open(p).is_some() || launch.contains(&docs::path_key(p)),
+            |paths| docs.open_or_launching(&launch, paths),
         ))
     })
     .await
@@ -3486,7 +3482,8 @@ pub fn run() {
                 *app.state::<LaunchPaths>()
                     .0
                     .lock()
-                    .unwrap_or_else(|p| p.into_inner()) = paths.clone();
+                    .unwrap_or_else(|p| p.into_inner()) =
+                    paths.iter().take(MAX_OS_OPENS).cloned().collect();
                 open_paths(app.handle(), paths, false);
             }
             Ok(())

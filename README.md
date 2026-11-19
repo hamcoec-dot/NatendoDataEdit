@@ -205,7 +205,9 @@ everything is also in command search.
   never anything from the cells (so filters and highlight rules, which can
   hold names from the file, are not kept either); files in private file mode, encrypted files
   and tabs never saved are not remembered. File > Options sets it to offer
-  (the default), reopen without asking, or never remember.
+  (the default), reopen without asking, or never remember. Files already
+  open, such as one you double-clicked to start the app, are not offered
+  again, and that file stays in front after the others reopen.
 
 ### The grid
 

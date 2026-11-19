@@ -1905,32 +1905,33 @@ impl Docs {
         let mut entries: Vec<(u32, Arc<Entry>)> =
             self.map().iter().map(|(k, v)| (*k, v.clone())).collect();
         entries.sort_unstable_by_key(|(id, _)| *id);
-        let open: Vec<(u32, PathBuf, String)> = entries
+        let (ids, open): (Vec<u32>, Vec<(PathBuf, String)>) = entries
             .iter()
             .filter_map(|(id, e)| {
                 let p = e.current_path()?;
                 let k = path_key(&p);
-                Some((*id, p, k))
+                Some((*id, (p, k)))
             })
-            .collect();
+            .unzip();
         if open.is_empty() {
             return vec![None; paths.len()];
         }
-        let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
         paths
             .iter()
-            .map(|want| {
-                let k = path_key(want);
-                open.iter()
-                    .find(|(_, _, ok)| *ok == k)
-                    .or_else(|| {
-                        open.iter().find(|(_, p, _)| {
-                            name(p) == name(want)
-                                && same_file::is_same_file(p, want).unwrap_or(false)
-                        })
-                    })
-                    .map(|(id, _, _)| *id)
-            })
+            .map(|want| match_path(&open, want).map(|i| ids[i]))
+            .collect()
+    }
+
+    /// For each remembered file at start: open already, or one of the files
+    /// Windows passed this run (it may still be opening). Launch files are
+    /// matched by the same rule as open ones.
+    pub fn open_or_launching(&self, launch: &[PathBuf], paths: &[PathBuf]) -> Vec<bool> {
+        let open = self.find_open_many(paths);
+        let launch: Vec<(PathBuf, String)> =
+            launch.iter().map(|p| (p.clone(), path_key(p))).collect();
+        open.into_iter()
+            .zip(paths)
+            .map(|(o, p)| o.is_some() || (!launch.is_empty() && match_path(&launch, p).is_some()))
             .collect()
     }
 
@@ -6227,6 +6228,19 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
     same_file::is_same_file(a, b).unwrap_or(false) || path_key(a) == path_key(b)
 }
 
+/// Which of `have` (a path and its `path_key`) is the file `want`: compared
+/// as text first; looked at on disk (same file under another name: a mapped
+/// drive and its network share) only when the file names match.
+fn match_path(have: &[(PathBuf, String)], want: &Path) -> Option<usize> {
+    let k = path_key(want);
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    have.iter().position(|(_, hk)| *hk == k).or_else(|| {
+        have.iter().position(|(p, _)| {
+            name(p) == name(want) && same_file::is_same_file(p, want).unwrap_or(false)
+        })
+    })
+}
+
 /// A path as text for matching: resolved where it exists, without the
 /// `\\?\` form, and (on Windows) in lower case with `\`.
 pub(crate) fn path_key(p: &Path) -> String {
@@ -7046,6 +7060,35 @@ mod tests {
             vec![None, Some(id)]
         );
         assert_eq!(docs.paths_of(&[id]), vec![Some(p.clone())]);
+    }
+
+    /// What the start-up offer leaves out: a file open already, and a file
+    /// Windows passed at start written another way; not other files.
+    #[test]
+    fn open_or_launching_marks() {
+        let a = tmp("launch-open.csv", b"a,b
+1,2
+");
+        let b = tmp("launch-passed.csv", b"a
+1
+");
+        let c = tmp("launch-neither.csv", b"a
+1
+");
+        let docs = Docs::default();
+        let id = docs.open_path(&a, false).unwrap().id;
+        wait(&docs, id);
+        let dir = b.parent().unwrap();
+        let _ = std::fs::create_dir_all(dir.join("x"));
+        // The launch file written another way: through `..`, and (Windows)
+        // in other letter case with `/`.
+        let mut other = dir.join("x").join("..").join(b.file_name().unwrap());
+        if cfg!(windows) {
+            other = PathBuf::from(other.to_string_lossy().to_uppercase().replace('\\', "/"));
+        }
+        let paths = [a.clone(), b.clone(), c.clone()];
+        assert_eq!(docs.open_or_launching(&[other], &paths), vec![true, true, false]);
+        assert_eq!(docs.open_or_launching(&[], &paths), vec![true, false, false]);
     }
 
     #[test]

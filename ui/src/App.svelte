@@ -1354,6 +1354,9 @@
   /** Tabs are remembered only once the start-up offer is settled (so the
    *  empty start does not overwrite last time's list). */
   let sessionReady = false;
+  /** The last tab a file from Windows (or a second launch) brought in while
+   *  start-up runs: it stays in front after last time's files reopen. */
+  let launchTab: Tab | null = null;
   let sessionKey = "";
 
   async function saveSession(): Promise<void> {
@@ -1446,7 +1449,10 @@
         say(`${it.name}: ${errorText(e)}`);
       }
     }
-    if (activeTab && tabs.includes(activeTab)) active = tabs.indexOf(activeTab);
+    // The file just double-clicked in Windows stays in front, whenever
+    // its open finished; otherwise last time's front tab.
+    const front = launchTab && tabs.includes(launchTab) ? launchTab : activeTab;
+    if (front && tabs.includes(front)) active = tabs.indexOf(front);
     if (fresh.length) say(`${fresh.join(", ")} changed since last time, so ${fresh.length === 1 ? "it was" : "they were"} opened fresh (the view was not put back).`);
   }
 
@@ -5469,6 +5475,15 @@
       activate(i: number) {
         if (i >= 0 && i < tabs.length) active = i;
       },
+      /** Tests: as at a new start, before files from Windows arrive. */
+      resetStart() {
+        sessionReady = false;
+        launchTab = null;
+      },
+      /** Tests: run the start-up offer. */
+      startSession() {
+        return startSession();
+      },
     };
   }
 
@@ -5811,11 +5826,19 @@
       return;
     }
     for (const o of list) {
+      let id: number | null = null;
       if (o.existing !== null) {
         const i = tabs.findIndex((t) => t.id === o.existing);
         if (i >= 0) active = i;
+        id = o.existing;
       } else if (o.error) say(`${o.name}: ${o.error}`);
-      else if (o.opened) opened(o.opened);
+      else if (o.opened) {
+        opened(o.opened);
+        id = o.opened.doc?.id ?? null;
+      }
+      // Noted while start-up runs, so reopening last time's files
+      // doesn't pull the front away from it.
+      if (!sessionReady && id !== null) launchTab = tabs.find((t) => t.id === id) ?? launchTab;
     }
   }
 
