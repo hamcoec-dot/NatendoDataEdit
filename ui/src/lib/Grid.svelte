@@ -71,8 +71,11 @@
     locked?: boolean;
     /** The second pane of a split view: it scrolls on its own. */
     pane?: "main" | "split";
+    /** Pixels at the bottom covered by something floating over the grid
+     *  (the title-row question): the active cell scrolls clear of them. */
+    bottomInset?: number;
   }
-  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onInsight, onActivate, onJump, onFillClear, readOnly, locked = false }: Props = $props();
+  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onInsight, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0 }: Props = $props();
   // Where this pane is scrolled to (a split view's second pane keeps its own).
   const view = $derived(pane === "split" ? tab.splitScroll : tab);
 
@@ -137,7 +140,8 @@
   }
   function maxScrollY(): number {
     const content = (dataRows() - frozenRows()) * rowH;
-    return Math.max(0, content - (viewH() - bodyTop()) + rowH);
+    // Room to scroll the last rows clear of anything floating at the bottom.
+    return Math.max(0, content - (viewH() - bodyTop()) + rowH + bottomInset);
   }
   function maxScrollX(): number {
     const content = tab.columns.total() - tab.columns.x(frozenCols());
@@ -1530,7 +1534,7 @@
     const off = tab.firstRow;
     if (c.row >= off + fr) {
       const y = (c.row - off - fr) * rowH;
-      const vis = viewH() - bodyTop();
+      const vis = Math.max(rowH, viewH() - bodyTop() - bottomInset);
       if (y < view.scrollY) view.scrollY = y;
       else if (y + rowH > view.scrollY + vis) view.scrollY = y + rowH - vis;
     }

@@ -60,6 +60,7 @@ const url = process.argv[3] || "http://localhost:5207";
   ok(/looks like column names, so it is used as titles/.test(await question.textContent()) && (await header()) === true, "with the guess applied");
   if (out) await question.screenshot({ path: path.join(out, "header-ask.png") });
   ok((await question.locator("button[aria-keyshortcuts='Alt+Shift+N']").count()) === 1, "the buttons name their keys");
+  ok((await p.locator(".header-ask[role=group][aria-label='Title row question'] [role=status]").count()) === 1, "a labelled group whose question is read out");
 
   // 1. Answered from the keyboard: the line stays, so the table doesn't move.
   let top = await gridTop();
@@ -112,6 +113,23 @@ const url = process.argv[3] || "http://localhost:5207";
   const kept = await p.evaluate(() => Object.keys(JSON.parse(localStorage.getItem("nde.headers.v1") ?? "{}").files ?? JSON.parse(localStorage.getItem("nde.headers.v1") ?? "{}")).length);
   await open();
   ok(await question.isVisible(), `closed after Forget: nothing kept, it asks again (${kept})`);
+
+  // Arrowing down keeps the active cell clear of the box; Esc closes it.
+  await close();
+  await forgetAll();
+  await open();
+  await p.evaluate(() => window.__nde.grid.select({ row: 1, col: 0 }));
+  for (let i = 0; i < 40; i++) await p.keyboard.press("ArrowDown");
+  await wait(300);
+  {
+    const qb = await question.boundingBox();
+    const cp = await p.evaluate(() => window.__nde.grid.cellPoint(window.__nde.tab.cell));
+    ok(qb && cp.y <= qb.y, `arrowing down, the active cell stays above the box (${Math.round(cp.y)} <= ${Math.round(qb?.y ?? 0)})`);
+  }
+  await p.keyboard.press("Escape");
+  await wait(400);
+  ok(!(await question.count()) && (await header()) === true, "Esc closes it, keeping the guess");
+  ok((await p.locator(".header-ask[role=group][aria-label='Title row question'] [role=status]").count()) === 0, "(gone)");
 
   // 4. A private file is not asked (it remembers nothing).
   await close();

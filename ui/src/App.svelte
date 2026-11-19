@@ -5459,6 +5459,8 @@
       case "Escape":
         // Esc drops a cut or the copy outline and leaves extend mode; the
         // selection stays (as in Excel and Google Sheets).
+        // With nothing of that to cancel, it closes the title-row question.
+        if (!t.cut && !t.copied && !extendMode && closeHeaderAsk()) return;
         if (t.cut) cancelCut();
         else cutEpoch++;
         if (t.copied) {
@@ -6006,6 +6008,21 @@
           : "Does the first row hold column names? It is read as data for now.";
   });
 
+  /** The floating question's height: the grid keeps the active cell clear
+   *  of it (plus its gap) while it shows. */
+  let headerAskH = $state(0);
+  const headerAskInset = $derived(headerQuestion ? headerAskH + 28 : 0);
+
+  /** Esc in the grid (nothing else to cancel) or the X: close the question,
+   *  keeping the guess. */
+  function closeHeaderAsk(): boolean {
+    const t = tab;
+    if (!t || !headerQuestion) return false;
+    t.headerAskClosed = true;
+    void tick().then(() => grid?.focus());
+    return true;
+  }
+
   const notices = $derived.by(() => {
     const t = tab;
     type Notice = { text: string; action?: string; run?: () => void; actions?: { label: string; run: () => void; title?: string }[] };
@@ -6318,6 +6335,7 @@
             <Grid
                   bind:this={grid}
                   {tab}
+                  bottomInset={headerAskInset}
                   readOnly={!tab.info.indexed || tab.peeking}
                   locked={tab.info.read_only}
                   onCommit={commitCell}
@@ -6345,6 +6363,7 @@
             <div class="pane">
             <Grid
                   pane="split"
+                  bottomInset={headerAskInset}
                   {tab}
                   readOnly={!tab.info.indexed || tab.peeking}
                   locked={tab.info.read_only}
@@ -6374,6 +6393,7 @@
         <Grid
           bind:this={grid}
           {tab}
+          bottomInset={headerAskInset}
           readOnly={!tab.info.indexed || tab.peeking}
           locked={tab.info.read_only}
           onCommit={commitCell}
@@ -6449,12 +6469,11 @@
       />
     {/if}
     {#if headerQuestion && tab}
-      {@const t = tab}
-      <div class="header-ask" role="status" aria-live="polite" transition:fade={{ duration: 250 }}>
-        <span>{headerQuestion}</span>
+      <div class="header-ask" role="group" aria-label="Title row question" bind:clientHeight={headerAskH} transition:fade={{ duration: 250 }}>
+        <span role="status" aria-live="polite">{headerQuestion}</span>
         <button type="button" class="small" title="Alt+Shift+Y" aria-keyshortcuts="Alt+Shift+Y" onclick={() => void answerHeader(true)}>Yes, column names</button>
         <button type="button" class="small" title="Alt+Shift+N" aria-keyshortcuts="Alt+Shift+N" onclick={() => void answerHeader(false)}>No, it's data</button>
-        <button type="button" class="small close" aria-label="Close: keep the guess" title="Keep the guess" onclick={() => { t.headerAskClosed = true; void tick().then(() => grid?.focus()); }}><Icon name="close" size={12} /></button>
+        <button type="button" class="small close" aria-label="Close: keep the guess" title="Keep the guess (Esc)" onclick={() => void closeHeaderAsk()}><Icon name="close" size={12} /></button>
       </div>
     {/if}
   </main>
@@ -7523,6 +7542,11 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     box-shadow: 0 4px 16px rgb(0 0 0 / 0.18);
+  }
+  /* Centred over the table, not the table and the side panel. */
+  .body.with-panel .header-ask {
+    left: calc((100% - 320px) / 2);
+    max-width: calc(100% - 352px);
   }
   .header-ask .close {
     padding: 3px 5px;
