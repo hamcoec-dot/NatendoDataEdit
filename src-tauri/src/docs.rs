@@ -2600,6 +2600,13 @@ impl Docs {
         })
     }
 
+    /// Insert columns as part of something not a recipe step (Split into
+    /// columns after a paste): not noted for the recipe, as the cells
+    /// written into them are not.
+    pub fn insert_cols_unrecorded(&self, id: u32, at: u32, count: u32) -> CmdResult<DocInfo> {
+        self.insert_cols_now(id, at, count)
+    }
+
     fn insert_cols_now(&self, id: u32, at: u32, count: u32) -> CmdResult<DocInfo> {
         if count > MAX_INSERT_COLS {
             return Err(CmdError::new(

@@ -2059,12 +2059,13 @@
         void (async () => {
           if (tab !== t) return;
           const at = col;
+          let inserted = false;
           // Cells to the right with something in them: ask first.
           const busy = await filled().catch(() => 0);
           if (busy > 0) {
             const a = await ask(
               `Replace what is in ${busy === 1 ? "1 cell" : `${busy} cells`} to the right?`,
-              `Splitting puts ${parts.length} parts in columns ${col + 1} to ${col + parts.length} of this row, over what is there now. Insert ${parts.length - 1 === 1 ? "a new column" : `${parts.length - 1} new columns`} instead to keep it.`,
+              `Splitting puts ${parts.length} parts in columns ${col + 1} to ${col + parts.length} of this row, over what is there now. Insert ${parts.length - 1 === 1 ? "a new column" : `${parts.length - 1} new columns`} instead to keep it (${parts.length - 1 === 1 ? "it is" : "they are"} added to every row, empty in the others).`,
               [
                 { id: "insert", label: `Insert ${parts.length - 1 === 1 ? "1 column" : `${parts.length - 1} columns`}`, primary: true },
                 { id: "replace", label: "Replace", danger: true },
@@ -2073,12 +2074,13 @@
               "cancel",
             );
             if (a !== "insert" && a !== "replace") return;
-            if (a === "insert" && !(await change({ op: "insert_cols", at: col + 1, count: parts.length - 1 }))) return;
+            if (a === "insert" && !(await change({ op: "insert_cols", at: col + 1, count: parts.length - 1, unrecorded: true }))) return;
+            inserted = a === "insert";
           }
           t.whatNext = "splitting the pasted line";
           if (await apply((x) => backend().setCells(x.id, parts.map((v, i) => [row, at + i, v] as [number, number, string])))) {
             grid?.select({ row, col: at }, { row, col: at + parts.length - 1 });
-            say(`Split into ${parts.length} columns. Ctrl+Z undoes it.`);
+            say(`Split into ${parts.length} columns. ${inserted ? "Ctrl+Z takes the split back; press it again to remove the new columns." : "Ctrl+Z undoes it."}`);
           }
         })(),
     };

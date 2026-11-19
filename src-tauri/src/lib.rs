@@ -2537,6 +2537,9 @@ enum Structure {
     InsertCols {
         at: u32,
         count: u32,
+        /// Part of something that is not a recipe step (Split into columns).
+        #[serde(default)]
+        unrecorded: bool,
     },
     DeleteCols {
         at: u32,
@@ -2576,7 +2579,17 @@ async fn change(docs: DocsState<'_>, doc: u32, change: Structure) -> CmdResult<D
         Structure::InsertRows { at, count } => docs.insert_rows(doc, at, count),
         Structure::DeleteRows { at, count } => docs.delete_rows(doc, at, count),
         Structure::MoveRows { at, count, to } => docs.move_rows(doc, at, count, to),
-        Structure::InsertCols { at, count } => docs.insert_cols(doc, at, count),
+        Structure::InsertCols {
+            at,
+            count,
+            unrecorded,
+        } => {
+            if unrecorded {
+                docs.insert_cols_unrecorded(doc, at, count)
+            } else {
+                docs.insert_cols(doc, at, count)
+            }
+        }
         Structure::DeleteCols { at, count } => docs.delete_cols(doc, at, count),
         Structure::MoveCols { at, count, to } => docs.move_cols(doc, at, count, to),
         Structure::HideRows { at, count } => docs.hide_rows(doc, at, count),

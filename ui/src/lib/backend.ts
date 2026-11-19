@@ -117,7 +117,7 @@ export type Change =
   | { op: "insert_rows"; at: number; count: number }
   | { op: "delete_rows"; at: number; count: number }
   | { op: "move_rows"; at: number; count: number; to: number }
-  | { op: "insert_cols"; at: number; count: number }
+  | { op: "insert_cols"; at: number; count: number; /** Not a recipe step (Split into columns). */ unrecorded?: boolean }
   | { op: "delete_cols"; at: number; count: number }
   | { op: "move_cols"; at: number; count: number; to: number }
   | { op: "hide_rows"; at: number; count: number }
