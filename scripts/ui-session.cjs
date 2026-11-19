@@ -2,8 +2,9 @@
 // double-clicked in Windows, are not offered back, and after Reopen that
 // file stays in front, even when its open finishes mid-reopen.
 // Run: (cd ui && npx vite --port 5208) then
-// NODE_PATH=<folder with playwright> node scripts/ui-session.cjs [screenshot dir] [url]
+// NODE_PATH=<folder with playwright> node scripts/ui-session.cjs [screenshot folder] [url]
 const { chromium } = require("playwright");
+const path = require("path");
 const url = process.argv[3] || "http://localhost:5208";
 (async () => {
   const b = await chromium.launch({ channel: "msedge" });
@@ -81,7 +82,7 @@ const url = process.argv[3] || "http://localhost:5208";
   await wait(800);
   ok((await p.locator(".dialog[role=alertdialog]").count()) === 0, "nothing to offer: no question");
 
-  if (process.argv[2]) await p.screenshot({ path: process.argv[2] });
+  if (process.argv[2]) await p.screenshot({ path: path.join(process.argv[2], "session.png") });
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   console.log(failed ? `${failed} FAILED` : "ALL PASS");
   await b.close();
