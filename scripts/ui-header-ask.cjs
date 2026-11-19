@@ -86,9 +86,18 @@ const url = process.argv[3] || "http://localhost:5207";
   ok((await gridTop()) === top, "and the table did not move");
   await command("Ask about the title row again");
   ok(await question.isVisible(), "Format › Ask about the title row again brings it back");
+  ok(/looks like column names/.test(await question.textContent()), "worded as sure as the guess at open was");
   await p.keyboard.press("Alt+Shift+Y");
   await wait(400);
   ok((await header()) === true && (await answered.isVisible()), "Alt+Shift+Y: column names");
+
+  // Forget: the line goes, and closing doesn't remember the choice again.
+  await command("Forget this file's title-row choice");
+  ok(!(await question.count()) && !(await answered.count()), "Forget: no question comes back");
+  await close();
+  const kept = await p.evaluate(() => Object.keys(JSON.parse(localStorage.getItem("nde.headers.v1") ?? "{}").files ?? JSON.parse(localStorage.getItem("nde.headers.v1") ?? "{}")).length);
+  await open();
+  ok(await question.isVisible(), `closed after Forget: nothing kept, it asks again (${kept})`);
 
   // 4. A private file is not asked (it remembers nothing).
   await close();

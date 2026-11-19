@@ -507,8 +507,10 @@
     const path = t?.info.path;
     if (!t || !path) return;
     await rememberHeader(path, false, true);
-    // Closing it now does not remember it again.
+    // Closing it now does not remember it again (nor does the question,
+    // which goes: the next open guesses and asks).
     t.headerTouched = false;
+    t.headerAsk = null;
     say("Forgot this file's title-row choice; the next time it opens, the app guesses again. Using the switch or saving the file remembers it again.");
   }
   /** Format › Forget remembered title rows: every file's choice. */
@@ -524,7 +526,10 @@
     ], "cancel");
     if (a !== "forget") return;
     forgetHeaders();
-    for (const t of tabs) t.headerTouched = false;
+    for (const t of tabs) {
+      t.headerTouched = false;
+      t.headerAsk = null;
+    }
     say(`Forgot the title-row choices of ${plural(n, "file")}.`);
   }
 
@@ -557,7 +562,7 @@
     if (!t) return;
     t.dismissed = false;
     t.headerTouched = false;
-    t.headerAsk = "unsure";
+    t.headerAsk = t.headerSure ?? "unsure";
   }
 
   /** Format › Ask about the title row when a file opens (as in Options). */
@@ -608,6 +613,7 @@
       const sample = rows.map((r) => r.slice(0, width));
       if (t.headerTouched) return;
       const sure = headerCertainty(sample);
+      t.headerSure = sure;
       const guess = sure === "unsure" ? looksLikeHeader(sample) : sure === "yes";
       if (guess) {
         t.header = true;
@@ -5983,13 +5989,19 @@
     const out: Notice[] = [];
     if (t.headerAsk && !t.headerTouched)
       out.push({
+        // Worded by how sure the guess is and what is applied now (asked
+        // again after the switch was flipped, they can differ).
         text: t.header
           ? t.headerAsk === "yes"
             ? "The first row looks like column names, so it is used as titles. Is that right?"
-            : "The first row may hold column names; it is used as titles for now. Is that right?"
+            : t.headerAsk === "no"
+              ? "The first row looks like data, but it is used as titles for now. Is that right?"
+              : "The first row may hold column names; it is used as titles for now. Is that right?"
           : t.headerAsk === "no"
             ? "The first row looks like data, so the columns are numbered. Does it hold column names after all?"
-            : "Does the first row hold column names? It is read as data for now.",
+            : t.headerAsk === "yes"
+              ? "The first row looks like column names, but it is read as data for now. Does it hold column names?"
+              : "Does the first row hold column names? It is read as data for now.",
         actions: [
           { label: "Yes, column names", run: () => void answerHeader(true), title: "Alt+Shift+Y" },
           { label: "No, it's data", run: () => void answerHeader(false), title: "Alt+Shift+N" },
