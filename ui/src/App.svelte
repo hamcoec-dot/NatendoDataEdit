@@ -3274,9 +3274,6 @@
     return out;
   }
 
-  /** Edit › Copy column names: the names in one row, split by tabs (pastes
-   *  into a table, here or in a spreadsheet) or, `asText`, by this file's
-   *  delimiter (a line for a text file). */
   /** What every copy does first (as Ctrl+C): a pending cut and the copy
    *  outlines go, on every tab. */
   function clearCopyMarks(): void {
@@ -3290,6 +3287,9 @@
     }
   }
 
+  /** Edit › Copy column names: the names in one row, split by tabs (pastes
+   *  into a table, here or in a spreadsheet) or, `asText`, by this file's
+   *  delimiter (a line for a text file). */
   async function copyColumnNames(asText: boolean): Promise<void> {
     const t = tab;
     if (!t) return;
@@ -3407,7 +3407,9 @@
       if (a === "fit") cells = cells.filter(([c]) => c < t.info.cols);
       else widened = added;
     }
-    const dupes = new Set(names.filter((n, i) => n !== "" && names.findIndex((m) => m.toLowerCase() === n.toLowerCase()) !== i).map((n) => n.toLowerCase())).size;
+    // Repeats among the names pasted (after any "Paste only" choice).
+    const pasted = cells.map(([, n]) => n);
+    const dupes = new Set(pasted.filter((n, i) => n !== "" && pasted.findIndex((m) => m.toLowerCase() === n.toLowerCase()) !== i).map((n) => n.toLowerCase())).size;
     if (!t.header) {
       if (t.info.filtered) {
         say("Show all rows first (a filter or hidden rows are on), then paste the column names.");
