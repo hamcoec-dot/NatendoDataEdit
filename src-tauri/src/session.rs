@@ -63,6 +63,9 @@ pub struct SessionItem {
     pub changed: bool,
     /// The file is gone.
     pub missing: bool,
+    /// The file is open already (or being opened, say from Windows at
+    /// start): nothing to offer back.
+    pub open: bool,
     pub active: bool,
 }
 
@@ -168,7 +171,11 @@ impl Session {
     }
 
     /// The remembered tabs, by name (files now private are left out).
-    pub fn items(&self, is_private: impl Fn(&Path) -> bool) -> Vec<SessionItem> {
+    pub fn items(
+        &self,
+        is_private: impl Fn(&Path) -> bool,
+        is_open: impl Fn(&Path) -> bool,
+    ) -> Vec<SessionItem> {
         let entries = self
             .entries
             .lock()
@@ -193,6 +200,7 @@ impl Session {
                     folder,
                     changed: now.is_some_and(|s| s != (e.size, e.modified)),
                     missing: now.is_none(),
+                    open: is_open(p),
                     active: e.active,
                 }
             })
@@ -306,16 +314,18 @@ mod tests {
         // Read back by a new run.
         let s2 = Session::default();
         s2.load(&dir);
-        let items = s2.items(|_| false);
+        let items = s2.items(|_| false, |_| false);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "a.csv");
-        assert!(!items[0].changed && !items[0].missing && items[0].active);
+        assert!(!items[0].changed && !items[0].missing && !items[0].open && items[0].active);
+        // A file open already is marked, so the window doesn't offer it.
+        assert!(s2.items(|_| false, |p| p == a)[0].open);
         let (p, place) = s2.place(0).unwrap();
         assert_eq!(p, a);
         assert_eq!((place.row, place.col), (5, 2));
         assert!(place.view.is_some());
         // Private files are not listed.
-        assert!(s2.items(|_| true).is_empty());
+        assert!(s2.items(|_| true, |_| false).is_empty());
         // A changed file reopens with the plain view.
         std::fs::write(&a, "x,y\n1,2\n3,4\n").unwrap();
         let (_, place) = s2.place(0).unwrap();
@@ -324,7 +334,7 @@ mod tests {
         let text = std::fs::read_to_string(dir.join("session.json")).unwrap();
         assert!(!text.contains("1,2"));
         s2.clear();
-        assert!(s2.items(|_| false).is_empty());
+        assert!(s2.items(|_| false, |_| false).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

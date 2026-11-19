@@ -1633,7 +1633,7 @@ export class MockBackend implements Backend {
     return this.lastTabs.length;
   }
   async sessionList(): Promise<SessionItem[]> {
-    return this.lastTabs.map((s, index) => ({ index, name: s.path.split("/").at(-1)!, folder: "C:", changed: false, missing: false, active: s.active }));
+    return this.lastTabs.map((s, index) => ({ index, name: s.path.split("/").at(-1)!, folder: "C:", changed: false, missing: false, open: this.openAt(s.path) !== null, active: s.active }));
   }
   async sessionOpen(index: number): Promise<{ opened: Opened; place: SessionPlace }> {
     const s = this.lastTabs[index];

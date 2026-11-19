@@ -286,6 +286,8 @@ export interface SessionItem {
   /** The file changed since: it opens with the plain view. */
   changed: boolean;
   missing: boolean;
+  /** Open already (or being opened at start): not offered back. */
+  open?: boolean;
   active: boolean;
 }
 export interface SessionPlace {

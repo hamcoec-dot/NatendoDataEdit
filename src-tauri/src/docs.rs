@@ -6229,7 +6229,7 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
 
 /// A path as text for matching: resolved where it exists, without the
 /// `\\?\` form, and (on Windows) in lower case with `\`.
-fn path_key(p: &Path) -> String {
+pub(crate) fn path_key(p: &Path) -> String {
     let norm = |p: &Path| -> String {
         let p = std::fs::canonicalize(p)
             .or_else(|_| std::path::absolute(p))

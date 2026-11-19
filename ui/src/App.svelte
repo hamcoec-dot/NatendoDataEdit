@@ -1,5 +1,6 @@
 <script lang="ts">
   import { forgetHeaders, recallHeader, rememberedHeaders, rememberHeader } from "./lib/headerMemory";
+  import { sessionToOffer } from "./lib/sessionOffer";
   import { onMount, tick } from "svelte";
   import { backend, errorText, isCmdError, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
   import { Tab } from "./lib/tab.svelte";
@@ -1384,7 +1385,9 @@
         await backend().sessionClear();
         return;
       }
-      const items = (await backend().sessionList()).filter((i) => !i.missing);
+      // Files open already (one opened from Windows, which started the
+      // app) are not offered back: only the others are.
+      const items = sessionToOffer(await backend().sessionList());
       if (!items.length) return;
       if (prefs.data.reopenLast === "ask") {
         const names = items.slice(0, 6).map((i) => i.name).join(", ") + (items.length > 6 ? `, and ${items.length - 6} more` : "");

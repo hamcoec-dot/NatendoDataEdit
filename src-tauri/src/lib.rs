@@ -440,12 +440,36 @@ async fn session_save(
 /// The tabs open when the app last closed (names only).
 #[tauri::command]
 async fn session_list(
+    docs: DocsState<'_>,
     recent: RecentState<'_>,
     session: SessionState<'_>,
+    launch: State<'_, LaunchPaths>,
 ) -> CmdResult<Vec<session::SessionItem>> {
-    let (recent, session) = (recent.inner().clone(), session.inner().clone());
-    blocking(move || Ok(session.items(|p| recent.is_private(p)))).await
+    let (docs, recent, session) = (
+        docs.inner().clone(),
+        recent.inner().clone(),
+        session.inner().clone(),
+    );
+    let launch: Vec<String> = launch
+        .0
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .map(|p| docs::path_key(p))
+        .collect();
+    blocking(move || {
+        Ok(session.items(
+            |p| recent.is_private(p),
+            |p| docs.find_open(p).is_some() || launch.contains(&docs::path_key(p)),
+        ))
+    })
+    .await
 }
+
+/// The files Windows asked this run to open at start (they may still be
+/// opening when the window asks what to offer back).
+#[derive(Default)]
+struct LaunchPaths(Mutex<Vec<PathBuf>>);
 
 /// A remembered tab reopened, and where it was.
 #[derive(Serialize)]
@@ -3405,6 +3429,7 @@ pub fn run() {
         .manage(Arc::new(Docs::default()))
         .manage(Arc::new(Agent::default()))
         .manage(Pending::default())
+        .manage(LaunchPaths::default())
         .manage(Arc::new(Imports::default()))
         .manage(Arc::new(Recent::default()))
         .manage(Arc::new(session::Session::default()))
@@ -3458,6 +3483,10 @@ pub fn run() {
             let cwd = std::env::current_dir().ok();
             let paths = arg_paths(&args, cwd.as_deref());
             if !paths.is_empty() {
+                *app.state::<LaunchPaths>()
+                    .0
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = paths.clone();
                 open_paths(app.handle(), paths, false);
             }
             Ok(())
