@@ -7114,15 +7114,9 @@ mod tests {
     /// Windows passed at start written another way; not other files.
     #[test]
     fn open_or_launching_marks() {
-        let a = tmp("launch-open.csv", b"a,b
-1,2
-");
-        let b = tmp("launch-passed.csv", b"a
-1
-");
-        let c = tmp("launch-neither.csv", b"a
-1
-");
+        let a = tmp("launch-open.csv", b"a,b\r\n1,2\r\n");
+        let b = tmp("launch-passed.csv", b"a\r\n1\r\n");
+        let c = tmp("launch-neither.csv", b"a\r\n1\r\n");
         let docs = Docs::default();
         let id = docs.open_path(&a, false).unwrap().id;
         wait(&docs, id);
@@ -7135,25 +7129,45 @@ mod tests {
             other = PathBuf::from(other.to_string_lossy().to_uppercase().replace('\\', "/"));
         }
         let paths = [a.clone(), b.clone(), c.clone()];
-        assert_eq!(docs.open_or_launching(&[other], &paths), vec![true, true, false]);
-        assert_eq!(docs.open_or_launching(&[], &paths), vec![true, false, false]);
+        assert_eq!(
+            docs.open_or_launching(&[other], &paths),
+            vec![true, true, false]
+        );
+        assert_eq!(
+            docs.open_or_launching(&[], &paths),
+            vec![true, false, false]
+        );
     }
 
     /// Copy column names and Paste as column names.
     #[test]
     fn column_names_copy_and_paste() {
-        let p = tmp("names-copy.csv", b"id,\"last, first\",city\r\n1,\"Stone, Ada\",Dayton\r\n");
+        let p = tmp(
+            "names-copy.csv",
+            b"id,\"last, first\",city\r\n1,\"Stone, Ada\",Dayton\r\n",
+        );
         let docs = Docs::default();
         let id = docs.open_path(&p, false).unwrap().id;
         wait(&docs, id);
-        assert_eq!(docs.column_names_line(id, &[0, 1, 2], '\t').unwrap(), "id\tlast, first\tcity");
+        assert_eq!(
+            docs.column_names_line(id, &[0, 1, 2], '\t').unwrap(),
+            "id\tlast, first\tcity"
+        );
         assert_eq!(docs.column_names_line(id, &[2, 0], ',').unwrap(), "city,id");
-        assert_eq!(docs.column_names_line(id, &[1], ',').unwrap(), "\"last, first\"");
+        assert_eq!(
+            docs.column_names_line(id, &[1], ',').unwrap(),
+            "\"last, first\""
+        );
         // Past the last column: an empty name.
         assert_eq!(docs.column_names_line(id, &[0, 9], ';').unwrap(), "id;");
-        let info = docs.set_column_names(id, vec![(0, "key".into()), (2, "town".into())]).unwrap();
+        let info = docs
+            .set_column_names(id, vec![(0, "key".into()), (2, "town".into())])
+            .unwrap();
         assert!(info.can_undo);
-        assert_eq!(docs.column_names_line(id, &[0, 1, 2], ',').unwrap(), "key,\"last, first\",town");
+        assert_eq!(
+            docs.column_names_line(id, &[0, 1, 2], ',').unwrap(),
+            "key,\"last, first\",town"
+        );
     }
 
     #[test]
