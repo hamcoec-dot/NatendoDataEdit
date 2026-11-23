@@ -27,7 +27,7 @@ const url = process.argv[3] || "http://localhost:5193";
   const sel = () =>
     p.evaluate(() => {
       const t = window.__nde.tab;
-      return { cell: { ...t.cell }, rect: { ...t.rect }, last: t.info.rows - 1, cols: t.info.cols };
+      return { cell: { ...t.cell }, rect: { ...t.drawRect }, last: t.info.rows - 1, cols: t.info.cols };
     });
   const start = async (row, col) => {
     await p.evaluate(([r, c]) => {

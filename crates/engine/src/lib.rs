@@ -15,6 +15,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod areas;
 pub mod cellformula;
 pub mod changes;
 pub mod clean;

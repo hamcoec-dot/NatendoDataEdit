@@ -61,8 +61,10 @@
     lastScope = s;
     if (s === "all" || s === "pick" || s === "tabs") block = null;
     else {
-      const r = rectOf(tab.sel);
-      block = r.rows * r.cols > 1 ? { ...r } : null;
+      // One block only: with several blocks selected there is no one block to
+      // search, so "Selection" searches the whole file.
+      const r = tab.singleRect();
+      block = r && r.rows * r.cols > 1 ? { ...r } : null;
     }
   });
 
@@ -217,7 +219,7 @@
 
   /** The search as set up now. A one-cell "selection" scope searches all. */
   function spec(): FindSpec {
-    const r = options.scope !== "all" && block ? block : rectOf(tab.sel);
+    const r = options.scope !== "all" && block ? block : (tab.singleRect() ?? { row: 0, rows: 0, col: 0, cols: 0 });
     const o = { ...options, cols: [...options.cols] };
     if (o.scope === "selection" && r.rows * r.cols <= 1) o.scope = "all";
     if (o.scope === "tabs") o.scope = "all";

@@ -80,6 +80,8 @@ pub const MAX_EDIT_CHARS: usize = 1 << 20;
 pub const MAX_WRITE_CELLS: u64 = 100_000;
 /// Characters written by one command, all cells together.
 pub const MAX_WRITE_CHARS: usize = 64 << 20;
+/// Most blocks one multi-block (Ctrl+click) request may carry.
+pub const MAX_AREAS: usize = 10_000;
 /// Rows inserted by one command.
 pub const MAX_INSERT_ROWS: u64 = 100_000;
 /// Cells copied to the clipboard at once.
@@ -2350,6 +2352,42 @@ impl Docs {
         })
     }
 
+    /// One value into every cell of several blocks (Ctrl+click), as ONE
+    /// undo step. The blocks are made non-overlapping here (never trust the
+    /// window), the cells of all of them count against the per-change cap,
+    /// hidden columns (`skip`) are left alone. An empty value clears them.
+    pub fn fill_areas(
+        &self,
+        id: u32,
+        areas: Vec<natendo_engine::areas::Area>,
+        value: String,
+        skip: &[u32],
+    ) -> CmdResult<DocInfo> {
+        if areas.len() > MAX_AREAS {
+            return Err(CmdError::new("too_large", "too many selected blocks"));
+        }
+        let parts = natendo_engine::areas::disjoint(&areas);
+        let n: u64 = parts.iter().fold(0u64, |n, a| n.saturating_add(a.cells()));
+        check_write(n, std::iter::once(value.len()))?;
+        if (value.len() as u64).saturating_mul(n) > MAX_WRITE_CHARS as u64 {
+            return Err(too_much());
+        }
+        self.edit(id, |d| {
+            let mut cells = Vec::with_capacity(n as usize);
+            for a in &parts {
+                let r1 = a.row.checked_add(a.rows).ok_or(Error::OutOfRange)?;
+                let c1 = a.col.checked_add(a.cols).ok_or(Error::OutOfRange)?;
+                check_width(d, c1 as u64)?;
+                for r in a.row..r1 {
+                    for c in (a.col..c1).filter(|c| !skip.contains(c)) {
+                        cells.push((r, c, value.clone()));
+                    }
+                }
+            }
+            d.set_cells(cells)
+        })
+    }
+
     /// Selected cells as tab-separated text for the clipboard. Values with a
     /// tab, quote or line break are quoted, so pasting round-trips.
     #[cfg(test)]
@@ -2654,6 +2692,47 @@ impl Docs {
                 }
                 Ok(t)
             });
+        drop(d);
+        let mut slot = entry.totals.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.as_ref().is_some_and(|p| Arc::ptr_eq(p, &progress)) {
+            *slot = None;
+        }
+        Ok(r?)
+    }
+
+    /// [`Docs::selection_totals`] over several blocks (Ctrl+click): made
+    /// non-overlapping here (the window's list is not trusted), no distinct count.
+    pub fn selection_totals_areas(
+        &self,
+        id: u32,
+        areas: Vec<natendo_engine::areas::Area>,
+        read: ReadOptions,
+    ) -> CmdResult<TotalsOut> {
+        if areas.len() > MAX_AREAS {
+            return Err(CmdError::new("too_large", "too many selected blocks"));
+        }
+        let entry = self.get(id)?;
+        let progress = Arc::new(Progress::new());
+        {
+            let mut slot = entry.totals.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(old) = slot.replace(progress.clone()) {
+                old.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(CmdError::new("busy", "the file is being changed"))
+            }
+        };
+        if entry.change_waiting() {
+            drop(d);
+            return Err(CmdError::new("busy", "the file is being changed"));
+        }
+        let r = d
+            .selection_totals_areas(&areas, read, &progress)
+            .map(TotalsOut::from);
         drop(d);
         let mut slot = entry.totals.lock().unwrap_or_else(|p| p.into_inner());
         if slot.as_ref().is_some_and(|p| Arc::ptr_eq(p, &progress)) {

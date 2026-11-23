@@ -32,7 +32,7 @@ const url = process.argv[3] || "http://localhost:5193";
   let left = 0;
   for (let x = 30; x < 120; x += 2) {
     await p.mouse.click(canvas.x + x, canvas.y + HEAD + ROW + 12);
-    if (/C1$/.test(await at()) && (await p.evaluate(() => window.__nde.tab.rect.cols)) === 1) {
+    if (/C1$/.test(await at()) && (await p.evaluate(() => window.__nde.tab.drawRect.cols)) === 1) {
       left = x;
       break;
     }

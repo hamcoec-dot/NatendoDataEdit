@@ -154,7 +154,7 @@ const url = process.argv[3] || "http://localhost:5194";
 
   // ---- 5. Undo and Redo select what changed and say what it was ----
   const status = () => p.textContent("footer.status");
-  const sel = () => p.evaluate(() => ({ ...window.__nde.tab.cell, rect: { ...window.__nde.tab.rect } }));
+  const sel = () => p.evaluate(() => ({ ...window.__nde.tab.cell, rect: { ...window.__nde.tab.drawRect } }));
   await put(8, 2, "zzz");
   await start(1, 0);
   await p.keyboard.press("Control+z");

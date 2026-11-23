@@ -149,7 +149,7 @@ const url = process.argv[3] || "http://localhost:5197";
   await p.waitForTimeout(800);
   ok((await p.evaluate(() => window.__nde.tab.info.total_rows)) === 7, "the rest went into one new row at the end");
   ok(/added 1 new row at the end/.test(await status()), "the status line says so");
-  const s = await p.evaluate(() => window.__nde.tab.rect);
+  const s = await p.evaluate(() => window.__nde.tab.drawRect);
   ok(s.row === (await p.evaluate(() => window.__nde.tab.info.rows)) - 1, "the new row is selected");
 
   // Hidden rows were never written.
