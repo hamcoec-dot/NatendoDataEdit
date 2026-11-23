@@ -1583,6 +1583,46 @@ fn main() {
     big.selection_totals(1, rows - 1, 0, COLS as u32, read, &p)
         .unwrap();
     check.budget("quick totals, every cell", t.elapsed(), budget(6.0));
+    // Several selected blocks (Ctrl+click): totals over three whole-column
+    // blocks against one, the split of 10,000 blocks, and two big clears
+    // against one.
+    {
+        use natendo_engine::areas::{disjoint, Area};
+        let col = |c: u32| Area {
+            row: 1,
+            rows: rows - 1,
+            col: c,
+            cols: 1,
+        };
+        let t = Instant::now();
+        big.selection_totals(1, rows - 1, 2, 1, read, &p).unwrap();
+        let one = t.elapsed();
+        let t = Instant::now();
+        let three = big
+            .selection_totals_areas(&[col(2), col(4), col(6)], read, &p)
+            .unwrap();
+        let many = t.elapsed();
+        assert!(three.cells >= 3 * (rows - 1));
+        println!(
+            "  [multi-area] totals: one 1M-row column {:?}, three {:?} ({:.2}x)",
+            one,
+            many,
+            many.as_secs_f64() / one.as_secs_f64().max(1e-9)
+        );
+        check.budget("quick totals, three whole-column blocks", many, budget(3.0));
+        let singles: Vec<Area> = (0..10_000u64)
+            .map(|i| Area {
+                row: (i * 7919) % 1_000_000,
+                rows: 1,
+                col: (i % 20) as u32,
+                cols: 1,
+            })
+            .collect();
+        let t = Instant::now();
+        let d = disjoint(&singles);
+        check.budget("split 10,000 selected blocks", t.elapsed(), budget(0.05));
+        assert!(!d.is_empty());
+    }
     let t = Instant::now();
     big.hide_rows(1, rows / 2).unwrap();
     let shown = big.row_count();

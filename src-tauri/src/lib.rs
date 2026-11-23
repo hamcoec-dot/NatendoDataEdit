@@ -704,6 +704,18 @@ async fn selection_totals(
     blocking(move || docs.selection_totals(doc, row, rows, col, cols, read, distinct)).await
 }
 
+/// Totals of several selected blocks (Ctrl+click), each cell once.
+#[tauri::command]
+async fn selection_totals_areas(
+    docs: DocsState<'_>,
+    doc: u32,
+    areas: Vec<natendo_engine::areas::Area>,
+    read: natendo_engine::value::ReadOptions,
+) -> CmdResult<docs::TotalsOut> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.selection_totals_areas(doc, areas, read)).await
+}
+
 /// A new table and what a comparison found.
 #[tauri::command]
 async fn table_report(docs: DocsState<'_>, doc: u32, op: TableOp) -> CmdResult<docs::TableReport> {
@@ -2508,6 +2520,20 @@ async fn fill_cells(
     blocking(move || docs.fill_skipping(doc, row, rows, col, cols, value, &skip)).await
 }
 
+/// One value into every cell of several selected blocks, one undo step.
+#[tauri::command]
+async fn fill_areas(
+    docs: DocsState<'_>,
+    doc: u32,
+    areas: Vec<natendo_engine::areas::Area>,
+    value: String,
+    skip: Option<Vec<u32>>,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    let skip = skip.unwrap_or_default();
+    blocking(move || docs.fill_areas(doc, areas, value, &skip)).await
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn move_cells(
@@ -3815,6 +3841,8 @@ pub fn run() {
             column_types,
             column_summary,
             selection_totals,
+            selection_totals_areas,
+            fill_areas,
             open_link,
             clean_suggestions,
             autosave,

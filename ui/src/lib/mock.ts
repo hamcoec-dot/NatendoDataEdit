@@ -47,6 +47,7 @@ import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, Spli
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
+import { disjoint, type Rect } from "./selection";
 import type { CellFormula, FacetCard, Facets, FormulaReport, Insights, InsightSpec, Profile, ProfileSpec } from "./backend";
 import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally, LookAlikeSpec, LookAlikes, HandOver, ModifiedReport } from "./backend";
 import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
@@ -914,6 +915,16 @@ export class MockBackend implements Backend {
     const hide = new Set(skip);
     const cells: [number, number, string][] = [];
     for (let r = row; r < row + rows; r++) for (let c = col; c < col + cols; c++) if (!hide.has(c)) cells.push([r, c, value]);
+    return this.setCells(doc, cells);
+  }
+
+  async fillAreas(doc: number, areas: Rect[], value: string, skip: number[] = []) {
+    const parts = disjoint(areas);
+    const n = parts.reduce((a, r) => a + r.rows * r.cols, 0);
+    if (n > 100_000) throw err("too_large", "one change is limited to 100,000 cells");
+    const hide = new Set(skip);
+    const cells: [number, number, string][] = [];
+    for (const a of parts) for (let r = a.row; r < a.row + a.rows; r++) for (let c = a.col; c < a.col + a.cols; c++) if (!hide.has(c)) cells.push([r, c, value]);
     return this.setCells(doc, cells);
   }
 
@@ -1903,6 +1914,37 @@ export class MockBackend implements Backend {
     t.distinct = seen.size;
     if (t.numbers && !Number.isFinite(sum)) t.too_large = true;
     else if (t.numbers) {
+      t.sum = sum;
+      t.average = sum / t.numbers;
+    }
+    return t;
+  }
+
+  async selectionTotalsAreas(doc: number, areas: Rect[]): Promise<Totals> {
+    const d = this.get(doc);
+    const parts = disjoint(areas);
+    const t: Totals = { cells: 0, filled: 0, numbers: 0, sum: null, average: null, min: null, max: null, too_large: false, chars: 0, distinct: null, distinct_exact: true };
+    let sum = 0;
+    let budget = 200_000;
+    for (const a of parts) {
+      t.cells += a.rows * a.cols;
+      for (let r = a.row; r < a.row + a.rows && budget > 0; r++) {
+        for (let c = a.col; c < a.col + a.cols && budget > 0; c++, budget--) {
+          const raw = this.value(d, r, c);
+          t.chars += [...raw].length;
+          const v = raw.trim();
+          if (!v) continue;
+          t.filled++;
+          const x = numberOf(v);
+          if (x === null) continue;
+          t.numbers++;
+          sum += x;
+          t.min = Math.min(t.min ?? x, x);
+          t.max = Math.max(t.max ?? x, x);
+        }
+      }
+    }
+    if (t.numbers) {
       t.sum = sum;
       t.average = sum / t.numbers;
     }
