@@ -7,6 +7,7 @@
   import { backend, type Totals } from "./backend";
   import { prefs, TOTAL_KINDS, type TotalKind } from "./prefs.svelte";
   import { fmt } from "./views";
+  import { cellCountAreas } from "./selection";
   import { totalLabel, totalText, totalValue } from "./m9";
 
   let { tab }: { tab: Tab } = $props();
@@ -21,7 +22,8 @@
 
   $effect(() => {
     const t = tab;
-    const r = t.rect;
+    const areas = t.areas;
+    const r = t.singleRect();
     void t.version;
     void t.info;
     const distinct = prefs.data.totalsShown.includes("distinct");
@@ -31,7 +33,7 @@
     totals = null;
     open = false;
     // One cell: nothing to total (as in Sheets).
-    if (r.rows * r.cols <= 1 || !t.info.indexed) {
+    if (cellCountAreas(areas) <= 1 || !t.info.indexed) {
       totals = null;
       pending = false;
       return;
@@ -41,8 +43,16 @@
       const slow = setTimeout(() => {
         if (n === asked) pending = true;
       }, 250);
-      void backend()
-        .selectionTotals(t.id, r.row, r.rows, r.col, Math.min(r.cols, 16_384), READ, distinct)
+      // One block asks for its totals (with a distinct count if ticked);
+      // several blocks ask once for all of them, each cell once.
+      void (r
+        ? backend().selectionTotals(t.id, r.row, r.rows, r.col, Math.min(r.cols, 16_384), READ, distinct)
+        : backend().selectionTotalsAreas(
+            t.id,
+            areas.map((a) => ({ ...a, cols: Math.min(a.cols, 16_384) })),
+            READ,
+          )
+      )
         .then((x) => {
           if (n === asked) totals = x;
         })

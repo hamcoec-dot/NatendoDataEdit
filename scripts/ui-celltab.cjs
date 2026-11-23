@@ -39,7 +39,7 @@ const url = process.argv[3] || "http://localhost:5213";
   // Text of a block: line breaks as LF, none at the end.
   const block = async (id, row, rows, col, cols) =>
     (await p.evaluate(([id, row, rows, col, cols]) => window.__nde.backend.copyCells(id, row, rows, col, cols), [id, row, rows, col, cols])).replace(/\r/g, "").replace(/\n$/, "");
-  const rectOf = (i) => p.evaluate((i) => ({ ...window.__nde.tabs[i].rect }), i);
+  const rectOf = (i) => p.evaluate((i) => ({ ...window.__nde.tabs[i].drawRect }), i);
   const undo = async () => {
     await p.keyboard.press("Control+z");
     await p.waitForTimeout(400);
@@ -62,7 +62,7 @@ const url = process.argv[3] || "http://localhost:5213";
   let left = 0;
   for (let x = 30; x < 120; x += 2) {
     await p.mouse.click(canvas.x + x, canvas.y + HEAD + ROW + 12);
-    if ((await p.evaluate(() => window.__nde.tab.rect.cols)) === 1 && /C1$/.test(await p.inputValue("input.goto"))) {
+    if ((await p.evaluate(() => window.__nde.tab.drawRect.cols)) === 1 && /C1$/.test(await p.inputValue("input.goto"))) {
       left = x;
       break;
     }

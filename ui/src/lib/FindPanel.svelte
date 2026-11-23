@@ -61,8 +61,10 @@
     lastScope = s;
     if (s === "all" || s === "pick" || s === "tabs") block = null;
     else {
-      const r = rectOf(tab.sel);
-      block = r.rows * r.cols > 1 ? { ...r } : null;
+      // One block only: with several blocks selected there is no one block to
+      // search, so "Selection" searches the whole file.
+      const r = tab.singleRect();
+      block = r && r.rows * r.cols > 1 ? { ...r } : null;
     }
   });
 
@@ -210,14 +212,19 @@
     focus();
   });
 
+  /** Several blocks are selected (Ctrl+click) and the scope asks for one:
+   *  nothing is searched (and nothing is quietly widened to the whole file). */
+  const scopeNeedsOne = $derived(tab.extra.length > 0 && (options.scope === "selection" || options.scope === "column"));
+  const NEEDS_ONE = "Searching in a selection works on one block. Click once to select a single block, or choose Whole file.";
+
   /** There is something to look for (in the cells, not the notes). */
   function searching(): boolean {
-    return options.lookIn === "cells" && (options.blank || options.text !== "") && !(options.scope === "pick" && options.cols.length === 0);
+    return options.lookIn === "cells" && !scopeNeedsOne && (options.blank || options.text !== "") && !(options.scope === "pick" && options.cols.length === 0);
   }
 
   /** The search as set up now. A one-cell "selection" scope searches all. */
   function spec(): FindSpec {
-    const r = options.scope !== "all" && block ? block : rectOf(tab.sel);
+    const r = options.scope !== "all" && block ? block : (tab.singleRect() ?? { row: 0, rows: 0, col: 0, cols: 0 });
     const o = { ...options, cols: [...options.cols] };
     if (o.scope === "selection" && r.rows * r.cols <= 1) o.scope = "all";
     if (o.scope === "tabs") o.scope = "all";
@@ -337,6 +344,10 @@
 
   export async function next(backward = false): Promise<void> {
     if (!ready()) return;
+    if (options.lookIn === "cells" && scopeNeedsOne) {
+      status = NEEDS_ONE;
+      return;
+    }
     const f = tab.cell;
     if (options.lookIn === "notes") {
       const list = await matchingNotes();
@@ -371,6 +382,10 @@
 
   export async function findAll(): Promise<void> {
     if (!ready()) return;
+    if (options.lookIn === "cells" && scopeNeedsOne) {
+      status = NEEDS_ONE;
+      return;
+    }
     deleteAsk = false;
     if (options.lookIn === "notes") {
       const list = await matchingNotes();
@@ -828,11 +843,12 @@
     <button type="button" title="Find all (Alt+Enter)" onclick={() => void findAll()}>Find all</button>
     <select aria-label="Search in" title="Alt+L: selection or whole file" bind:value={options.scope}>
       <option value="all">Whole file</option>
-      <option value="selection">{blockCells && options.scope === "selection" ? `Selection ${blockCells}` : "Selection"}</option>
-      <option value="column">{blockCols && options.scope === "column" ? `Selected columns ${blockCols}` : "Selected columns"}</option>
+      <option value="selection" disabled={tab.extra.length > 0 && options.scope !== "selection"} title={tab.extra.length > 0 ? NEEDS_ONE : undefined}>{blockCells && options.scope === "selection" ? `Selection ${blockCells}` : "Selection"}</option>
+      <option value="column" disabled={tab.extra.length > 0 && options.scope !== "column"} title={tab.extra.length > 0 ? NEEDS_ONE : undefined}>{blockCols && options.scope === "column" ? `Selected columns ${blockCols}` : "Selected columns"}</option>
       <option value="pick">{options.scope === "pick" && options.cols.length ? `Columns: ${options.cols.length} picked` : "Columns…"}</option>
       <option value="tabs">All open tabs</option>
     </select>
+    {#if scopeNeedsOne}<span role="status" class="needone">{NEEDS_ONE}</span>{/if}
     {#if options.scope === "pick" && !picking}<button type="button" onclick={() => (picking = true)}>Change columns</button>{/if}
     <span class="spacer"></span>
     <span class="menuwrap">
@@ -1453,5 +1469,9 @@
     background: var(--accent);
     color: var(--accent-ink);
     border-radius: 2px;
+  }
+  .needone {
+    color: var(--muted);
+    font-size: 12px;
   }
 </style>

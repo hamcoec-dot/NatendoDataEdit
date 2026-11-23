@@ -4,15 +4,15 @@
   import { namesFromText } from "./lib/columnNames";
   import { onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
-  import { backend, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
+  import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
   import { Tab, exportHandTab, importHandTab, type HandTab } from "./lib/tab.svelte";
   import { SECOND_WINDOW } from "./lib/windowRole";
   import { invisibleNote } from "./lib/invisible";
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
-  import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu } from "./lib/commands";
+  import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu, SELECTION_FREE } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
   import { colLetters, parseGoto } from "./lib/goto";
-  import { cellCount, type Rect } from "./lib/selection";
+  import { cellCount, type Rect, cellCountAreas, colsOfAreas, disjoint, MAX_AREAS } from "./lib/selection";
   import { dropIndex, MOUSE_MOVES } from "./lib/dragmove";
   import { headerCertainty, looksLikeHeader } from "./lib/header";
   import { separatorName } from "./lib/layout";
@@ -284,6 +284,35 @@
     }, 500);
   }
 
+  /** What is said when work that takes one block meets a selection of several. */
+  const ONE_BLOCK = "That works on one block. Click once to select a single block.";
+
+  /** The one selected block of a tab, or null (the message above said) when
+   *  several blocks are selected. */
+  /** For dialogs that only open after a command that took one block: the
+   *  block, or an empty one in the moment a dialog is closing. */
+  const NO_BLOCK: Rect = { row: 0, rows: 0, col: 0, cols: 0 };
+  function blockOr(t: Tab): Rect {
+    return t.singleRect() ?? NO_BLOCK;
+  }
+
+  /** The second guard (the registry is the first): work that changes a file
+   *  does not start while several blocks are selected, unless a command that
+   *  handles several blocks is running. The backend itself refuses too. */
+  function writeBlocked(t: Tab): boolean {
+    if (t.extra.length > 0 && !reg.multiOk) {
+      say(ONE_BLOCK);
+      return true;
+    }
+    return false;
+  }
+
+  function oneBlock(t: Tab): Rect | null {
+    const r = t.singleRect();
+    if (!r) say(ONE_BLOCK);
+    return r;
+  }
+
   function say(text: string): void {
     if (protectNote) {
       const n = protectNote;
@@ -315,6 +344,7 @@
   async function apply(f: (t: Tab) => Promise<DocInfo>, dataChanged = true, of?: Tab): Promise<boolean> {
     const t = of ?? tab;
     if (!t) return false;
+    if (writeBlocked(t)) return false;
     try {
       const info = await f(t);
       t.update(info, dataChanged);
@@ -1762,6 +1792,21 @@
   }
 
   // ---- editing ----------------------------------------------------------------------
+  /** One value into every cell of all the selected blocks (Ctrl+Enter, a
+   *  single value pasted, Delete with ""): one undo step, each cell once. */
+  async function fillAreasValue(t: Tab, value: string, what: string): Promise<boolean> {
+    const areas = t.areas;
+    const n = cellCountAreas(areas);
+    if (n > MAX_CELLS_PER_CHANGE) {
+      say(`Filling several blocks works on up to ${MAX_CELLS_PER_CHANGE.toLocaleString()} cells at once. Select fewer cells, or use one block.`);
+      return false;
+    }
+    t.whatNext = what;
+    const ok = await reg.withMulti(() => apply((x) => backend().fillAreas(x.id, areas, value, hiddenColsOf(x)), true, t));
+    if (ok) say(`${value === "" ? "Cleared" : "Filled"} ${plural(n, "cell")} in ${plural(areas.length, "block")}. Ctrl+Z undoes it.`);
+    return ok;
+  }
+
   async function commitCell(row: number, col: number, value: string, fill: boolean, what = "filling cells"): Promise<boolean> {
     const t = tab;
     if (!t) return false;
@@ -1771,8 +1816,13 @@
       if ("formula" in typed) return runCellFormula(t, row, col, typed.formula, fill);
       value = typed.text;
     }
+    // Typing into one of several selected blocks writes the active cell only
+    // (as in Excel); Ctrl+Enter writes it into every block.
+    if (!fill && t.extra.length) t.extra = [];
+    if (fill && t.extra.length) return fillAreasValue(t, value, what);
     if (fill) {
-      const r = t.rect;
+      const r = oneBlock(t);
+      if (!r) return false;
       // A big block is one engine job (with progress and Cancel).
       if (cellCount(r) > MAX_CELLS_PER_CHANGE) return fillRect(r, value);
       t.whatNext = what;
@@ -1801,7 +1851,8 @@
   async function runCellFormula(t: Tab, row: number, col: number, formula: string, fill: boolean): Promise<boolean> {
     let targets: [number, number][] = [];
     if (fill) {
-      const r = t.rect;
+      const r = oneBlock(t);
+      if (!r) return false;
       if (cellCount(r) > MAX_CELLS_PER_CHANGE) {
         say(`A formula fills at most ${MAX_CELLS_PER_CHANGE.toLocaleString()} cells at once. For a whole column use Data › Computed column.`);
         return false;
@@ -1861,7 +1912,8 @@
   async function openCounts(): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     const hidden = new Set(hiddenColsOf(t));
     const picked = r.cols > 1 && r.cols <= 3 ? Array.from({ length: r.cols }, (_, i) => r.col + i).filter((c) => !hidden.has(c)) : [t.cell.col];
     const cols = picked.length ? picked : [t.cell.col];
@@ -1900,7 +1952,8 @@
       say("The tab these counts came from is closed.");
       return;
     }
-    const r = ct.rect;
+    const r = oneBlock(ct);
+    if (!r) return;
     const first = Math.max(1, r.row);
     const last = r.row + r.rows - 1;
     if (last < 1) {
@@ -1956,7 +2009,9 @@
   async function clearSelection(): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    if (t.extra.length) return void (await clearAreas(t));
+    const r = oneBlock(t);
+    if (!r) return;
     if (cellCount(r) > MAX_CELLS_PER_CHANGE) {
       await fillRect(r, "");
       return;
@@ -1966,6 +2021,33 @@
       const note = await hiddenRowsNote(t, r);
       if (note) say(`Cleared ${plural(r.rows * shownColsIn(t, r), "cell")}.${note} Ctrl+Z undoes it.`);
     }
+  }
+
+  /** Delete over several blocks: one undo step. Up to the per-change cap it is
+   *  one engine edit; past it each block is cleared as an engine job and the
+   *  steps are grouped so Ctrl+Z takes them back together. */
+  async function clearAreas(t: Tab): Promise<void> {
+    const areas = t.areas;
+    const n = cellCountAreas(areas);
+    if (n <= MAX_CELLS_PER_CHANGE) {
+      await fillAreasValue(t, "", "clearing cells");
+      return;
+    }
+    const parts = disjoint(areas);
+    t.recordView();
+    const start = t.info.history_pos;
+    t.grouping = true;
+    let done = 0;
+    try {
+      for (const a of parts) {
+        const rep = await reg.withMulti(() => runOp({ op: "fill_rect", spec: { row: a.row, rows: a.rows, col: a.col, cols: a.cols, value: "" } }, "Clearing", t));
+        if (!rep) break;
+        done += rep.cells || cellCount(a);
+      }
+    } finally {
+      t.endGroup(start);
+    }
+    if (done) say(`Cleared ${plural(done, "cell")} in ${plural(areas.length, "block")}. Ctrl+Z undoes it.`);
   }
 
   /** One value into every cell of a big block (clearing it when ""), as an
@@ -1981,10 +2063,47 @@
     return !!rep;
   }
 
+  /** Copy over several blocks (Ctrl+click), as Excel allows: the blocks must
+   *  share the same rows (they go side by side) or the same columns (they go
+   *  one under the other). The text goes to the clipboard as one block. */
+  async function copyAreas(t: Tab): Promise<void> {
+    const areas = disjoint(t.areas);
+    const sameRows = areas.every((a) => a.row === areas[0]!.row && a.rows === areas[0]!.rows);
+    const sameCols = areas.every((a) => a.col === areas[0]!.col && a.cols === areas[0]!.cols);
+    if (!sameRows && !sameCols) {
+      say("Copy needs the blocks to line up: all with the same rows (side by side) or all with the same columns (one under the other). Select blocks that line up, or copy one block at a time.");
+      return;
+    }
+    if (cellCountAreas(areas) > MAX_CELLS_PER_CHANGE) {
+      say(`Copy works on up to ${MAX_CELLS_PER_CHANGE.toLocaleString()} cells over several blocks. Select fewer cells.`);
+      return;
+    }
+    const ordered = [...areas].sort((a, b) => (sameRows ? a.col - b.col : a.row - b.row));
+    try {
+      if (cellCountAreas(areas) >= LARGE_COPY && !(await privacyGate("The copy goes to the clipboard, where other programs can read it.", [Math.min(...ordered.map((a) => a.col)), Math.max(...ordered.map((a) => a.col + a.cols)) - Math.min(...ordered.map((a) => a.col))]))) return;
+      const texts = await Promise.all(ordered.map(async (a) => parseTsv(await backend().copyCells(t.id, a.row, a.rows, a.col, a.cols, hiddenColsOf(t)))));
+      const rows: string[][] = sameRows
+        ? texts[0]!.map((_, i) => texts.flatMap((g) => g[i] ?? []))
+        : texts.flat();
+      await navigator.clipboard.writeText(toTsv(rows));
+      copiedFrom = t.id;
+    } catch (e) {
+      say(errorText(e));
+      return;
+    }
+    say(`Copied ${plural(cellCountAreas(areas), "cell")} from ${plural(areas.length, "block")}.`);
+  }
+
   async function copy(cut: boolean): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    if (t.extra.length) {
+      if (cut) say("Cut works on one block. Click once to select a single block. (Copy works on blocks that line up.)");
+      else await copyAreas(t);
+      return;
+    }
+    const r = oneBlock(t);
+    if (!r) return;
     // Cut works as in Excel and Google Sheets: nothing changes until Paste,
     // which moves what was cut there (whole columns or rows go in before the
     // one picked, and the gap they leave closes up).
@@ -2072,7 +2191,8 @@
     }
     t.cut = null;
     t.bump();
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return false;
     const from = c.rect;
     if (c.kind === "cols") {
       const to = dropIndex(from.col, from.cols, r.col, t.info.cols);
@@ -2115,6 +2235,14 @@
         .map((n) => (/[\t"\r\n]/.test(n) ? `"${n.replace(/"/g, '""')}"` : n))
         .join("\t");
     }
+    // Several blocks selected: one value goes into every one of them; a bigger
+    // block of text has no single place to land.
+    if (t.extra.length) {
+      const grid1 = parseTsv(text.replace(/\r?\n$/, ""));
+      if (grid1.length === 1 && grid1[0]!.length === 1) await fillAreasValue(t, grid1[0]![0] ?? "", "pasting");
+      else say("Paste of more than one value works on one block. Click once to select a single block. (One value pastes into every selected block.)");
+      return;
+    }
     if (await pasteCut(text)) return;
     // Cut in another file: paste a copy here and leave those cells where
     // they are (a move between two files would be two undo steps).
@@ -2131,7 +2259,8 @@
     }
     let rows = parseTsv(text);
     if (rows.length === 0) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     let width = widest(rows);
     // A block pasted into a bigger selection that it fits a whole number of
     // times repeats to fill it (as in Excel and Google Sheets).
@@ -2259,7 +2388,9 @@
   async function fill(dir: Dir): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = { ...t.rect };
+    const r0 = oneBlock(t);
+    if (!r0) return;
+    const r = { ...r0 };
     if (dir === "down" && r.rows === 1 && r.row > t.firstRow) {
       r.row -= 1;
       r.rows = 2;
@@ -2285,7 +2416,9 @@
   async function fillHandle(dir: Dir, count: number, swap: boolean): Promise<void> {
     const t = tab;
     if (!t || !ready()) return;
-    const r = { ...t.rect };
+    const r0 = oneBlock(t);
+    if (!r0) return;
+    const r = { ...r0 };
     const spec: FillSpec = { row: r.row, col: r.col, rows: r.rows, cols: r.cols, dir, count, mode: { kind: swap ? "auto_swap" : "auto" } };
     const rep = await runOp({ op: "fill", spec }, "Filling");
     if (!rep) return;
@@ -2303,7 +2436,8 @@
   async function fillHandleAuto(): Promise<void> {
     const t = tab;
     if (!t || !ready()) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     const bottom = r.row + r.rows - 1;
     if (bottom + 1 >= t.info.rows) return;
     const sides = [r.col - 1, r.col + r.cols].filter((c) => c >= 0 && c < t.info.cols);
@@ -2386,6 +2520,7 @@
   async function runOp(op: DataOp, label: string, of?: Tab): Promise<OpReport | null> {
     const t = of ?? tab;
     if (!t) return null;
+    if (writeBlocked(t)) return null;
     // What can't be seen isn't touched: hidden columns are passed over.
     const hide = hiddenColsOf(t);
     if (hide.length && (op.op === "paste" || op.op === "fill" || op.op === "fill_rect")) op.spec.skip_cols = hide;
@@ -2574,7 +2709,8 @@
       say("Sorting columns uses their titles: turn on Format > First row is header first.");
       return;
     }
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     const whole = r.cols <= 1;
     const rep = await runOp({ op: "sort_columns", col: whole ? 0 : r.col, count: whole ? 0 : r.cols, descending }, "Sorting columns");
     if (rep) say(rep.cols ? "Columns sorted by their titles. Undo (Ctrl+Z) puts them back." : "The columns were already in that order.");
@@ -2810,9 +2946,9 @@
     if (!t || !grid) return;
     const all = () => grid?.select({ row: t.firstRow, col: 0 }, { row: t.info.rows - 1, col: t.info.cols - 1 }, false, t.cell);
     const r = await regionOf(t);
-    const cur = t.rect;
+    const cur = t.singleRect();
     const whole = !r || (r.row <= t.firstRow && r.rows >= t.info.rows - t.firstRow && r.col === 0 && r.cols >= t.info.cols);
-    const same = r && cur.row === r.row && cur.rows === r.rows && cur.col === r.col && cur.cols === r.cols;
+    const same = r && cur && cur.row === r.row && cur.rows === r.rows && cur.col === r.col && cur.cols === r.cols;
     if (whole || same || t !== tab) return void all();
     grid.select({ row: r.row, col: r.col }, { row: r.row + r.rows - 1, col: r.col + r.cols - 1 }, false, t.cell);
     say("Selected the block of data around the cell. Ctrl+A again selects everything.");
@@ -2833,8 +2969,9 @@
     const t = tab;
     if (!t || !grid) return;
     ctxKeysUntil = performance.now() + 400;
-    const r = t.rect;
-    const area = wholeRows(r, t) && !wholeCols(r, t) ? "row" : wholeCols(r, t) && !wholeRows(r, t) ? "col" : "cell";
+    // With several blocks the menu opens on the active cell as for a cell.
+    const r = t.singleRect();
+    const area = r && wholeRows(r, t) && !wholeCols(r, t) ? "row" : r && wholeCols(r, t) && !wholeRows(r, t) ? "col" : "cell";
     grid.scrollIntoView(t.cell);
     const p = grid.cellPoint(t.cell);
     openContext(p.x, p.y, area, t.cell.col);
@@ -2885,7 +3022,8 @@
   function nextCorner(): void {
     const t = tab;
     if (!t || !grid) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     const r1 = r.row + r.rows - 1;
     const c1 = r.col + r.cols - 1;
     const corners = [
@@ -2936,7 +3074,8 @@
   async function insertRows(below: boolean, howMany?: number): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     const at = below ? r.row + r.rows : r.row;
     const count = howMany ?? r.rows;
     if (await change({ op: "insert_rows", at, count })) {
@@ -2947,7 +3086,8 @@
   async function deleteRows(): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     const count = Math.min(r.rows, t.info.rows - r.row);
     if (count <= 0) return;
     if (await change({ op: "delete_rows", at: r.row, count })) grid?.select({ row: r.row, col: r.col });
@@ -2956,7 +3096,8 @@
   async function insertCols(right: boolean, howMany?: number): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     const at = right ? r.col + r.cols : r.col;
     const count = howMany ?? r.cols;
     if (await change({ op: "insert_cols", at, count })) {
@@ -2968,7 +3109,8 @@
   async function deleteCols(): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     if (r.cols >= t.info.cols) {
       say("At least one column must remain.");
       return;
@@ -3004,16 +3146,20 @@
   async function insertSmart(): Promise<void> {
     const t = tab;
     if (!t) return;
-    if (wholeCols(t.rect, t) && !wholeRows(t.rect, t)) await insertCols(false);
-    else if (wholeRows(t.rect, t)) await insertRows(false);
+    const r = oneBlock(t);
+    if (!r) return;
+    if (wholeCols(r, t) && !wholeRows(r, t)) await insertCols(false);
+    else if (wholeRows(r, t)) await insertRows(false);
     else shiftAsk = { insert: true };
   }
   /** Ctrl+Minus: the same for deleting (shift cells left or up). */
   async function deleteSmart(): Promise<void> {
     const t = tab;
     if (!t) return;
-    if (wholeCols(t.rect, t) && !wholeRows(t.rect, t)) await deleteCols();
-    else if (wholeRows(t.rect, t)) await deleteRows();
+    const r = oneBlock(t);
+    if (!r) return;
+    if (wholeCols(r, t) && !wholeRows(r, t)) await deleteCols();
+    else if (wholeRows(r, t)) await deleteRows();
     else shiftAsk = { insert: false };
   }
   let shiftAsk = $state<{ insert: boolean } | null>(null);
@@ -3029,7 +3175,8 @@
       return;
     }
     const titles = Array.from({ length: Math.min(t.info.cols, 5_000) }, (_, c) => columnTitle(t, c));
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     // Two selected columns, or the active one and the next.
     const first = r.cols === 2 ? r.col : t.cell.col;
     const second = r.cols === 2 ? r.col + 1 : first + 1 < t.info.cols ? first + 1 : Math.max(0, first - 1);
@@ -3131,7 +3278,8 @@
   /** The columns Protect acts on: the right-clicked heading, or the
    *  selection's columns. */
   function protectTargets(t: Tab): number[] {
-    const r = t.rect;
+    const r = t.singleRect();
+    if (!r) return [];
     if (contextCol !== null && (contextCol < r.col || contextCol >= r.col + r.cols)) return [contextCol];
     return Array.from({ length: Math.min(r.cols, t.info.cols) }, (_, i) => r.col + i);
   }
@@ -3165,8 +3313,10 @@
   function specialArea(t: Tab, inSelection: boolean): { row: number; rows: number; cols: number[] } {
     const hidden = new Set(hiddenColsOf(t));
     const first = t.firstRow;
-    if (inSelection && cellCount(t.rect) > 1) {
-      const r = t.rect;
+    const block = t.singleRect();
+    if (inSelection && block && cellCount(block) > 1) {
+      const r = t.singleRect();
+      if (!r) return { row: 0, rows: 0, cols: [] };
       const row = Math.max(r.row, first);
       const cols: number[] = [];
       for (let c = r.col; c < r.col + r.cols; c++) if (!hidden.has(c)) cols.push(c);
@@ -3221,7 +3371,8 @@
   async function runShift(insert: boolean, choice: ShiftChoice): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     if (choice === "rows") return insert ? insertRows(false) : deleteRows();
     if (choice === "cols") return insert ? insertCols(false) : deleteCols();
     const moved = choice === "up" || choice === "down" ? t.info.rows - r.row : r.rows;
@@ -3248,7 +3399,8 @@
   async function moveRows(dir: -1 | 1): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     const to = r.row + dir;
     if (to < t.firstRow || to + r.rows > t.info.rows) return;
     if (await change({ op: "move_rows", at: r.row, count: r.rows, to })) {
@@ -3260,7 +3412,8 @@
   async function moveCols(dir: -1 | 1): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     const to = r.col + dir;
     if (to < 0 || to + r.cols > t.info.cols) return;
     if (await change({ op: "move_cols", at: r.col, count: r.cols, to })) {
@@ -3416,7 +3569,7 @@
       say(errorText(e));
       return;
     }
-    const at = dst.rect;
+    const at = dst.cell;
     const put = await pasteInto(dst, text, at.row, at.col);
     if (!put) {
       say(`Nothing was copied to ${dst.info.name}.`);
@@ -3479,7 +3632,8 @@
       "cancel",
     );
     const dst = a === "cancel" ? undefined : shown[Number(a)];
-    if (dst && tabs.includes(src)) await dropCellsOnTab(src, src.rect, dst, move);
+    const from = oneBlock(src);
+    if (dst && from && tabs.includes(src)) await dropCellsOnTab(src, from, dst, move);
   }
 
   // ---- file tabs: drag one along the bar to put it elsewhere -----------------
@@ -3655,7 +3809,8 @@
    *  every column; hidden ones are left out (what is not shown is not
    *  copied). */
   function nameCols(t: Tab): number[] {
-    const r = t.rect;
+    const r = t.singleRect();
+    if (!r) return [];
     const hidden = new Set(hiddenColsOf(t));
     const [from, n] = wholeCols(r, t) ? [r.col, r.cols] : [0, t.info.cols];
     const out: number[] = [];
@@ -3716,7 +3871,8 @@
   async function copyWithNames(): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     // Without names, or with the title row in the selection: a plain copy.
     if (!t.header || r.row === 0) {
       await copy(false);
@@ -3774,7 +3930,8 @@
       say(`That is ${names.length.toLocaleString()} names; at most 20,000 can be pasted as column names at once.`);
       return;
     }
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     const hidden = new Set(hiddenColsOf(t));
     let cells: [number, string][] = [];
     let widened = 0;
@@ -3894,7 +4051,8 @@
   // ---- Milestone 9: rows, links, formats -------------------------------------------
   /** Shown data rows of the selection (the header row left out). */
   function selectedRows(t: Tab): { at: number; count: number } {
-    const r = t.rect;
+    const r = t.singleRect();
+    if (!r) return { at: 0, count: 0 };
     const at = Math.max(r.row, t.firstRow);
     return { at, count: Math.max(0, r.row + r.rows - at) };
   }
@@ -3918,7 +4076,8 @@
     const t = tab;
     if (!t || !t.info.hidden_rows) return;
     const before = t.info.hidden_rows;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     // From the top when the selection starts at the first data row.
     const at = r.row <= t.firstRow ? 0 : r.row;
     const count = r.row + r.rows - at;
@@ -3932,7 +4091,7 @@
   async function shuffleRows(): Promise<void> {
     const t = tab;
     if (!t) return;
-    const one = t.rect.rows <= 1;
+    const one = (t.singleRect()?.rows ?? 2) <= 1;
     const at = one ? t.firstRow : selectedRows(t).at;
     const count = one ? t.info.rows - t.firstRow : selectedRows(t).count;
     if (count < 2) {
@@ -4056,7 +4215,7 @@
   async function flipRows(): Promise<void> {
     const t = tab;
     if (!t) return;
-    const one = t.rect.rows <= 1;
+    const one = (t.singleRect()?.rows ?? 2) <= 1;
     const at = one ? t.firstRow : selectedRows(t).at;
     const count = one ? t.info.rows - t.firstRow : selectedRows(t).count;
     if (count < 2) {
@@ -4270,7 +4429,8 @@
   async function selectionToTab(): Promise<void> {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     try {
       const hidden = hiddenColsOf(t);
       const shown = shownColsIn(t, r);
@@ -4379,10 +4539,13 @@
   }
 
   /** Selected columns that are shown (hidden ones left alone). */
+  /** The shown columns the selection touches (every block of it, each column once). */
   function selectedCols(t: Tab): number[] {
-    const r = t.rect;
     const out: number[] = [];
-    for (let c = r.col; c < r.col + r.cols && out.length < 16_384; c++) if (!t.columns.isHidden(c)) out.push(c);
+    for (const c of colsOfAreas(t.areas)) {
+      if (out.length >= 16_384) break;
+      if (!t.columns.isHidden(c)) out.push(c);
+    }
     return out;
   }
 
@@ -4442,7 +4605,8 @@
   function unhideCols(): void {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     if (r.cols > 1 && t.columns.hiddenIn(r.col, r.col + r.cols)) {
       t.columns.showRange(r.col, r.col + r.cols);
       say("Showed the hidden columns inside the selection.");
@@ -4497,7 +4661,7 @@
     if (!cols.length) return;
     const c0 = cols[0]!;
     const samples: string[] = [];
-    const r0 = Math.max(t.firstRow, t.rect.row);
+    const r0 = Math.max(t.firstRow, t.singleRect()?.row ?? t.cell.row);
     for (let r = r0; r < r0 + 40 && samples.length < 8; r++) {
       const v = t.cache.get(r, c0);
       if (v) samples.push(v);
@@ -4785,7 +4949,8 @@
   function hideCols(): void {
     const t = tab;
     if (!t) return;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     let visible = 0;
     for (let c = 0; c < t.info.cols && visible <= r.cols; c++) if (!t.columns.isHidden(c)) visible++;
     if (visible <= r.cols) {
@@ -4960,6 +5125,8 @@
   async function runJob<T>(label: string, f: () => Promise<T>): Promise<T | null> {
     const t = tab;
     if (!t) return null;
+    // (No early several-blocks check here: this also carries read-only work
+    // such as Find. Any write inside it is refused by the backend guard.)
     if (t.busy) {
       say("Please wait: another operation is still running.");
       return null;
@@ -5121,12 +5288,14 @@
     // Pressed again while Find is open, a new block selected since is
     // taken; one cell (a hit) keeps the block searched so far.
     const t = tab;
-    const r = t?.rect;
+    const r = t?.singleRect();
     if (t && r && cellCount(r) > 1) {
       findOptions.scope = wholeCols(r, t) && !wholeRows(r, t) ? "column" : wholeRows(r, t) && wholeCols(r, t) ? "all" : "selection";
       // The block searched stays the one selected now, whatever a hit selects.
       findBlock = findOptions.scope !== "all" ? { ...r } : null;
-    } else if (t && !findOpen) {
+    } else if (t && r && !findOpen) {
+      // (With several blocks selected the scope is left as it is: if it is Selection, the
+      // panel says Find in a selection works on one block, rather than widening quietly.)
       if (findOptions.scope === "selection") findOptions.scope = "all";
       findBlock = null;
     }
@@ -5271,7 +5440,7 @@
       return;
     }
     const f = t.cell;
-    const multi = all && cellCount(t.rect) > 1;
+    const multi = all && cellCountAreas(t.areas) > 1;
     const ok = await commitCell(f.row, f.col, cellBarText, multi);
     if (ok) {
       cellBarDirty = false;
@@ -5317,6 +5486,14 @@
 
   // ---- commands ------------------------------------------------------------------------
   const reg = new Registry();
+  // Several blocks selected (Ctrl+click): only commands that say they handle
+  // them may run; the write helpers and the backend refuse everything else.
+  reg.guard = (c) => (tab && tab.extra.length > 0 && !c.multiArea && !SELECTION_FREE.test(c.id) ? ONE_BLOCK : null);
+  reg.onRefuse = (why) => say(why);
+  writeGuard.check = (doc) => {
+    const t = tabs.find((x) => x.id === doc);
+    return t && t.extra.length > 0 && !reg.multiOk ? ONE_BLOCK : null;
+  };
   Tab.activeCommand = () => reg.active;
   const setTheme = (t: Theme) => () => {
     prefs.data.theme = t;
@@ -5375,8 +5552,8 @@
     { id: "file.close", label: "&Close", keys: ["Ctrl+W", "Ctrl+F4"], run: () => void closeTab(), enabled: hasTab },
     { id: "file.quit", label: "E&xit", run: quit },
 
-    { id: "edit.undo", label: "&Undo", keys: ["Ctrl+Z"], run: () => undoRedo("undo"), enabled: () => ready() && !!tab?.canUndo },
-    { id: "edit.redo", label: "&Redo", keys: ["Ctrl+Y", "Ctrl+Shift+Z"], run: () => undoRedo("redo"), enabled: () => ready() && !!tab?.canRedo },
+    { id: "edit.undo", label: "&Undo", multiArea: true, keys: ["Ctrl+Z"], run: () => undoRedo("undo"), enabled: () => ready() && !!tab?.canUndo },
+    { id: "edit.redo", label: "&Redo", multiArea: true, keys: ["Ctrl+Y", "Ctrl+Shift+Z"], run: () => undoRedo("redo"), enabled: () => ready() && !!tab?.canRedo },
     {
       id: "edit.repeat",
       label: "Repeat last action",
@@ -5387,8 +5564,8 @@
       enabled: () => ready() && reg.lastRepeatable !== null,
     },
     { id: "edit.cut", label: "Cu&t", keys: ["Ctrl+X"], run: () => copy(true), enabled: ready },
-    { id: "edit.copy", label: "&Copy", keys: ["Ctrl+C"], run: () => copy(false), enabled: hasTab },
-    { id: "edit.paste", label: "&Paste", run: pasteFromMenu, enabled: ready },
+    { id: "edit.copy", label: "&Copy", multiArea: true, keys: ["Ctrl+C"], run: () => copy(false), enabled: hasTab },
+    { id: "edit.paste", label: "&Paste", multiArea: true, run: pasteFromMenu, enabled: ready },
     { id: "edit.moveCut", label: "&Move what was cut here", run: () => void pasteCut(null), enabled: () => ready() && !!tab?.cut },
     { id: "edit.cancelCut", label: "Ca&ncel cut", run: cancelCut, enabled: () => !!tab?.cut },
     { id: "edit.copyNames", label: "Copy column &names", run: () => void copyColumnNames(false), enabled: () => !!tab?.info.indexed },
@@ -5396,13 +5573,13 @@
     { id: "edit.copyWithNames", label: "Copy with column names", keys: ["Ctrl+Shift+C"], run: () => void copyWithNames(), enabled: hasTab },
     { id: "edit.pasteNames", label: "Paste as column names", run: () => void pasteColumnNames(), enabled: () => ready() && !tab?.info.read_only },
     { id: "edit.pasteSpecial", label: "Paste &special…", keys: ["Ctrl+Alt+V"], run: () => openOp("paste_special"), enabled: ready },
-    { id: "edit.clear", label: "Cle&ar contents", keys: ["Delete"], run: clearSelection, enabled: ready, repeatable: true },
+    { id: "edit.clear", label: "Cle&ar contents", multiArea: true, keys: ["Delete"], run: clearSelection, enabled: ready, repeatable: true },
     { id: "edit.fillDown", label: "Fill &down", keys: ["Ctrl+D"], run: () => fill("down"), enabled: ready, repeatable: true },
     { id: "edit.fillRight", label: "Fill r&ight", keys: ["Ctrl+R"], run: () => fill("right"), enabled: ready, repeatable: true },
     { id: "edit.fillUp", label: "Fill &up", run: () => fill("up"), enabled: ready, repeatable: true },
     { id: "edit.fillLeft", label: "Fill le&ft", run: () => fill("left"), enabled: ready, repeatable: true },
     { id: "edit.fillSeries", label: "Fill series…", run: () => openOp("series"), enabled: ready },
-    { id: "edit.cell", label: "&Edit cell", keys: ["F2"], run: () => grid?.startEdit(), enabled: ready },
+    { id: "edit.cell", label: "&Edit cell", multiArea: true, keys: ["F2"], run: () => grid?.startEdit(), enabled: ready },
     {
       id: "edit.today",
       label: "Insert today's date",
@@ -5437,13 +5614,13 @@
       run: () => selectAll(),
       enabled: hasTab,
     },
-    { id: "edit.selectRegion", label: "Select the current block of data", keys: ["Ctrl+Shift+*", "Ctrl+Shift+8"], run: () => selectRegion(), enabled: hasTab },
-    { id: "edit.contextMenu", label: "Open the right-click menu", keys: ["Shift+F10", "ContextMenu"], run: () => contextFromKeys(), enabled: hasTab },
+    { id: "edit.selectRegion", label: "Select the current block of data", multiArea: true, keys: ["Ctrl+Shift+*", "Ctrl+Shift+8"], run: () => selectRegion(), enabled: hasTab },
+    { id: "edit.contextMenu", label: "Open the right-click menu", multiArea: true, keys: ["Shift+F10", "ContextMenu"], run: () => contextFromKeys(), enabled: hasTab },
     { id: "edit.copyAbove", label: "Copy the value from the cell above", keys: ["Ctrl+'", 'Ctrl+Shift+"'], run: () => void copyAbove(), enabled: ready },
     { id: "view.toActive", label: "Scroll back to the active cell", keys: ["Ctrl+Backspace"], run: () => { if (tab) grid?.scrollIntoView(tab.cell); }, enabled: hasTab },
     { id: "edit.shrinkSel", label: "Select just the active cell", keys: ["Shift+Backspace"], run: () => { if (tab) grid?.select(tab.cell); }, enabled: hasTab },
     { id: "edit.nextCorner", label: "Move the active cell to the next corner of the selection", keys: ["Ctrl+."], run: () => nextCorner(), enabled: hasTab },
-    { id: "edit.extendMode", label: "Extend the selection with the arrow keys (on or off)", keys: ["F8"], run: () => toggleExtend(), enabled: hasTab, checked: () => extendMode },
+    { id: "edit.extendMode", label: "Extend the selection with the arrow keys (on or off)", multiArea: true, keys: ["F8"], run: () => toggleExtend(), enabled: hasTab, checked: () => extendMode },
     {
       id: "edit.gotoSpecial",
       label: "Go to s&pecial…",
@@ -5482,7 +5659,7 @@
     { id: "insert.colsMany", label: "Columns (choose how ma&ny)…", run: () => { insertAsk = "cols"; }, enabled: ready },
     { id: "insert.symbol", label: "&Symbol…", run: openSymbols, enabled: ready },
 
-    { id: "format.autofit", label: "&AutoFit column width", run: () => { const r = tab!.rect; void grid?.fitCols(r.col, r.cols); }, enabled: hasTab },
+    { id: "format.autofit", label: "&AutoFit column width", run: () => { const r = oneBlock(tab!); if (r) void grid?.fitCols(r.col, r.cols); }, enabled: hasTab },
     { id: "format.hideCols", label: "&Hide columns", keys: ["Ctrl+0"], run: hideCols, enabled: hasTab },
     { id: "format.tidyTitles", label: "&Tidy column titles…", run: openTidyTitles, enabled: ready },
     { id: "data.compareCols", label: "Compare t&wo columns…", run: openCompareCols, enabled: ready },
@@ -5563,11 +5740,11 @@
     { id: "format.hideRows", label: "Hide &rows", keys: ["Ctrl+9"], run: () => void hideRows(), enabled: ready, repeatable: true },
     { id: "format.showRows", label: "Unhide rows in the selection", keys: ["Ctrl+Shift+9", "Ctrl+Shift+("], run: () => void showRows(false), enabled: () => ready() && !!tab?.info.hidden_rows },
     { id: "format.showAllRows", label: "Unhide all ro&ws", run: () => void showRows(true), enabled: () => ready() && !!tab?.info.hidden_rows },
-    { id: "format.alignLeft", label: "Align &left", run: () => setAlign("left"), enabled: hasTab, checked: () => alignIs("left") },
-    { id: "format.alignCenter", label: "Align &center", run: () => setAlign("center"), enabled: hasTab, checked: () => alignIs("center") },
-    { id: "format.alignRight", label: "Align &right", run: () => setAlign("right"), enabled: hasTab, checked: () => alignIs("right") },
-    { id: "format.alignAuto", label: "Align a&utomatically", run: () => setAlign(null), enabled: hasTab, checked: () => alignIs(null) },
-    { id: "format.clip", label: "Cut off long te&xt", run: toggleClip, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.clips.has(c)) },
+    { id: "format.alignLeft", label: "Align &left", multiArea: true, run: () => setAlign("left"), enabled: hasTab, checked: () => alignIs("left") },
+    { id: "format.alignCenter", label: "Align &center", multiArea: true, run: () => setAlign("center"), enabled: hasTab, checked: () => alignIs("center") },
+    { id: "format.alignRight", label: "Align &right", multiArea: true, run: () => setAlign("right"), enabled: hasTab, checked: () => alignIs("right") },
+    { id: "format.alignAuto", label: "Align a&utomatically", multiArea: true, run: () => setAlign(null), enabled: hasTab, checked: () => alignIs(null) },
+    { id: "format.clip", label: "Cut off long te&xt", multiArea: true, run: toggleClip, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.clips.has(c)) },
     { id: "view.listArrows", label: "List arrows on every cell", run: () => { prefs.data.listArrows = !prefs.data.listArrows; prefs.save(); }, checked: () => prefs.data.listArrows },
     { id: "view.colLetters", label: "Column &letters (A, B, C)", run: () => { prefs.data.colLetters = !prefs.data.colLetters; prefs.save(); }, checked: () => prefs.data.colLetters },
     {
@@ -5581,16 +5758,16 @@
       checked: () => prefs.data.insights,
     },
     { id: "view.alignNumbers", label: "&Numbers on the right", run: () => { prefs.data.alignNumbers = !prefs.data.alignNumbers; prefs.save(); }, checked: () => prefs.data.alignNumbers },
-    { id: "format.wrap", label: "&Wrap text", run: toggleWrap, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.wraps.has(c)) },
+    { id: "format.wrap", label: "&Wrap text", multiArea: true, run: toggleWrap, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.wraps.has(c)) },
     { id: "format.rowHeight", label: "Row &height (lines)…", run: askRowLines, enabled: hasTab },
     { id: "format.fitRows", label: "Fit row height to wrapped text", run: () => grid?.fitRowLines(), enabled: () => !!tab && tab.columns.wraps.size > 0 },
     { id: "format.display", label: "&Display format (numbers, dates, tick boxes)…", keys: ["Ctrl+1"], run: openFormat, enabled: hasTab },
-    { id: "format.asNumber", label: "Show as number (1,234.00)", keys: ["Ctrl+Shift+1", "Ctrl+Shift+!"], run: () => quickFormat("number"), enabled: hasTab },
-    { id: "format.asDate", label: "Show as date", keys: ["Ctrl+Shift+3", "Ctrl+Shift+#"], run: () => quickFormat("date"), enabled: hasTab },
-    { id: "format.asCurrency", label: "Show as currency ($1,234.00)", keys: ["Ctrl+Shift+4", "Ctrl+Shift+$"], run: () => quickFormat("currency"), enabled: hasTab },
-    { id: "format.asPercent", label: "Show as percent (12%)", keys: ["Ctrl+Shift+5", "Ctrl+Shift+%"], run: () => quickFormat("percent"), enabled: hasTab },
+    { id: "format.asNumber", label: "Show as number (1,234.00)", multiArea: true, keys: ["Ctrl+Shift+1", "Ctrl+Shift+!"], run: () => quickFormat("number"), enabled: hasTab },
+    { id: "format.asDate", label: "Show as date", multiArea: true, keys: ["Ctrl+Shift+3", "Ctrl+Shift+#"], run: () => quickFormat("date"), enabled: hasTab },
+    { id: "format.asCurrency", label: "Show as currency ($1,234.00)", multiArea: true, keys: ["Ctrl+Shift+4", "Ctrl+Shift+$"], run: () => quickFormat("currency"), enabled: hasTab },
+    { id: "format.asPercent", label: "Show as percent (12%)", multiArea: true, keys: ["Ctrl+Shift+5", "Ctrl+Shift+%"], run: () => quickFormat("percent"), enabled: hasTab },
     { id: "format.bakeDisplay", label: "Write the display format into the cells", run: () => void bakeFormats(), enabled: () => !!tab && !tab.busy && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
-    { id: "format.clearDisplay", label: "Remove display format", keys: ["Ctrl+\\"], run: () => { if (tab) setFormat(selectedCols(tab), null); }, enabled: () => !!tab && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
+    { id: "format.clearDisplay", label: "Remove display format", multiArea: true, keys: ["Ctrl+\\"], run: () => { if (tab) setFormat(selectedCols(tab), null); }, enabled: () => !!tab && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
     { id: "view.banded", label: "Alternating row &colours", run: toggleBanded, enabled: hasTab, checked: () => !!tab?.banded },
     { id: "data.shuffle", label: "Shu&ffle rows (random order)", run: () => void shuffleRows(), enabled: ready, repeatable: true },
     { id: "tools.fillBlanks", label: "&Fill blank cells…", run: () => openTools("fill_blanks"), enabled: ready },
@@ -5665,7 +5842,7 @@
     { id: "data.splitName", label: "Split names into columns…", run: () => { splitNameOpen = true; }, enabled: ready },
     { id: "clean.tools", label: "&Cleaning tools…", keys: ["Ctrl+Shift+K"], run: () => { cleanTool = "spaces"; }, enabled: ready },
     ...TOOLS.map((tl) => ({ id: `clean.tool.${tl.id}`, label: `${tl.label}…`, run: () => { cleanTool = tl.id; }, enabled: ready })),
-    { id: "find.find", label: "&Find…", keys: ["Ctrl+F", "Shift+F5"], run: () => openFind(false), enabled: hasTab },
+    { id: "find.find", label: "&Find…", multiArea: true, keys: ["Ctrl+F", "Shift+F5"], run: () => openFind(false), enabled: hasTab },
     { id: "find.replace", label: "&Replace…", keys: ["Ctrl+H"], run: () => openFind(true), enabled: ready },
     { id: "find.batch", label: "Replace from a &list…", run: () => { batchOpen = true; }, enabled: ready },
     { id: "find.next", label: "Find &next", keys: ["F3", "Shift+F4"], run: () => findAgain(false), enabled: hasTab },
@@ -5792,7 +5969,8 @@
   function contextLabel(id: string): string | null {
     const t = tab;
     if (!t) return null;
-    const r = t.rect;
+    const r = t.singleRect();
+    if (!r) return null;
     const nRows = r.rows === 1 ? "1 row" : `${r.rows.toLocaleString()} rows`;
     // Row numbers as the headings show them; just how many when one is not
     // known yet (or a filter makes them non-consecutive).
@@ -6043,6 +6221,11 @@
         void grid.startEdit("");
         return;
       case "Escape":
+        // Several blocks (Ctrl+click): Esc goes back to the last block alone.
+        if (t.extra.length) {
+          t.extra = [];
+          return;
+        }
         // Esc drops a cut or the copy outline and leaves extend mode; the
         // selection stays (as in Excel and Google Sheets).
         // With nothing of that to cancel, it closes the title-row question.
@@ -6116,6 +6299,10 @@
       },
       get backend() {
         return backend();
+      },
+      /** Tests: the command registry (every command, run by id). */
+      get reg() {
+        return reg;
       },
       get tabs() {
         return tabs;
@@ -6396,7 +6583,8 @@
     const all = shownTitles(t);
     const titles = t.header ? cols.map((c) => all[c] ?? "") : null;
     const first = t.firstRow;
-    const r = t.rect;
+    const r = oneBlock(t);
+    if (!r) return;
     const selFirst = Math.max(first, r.row);
     const selRows = Math.max(0, Math.min(t.info.rows, r.row + r.rows) - selFirst);
     let sample: string[][] = [];
@@ -6657,7 +6845,7 @@
     const t = tab;
     if (!t) return null;
     const d = t.info;
-    const r = t.rect;
+    const r = t.singleRect();
     const delim = separatorName(d);
     return {
       size: d.filtered
@@ -6671,7 +6859,7 @@
             ...(!t.filter?.columns.length && !d.filter_on_deleted ? ["rows with duplicates"] : []),
           ].join("; ")
         : "",
-      sel: cellCount(r) > 1 ? `${r.rows.toLocaleString()} × ${r.cols.toLocaleString()} selected` : "",
+      sel: r ? (cellCount(r) > 1 ? `${r.rows.toLocaleString()} × ${r.cols.toLocaleString()} selected` : "") : `${cellCountAreas(t.areas).toLocaleString()} cells in ${t.areas.length.toLocaleString()} blocks selected`,
       format: `${d.encoding}${d.bom ? " (BOM)" : ""} · ${delim} separated · ${d.line_break}${d.mixed_line_breaks ? " (mixed)" : ""}`,
     };
   });
@@ -6807,8 +6995,8 @@
         }}
       ></textarea>
       {#if cellBarDirty}
-        <button type="button" class="small primary" onclick={() => void applyCellBar(true)} title={cellCount(tab.rect) > 1 ? "Put the value in every selected cell (Ctrl+Enter)" : `Apply (${cellBarExpanded ? "Ctrl+Enter" : "Enter"})`}
-          >{cellCount(tab.rect) > 1 ? `Apply to ${cellCount(tab.rect).toLocaleString()} cells` : "Apply"}</button
+        <button type="button" class="small primary" onclick={() => void applyCellBar(true)} title={cellCountAreas(tab.areas) > 1 ? "Put the value in every selected cell (Ctrl+Enter)" : `Apply (${cellBarExpanded ? "Ctrl+Enter" : "Enter"})`}
+          >{cellCountAreas(tab.areas) > 1 ? `Apply to ${cellCountAreas(tab.areas).toLocaleString()} cells` : "Apply"}</button
         >
         <button type="button" class="small" onclick={() => { cellBarDirty = false; cellBarFor = ""; }}>Cancel</button>
       {/if}
@@ -7195,7 +7383,7 @@
     titles={Array.from({ length: Math.min(tab.info.cols, 5000) }, (_, c) => columnTitle(tab!, c))}
     cols={tab.info.cols}
     header={tab.header}
-    sel={tab.rect}
+    sel={blockOr(tab)}
     clip={od.clip}
     onRun={(r, header) => { opDialog = null; void runDialog(r, header); grid?.focus(); }}
     onClose={() => { opDialog = null; grid?.focus(); }}
@@ -7285,7 +7473,7 @@
     docs={searchDocs}
     menuOf={(id) => menuOfId.get(id) ?? (id.startsWith("view.") ? "View" : undefined)}
     hotkey={reg.get("help.search")?.keys?.[0] ?? "Alt+Q"}
-    onUnavailable={(name) => say(ready() ? `“${name}” isn't available here right now.` : `“${name}” needs a file: open one first.`)}
+    onUnavailable={(name) => say(!ready() ? `“${name}” needs a file: open one first.` : tab && tab.extra.length > 0 ? ONE_BLOCK : `“${name}” isn't available here right now.`)}
     keysOf={(id) => reg.get(id)?.keys ?? []}
     enabled={(id) => (id.startsWith("view.saved.") ? ready() : id.startsWith("view.forget.") ? true : reg.enabled(id))}
     onRun={runSearched}
@@ -7693,7 +7881,7 @@
     {tab}
     {tabs}
     titles={shownTitles(tab)}
-    sel={{ col: tab.rect.col, cols: tab.rect.cols }}
+    sel={{ col: blockOr(tab).col, cols: blockOr(tab).cols }}
     run={runJob}
     onDone={(r) => {
       batchOpen = false;
@@ -7742,7 +7930,7 @@
   {@const kind = insertAsk}
   <InsertDialog
     {kind}
-    count={kind === "rows" ? tab.rect.rows : tab.rect.cols}
+    count={kind === "rows" ? blockOr(tab).rows : blockOr(tab).cols}
     onRun={(n, after) => { const rows = kind === "rows"; insertAsk = null; void (rows ? insertRows(after, n) : insertCols(after, n)).then(() => grid?.focus()); }}
     onClose={() => { insertAsk = null; void tick().then(() => grid?.focus()); }}
   />
@@ -7771,7 +7959,7 @@
 {#if specialAsk && tab}
   {@const t = tab}
   <GoToSpecialDialog
-    selected={cellCount(t.rect)}
+    selected={cellCount(blockOr(t))}
     against={t.header && t.info.rows > 0 ? t.cache.get(0, t.cell.col) || `column ${t.cell.col + 1}` : `column ${t.cell.col + 1}`}
     hasChecks={t.checks.length > 0}
     readOnly={!!t.info.read_only}
@@ -7784,8 +7972,8 @@
   {@const s = shiftAsk}
   <ShiftCellsDialog
     insert={s.insert}
-    rows={tab.rect.rows}
-    cols={tab.rect.cols}
+    rows={blockOr(tab).rows}
+    cols={blockOr(tab).cols}
     onRun={(choice) => { const insert = s.insert; shiftAsk = null; void runShift(insert, choice).then(() => grid?.focus()); }}
     onClose={() => { shiftAsk = null; void tick().then(() => grid?.focus()); }}
   />
