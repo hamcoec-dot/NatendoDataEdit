@@ -32,8 +32,9 @@ const MIN_SPELL: usize = 4;
 /// Values longer than this are not grouped by spelling (the index grows with
 /// the square of the length).
 const MAX_SPELL: usize = 32;
-/// A sound key shorter than this says too little ("Lee" and "Lew" are "L").
-const MIN_SOUND: usize = 2;
+/// A sound key with fewer letters than this says too little ("Lee" and "Lew"
+/// are "L"; "Moore", "Mary" and "Mari" are "MR").
+const MIN_SOUND: usize = 3;
 /// Two values both seen at least this often, with different first letters,
 /// are different names, not spellings of one.
 const COMMON: u64 = 10;
@@ -73,7 +74,7 @@ pub struct Grouping {
 
 /// A key that is the same for names that sound alike: letters only (accents
 /// folded, case and spaces ignored), vowels dropped except a first one, silent
-/// letters dropped, `PH`=`F`, `C`/`K`/`Q` alike, `TH`=`0`, `GH`, `KN`, `WR`,
+/// letters dropped, `PH`=`F`, `C`/`K`/`Q` alike, `TH`=`Q` (so it never reads as a digit), `GH`, `KN`, `WR`,
 /// doubled letters merged, and so on. Digits stay as they are at the end, so
 /// "Ward 1" and "Ward 2" never match.
 pub fn sound_key(s: &str) -> String {
@@ -202,7 +203,7 @@ pub fn sound_key(s: &str) -> String {
                 if n1 == 'i' && matches!(n2, 'a' | 'o') {
                     out.push('X');
                 } else if n1 == 'h' {
-                    out.push('0');
+                    out.push('Q');
                     i += 1;
                 } else if !(n1 == 'c' && n2 == 'h') {
                     out.push('T');
@@ -631,6 +632,8 @@ mod tests {
         // Digits stay.
         assert_ne!(k("Ward 1"), k("Ward 2"));
         assert_eq!(k("Ward 1"), k("WARD 1"));
+        // The "th" sound is not a digit: "Smith" is not "Smi" plus a 0.
+        assert_ne!(k("Smith"), k("Smi0"));
     }
 
     #[test]
