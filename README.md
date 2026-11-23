@@ -320,7 +320,9 @@ everything is also in command search.
   change settings (Options is greyed out there) and does not remember tabs on
   its own; the files it held are remembered as ordinary tabs and reopen in the
   main window next time. Each extra window uses about 250 MB more memory;
-  there is one extra window.
+  there is one extra window. A window you minimise keeps its tabs.
+
+![Two windows side by side: the main window with one file and a second window holding a tab moved out of it](docs/screenshots/two-windows.png)
 - **Drag to move and arrange**, as in Google Sheets: reorder or rearrange
   columns by dragging their selected headings, or rows by their selected
   numbers; drag a selected block of cells by its outline to move it (Ctrl+drag
