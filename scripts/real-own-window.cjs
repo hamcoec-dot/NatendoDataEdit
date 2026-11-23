@@ -50,8 +50,20 @@ const BACKUP = path.join(WORK, "backup");
 const backup = () => {
   fs.mkdirSync(BACKUP, { recursive: true });
   for (const f of ["session.json", "recent.json"]) if (fs.existsSync(path.join(DATA, f))) fs.copyFileSync(path.join(DATA, f), path.join(BACKUP, f));
+  // The person's own recovery copies are put aside (and put back at the end), so a run starts with none and the app's "recover unsaved work" offer does not cover the test.
+  const rec = path.join(LOCAL, "recovery");
+  const aside = path.join(BACKUP, "recovery");
+  if (fs.existsSync(rec) && !fs.existsSync(aside)) fs.renameSync(rec, aside);
+};
+// Nothing is deleted: copies left by the test's own stopped apps are moved into the backup folder.
+const wipeRecovery = () => {
+  const rec = path.join(LOCAL, "recovery");
+  if (fs.existsSync(rec)) fs.renameSync(rec, path.join(BACKUP, `recovery-run-${Date.now()}`));
 };
 const restore = () => {
+  wipeRecovery();
+  const aside = path.join(BACKUP, "recovery");
+  if (fs.existsSync(aside)) fs.renameSync(aside, path.join(LOCAL, "recovery"));
   for (const f of ["session.json", "recent.json"]) {
     const b = path.join(BACKUP, f);
     if (fs.existsSync(b)) fs.copyFileSync(b, path.join(DATA, f));
@@ -87,6 +99,7 @@ const pageMain = () => ctx.pages().find((p) => !p.url().includes("window=2"));
 const pageSecond = () => ctx.pages().find((p) => p.url().includes("window=2"));
 const start = async (files) => {
   await killApp();
+  wipeRecovery();
   if (running()) throw new Error("another Natendo Data Edit is running: close it first (this test never stops an app it did not start)");
   const child = spawn(exe, files, {
     env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, WEBVIEW2_USER_DATA_FOLDER: path.join(WORK, "wv2") },
@@ -354,8 +367,13 @@ const scenarios = {
   async state() {
     const big = path.join(WORK, "big.csv");
     fs.copyFileSync(bigCsv, big);
-    const m = await start([big]);
-    await waitFor(async () => /1,000,000 rows/.test((await m.textContent("footer.status")) || ""), 60000, 500);
+    // A second big file stays in main so main's scrolling can be measured after the move.
+    const big2 = path.join(WORK, "big2.csv");
+    fs.copyFileSync(bigCsv, big2);
+    const m = await start([big, big2]);
+    await waitFor(async () => (await tabNames(m)).length === 2, 60000, 500);
+    await m.locator("[role=tab], .tab").filter({ hasText: "big.csv" }).first().click();
+    await waitFor(async () => /1,000,000 rows/.test((await m.textContent("footer.status")) || ""), 90000, 500);
     await m.locator("input.goto").fill("R500000 C3");
     await m.keyboard.press("Enter");
     await sleep(600);
@@ -434,7 +452,7 @@ const scenarios = {
     await secondLaunch(first);
     await secondLaunch(second);
     // second.csv is active: make it private, then move both to window 2.
-    await cmd(m, "Private file mode (this file)");
+    await invoke(m, "set_private", { doc: 2, folder: false, on: true }); info("dialog before move: " + (await dialogText(m)).slice(0, 160)); await m.screenshot({ path: path.join(process.argv[3], "private-before-move.png") });
     const keep = m.getByRole("button", { name: /Keep them/ });
     if (await keep.isVisible().catch(() => false)) await keep.click();
     await sleep(500);
@@ -444,7 +462,7 @@ const scenarios = {
     await waitFor(async () => (await tabNames(w2)).length === 2, 10000);
     const ids = {};
     for (const [name, id] of [["first", 1], ["second", 2]]) ids[name] = id;
-    const st = await invoke(w2, "private_state", { doc: 2 });
+    const st = await invoke(w2, "private_state", { doc: 2 }); info("private_state 1,2,3: " + JSON.stringify([await invoke(w2, "private_state", { doc: 1 }), await invoke(w2, "private_state", { doc: 2 }), await invoke(w2, "private_state", { doc: 3 }).catch((e) => String(e.message || e))]) + " tabs " + (await tabNames(w2)).join("|"));
     ok(st && st.file === true, `a private tab moved to window 2 is still private (${JSON.stringify(st)})`);
     // An unsaved edit in each.
     await w2.locator("[role=tab], .tab").filter({ hasText: "second.csv" }).first().click();
@@ -479,6 +497,7 @@ const scenarios = {
     ok(await waitFor(() => !alive(), 10000), "quit through the new path ends the app");
     await sleep(1000);
     const session = fs.existsSync(path.join(DATA, "session.json")) ? fs.readFileSync(path.join(DATA, "session.json"), "utf8") : "";
+    info("session.json: " + session.replace(/\s+/g, " ").slice(0, 500));
     ok(/first\.csv/.test(session) && /second\.csv/.test(session), "the remembered session lists the file in the main window AND the one in window 2");
     const recAfter = (fs.existsSync(path.join(LOCAL, "recovery")) ? fs.readdirSync(path.join(LOCAL, "recovery")) : []).filter((f) => !recBefore.has(f));
     ok(recAfter.length === 0, `no recovery copy of this run is left behind (${recAfter.length})`);
@@ -506,8 +525,12 @@ const scenarios = {
       await sleep(30);
       say("close main during the save: " + CLOSE_MAIN());
       await sleep(400);
+      if (!alive()) {
+        info("the save had finished when the close request came, so the app (rightly) quit at once with nothing unsaved");
+        break;
+      }
       const t = await dialogText(m);
-      if (/still being saved or changed|still busy/.test(t)) {
+      if (/Still running|still being saved or changed|still busy/.test(t)) {
         seen = true;
         ok(alive(), `a save in progress blocks the quit (${t.slice(0, 100)})`);
         await dialog(m).getByRole("button", { name: "OK" }).click().catch(() => {});

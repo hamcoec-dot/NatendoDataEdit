@@ -319,7 +319,7 @@ everything is also in command search.
   main window, then move the tab: the new window does not open files, does not
   change settings (Options is greyed out there) and does not remember tabs on
   its own; the files it held are remembered as ordinary tabs and reopen in the
-  main window next time. Each extra window uses about 100 MB more memory;
+  main window next time. Each extra window uses about 200 MB more memory;
   there is one extra window.
 - **Drag to move and arrange**, as in Google Sheets: reorder or rearrange
   columns by dragging their selected headings, or rows by their selected

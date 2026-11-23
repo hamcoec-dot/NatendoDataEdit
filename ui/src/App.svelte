@@ -1457,6 +1457,7 @@
     }
     try {
       await backend().windowMove(handOverOf(t));
+      sessionKey = ""; // the next save (10 s) adds the file window 2 now holds
     } catch (e) {
       say(errorText(e));
       return;
@@ -1536,7 +1537,7 @@
   let launchTab: Tab | null = null;
   let sessionKey = "";
 
-  async function saveSession(): Promise<void> {
+  async function saveSession(force = false): Promise<void> {
     if (!sessionReady || prefs.data.reopenLast === "never") return;
     const list = tabs
       .filter((t) => t.info.path && !t.private?.file && !t.private?.folder)
@@ -1549,7 +1550,8 @@
         active: t === tab,
       }));
     const key = JSON.stringify(list);
-    if (key === sessionKey) return;
+    // (forced when quitting: the files held by window 2 are added by the app, so this window's list can look unchanged)
+    if (key === sessionKey && !force) return;
     sessionKey = key;
     try {
       await backend().sessionSave(list);
@@ -1683,7 +1685,7 @@
         if (a !== "quit") return;
       }
       await Promise.all(tabs.filter((t) => !t.info.modified).map((t) => rememberTab(t)));
-      await saveSession();
+      await saveSession(true);
       const reply = await backend().quitApp(r.docs.map((d) => ({ id: d.id, generation: d.generation }))).catch(() => "exiting");
       if (reply !== "ask_again") return;
       }
