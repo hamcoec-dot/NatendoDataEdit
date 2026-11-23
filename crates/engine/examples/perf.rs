@@ -78,6 +78,69 @@ impl Check {
     }
 }
 
+/// Several selected blocks (Ctrl+click): totals over three whole-column
+/// blocks against one, and the split of 10,000 blocks. (`--multi-only` runs
+/// just this on the fixture.)
+fn multi_area_checks(
+    big: &Document,
+    rows: u64,
+    read: ReadOptions,
+    p: &Progress,
+    check: &mut Check,
+) {
+    // Budgets for 10M rows, scaled by row count (as the rest of this file).
+    let rs = (rows as f64 / 1e7).max(0.05);
+    let budget = |secs: f64| Duration::from_secs_f64(secs * rs);
+    {
+        use natendo_engine::areas::{disjoint, Area};
+        let col = |c: u32| Area {
+            row: 1,
+            rows: rows - 1,
+            col: c,
+            cols: 1,
+        };
+        let t = Instant::now();
+        // The same number of cells as one block of three columns next to each other.
+        big.selection_totals(1, rows - 1, 2, 3, read, p).unwrap();
+        let one = t.elapsed();
+        let t = Instant::now();
+        let three = big
+            .selection_totals_areas(&[col(2), col(4), col(6)], read, p)
+            .unwrap();
+        let many = t.elapsed();
+        assert!(three.cells >= 3 * (rows - 1));
+        println!(
+            "  [multi-area] totals: one 1M x 3 block {:?}, three 1M-row column blocks {:?} ({:.2}x)",
+            one,
+            many,
+            many.as_secs_f64() / one.as_secs_f64().max(1e-9)
+        );
+        check.budget("quick totals, three whole-column blocks", many, budget(3.0));
+        // Gate: within 1.2x of the same cells as one block (a little slack for timer noise).
+        check.budget(
+            "three column blocks within 1.2x one 3-column block",
+            many,
+            one.mul_f64(1.2) + Duration::from_millis(3),
+        );
+        let singles: Vec<Area> = (0..10_000u64)
+            .map(|i| Area {
+                row: (i * 7919) % 1_000_000,
+                rows: 1,
+                col: (i % 20) as u32,
+                cols: 1,
+            })
+            .collect();
+        let t = Instant::now();
+        let d = disjoint(&singles);
+        check.budget(
+            "split 10,000 selected blocks",
+            t.elapsed(),
+            Duration::from_millis(50),
+        );
+        assert!(!d.is_empty());
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rows: u64 = args
@@ -102,6 +165,18 @@ fn main() {
     // Budgets scale with size so small runs are still meaningful.
     let scale = (size as f64 / 2e9).max(0.05);
     let mut check = Check { failed: false };
+    if args.iter().any(|a| a == "--multi-only") {
+        let big = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
+        let p = Progress::new();
+        multi_area_checks(
+            &big,
+            big.row_count(),
+            ReadOptions::default(),
+            &p,
+            &mut check,
+        );
+        std::process::exit(i32::from(check.failed));
+    }
 
     // Open: first screen, then the full index.
     let t = Instant::now();
@@ -1583,6 +1658,7 @@ fn main() {
     big.selection_totals(1, rows - 1, 0, COLS as u32, read, &p)
         .unwrap();
     check.budget("quick totals, every cell", t.elapsed(), budget(6.0));
+    multi_area_checks(&big, rows, read, &p, &mut check);
     let t = Instant::now();
     big.hide_rows(1, rows / 2).unwrap();
     let shown = big.row_count();

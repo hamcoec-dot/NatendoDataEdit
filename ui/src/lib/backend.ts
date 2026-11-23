@@ -1159,6 +1159,8 @@ export interface Backend {
   setCells(doc: number, cells: [number, number, string][]): Promise<DocInfo>;
   /** `skip`: columns left as they are (hidden ones). */
   fillCells(doc: number, row: number, rows: number, col: number, cols: number, value: string, skip?: number[]): Promise<DocInfo>;
+  /** One value into every cell of several blocks (Ctrl+click), one undo step. */
+  fillAreas(doc: number, areas: import("./selection").Rect[], value: string, skip?: number[]): Promise<DocInfo>;
   /** Rows hidden between shown rows `row` and `row + rows - 1`. */
   hiddenBetween(doc: number, row: number, rows: number): Promise<number>;
   /** `skip`: columns left out (hidden ones). */
@@ -1321,6 +1323,8 @@ export interface Backend {
   openLink(url: string): Promise<void>;
   /** Quick totals; a newer request cancels an older one (kind "cancelled"). */
   selectionTotals(doc: number, row: number, rows: number, col: number, cols: number, read: ReadOptions, distinct?: boolean): Promise<Totals>;
+  /** Totals of several blocks (Ctrl+click), each cell once, no distinct count. */
+  selectionTotalsAreas(doc: number, areas: import("./selection").Rect[], read: ReadOptions): Promise<Totals>;
   chartData(doc: number, spec: ChartSpec): Promise<ChartData>;
   highlights(doc: number, row: number, rows: number, col: number, cols: number, rules: Highlight[], skipFirst: boolean, read: ReadOptions): Promise<Mark[]>;
   /** Where Ctrl+arrow lands from a cell. */
@@ -1584,6 +1588,9 @@ class TauriBackend implements Backend {
   }
   setCells(doc: number, cells: [number, number, string][]) {
     return call<DocInfo>("set_cells", { doc, cells });
+  }
+  fillAreas(doc: number, areas: import("./selection").Rect[], value: string, skip?: number[]) {
+    return call<DocInfo>("fill_areas", { doc, areas, value, skip: skip ?? null });
   }
   fillCells(doc: number, row: number, rows: number, col: number, cols: number, value: string, skip?: number[]) {
     return call<DocInfo>("fill_cells", { doc, row, rows, col, cols, value, skip: skip ?? null });
@@ -1860,6 +1867,9 @@ class TauriBackend implements Backend {
   }
   selectionTotals(doc: number, row: number, rows: number, col: number, cols: number, read: ReadOptions, distinct = false) {
     return call<Totals>("selection_totals", { doc, row, rows, col, cols, read, distinct });
+  }
+  selectionTotalsAreas(doc: number, areas: import("./selection").Rect[], read: ReadOptions) {
+    return call<Totals>("selection_totals_areas", { doc, areas, read });
   }
   chartData(doc: number, spec: ChartSpec) {
     return call<ChartData>("chart_data", { doc, spec });
@@ -2153,7 +2163,58 @@ class TauriBackend implements Backend {
 
 let instance: Backend | null = null;
 
+/** Every method that changes what a file holds. While several blocks are
+ *  selected (Ctrl+click) a call to any of them is refused unless the command
+ *  running handles several blocks, whatever code made the call (a toolbar
+ *  button, a panel, the editor). A test lists every method that returns a
+ *  document's state and makes sure each is on this list or on the safe one. */
+export const WRITE_METHODS: readonly string[] = [
+  "setCells",
+  "fillCells",
+  "fillAreas",
+  "moveCells",
+  "change",
+  "sortRows",
+  "setFilter",
+  "clearFilter",
+  "replaceConfirm",
+  "replaceCell",
+  "replaceTitles",
+  "replaceAll",
+  "batchConfirm",
+  "dataOp",
+  "tidyTitles",
+  "setFirstRowCell",
+  "setColumnNames",
+  "updatesAccept",
+  "matchAccept",
+  "recipeRun",
+  "stepsGoto",
+  "stepsChange",
+  "streetLookup",
+];
+
+/** Returns the reason a write to this file must not happen now, or null. The
+ *  window installs it. */
+export const writeGuard: { check: ((doc: number) => string | null) | null } = { check: null };
+
+const WRITES = new Set(WRITE_METHODS);
+
+function guarded(b: Backend): Backend {
+  return new Proxy(b, {
+    get(target, prop, receiver) {
+      const v = Reflect.get(target, prop, receiver);
+      if (typeof prop !== "string" || !WRITES.has(prop) || typeof v !== "function") return v;
+      return (...args: unknown[]) => {
+        const why = writeGuard.check?.(args[0] as number) ?? null;
+        if (why) return Promise.reject({ kind: "one_block", message: why });
+        return (v as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  });
+}
+
 export function backend(): Backend {
-  instance ??= inTauri() ? new TauriBackend() : new MockBackend();
+  instance ??= guarded(inTauri() ? new TauriBackend() : new MockBackend());
   return instance;
 }

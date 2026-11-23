@@ -7,6 +7,7 @@ import type { Rect } from "./selection";
  *  and drag moves). */
 export const MOUSE_MOVES: { label: string; keys: string }[] = [
   { label: "Select columns or rows", keys: "Click or drag the column headings or row numbers" },
+  { label: "Select several blocks at once", keys: "Ctrl+click a cell, Ctrl+drag a block, or Ctrl+click a heading or row number; Esc goes back to the last one" },
   { label: "Move selected columns", keys: "Drag a selected column heading" },
   { label: "Move selected rows", keys: "Drag a selected row number" },
   { label: "Move the selected cells", keys: "Drag the selection's outline" },

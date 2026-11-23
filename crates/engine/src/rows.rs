@@ -15,6 +15,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::areas::Area;
 use crate::document::{Document, Progress};
 use crate::ops::Cols;
 use crate::stats::Kahan;
@@ -87,6 +88,25 @@ impl Acc {
     }
 }
 
+/// The totals of what was read; columns past the last one count as blank
+/// cells (`cells` is what was asked for).
+fn totals_of(acc: Acc, cells: u64) -> Totals {
+    let has = acc.numbers > 0;
+    let sum = acc.sum.value();
+    let fits = sum.is_finite();
+    Totals {
+        cells,
+        filled: acc.filled,
+        numbers: acc.numbers,
+        sum: (has && fits).then_some(sum),
+        average: (has && fits).then(|| sum / acc.numbers as f64),
+        too_large: has && !fits,
+        min: has.then_some(acc.min),
+        max: has.then_some(acc.max),
+        chars: acc.chars,
+    }
+}
+
 /// How rows are shuffled: a computed new order (see [`Document::apply_shuffle`]).
 pub struct ShufflePlan {
     revision: u64,
@@ -146,14 +166,78 @@ impl Document {
         read: ReadOptions,
         progress: &Progress,
     ) -> Result<Totals, Error> {
-        let end = row.checked_add(rows).ok_or(Error::OutOfRange)?;
-        if end > self.row_count() || cols > MAX_TOTAL_COLS {
+        let acc = self.totals_acc(row, rows, col, cols, read, progress)?;
+        Ok(totals_of(acc, rows.saturating_mul(cols as u64)))
+    }
+
+    /// [`Document::selection_totals`] over several blocks (Ctrl+click): the
+    /// blocks are made non-overlapping first, so a cell counts once, and all
+    /// of them are read in one go.
+    pub fn selection_totals_areas(
+        &self,
+        areas: &[Area],
+        read: ReadOptions,
+        progress: &Progress,
+    ) -> Result<Totals, Error> {
+        let parts = crate::areas::disjoint(areas);
+        let n = self.col_count();
+        // Blocks over the same rows are read in one pass (their columns together).
+        let mut by_rows: std::collections::BTreeMap<(u64, u64), Vec<u32>> =
+            std::collections::BTreeMap::new();
+        let mut cells = 0u64;
+        for a in &parts {
+            cells = cells.saturating_add(a.cells());
+            if a.cols > MAX_TOTAL_COLS {
+                return Err(Error::OutOfRange);
+            }
+            let c1 = a.col.saturating_add(a.cols).min(n);
+            by_rows
+                .entry((a.row, a.rows))
+                .or_default()
+                .extend(a.col.min(c1)..c1);
+        }
+        let mut acc = Acc::new();
+        for ((row, rows), mut cols) in by_rows {
+            cols.sort_unstable();
+            cols.dedup();
+            acc = acc.merge(self.totals_acc_cols(row, rows, &cols, read, progress)?);
+        }
+        Ok(totals_of(acc, cells))
+    }
+
+    fn totals_acc(
+        &self,
+        row: u64,
+        rows: u64,
+        col: u32,
+        cols: u32,
+        read: ReadOptions,
+        progress: &Progress,
+    ) -> Result<Acc, Error> {
+        if cols > MAX_TOTAL_COLS {
             return Err(Error::OutOfRange);
         }
         let n = self.col_count();
         let c1 = col.saturating_add(cols).min(n);
         let wanted: Vec<u32> = (col.min(c1)..c1).collect();
-        let reader = Cols::new(self, &wanted);
+        self.totals_acc_cols(row, rows, &wanted, read, progress)
+    }
+
+    /// The totals of shown rows `row..row + rows` in exactly these columns
+    /// (one pass over the rows, however many columns).
+    fn totals_acc_cols(
+        &self,
+        row: u64,
+        rows: u64,
+        wanted: &[u32],
+        read: ReadOptions,
+        progress: &Progress,
+    ) -> Result<Acc, Error> {
+        let end = row.checked_add(rows).ok_or(Error::OutOfRange)?;
+        if end > self.row_count() || wanted.len() as u64 > u64::from(MAX_TOTAL_COLS) {
+            return Err(Error::OutOfRange);
+        }
+        let reader = Cols::new(self, wanted);
         progress.start(rows);
         let chunks = rows.div_ceil(CHUNK);
         let acc = (0..chunks)
@@ -186,22 +270,7 @@ impl Document {
                 Ok(a)
             })
             .try_reduce(Acc::new, |a, b| Ok(a.merge(b)))?;
-        // Columns past the last one count as blank cells.
-        let cells = rows.saturating_mul(cols as u64);
-        let has = acc.numbers > 0;
-        let sum = acc.sum.value();
-        let fits = sum.is_finite();
-        Ok(Totals {
-            cells,
-            filled: acc.filled,
-            numbers: acc.numbers,
-            sum: (has && fits).then_some(sum),
-            average: (has && fits).then(|| sum / acc.numbers as f64),
-            too_large: has && !fits,
-            min: has.then_some(acc.min),
-            max: has.then_some(acc.max),
-            chars: acc.chars,
-        })
+        Ok(acc)
     }
 
     /// How many different non-blank values (spaces at the ends ignored) the
@@ -414,6 +483,43 @@ mod tests {
         (0..d.row_count())
             .map(|r| d.cell(r, c).unwrap_or_default())
             .collect()
+    }
+
+    #[test]
+    fn totals_over_several_blocks_count_each_cell_once() {
+        let d = doc("a,b
+1,x
+2.5,
+,-4
+");
+        let one = |r, rs, c, cs| Area {
+            row: r,
+            rows: rs,
+            col: c,
+            cols: cs,
+        };
+        // Column a (rows 0..4), column b (rows 0..4) and an overlap with both.
+        let t = d
+            .selection_totals_areas(
+                &[one(0, 4, 0, 1), one(0, 4, 1, 1), one(1, 2, 0, 2)],
+                ReadOptions::default(),
+                &Progress::new(),
+            )
+            .unwrap();
+        let whole = d
+            .selection_totals(0, 4, 0, 2, ReadOptions::default(), &Progress::new())
+            .unwrap();
+        assert_eq!(t, whole);
+        // Two separate blocks: a1..a2 and b3.
+        let t = d
+            .selection_totals_areas(
+                &[one(1, 2, 0, 1), one(3, 1, 1, 1)],
+                ReadOptions::default(),
+                &Progress::new(),
+            )
+            .unwrap();
+        assert_eq!(t.cells, 3);
+        assert_eq!(t.sum, Some(1.0 + 2.5 - 4.0));
     }
 
     #[test]

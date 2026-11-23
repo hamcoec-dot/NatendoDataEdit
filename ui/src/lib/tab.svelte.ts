@@ -8,7 +8,7 @@ import type { SortSpec } from "./backend";
 import { backend, type DocInfo, type FilterSpec } from "./backend";
 import { CellCache } from "./cache";
 import { Columns, type ColSnap } from "./columns";
-import { single, type Selection, rectOf, type Rect, type Cell, activeOf } from "./selection";
+import { single, type Selection, rectOf, type Rect, type Cell, activeOf, MAX_AREAS, sameRect, rectInside } from "./selection";
 
 /** Characters per cell fetched for display (the backend caps this too). */
 export const DISPLAY_CHARS = 512;
@@ -63,7 +63,45 @@ function sameLook(a: ViewLook, b: ViewLook): boolean {
 
 export class Tab {
   info = $state<DocInfo>() as DocInfo;
-  sel = $state<Selection>(single({ row: 0, col: 0 }));
+  private _sel = $state<Selection>(single({ row: 0, col: 0 }));
+  /** The selected block (the last one picked when several are selected).
+   *  Putting a new selection here is picking one block again: the earlier
+   *  blocks of a Ctrl+click selection go (use `setPrimary` to move the last
+   *  block only, or `addArea` to add one). */
+  get sel(): Selection {
+    return this._sel;
+  }
+  set sel(v: Selection) {
+    this._sel = v;
+    if (this.extra.length) this.extra = [];
+  }
+  /** The blocks picked before the last one (Ctrl+click), oldest first. */
+  extra = $state<Rect[]>([]);
+  /** Move the last block (Shift+click, Shift+arrows, a Ctrl+drag) and keep the earlier ones. */
+  setPrimary(v: Selection): void {
+    this._sel = v;
+  }
+  /** Ctrl+click or Ctrl+drag: the block selected so far becomes an earlier
+   *  block and `v` the new last one. A block already inside an earlier one
+   *  adds nothing. False when the 10,000-block cap is reached. */
+  addArea(v: Selection): boolean {
+    const r = rectOf(this._sel);
+    if (!this.extra.some((x) => sameRect(x, r) || rectInside(r, x))) {
+      if (this.extra.length + 1 >= MAX_AREAS) return false;
+      this.extra = [...this.extra, r];
+    }
+    this._sel = v;
+    return true;
+  }
+  /** Every selected block: the earlier ones, then the last. */
+  get areas(): Rect[] {
+    return [...this.extra, rectOf(this._sel)];
+  }
+  /** The one selected block, or null when several blocks are selected: code
+   *  that works on one block must handle null (refuse, or say "one block only"). */
+  singleRect(): Rect | null {
+    return this.extra.length ? null : rectOf(this._sel);
+  }
   /** First row is shown as column titles. */
   header = $state(false);
   /** The user set the header switch, so the automatic guess stays out. */
@@ -224,8 +262,10 @@ export class Tab {
     return this.header && this.info.rows > 0 ? 1 : 0;
   }
 
-  get rect(): Rect {
-    return rectOf(this.sel);
+  /** The last block picked, for drawing and gestures in the grid only (everything
+   *  else asks `singleRect()` or `areas`). */
+  get drawRect(): Rect {
+    return rectOf(this._sel);
   }
 
   /** Column moves by the undo position they made, so undo and redo carry
@@ -518,6 +558,9 @@ export class Tab {
     if (!info.has_filter) this.filter = null;
     const before = this.info.history_pos;
     const after = info.history_pos;
+    // Several blocks stand for rows and columns as they were: other rows
+    // (a filter, undo, redo) or a changed shape make them stale.
+    if (this.extra.length && (structural || after < before || this.redoing > 0 || info.has_filter !== this.info.has_filter || info.hidden_rows !== this.info.hidden_rows)) this.extra = [];
     // Any change, and any change of which rows are shown (a filter), drops a
     // pending cut: its rows would now be other rows.
     if (dataChanged || after !== before || structural || info.has_filter !== this.info.has_filter || info.hidden_rows !== this.info.hidden_rows) {
