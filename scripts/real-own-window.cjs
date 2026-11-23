@@ -147,11 +147,13 @@ const edit = async (page, text = "X") => {
   await sleep(500);
 };
 const dialog = (page) => page.locator(".dialog[role=alertdialog]");
-const dialogText = async (page) => ((await dialog(page).textContent().catch(() => "")) || "").replace(/\s+/g, " ").trim();
+const dialogText = async (page) => ((await dialog(page).textContent({ timeout: 800 }).catch(() => "")) || "").replace(/\s+/g, " ").trim();
 const osClose = (title) => {
+  // Top-level windows of the app's process, matched by exact title and visibility (a hidden helper window can share the title).
   const ps =
-    `Add-Type 'using System;using System.Runtime.InteropServices;public class W{[DllImport("user32.dll")]public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);[DllImport("user32.dll")]public static extern IntPtr FindWindow(string c,string t);}'; ` +
-    `$h=[W]::FindWindow([NullString]::Value,'${title}'); if ($h -eq [IntPtr]::Zero) { 'no window' } else { [void][W]::PostMessage($h,0x10,[IntPtr]::Zero,[IntPtr]::Zero); 'sent' }`;
+    `Add-Type 'using System;using System.Text;using System.Collections.Generic;using System.Runtime.InteropServices;public class W{public delegate bool CB(IntPtr h,IntPtr l);[DllImport("user32.dll")]public static extern bool EnumWindows(CB cb,IntPtr l);[DllImport("user32.dll")]public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);[DllImport("user32.dll")]public static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")]public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);public static List<IntPtr> Find(uint pid,string t){var r=new List<IntPtr>();EnumWindows((h,l)=>{uint p;GetWindowThreadProcessId(h,out p);var sb=new StringBuilder(256);GetWindowText(h,sb,256);if(p==pid&&IsWindowVisible(h)&&sb.ToString()==t)r.Add(h);return true;},IntPtr.Zero);return r;}}'; ` +
+    `$pids=@(Get-Process -Name natendo-data-edit -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }); $f=$null; foreach ($i in $pids) { $x=[W]::Find([uint32]$i,'${title}'); if ($x.Count -gt 0) { $f=$x[0] } }; ` +
+    `if ($f -eq $null) { 'no window' } else { [void][W]::PostMessage($f,0x10,[IntPtr]::Zero,[IntPtr]::Zero); 'sent' }`;
   return spawnSync("powershell", ["-NoProfile", "-Command", ps], { encoding: "utf8" }).stdout.trim();
 };
 const CLOSE_MAIN = () => osClose("Natendo Data Edit");
@@ -184,6 +186,16 @@ const got = (page, list) => page.evaluate((l) => (window[l] || []).slice(), list
 
 // ---- scenarios ----
 const scenarios = {
+  async probe() {
+    const m = await start([first]);
+    await edit(m, "X");
+    await listen(m, ["close-requested"], "main", "L1");
+    await m.evaluate(() => { window.__errs = []; window.addEventListener("error", (e) => window.__errs.push(String(e.message))); window.addEventListener("unhandledrejection", (e) => window.__errs.push(String(e.reason && (e.reason.message || JSON.stringify(e.reason))))); });
+    say("titles: " + spawnSync("powershell",["-NoProfile","-Command","Get-Process natendo-data-edit | Select-Object Id,MainWindowTitle | Format-List | Out-String"],{encoding:"utf8"}).stdout.replace(/\s+/g," ")); say("via invoke close: " + JSON.stringify(await m.evaluate(async () => { try { await window.__TAURI_INTERNALS__.invoke("plugin:window|close", { label: "main" }); return "ok"; } catch (e) { return String(e); } }))); say("close main: " + CLOSE_MAIN());
+    await sleep(4000);
+    say("events=" + JSON.stringify(await got(m, "L1")) + " errs=" + JSON.stringify(await m.evaluate(() => window.__errs)) + " dlg=" + (await dialogText(m)) + " alive=" + alive());
+    await m.screenshot({ path: path.join(process.argv[3], "probe.png") });
+  },
   // D: closing main with an unsaved edit still asks after window 2 has been and gone, and window 2 cannot quit the app.
   async d() {
     const m = await start([first]);
@@ -199,7 +211,7 @@ const scenarios = {
     ok(alive(), "the app is still running");
     say("close main (its close button): " + CLOSE_MAIN());
     const asked = await waitFor(async () => /Quit without saving/.test(await dialogText(m)), 5000);
-    ok(asked && alive(), `D: closing main with an unsaved edit after window 2 closed still asks (${(await dialogText(m)).slice(0, 110)})`);
+    ok(asked && alive(), `D: closing main with an unsaved edit after window 2 closed still asks (alive=${alive()} asked=${asked} text=${(await dialogText(m)).slice(0, 110)})`);
     await dialog(m).getByRole("button", { name: "Cancel" }).click().catch(() => {});
     await sleep(500);
     // A stray quit from window 2.

@@ -1648,6 +1648,9 @@
     if (quitAsking) return;
     quitAsking = true;
     try {
+      // The app says "ask_again" when something changed after the question was
+      // shown; the question then comes round again with the new list.
+      for (;;) {
       let r: ModifiedReport;
       try {
         r = await backend().modifiedDocs();
@@ -1681,8 +1684,9 @@
       }
       await Promise.all(tabs.filter((t) => !t.info.modified).map((t) => rememberTab(t)));
       await saveSession();
-      await backend().quitApp(r.docs.map((d) => ({ id: d.id, generation: d.generation }))).catch(() => "exiting");
-      // "ask_again": the app saw a change made after the question; it asks again.
+      const reply = await backend().quitApp(r.docs.map((d) => ({ id: d.id, generation: d.generation }))).catch(() => "exiting");
+      if (reply !== "ask_again") return;
+      }
     } finally {
       quitAsking = false;
     }
