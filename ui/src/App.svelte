@@ -3319,6 +3319,14 @@
   }
 
   // ---- cells dropped on another tab (copy, Shift: move) ----------------------
+  /** When each tab was last the front one (for listing the most recent first). */
+  const usedAt = new Map<number, number>();
+  let usedSeq = 0;
+  $effect(() => {
+    const t = tabs[active];
+    if (t) usedAt.set(t.id, ++usedSeq);
+  });
+
   /** The tab the cell drag is over (outlined in the bar), if any. */
   let cellDropTab = $state<number | null>(null);
 
@@ -3345,7 +3353,7 @@
   /** The paste half of Paste, into any tab at a place: asks about rows
    *  that do not fit while rows are hidden, writes one undo step, and says
    *  how many rows were added. null: nothing was written. */
-  async function pasteInto(dst: Tab, text: string, row: number, col: number): Promise<{ rows: number; added: number } | null> {
+  async function pasteInto(dst: Tab, text: string, row: number, col: number): Promise<{ rows: number; width: number; added: number } | null> {
     const rows = parseTsv(text);
     if (rows.length === 0) return null;
     const fit = await askOverflow(dst, row, rows.length, dst.info.name);
@@ -3353,12 +3361,14 @@
     const before = dst.info.rows;
     const done = await runOp({ op: "paste", spec: { row, col, op: "none", skip_blanks: false, transpose: false, stop_at_end: fit === "stop" }, text }, "Pasting", dst);
     if (!done) return null;
-    return { rows: rows.length, added: Math.max(0, dst.info.rows - before) };
+    return { rows: rows.length, width: Math.max(...rows.map((x) => x.length)), added: Math.max(0, dst.info.rows - before) };
   }
 
   /** What a source tab looked like when its cells were copied: a change
    *  after that stops a move from clearing it. */
-  const sourceKey = (t: Tab): string => `${t.info.history_pos}|${t.info.rows}|${t.info.total_rows}|${JSON.stringify(t.filter ?? null)}`;
+  // (The data revision moves on every edit, undo and redo, so edit, undo, edit
+  // lands on the same undo position but not on the same key.)
+  const sourceKey = (t: Tab): string => `${t.info.data_revision ?? 0}|${t.info.history_pos}|${t.info.rows}|${t.info.total_rows}|${JSON.stringify(t.filter ?? null)}`;
 
   /** Cells dropped on another tab: copied to that tab's active cell (Shift
    *  or "Move": then cleared here, but only once the other file has them;
@@ -3405,31 +3415,33 @@
       say(`Nothing was copied to ${dst.info.name}.`);
       return;
     }
+    // The cells actually sent (rows and columns of what was copied: hidden rows are not in it), not the size of the selection.
+    const written = put.rows * put.width;
     const added = put.added > 0 ? `, added ${plural(put.added, "row")}` : "";
     const goTo = () => {
       const i = tabs.indexOf(dst);
       if (i >= 0) active = i;
     };
     if (!move) {
-      say(`Copied ${plural(n, "cell")} to ${dst.info.name}${added}. Undo there with Ctrl+Z.`);
+      say(`Copied ${plural(written, "cell")} to ${dst.info.name}${added}. Undo there with Ctrl+Z.`);
       messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
       return;
     }
     // Move: the other file has the cells; only now clear the source tab,
     // which must still be what was copied (same changes, same rows, same filter).
     if (!tabs.includes(src) || sourceKey(src) !== key) {
-      say(`Copied ${plural(n, "cell")} to ${dst.info.name}${added}, not removed from ${src.info.name}: it changed meanwhile.`);
+      say(`Copied ${plural(written, "cell")} to ${dst.info.name}${added}, not removed from ${src.info.name}: it changed meanwhile.`);
       messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
       return;
     }
     src.whatNext = "moving cells to another file";
     const cleared = await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, "", hiddenColsOf(x)), true, src);
     if (!cleared) {
-      say(`Copied ${plural(n, "cell")} to ${dst.info.name}${added}, not removed from ${src.info.name}.`);
+      say(`Copied ${plural(written, "cell")} to ${dst.info.name}${added}, not removed from ${src.info.name}.`);
       messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
       return;
     }
-    say(`Moved ${plural(n, "cell")} to ${dst.info.name}${added}. Ctrl+Z in each file undoes its half.`);
+    say(`Moved ${plural(written, "cell")} to ${dst.info.name}${added}. Ctrl+Z in each file undoes its half.`);
     messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
   }
 
@@ -3446,7 +3458,8 @@
   async function cellsToTab(move: boolean): Promise<void> {
     const src = tab;
     if (!src || !ready()) return;
-    const others = tabs.filter((x) => x !== src);
+    // Most recently used first.
+    const others = tabs.filter((x) => x !== src).sort((a, b) => (usedAt.get(b.id) ?? 0) - (usedAt.get(a.id) ?? 0));
     if (!others.length) {
       say("Open a second file first.");
       return;

@@ -401,6 +401,26 @@ const scenarios = {
     ok(JSON.stringify(after) === JSON.stringify(["name", "Sname 1", "", "", "Sname 4", "Sname 5", "", "", "", "", "Sname 10", "Sname 11", "Sname 12"]), "the 2 hidden rows kept their values and exactly the 6 shown rows were cleared");
   },
 
+  // The "Copy selection to another file" picker lists the most recently used file first.
+  async picker() {
+    const eCsv = mk("e.csv", "E", 40);
+    const m = await start([sCsv, dCsv, eCsv]);
+    await waitFor(async () => (await tabNames(m)).length === 3, 20000);
+    for (const n of ["d.csv", "e.csv", "s.csv"]) {
+      await showTab(m, n);
+      const yes = m.getByRole("button", { name: "Yes, column names" });
+      if (await yes.isVisible().catch(() => false)) await yes.click();
+      await sleep(300);
+    }
+    // Used last to first: s (now), e, d; tab order is s, d, e, so a tab-order list would put d first.
+    await m.mouse.click(300, 300).catch(() => {});
+    await m.locator("canvas").first().click({ position: { x: 300, y: 130 } });
+    await cmd(m, "Copy selection to another file");
+    const names = (await m.locator(".dialog[role=alertdialog] button").allTextContents()).map((t) => t.trim());
+    info(`picker buttons: ${names.join(" | ")}`);
+    ok(names[0] === "e.csv" && names[1] === "d.csv", "the most recently used other file is listed first (e.csv, then d.csv)");
+  },
+
   // Speed: a big block (about 80,000 cells, under the 100,000 cap) dropped between two 1M-row files, against the engine calls Copy then Paste make.
   async speed() {
     const a = path.join(WORK, "big-a.csv");

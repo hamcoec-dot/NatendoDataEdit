@@ -170,6 +170,34 @@ const url = process.argv[3] || "http://localhost:5213";
   ok((await block(ids[0], 2, 2, 1, 2)).replace(/\r/g, "") === src.replace(/\r/g, ""), "the source cells are still there");
   await p.evaluate(() => {});
 
+  // ---- edit, undo, a different edit while the move runs: same undo position, other data: not cleared ----
+  await p.evaluate(async (sid) => {
+    const t = window.__nde.tabs.find((x) => x.id === sid);
+    t.update(await window.__nde.backend.setCells(sid, [[11, 5, "x0"]]), true);
+  }, ids[0]);
+  await p.evaluate((sid) => {
+    const bk = window.__nde.backend;
+    const orig = bk.copyCells.bind(bk);
+    bk.copyCells = async (...a) => {
+      const text = await orig(...a);
+      if (a[0] === sid) {
+        bk.copyCells = orig;
+        const t = window.__nde.tabs.find((x) => x.id === sid);
+        window.__pos = t.info.history_pos;
+        t.update(await bk.change(sid, { op: "undo" }), true);
+        t.update(await bk.setCells(sid, [[12, 5, "y"]]), true);
+        window.__posAfter = t.info.history_pos;
+      }
+      return text;
+    };
+  }, ids[0]);
+  await selectBlock();
+  await dragTo(1, { shift: true });
+  const same = await p.evaluate(() => window.__pos === window.__posAfter);
+  ok(same, "(set up: the undo position is the same again after edit, undo, edit)");
+  ok(/not removed from .*changed meanwhile/.test(await status()), `a different edit made during the move keeps the source cells (${await status()})`);
+  ok((await block(ids[0], 2, 2, 1, 2)) === src, "the source cells were not cleared");
+
   // ---- a clear that fails says copied, not removed ----
   await p.evaluate((sid) => {
     const bk = window.__nde.backend;
