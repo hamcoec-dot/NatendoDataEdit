@@ -278,6 +278,32 @@ export interface SessionTab {
   col: number;
   active: boolean;
 }
+/** A tab on its way between windows (or its last state, kept by the app so a
+ *  window's files can come back). `state` is built and read by the windows. */
+export interface HandOver {
+  doc: number;
+  state: unknown;
+  view?: unknown;
+  row: number;
+  col: number;
+  /** Why the tab came back on its own, if it did. */
+  note?: string | null;
+}
+/** A document with unsaved changes, as the quit question lists it. */
+export interface ModifiedDoc {
+  id: number;
+  name: string;
+  /** Counts every edit, undo and redo of the file (it never goes back). */
+  generation: number;
+}
+/** What stands between the app and a quit. */
+export interface ModifiedReport {
+  docs: ModifiedDoc[];
+  /** Files something holds right now (a save, a long change). */
+  busy: string[];
+  /** Long jobs running (quitting stops them). */
+  jobs: string[];
+}
 /** A tab open when the app last closed. */
 export interface SessionItem {
   index: number;
@@ -1306,7 +1332,25 @@ export interface Backend {
    *  that row itself is shown (otherwise the next shown one); null when
    *  no row is shown. */
   shownRowOf(doc: number, number: number): Promise<[number, boolean] | null>;
-  quitApp(): Promise<void>;
+  /** Unsaved files (either window), files held, long jobs: for the quit question. */
+  modifiedDocs(): Promise<ModifiedReport>;
+  /** Quit, with the list the question showed (file and generation): "ask_again"
+   *  when something else is unsaved now (nothing quits), "ignored" from a
+   *  window that cannot quit. */
+  quitApp(known: { id: number; generation: number }[]): Promise<string>;
+  /** Move a tab to the second window (opened on demand). */
+  windowMove(h: HandOver): Promise<void>;
+  /** Take the tabs waiting for this window. */
+  windowTake(): Promise<HandOver[]>;
+  /** The second window hands a tab back to the main window. */
+  windowMoveBack(h: HandOver): Promise<void>;
+  /** The second window reports its tabs (and that it is alive). */
+  windowSync(items: HandOver[]): Promise<void>;
+  /** The second window made a document itself (a result tab): it holds it. */
+  windowClaim(h: HandOver): Promise<void>;
+  /** The second window closes; its tabs go back to the main window. */
+  windowCloseSelf(): Promise<void>;
+  onHandover(handler: () => void): void;
   onCloseRequested(handler: () => void): void;
   computePreview(doc: number, spec: ComputeSpec): Promise<ComputePreview>;
   /** The filter panel's counts (an older count still running is cancelled). */
@@ -1449,6 +1493,14 @@ export interface Backend {
 
 export const inTauri = (): boolean =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+/** Listen for an app event in THIS window only. The default listener
+ *  ("Any") also hears events addressed to other windows, so every event goes
+ *  through here (a test fails on any other use of the event module). */
+async function listenHere<T = void>(event: string, handler: (payload: T) => void): Promise<void> {
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  await getCurrentWebviewWindow().listen<T>(event, (e) => handler(e.payload));
+}
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -1824,11 +1876,35 @@ class TauriBackend implements Backend {
   shownRowOf(doc: number, number: number) {
     return call<[number, boolean] | null>("shown_row_of", { doc, number });
   }
-  quitApp() {
-    return call<void>("quit_app");
+  modifiedDocs() {
+    return call<ModifiedReport>("modified_docs");
+  }
+  quitApp(known: { id: number; generation: number }[]) {
+    return call<string>("quit_app", { known });
+  }
+  windowMove(h: HandOver) {
+    return call<void>("window_move", { h });
+  }
+  windowTake() {
+    return call<HandOver[]>("window_take");
+  }
+  windowMoveBack(h: HandOver) {
+    return call<void>("window_move_back", { h });
+  }
+  windowSync(items: HandOver[]) {
+    return call<void>("window_sync", { items });
+  }
+  windowClaim(h: HandOver) {
+    return call<void>("window_claim", { h });
+  }
+  windowCloseSelf() {
+    return call<void>("window_close_self");
+  }
+  onHandover(handler: () => void) {
+    void listenHere("handover", handler);
   }
   onCloseRequested(handler: () => void) {
-    void import("@tauri-apps/api/event").then(({ listen }) => listen("close-requested", handler));
+    void listenHere("close-requested", handler);
   }
   facetCounts(doc: number, cards: FacetCard[], spec: FilterSpec) {
     return call<Facets>("facet_counts", { doc, cards, spec });
@@ -2047,12 +2123,10 @@ class TauriBackend implements Backend {
     return call<OsOpen[]>("take_opened");
   }
   onOpened(handler: () => void) {
-    void import("@tauri-apps/api/event").then(({ listen }) => listen("opened", handler));
+    void listenHere("opened", handler);
   }
   onAgentGoto(handler: (g: { doc: number; row: number; col: number }) => void) {
-    void import("@tauri-apps/api/event").then(({ listen }) =>
-      listen<{ doc: number; row: number; col: number }>("agent-goto", (e) => handler(e.payload)),
-    );
+    void listenHere<{ doc: number; row: number; col: number }>("agent-goto", handler);
   }
   fileTypes() {
     return call<FileType[]>("file_types");

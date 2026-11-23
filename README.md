@@ -303,6 +303,24 @@ everything is also in command search.
 - Tabs for each open file, frozen rows and columns, insert, delete, move,
   hide, resize and auto-fit columns, hide and show rows (Ctrl+9,
   Ctrl+Shift+9).
+- **A tab in its own window:** right-click a tab (or File menu, or Alt+Q) and
+  choose Move tab to a new window to see two files side by side, on two
+  screens if you like. The tab keeps its cell, selection, scroll position,
+  column widths, frozen panes, filter, sort and split, and the file is not
+  read again. Both windows share the open files and their undo history, so
+  Ctrl+Z in either window steps the same history. In the new window, Move tab
+  back to the main window (the same menus) returns it; closing the new window
+  (or its last tab) brings every tab back to the main window with unsaved edits
+  intact, even if that window stops responding (the app takes them back itself
+  after a few seconds). Closing the main window ends the app and asks first
+  about unsaved changes in both windows; if something is edited while the
+  question is open, the app asks again instead of losing it. A file you
+  double-click in Windows always opens in the main window. Open files in the
+  main window, then move the tab: the new window does not open files, does not
+  change settings (Options is greyed out there) and does not remember tabs on
+  its own; the files it held are remembered as ordinary tabs and reopen in the
+  main window next time. Each extra window uses about 100 MB more memory;
+  there is one extra window.
 - **Drag to move and arrange**, as in Google Sheets: reorder or rearrange
   columns by dragging their selected headings, or rows by their selected
   numbers; drag a selected block of cells by its outline to move it (Ctrl+drag

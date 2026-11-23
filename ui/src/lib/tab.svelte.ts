@@ -571,3 +571,75 @@ export class Tab {
     this.onRedraw?.();
   }
 }
+
+/** A tab's look and place, to show it in another window: column widths and
+ *  formats, highlight rules and colour scales, data checks, the sort and
+ *  filter as the page knows them, frozen panes, the facet cards, the header
+ *  setting, the selection, the scroll position, the split. (The rows
+ *  themselves, the filter's effect and the undo history live in the engine and
+ *  are shared by both windows.) Plain data: it goes through JSON. */
+export interface HandTab {
+  snap: ViewSnap;
+  filter: FilterSpec | null;
+  sortAt: number | null;
+  frozenRows: number;
+  frozenCols: number;
+  facetCards: Tab["facetCards"];
+  valueTypes: boolean;
+  header: boolean;
+  headerTouched: boolean;
+  filterButtons: boolean;
+  showEdits: boolean;
+  split: Tab["split"];
+  sel: Selection;
+  scrollX: number;
+  scrollY: number;
+  splitScroll: { scrollX: number; scrollY: number };
+}
+
+export function exportHandTab(t: Tab): HandTab {
+  return structuredClone(
+    $state.snapshot({
+      snap: t.snapView(),
+      filter: t.filter,
+      sortAt: t.sortAt,
+      frozenRows: t.frozenRows,
+      frozenCols: t.frozenCols,
+      facetCards: t.facetCards,
+      valueTypes: t.valueTypes,
+      header: t.header,
+      headerTouched: t.headerTouched,
+      filterButtons: t.filterButtons,
+      showEdits: t.showEdits,
+      split: t.split,
+      sel: t.sel,
+      scrollX: t.scrollX,
+      scrollY: t.scrollY,
+      splitScroll: t.splitScroll,
+    }),
+  ) as HandTab;
+}
+
+/** Put a tab's look and place (from `exportHandTab`) on a new tab. */
+export function importHandTab(t: Tab, h: HandTab): void {
+  // The look, the data checks and the sort; the filter's rows are already
+  // the engine's.
+  t.restoreView(h.snap, false);
+  t.sort = h.snap.sort ? structuredClone(h.snap.sort) : null;
+  t.sortAt = h.sortAt;
+  t.filter = h.filter ? structuredClone(h.filter) : null;
+  t.frozenRows = h.frozenRows;
+  t.frozenCols = h.frozenCols;
+  t.facetCards = structuredClone(h.facetCards);
+  t.valueTypes = h.valueTypes;
+  t.header = h.header;
+  t.headerTouched = h.headerTouched;
+  t.filterButtons = h.filterButtons;
+  t.showEdits = h.showEdits;
+  t.split = h.split ? structuredClone(h.split) : null;
+  t.sel = structuredClone(h.sel);
+  t.scrollX = h.scrollX;
+  t.scrollY = h.scrollY;
+  t.splitScroll = { ...h.splitScroll };
+  t.bump();
+}

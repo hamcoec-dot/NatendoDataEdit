@@ -102,6 +102,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "pick up where you left off": ["file.options", "file.recent"],
   // The grid
   "a spreadsheet style grid that stays": ["help.keys", "edit.repeat", "data.filter"],
+  "a tab in its own window": ["window.moveToNew", "window.moveToMain"],
   "tabs for each open file": [
     "window.next", "window.prev", "window.moveTabLeft", "window.moveTabRight", "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze",
     "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "edit.moveColsLeft", "edit.moveColsRight",
