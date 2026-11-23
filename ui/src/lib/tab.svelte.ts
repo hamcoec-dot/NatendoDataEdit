@@ -641,8 +641,6 @@ export class Tab {
     this.bump();
   }
 
-  /** Custom row heights follow the rows they belong to, or go with a note when
-   *  that cannot be done exactly. Undo and Redo put them back with the look. */
   /** After an Undo or Redo that moved the history: when the look kept with the
    *  step was let go (the undo memory ran short), the heights could sit on other
    *  rows (a row count change or a row move), so they are cleared. True when they
@@ -653,6 +651,8 @@ export class Tab {
     this.rowHeightsNote = "The custom row heights were cleared because Undo or Redo changed the rows and their saved heights were no longer kept.";
     return true;
   }
+  /** Custom row heights follow the rows they belong to, or go with a note when
+   *  that cannot be done exactly. Undo and Redo put them back with the look. */
   private followRows(info: DocInfo): void {
     const pend = this.pendingRows;
     this.pendingRows = null;
