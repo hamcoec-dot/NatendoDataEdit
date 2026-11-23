@@ -521,6 +521,17 @@ const scenarios = {
     ok(closed, "the cleanup on exit ran (the 'closed' line is in the log)");
   },
 
+  // Screenshots for the README: two real windows (made-up data).
+  async shot() {
+    const m = await start([first]);
+    await secondLaunch(second);
+    const w2 = await moveActiveToSecond(m);
+    await sleep(1500);
+    await m.screenshot({ path: path.join(evidence, "shot-main.png") });
+    await w2.screenshot({ path: path.join(evidence, "shot-window2.png") });
+    ok(fs.existsSync(path.join(evidence, "shot-window2.png")), "two windows captured");
+  },
+
   // A save in progress blocks the quit. Needs the test-hook build (feature
   // test-slow-save: a save holds the document for NATENDO_TEST_SAVE_DELAY_MS);
   // its path is in SAVE_HOOK_EXE. A release build has no such hook.
