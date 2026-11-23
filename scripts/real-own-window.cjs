@@ -51,6 +51,9 @@ const backup = () => {
   fs.mkdirSync(BACKUP, { recursive: true });
   for (const f of ["session.json", "recent.json"]) if (fs.existsSync(path.join(DATA, f))) fs.copyFileSync(path.join(DATA, f), path.join(BACKUP, f));
   // The person's own recovery copies are put aside (and put back at the end), so a run starts with none and the app's "recover unsaved work" offer does not cover the test.
+  fs.rmSync(path.join(BACKUP, "no-private-json"), { force: true });
+  if (!fs.existsSync(path.join(DATA, "private.json"))) fs.writeFileSync(path.join(BACKUP, "no-private-json"), "");
+  else fs.copyFileSync(path.join(DATA, "private.json"), path.join(BACKUP, "private.json"));
   const rec = path.join(LOCAL, "recovery");
   const aside = path.join(BACKUP, "recovery");
   if (fs.existsSync(rec) && !fs.existsSync(aside)) fs.renameSync(rec, aside);
@@ -61,6 +64,11 @@ const wipeRecovery = () => {
   if (fs.existsSync(rec)) fs.renameSync(rec, path.join(BACKUP, `recovery-run-${Date.now()}`));
 };
 const restore = () => {
+  // private.json (the private-files list) is put back as it was; a list the test made is moved aside, not deleted.
+  const pj = path.join(DATA, "private.json");
+  if (fs.existsSync(path.join(BACKUP, "no-private-json"))) {
+    if (fs.existsSync(pj)) fs.renameSync(pj, path.join(BACKUP, `private.from-run-${Date.now()}.json`));
+  } else if (fs.existsSync(path.join(BACKUP, "private.json"))) fs.copyFileSync(path.join(BACKUP, "private.json"), pj);
   wipeRecovery();
   const aside = path.join(BACKUP, "recovery");
   if (fs.existsSync(aside)) fs.renameSync(aside, path.join(LOCAL, "recovery"));
@@ -491,6 +499,7 @@ const scenarios = {
     await moveActiveToSecond(m);
     await sleep(1500);
     await edit(m, "Q");
+    info("before close: session.json mtime " + (fs.existsSync(path.join(DATA, "session.json")) ? fs.statSync(path.join(DATA, "session.json")).mtime.toISOString() : "none") + " now " + new Date().toISOString() + " page text: " + ((await m.locator("body").innerText().catch(() => "")) || "").replace(/\s+/g, " ").slice(0, 200));
     say("close main: " + CLOSE_MAIN());
     await waitFor(async () => /Quit without saving/.test(await dialogText(m)), 5000);
     await dialog(m).getByRole("button", { name: /Quit and lose changes/ }).click();
