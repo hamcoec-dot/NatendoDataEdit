@@ -84,21 +84,33 @@ describe("Undo and Redo of a row change put the height on the same data row", ()
 });
 
 describe("Undo or Redo of a row change whose kept look was let go", () => {
-  it("clears the heights with a note when the row count changed and nothing was restored", () => {
+  it("clears the heights with a note when the history moved and nothing was restored (an insert)", () => {
     const t = tabWith([5]);
     t.pendingRows = { kind: "insert", at: 2, count: 3 };
     t.update(info({ rows: 1003, total_rows: 1003, history_pos: 1 }), true);
-    const rowsBefore = t.info.total_rows;
-    t.update(info({ rows: 1000, total_rows: 1000, history_pos: 0 }), true); // Undo: the engine takes the 3 rows away
-    expect(t.clearHeightsIfLookLost(rowsBefore, false)).toBe(true);
+    const posBefore = t.info.history_pos;
+    t.update(info({ rows: 1000, total_rows: 1000, history_pos: 0 }), true); // Undo
+    expect(t.clearHeightsIfLookLost(posBefore, false)).toBe(true);
     expect(t.rowHeights.empty).toBe(true);
     expect(t.rowHeightsNote).toMatch(/Undo or Redo/);
   });
 
-  it("leaves them when the look was restored, or the row count did not change", () => {
+  it("does the same for the Undo of a row MOVE (the row count does not change)", () => {
     const t = tabWith([5]);
-    expect(t.clearHeightsIfLookLost(2000, true)).toBe(false);
-    expect(t.clearHeightsIfLookLost(1000, false)).toBe(false);
+    t.pendingRows = { kind: "move", at: 5, count: 1, to: 20 };
+    t.update(info({ history_pos: 1 }), true);
+    expect(t.rowHeights.toView()).toEqual([[20, 60]]);
+    const posBefore = t.info.history_pos;
+    t.update(info({ history_pos: 0 }), true); // Undo of the move
+    expect(t.clearHeightsIfLookLost(posBefore, false)).toBe(true);
+    expect(t.rowHeights.empty).toBe(true);
+  });
+
+  it("leaves them when the look was restored, or the history did not move", () => {
+    const t = tabWith([5]);
+    t.update(info({ history_pos: 3 }), true);
+    expect(t.clearHeightsIfLookLost(4, true)).toBe(false);
+    expect(t.clearHeightsIfLookLost(3, false)).toBe(false);
     expect(t.rowHeights.toView()).toEqual([[5, 60]]);
   });
 });

@@ -5125,7 +5125,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const target = group ? (op === "undo" ? group.start : group.end) : op === "undo" ? pos - 1 : pos + 1;
     undoBusy.add(t);
     if (op === "redo") t.redoing++;
-    const rowsBefore = t.info.total_rows;
+    const posBefore = t.info.history_pos;
     try {
       for (;;) {
         const at = t.info.history_pos;
@@ -5140,7 +5140,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       const step = now !== target ? undefined : op === "undo" ? t.stepViews.get(target + 1)?.before : t.stepViews.get(now)?.after;
       if (step) t.restoreView(step, true);
       // The look kept with the step was let go: heights would sit on the wrong rows.
-      if (t.clearHeightsIfLookLost(rowsBefore, !!step)) {
+      if (t.clearHeightsIfLookLost(posBefore, !!step)) {
         // The "Undid ..." message below takes it along; otherwise it is said alone.
         rowNote = t.rowHeightsNote;
         t.rowHeightsNote = "";

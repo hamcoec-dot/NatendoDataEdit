@@ -643,11 +643,12 @@ export class Tab {
 
   /** Custom row heights follow the rows they belong to, or go with a note when
    *  that cannot be done exactly. Undo and Redo put them back with the look. */
-  /** After an Undo or Redo that changed the number of rows: when the look kept
-   *  with the step was let go (the undo memory ran short), the heights would sit
-   *  on other rows, so they are cleared. True when they were (the note is set). */
-  clearHeightsIfLookLost(rowsBefore: number, restored: boolean): boolean {
-    if (restored || this.rowHeights.empty || this.info.total_rows === rowsBefore) return false;
+  /** After an Undo or Redo that moved the history: when the look kept with the
+   *  step was let go (the undo memory ran short), the heights could sit on other
+   *  rows (a row count change or a row move), so they are cleared. True when they
+   *  were (the note is set). */
+  clearHeightsIfLookLost(posBefore: number, restored: boolean): boolean {
+    if (restored || this.rowHeights.empty || this.info.history_pos === posBefore) return false;
     this.rowHeights.clear();
     this.rowHeightsNote = "The custom row heights were cleared because Undo or Redo changed the rows and their saved heights were no longer kept.";
     return true;
