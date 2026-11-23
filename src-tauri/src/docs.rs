@@ -2732,11 +2732,15 @@ impl Docs {
         }))
     }
 
-    /// Ask the running long operation to stop (nothing is changed).
-    pub fn cancel_job(&self, id: u32) -> CmdResult<()> {
+    /// Ask the running long operation to stop (nothing is changed). With a
+    /// `label`, only that operation: another one that has started since (a
+    /// sort, a count) is left alone.
+    pub fn cancel_job(&self, id: u32, label: Option<&str>) -> CmdResult<()> {
         let entry = self.get(id)?;
         if let Some(j) = entry.jobs().as_ref() {
-            j.progress.cancel.store(true, Ordering::Relaxed);
+            if label.is_none_or(|l| l == j.label) {
+                j.progress.cancel.store(true, Ordering::Relaxed);
+            }
         }
         Ok(())
     }
@@ -9246,7 +9250,15 @@ B,y
             ..Default::default()
         };
         assert_eq!(docs.sort(id, spec.clone()).unwrap_err().kind, "busy");
-        docs.cancel_job(id).unwrap();
+        // A cancel aimed at another operation leaves this one running.
+        docs.cancel_job(id, Some("Looking for look-alikes"))
+            .unwrap();
+        assert!(!job.progress.cancel.load(Ordering::Relaxed));
+        docs.cancel_job(id, Some("Sorting")).unwrap();
+        assert!(job.progress.cancel.load(Ordering::Relaxed));
+        job.progress.cancel.store(false, Ordering::Relaxed);
+        // No label: whatever is running.
+        docs.cancel_job(id, None).unwrap();
         assert!(job.progress.cancel.load(Ordering::Relaxed));
         drop(job);
         assert!(docs.sort(id, spec).is_ok());

@@ -1084,10 +1084,16 @@ export class MockBackend implements Backend {
     return this.refresh(d);
   }
 
-  async jobProgress(): Promise<JobInfo | null> {
-    return null;
+  async jobProgress(doc?: number): Promise<JobInfo | null> {
+    const label = doc === undefined ? undefined : this.jobs.get(doc);
+    return label ? { label, fraction: 0.5 } : null;
   }
-  async cancelJob(): Promise<void> {}
+  async cancelJob(doc?: number, label?: string): Promise<void> {
+    const running = doc === undefined ? undefined : this.jobs.get(doc);
+    const hit = running !== undefined && (label === undefined || label === running);
+    this.callLog.push(`cancel:${label ?? "any"}:${hit ? "ran" : running ? "other" : "none"}`);
+    if (hit && doc !== undefined) this.cancelled.add(doc);
+  }
 
   async sortRows(doc: number, spec: SortSpec): Promise<DocInfo> {
     const d = this.get(doc);
@@ -2958,19 +2964,30 @@ export class MockBackend implements Backend {
 
   /** Documents with a counting or grouping job running: like the backend, a
    *  second one is refused until the first ends. */
-  private jobs = new Set<number>();
-  private async oneJob<T>(doc: number, f: () => Promise<T>): Promise<T> {
-    if (this.jobs.has(doc)) throw err("busy", "another operation is still running on this file");
-    this.jobs.add(doc);
+  private jobs = new Map<number, string>();
+  private cancelled = new Set<number>();
+  /** Tests: what the editor asked of the file, in order ("tally:start:2",
+   *  "group:end:2", "cancel:Looking for look-alikes:ran", ...). */
+  callLog: string[] = [];
+  private async oneJob<T>(doc: number, label: string, tag: string, f: () => Promise<T>): Promise<T> {
+    if (this.jobs.has(doc)) {
+      this.callLog.push(`${tag}:refused`);
+      throw err("busy", "another operation is still running on this file");
+    }
+    this.jobs.set(doc, label);
+    this.callLog.push(`${tag}:start`);
     try {
-      await new Promise((r) => setTimeout(r, 30));
+      // The search takes a moment, so a test can change something meanwhile.
+      await new Promise((r) => setTimeout(r, label === "Looking for look-alikes" ? 300 : 30));
+      if (this.cancelled.delete(doc)) throw err("cancelled", "cancelled");
       return await f();
     } finally {
       this.jobs.delete(doc);
+      this.callLog.push(`${tag}:end`);
     }
   }
   async valueTally(doc: number, spec: TallySpec): Promise<ValueTally> {
-    return this.oneJob(doc, () => this.valueTallyNow(doc, spec));
+    return this.oneJob(doc, "Counting values", `tally:${spec.col}`, () => this.valueTallyNow(doc, spec));
   }
   private async valueTallyNow(doc: number, spec: TallySpec): Promise<ValueTally> {
     const d = this.get(doc);
@@ -3000,7 +3017,7 @@ export class MockBackend implements Backend {
   /** A stand-in for the engine's grouping: a rough sound key, and spelling
    *  within one slip for values of 4 or more letters. */
   async lookalikeGroups(doc: number, spec: LookAlikeSpec): Promise<LookAlikes> {
-    return this.oneJob(doc, () => this.lookalikeGroupsNow(doc, spec));
+    return this.oneJob(doc, "Looking for look-alikes", `group:${spec.col}`, () => this.lookalikeGroupsNow(doc, spec));
   }
   private async lookalikeGroupsNow(doc: number, spec: LookAlikeSpec): Promise<LookAlikes> {
     const t = await this.valueTallyNow(doc, { col: spec.col, keep_first: spec.keep_first });

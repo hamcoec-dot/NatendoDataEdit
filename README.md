@@ -724,16 +724,25 @@ everything is also in command search.
   (Jonson, Johnson), or either. Each group shows its values with counts,
   suggests the most common one (the properly capitalised form wins a tie),
   and lets you pick another, or untick a value to leave it alone; Put in list
-  adds the group to the value editor's list of changes, which is applied as
-  one undo step on the shown rows. Looks only at the distinct values, so it
-  is quick on a million rows; the 100,000 most common values are looked at.
-  Values under 3 letters, and sounds with fewer than 3 consonant sounds ("Moore", "Mary"), are left alone, and values under 4 letters, over 32
-  letters or that differ only in digits are never grouped by spelling. One
-  slip (a letter changed, added, left out, or two neighbours swapped) counts
-  for values of 4 to 7 letters, two for longer ones. Two common values that
-  start with different letters are not joined by spelling. A group holds
-  one most-common value and what is near it, so a chain of near-misses does
-  not merge unrelated names. Nothing leaves your PC.
+  adds the group to the value editor's list of changes (Put all groups in
+  the list says how many groups and values it will add, and asks first),
+  which is applied as one undo step on the shown rows. Groups are only
+  suggestions: look them over. It looks only at the distinct values, so it is
+  quick on a million rows; the 100,000 most common values are looked at.
+  What it will not join: two values that are both common (each seen 20 or
+  more times: Michael and Michelle are two people, not two spellings), values
+  that differ only in digits, sounds under 3 consonant sounds ("Moore",
+  "Mary"), values under 3 letters, and values that sound alike but start with
+  another sound (Garcia and Karisha; Catherine and Kathryn, a known
+  respelling, do join). Spelling groups need 4 to 32 letters; one slip (a
+  letter changed, added, left out, or two neighbours swapped counts as one)
+  is allowed for values of 4 to 7 letters, two for longer ones. A group is
+  the most common value and what is near it, so a chain of near-misses does
+  not merge unrelated names. A nickname method (Bob, Robert) is not included.
+  Nothing leaves your PC.
+
+![Group look-alikes by sound in the value editor](docs/screenshots/lookalikes.png)
+*Smith, Smyth and Smythe sound alike; each group suggests its most common value.*
 
 ### Checking data
 

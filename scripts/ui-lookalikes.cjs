@@ -118,12 +118,71 @@ const url = process.argv[3] || "http://localhost:5211";
   await dialog.locator("legend:has-text('group')").waitFor({ timeout: 60000 });
   const lg = (await dialog.locator("legend").first().textContent()) ?? "";
   ok(/15,000 groups/.test(lg), `30,000 values make 15,000 groups (${lg.replace(/\s+/g, " ").trim()})`);
-  const t0 = Date.now();
   await dialog.getByRole("button", { name: "Put all groups in the list" }).click();
+  const sure = (await dialog.locator("[role=alert]").first().textContent()) ?? "";
+  ok(/Put 15,000 groups \(15,000 values\) in the list of changes\?/.test(sure), "Put all groups first says how many groups and values it adds");
+  ok(!(await dialog.locator("p.good").count()), "and has added nothing yet");
+  const t0 = Date.now();
+  await dialog.getByRole("button", { name: "Put them in the list" }).click();
   await dialog.locator("p.good").first().waitFor({ timeout: 20000 });
   const took = Date.now() - t0;
   ok(took < 5000, `Put all groups in the list for 15,000 groups takes ${took} ms`);
   ok(/15000 values will change|15,000 values will change/.test((await dialog.locator("p.good").first().textContent()) ?? ""), "the list holds 15,000 changes");
+
+  await dialog.getByRole("button", { name: "Cancel" }).last().click().catch(() => {});
+  await wait(300);
+
+  // 6. Order of calls: the search waits for the count of the column chosen,
+  // changing the column never cancels a job that is not the search.
+  await p.keyboard.press("Control+n");
+  await wait(700);
+  const rows6 = ["name\tcity", "Smith\tDayton", "Smyth\tDayton", "Smith\tDayton", "Dayton\tDaiton", "Smith\tDeyton"];
+  await p.evaluate((t) => navigator.clipboard.writeText(t), rows6.join("\r\n") + "\r\n");
+  await p.keyboard.press("Control+v");
+  await wait(800);
+  await p.evaluate(() => {
+    window.__nde.tab.header = true;
+    window.__nde.tab.bump();
+    window.__nde.grid.select({ row: 1, col: 0 });
+    window.__nde.backend.callLog.length = 0;
+  });
+  await command("Group look-alike values");
+  await dialog.locator("legend:has-text('group')").waitFor({ timeout: 20000 });
+  // Change the column while the search for the next one is still running.
+  await dialog.locator("select").first().selectOption({ index: 1 });
+  await dialog.locator("text=Looking for look-alikes").waitFor({ timeout: 5000 });
+  await dialog.locator("select").first().selectOption({ index: 0 });
+  await wait(1500);
+  await dialog.locator("select").first().selectOption({ index: 1 });
+  await wait(1500);
+  const log =await p.evaluate(() => window.__nde.backend.callLog.slice());
+  console.log("   call log:", log.join(" "));
+  let orderOk = log.length > 0;
+  for (let i = 0; i < log.length; i++) {
+    const m = /^group:(\d+):start$/.exec(log[i]);
+    if (!m) continue;
+    // The count of the same column finished before the search started.
+    const before = log.slice(0, i);
+    if (!before.includes(`tally:${m[1]}:end`)) orderOk = false;
+  }
+  ok(orderOk, "the search starts only after the count of its own column has ended");
+  // A call may be refused while the cancelled search finishes, but is tried
+  // again until it runs.
+  ok(log.every((e, i) => !e.endsWith(":refused") || log.slice(i + 1).includes(e.replace(":refused", ":start"))), "a call refused for the file being busy is tried again and runs");
+  ok(!log.some((e) => e === "group:0:refused" || e === "group:1:refused"), "the search itself is never refused");
+  ok(log.some((e) => e === "cancel:Looking for look-alikes:ran"), "changing the column mid-search cancelled the search");
+  ok(log.every((e) => !e.startsWith("cancel:") || e.startsWith("cancel:Looking for look-alikes:")), "every cancel was aimed at the look-alike search only");
+  // A cancel aimed at the search leaves another job alone.
+  const other = await p.evaluate(async () => {
+    const b = window.__nde.backend;
+    const id = window.__nde.tab.id;
+    const pending = b.valueTally(id, { col: 0, keep_first: true });
+    await b.cancelJob(id, "Looking for look-alikes");
+    const r = await pending;
+    return { values: r.values.length, last: b.callLog.at(-2) };
+  });
+  ok(other.values > 0 && /cancel:Looking for look-alikes:other/.test(other.last ?? ""), `a cancel aimed at the search left a count running alone (${other.last})`);
+  await p.keyboard.press("Escape");
 
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   console.log(failed ? `${failed} FAILED` : "ALL PASS");

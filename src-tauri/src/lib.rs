@@ -2666,9 +2666,10 @@ fn job_progress(docs: DocsState<'_>, doc: u32) -> CmdResult<Option<JobInfo>> {
     docs.job(doc)
 }
 
+/// Stop the running long operation; with `label`, only if it is that one.
 #[tauri::command]
-fn cancel_job(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
-    docs.cancel_job(doc)
+fn cancel_job(docs: DocsState<'_>, doc: u32, label: Option<String>) -> CmdResult<()> {
+    docs.cancel_job(doc, label.as_deref())
 }
 
 #[tauri::command]

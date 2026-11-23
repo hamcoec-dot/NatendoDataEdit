@@ -1143,7 +1143,9 @@ export interface Backend {
   /** null when the Save As dialog was cancelled. */
   save(doc: number, flags: SaveFlags): Promise<DocInfo | null>;
   jobProgress(doc: number): Promise<JobInfo | null>;
-  cancelJob(doc: number): Promise<void>;
+  /** Stop the running long operation; with `label`, only if it is that one
+   *  (another job that started since is left alone). */
+  cancelJob(doc: number, label?: string): Promise<void>;
   sortRows(doc: number, spec: SortSpec): Promise<DocInfo>;
   setFilter(doc: number, spec: FilterSpec): Promise<DocInfo>;
   clearFilter(doc: number): Promise<DocInfo>;
@@ -1558,8 +1560,8 @@ class TauriBackend implements Backend {
   jobProgress(doc: number) {
     return call<JobInfo | null>("job_progress", { doc });
   }
-  cancelJob(doc: number) {
-    return call<void>("cancel_job", { doc });
+  cancelJob(doc: number, label?: string) {
+    return call<void>("cancel_job", { doc, label: label ?? null });
   }
   sortRows(doc: number, spec: SortSpec) {
     return call<DocInfo>("sort_rows", { doc, spec });

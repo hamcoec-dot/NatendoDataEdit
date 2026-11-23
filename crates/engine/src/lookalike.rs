@@ -35,9 +35,11 @@ const MAX_SPELL: usize = 32;
 /// A sound key with fewer letters than this says too little ("Lee" and "Lew"
 /// are "L"; "Moore", "Mary" and "Mari" are "MR").
 const MIN_SOUND: usize = 3;
-/// Two values both seen at least this often, with different first letters,
-/// are different names, not spellings of one.
-const COMMON: u64 = 10;
+/// Two values both seen at least this often are different names (Michael and
+/// Michelle, Robert and Roberta), never two spellings of one: by either
+/// method, they are not joined. A value seen less often than this can join a
+/// common one (Smith 990 and Smyth 12).
+const COMMON: u64 = 20;
 /// A deleted form shared by more values than this is skipped (it is too
 /// general to say anything); counted in [`Grouping::crowded`].
 const MAX_CROWD: usize = 3_000;
@@ -443,6 +445,36 @@ fn first_letter(key: &[char]) -> Option<char> {
     key.iter().copied().find(|c| c.is_alphabetic())
 }
 
+/// Two values seen so often that they are two names, not two spellings.
+fn both_common(a: &Tally, b: &Tally) -> bool {
+    a.count >= COMMON && b.count >= COMMON
+}
+
+/// Can two values that sound alike start with these letters? The same
+/// letter, or a respelling of the first sound we know (Catherine and Kathryn,
+/// Philip and Fillip, George and Jorge). "Garcia" and "Karisha" share a sound
+/// key but not a start: a name that rare does not join a common one.
+fn same_start(a: Option<char>, b: Option<char>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            a == b
+                || matches!(
+                    (a.min(b), a.max(b)),
+                    ('c', 'k')
+                        | ('c', 'q')
+                        | ('k', 'q')
+                        | ('c', 's')
+                        | ('f', 'p')
+                        | ('g', 'j')
+                        | ('s', 'z')
+                        | ('s', 'x')
+                )
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// Group the look-alikes among `values` (a column's distinct values, most
 /// common first, as the Value editor lists them).
 pub fn group_lookalikes(
@@ -504,14 +536,8 @@ pub fn group_lookalikes(
             if digits[a] != digits[b] {
                 return false;
             }
-            // Two common values with different first letters are two names.
-            if values[a].count >= COMMON
-                && values[b].count >= COMMON
-                && first_letter(&keys[a]) != first_letter(&keys[b])
-            {
-                return false;
-            }
-            true
+            // Two common values are two names.
+            !both_common(&values[a], &values[b])
         };
         let (pairs, crowded) = spelling_pairs(&keys, &eligible, progress, &ok)?;
         result.crowded = crowded;
@@ -535,10 +561,23 @@ pub fn group_lookalikes(
             u32::MAX => &[][..],
             b => buckets[b as usize].as_slice(),
         };
-        for &m in near.iter().chain(same_sound.iter()) {
-            if m as usize != hub && !taken[m as usize] && !members.contains(&m) {
+        let hub_start = first_letter(&keys[hub]);
+        let mut take = |m: u32, sound: bool| {
+            let mi = m as usize;
+            if mi != hub
+                && !taken[mi]
+                && !both_common(&values[hub], &values[mi])
+                && (!sound || same_start(hub_start, first_letter(&keys[mi])))
+                && !members.contains(&m)
+            {
                 members.push(m);
             }
+        };
+        for &m in near {
+            take(m, false);
+        }
+        for &m in same_sound {
+            take(m, true);
         }
         if members.len() < 2 {
             continue;
@@ -705,6 +744,105 @@ mod tests {
         assert!(names(&t, &g)
             .iter()
             .all(|m| !(m.contains(&"Mason".to_string()) && m.contains(&"Jason".to_string()))));
+    }
+
+    /// Two names that are both common are two people, by either method, even
+    /// when they sound or are spelled alike.
+    #[test]
+    fn common_names_are_never_joined() {
+        let sounds = [
+            ("Michael", "Michelle"),
+            ("Michael", "Mitchell"),
+            ("Michelle", "Mitchell"),
+            ("Robert", "Roberta"),
+            ("Daniel", "Danielle"),
+            ("Brown", "Byron"),
+            ("Karen", "Green"),
+            ("Martin", "Morton"),
+            ("Allen", "Ellen"),
+        ];
+        let spellings = [("John", "Joan"), ("Mary", "Mark"), ("Robert", "Roberta")];
+        for (a, b) in sounds.iter().chain(spellings.iter()) {
+            for (ca, cb) in [(900, 40), (40, 900), (900, 800), (25, 20)] {
+                let t = tallies(&[(a, ca), (b, cb)]);
+                for method in [Method::Sounds, Method::Spelling, Method::Both] {
+                    let g = group_lookalikes(&t, method, &Progress::new()).unwrap();
+                    assert!(
+                        g.groups.is_empty(),
+                        "{a} ({ca}) + {b} ({cb}) joined by {method:?}: {:?}",
+                        names(&t, &g)
+                    );
+                }
+            }
+        }
+        // All three at once: Michael, Michelle and Mitchell stay three.
+        let t = tallies(&[("Michael", 900), ("Michelle", 800), ("Mitchell", 40)]);
+        assert!(group_lookalikes(&t, Method::Both, &Progress::new())
+            .unwrap()
+            .groups
+            .is_empty());
+    }
+
+    /// A rare value still joins a common one.
+    #[test]
+    fn a_rare_value_joins_a_common_one() {
+        let t = tallies(&[
+            ("Smith", 990),
+            ("Smyth", 12),
+            ("Johnson", 880),
+            ("Jonson", 3),
+            ("Michael", 900),
+            ("Micheal", 2),
+            ("Catherine", 500),
+            ("Kathryn", 3),
+            ("Philip", 300),
+            ("Fillip", 2),
+        ]);
+        let g = group_lookalikes(&t, Method::Both, &Progress::new()).unwrap();
+        let n = names(&t, &g);
+        for pair in [
+            ("Smith", "Smyth"),
+            ("Johnson", "Jonson"),
+            ("Michael", "Micheal"),
+            ("Catherine", "Kathryn"),
+            ("Philip", "Fillip"),
+        ] {
+            assert!(
+                n.iter()
+                    .any(|m| m.contains(&pair.0.to_string()) && m.contains(&pair.1.to_string())),
+                "{pair:?} not joined: {n:?}"
+            );
+        }
+    }
+
+    /// Sounding alike is not enough across first letters (Garcia and
+    /// Karisha share a key): only known respellings of the first sound join.
+    #[test]
+    fn sound_alike_with_another_start_is_not_joined() {
+        let t = tallies(&[
+            ("Garcia", 34661),
+            ("Karisha", 3),
+            ("Keorrisha", 3),
+            ("Kerisha", 1),
+        ]);
+        assert_eq!(sound_key("Garcia"), sound_key("Karisha"));
+        let g = group_lookalikes(&t, Method::Sounds, &Progress::new()).unwrap();
+        assert!(
+            !names(&t, &g)
+                .iter()
+                .any(|m| m.contains(&"Garcia".to_string())),
+            "{:?}",
+            names(&t, &g)
+        );
+        let t = tallies(&[("Karen", 500), ("Green", 4), ("Koren", 2)]);
+        let g = group_lookalikes(&t, Method::Sounds, &Progress::new()).unwrap();
+        assert!(
+            !names(&t, &g)
+                .iter()
+                .any(|m| m.contains(&"Green".to_string())),
+            "{:?}",
+            names(&t, &g)
+        );
     }
 
     #[test]

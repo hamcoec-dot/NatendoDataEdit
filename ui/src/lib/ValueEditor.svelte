@@ -57,6 +57,13 @@
   /** Group number → the value the group becomes (default: the first). */
   let winners = $state(new Map<number, string>());
   let gen = 0;
+  /** The look-alike search's job name (to cancel it and nothing else). */
+  const LOOK = "Looking for look-alikes";
+  /** Which column (and title-row setting) the values listed were counted for:
+   *  the search waits for the count of the column now chosen. */
+  let countedFor = $state<string | null>(null);
+  /** "Put all groups in the list" asks first, saying what it will add. */
+  let confirmAll = $state<{ groups: number; values: number } | null>(null);
 
   /** Run `f`, trying again for a few seconds while another job on the file
    *  is finishing (the file does one thing at a time). */
@@ -79,8 +86,9 @@
     const m = method;
     const c = col;
     const h = myHeader;
-    const counted = !loading && tally !== null;
+    const counted = !loading && tally !== null && countedFor === `${c}:${h}`;
     found = null;
+    confirmAll = null;
     groupProblem = "";
     dropped = new Map();
     winners = new Map();
@@ -104,7 +112,7 @@
     return () => {
       gen++;
       // Changed while looking: stop, so the next job can start.
-      if (running) void backend().cancelJob(doc);
+      if (running) void backend().cancelJob(doc, LOOK);
     };
   });
 
@@ -122,7 +130,7 @@
   });
 
   function stopGrouping(): void {
-    void backend().cancelJob(doc);
+    void backend().cancelJob(doc, LOOK);
   }
 
   /** The value a group becomes. */
@@ -162,6 +170,14 @@
     const next = new Map(edits);
     found.groups.forEach((g, k) => addGroup(next, k, g));
     edits = next;
+    confirmAll = null;
+  }
+  /** What "Put all groups" would add, shown before it does. */
+  function askMergeAll(): void {
+    if (!found) return;
+    const probe = new Map<string, string>();
+    found.groups.forEach((g, k) => addGroup(probe, k, g));
+    confirmAll = { groups: found.groups.length, values: probe.size };
   }
 
   $effect(() => {
@@ -173,7 +189,10 @@
     let live = true;
     whenFree(() => backend().valueTally(doc, { col: c, keep_first: h }), () => live)
       .then((t) => {
-        if (live) tally = t;
+        if (live) {
+          tally = t;
+          countedFor = `${c}:${h}`;
+        }
       })
       .catch((e: unknown) => {
         if (live) problem = errorText(e);
@@ -311,8 +330,15 @@
             {:else}
               <p class="note">
                 Each group becomes the value chosen next to it (the most common one to begin with). Untick a value to leave it alone, then put the group in the list of changes.
-                <button type="button" class="small" onclick={mergeAll}>Put all groups in the list</button>
+                <button type="button" class="small" onclick={askMergeAll}>Put all groups in the list</button>
               </p>
+              {#if confirmAll}
+                <p class="note" role="alert">
+                  Put {confirmAll.groups.toLocaleString()} {confirmAll.groups === 1 ? "group" : "groups"} ({confirmAll.values.toLocaleString()} {confirmAll.values === 1 ? "value" : "values"}) in the list of changes? Look the groups over first: they are only suggestions.
+                  <button type="button" class="small primary" onclick={mergeAll}>Put them in the list</button>
+                  <button type="button" class="small" onclick={() => (confirmAll = null)}>Not now</button>
+                </p>
+              {/if}
               <div class="groups" aria-label="Look-alike groups">
                 {#each found.groups.slice(0, 200) as g, k (k)}
                   <div class="row group">
