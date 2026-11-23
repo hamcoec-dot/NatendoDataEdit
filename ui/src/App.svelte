@@ -1482,6 +1482,7 @@
     const have = tabs.findIndex((x) => x.id === h.doc);
     if (have >= 0) {
       active = have;
+      if (h.note) say(h.note);
       return;
     }
     try {
