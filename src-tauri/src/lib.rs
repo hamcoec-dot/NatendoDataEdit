@@ -3442,6 +3442,28 @@ fn open_link(url: String) -> CmdResult<()> {
     links::open_link(&url)
 }
 
+/// SPIKE (throwaway): open a second window on the same UI bundle.
+#[tauri::command]
+async fn spike_open_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html?window=2".into()))
+        .title(format!("Natendo Data Edit ({label})"))
+        .inner_size(1000.0, 700.0)
+        .build()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// SPIKE: which windows hear which kind of emit.
+#[tauri::command]
+fn spike_emit(app: tauri::AppHandle, only: Option<String>) -> Result<(), String> {
+    use tauri::Emitter;
+    app.emit("spike-all", "app.emit").map_err(|e| e.to_string())?;
+    if let Some(t) = only {
+        app.emit_to(t, "spike-one", "emit_to").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn quit_app(window: WebviewWindow, quit: State<'_, Quit>) {
     quit.0.store(true, Ordering::Relaxed);
@@ -3589,6 +3611,8 @@ pub fn run() {
             column_pairs,
             find_notes,
             replace_titles,
+            spike_open_window,
+            spike_emit,
             batch_confirm,
             replace_cell,
             replace_page,
