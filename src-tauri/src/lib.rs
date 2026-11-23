@@ -3453,6 +3453,21 @@ async fn spike_open_window(app: tauri::AppHandle, label: String) -> Result<(), S
         .map_err(|e| e.to_string())
 }
 
+/// SPIKE: ask a window to close (as its close button does).
+#[tauri::command]
+fn spike_close(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    match app.get_webview_window(&label) {
+        Some(w) => w.close().map_err(|e| e.to_string()),
+        None => Err(format!("no window {label}")),
+    }
+}
+
+/// SPIKE: window labels now open.
+#[tauri::command]
+fn spike_windows(app: tauri::AppHandle) -> Vec<String> {
+    app.webview_windows().keys().cloned().collect()
+}
+
 /// SPIKE: which windows hear which kind of emit.
 #[tauri::command]
 fn spike_emit(app: tauri::AppHandle, only: Option<String>) -> Result<(), String> {
@@ -3613,6 +3628,8 @@ pub fn run() {
             replace_titles,
             spike_open_window,
             spike_emit,
+            spike_close,
+            spike_windows,
             batch_confirm,
             replace_cell,
             replace_page,
