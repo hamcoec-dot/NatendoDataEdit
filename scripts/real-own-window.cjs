@@ -108,6 +108,9 @@ const pageSecond = () => ctx.pages().find((p) => p.url().includes("window=2"));
 const start = async (files, extraEnv = {}, exePath = exe) => {
   await killApp();
   wipeRecovery();
+  // A private-files list a test run made (private scenario) must not leak into the next scenario.
+  const pj = path.join(DATA, "private.json");
+  if (fs.existsSync(pj) && fs.existsSync(path.join(BACKUP, "no-private-json"))) fs.renameSync(pj, path.join(BACKUP, `private.from-run-${Date.now()}.json`));
   if (running()) throw new Error("another Natendo Data Edit is running: close it first (this test never stops an app it did not start)");
   const child = spawn(exePath, files, {
     env: { ...process.env, ...extraEnv, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, WEBVIEW2_USER_DATA_FOLDER: path.join(WORK, "wv2") },
@@ -175,6 +178,13 @@ const osClose = (title) => {
     `Add-Type 'using System;using System.Text;using System.Collections.Generic;using System.Runtime.InteropServices;public class W{public delegate bool CB(IntPtr h,IntPtr l);[DllImport("user32.dll")]public static extern bool EnumWindows(CB cb,IntPtr l);[DllImport("user32.dll")]public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);[DllImport("user32.dll")]public static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")]public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);public static List<IntPtr> Find(uint pid,string t){var r=new List<IntPtr>();EnumWindows((h,l)=>{uint p;GetWindowThreadProcessId(h,out p);var sb=new StringBuilder(256);GetWindowText(h,sb,256);if(p==pid&&IsWindowVisible(h)&&sb.ToString()==t)r.Add(h);return true;},IntPtr.Zero);return r;}}'; ` +
     `$pids=@(Get-Process -Name natendo-data-edit -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }); $f=$null; foreach ($i in $pids) { $x=[W]::Find([uint32]$i,'${title}'); if ($x.Count -gt 0) { $f=$x[0] } }; ` +
     `if ($f -eq $null) { 'no window' } else { [void][W]::PostMessage($f,0x10,[IntPtr]::Zero,[IntPtr]::Zero); 'sent' }`;
+  return spawnSync("powershell", ["-NoProfile", "-Command", ps], { encoding: "utf8" }).stdout.trim();
+};
+/** Minimise (6) or restore (9) a window of the app by its exact title. */
+const osShow = (title, cmd) => {
+  const ps =
+    `Add-Type 'using System;using System.Text;using System.Collections.Generic;using System.Runtime.InteropServices;public class V{public delegate bool CB(IntPtr h,IntPtr l);[DllImport("user32.dll")]public static extern bool EnumWindows(CB cb,IntPtr l);[DllImport("user32.dll")]public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);[DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int c);[DllImport("user32.dll")]public static extern bool IsIconic(IntPtr h);public static string Do(uint pid,string t,int c){string r="no window";EnumWindows((h,l)=>{uint p;GetWindowThreadProcessId(h,out p);var sb=new StringBuilder(256);GetWindowText(h,sb,256);if(p==pid&&sb.ToString()==t){ShowWindow(h,c);r="done iconic="+IsIconic(h);}return true;},IntPtr.Zero);return r;}}'; ` +
+    `$o='no window'; foreach ($i in @(Get-Process -Name natendo-data-edit -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })) { $x=[V]::Do([uint32]$i,'${title}',${cmd}); if ($x -ne 'no window') { $o=$x } }; $o`;
   return spawnSync("powershell", ["-NoProfile", "-Command", ps], { encoding: "utf8" }).stdout.trim();
 };
 const CLOSE_MAIN = () => osClose("Natendo Data Edit");
@@ -317,8 +327,8 @@ const scenarios = {
     const cdp = await ctx.newCDPSession(w2);
     await cdp.send("Page.crash").catch(() => {});
     say("window 2's page crashed (no Destroyed event)");
-    const back = await waitFor(async () => (await tabNames(m)).some((t) => /●.*second\.csv/.test(t)), 25000);
-    ok(back, "after the silence the tab is back in main, still modified");
+    const back = await waitFor(async () => (await tabNames(m)).some((t) => /●.*second\.csv/.test(t)), 190000, 1000);
+    ok(back, "after the silence (the app waits 150 s: a hidden page is slowed on purpose) the tab is back in main, still modified");
     ok(await waitFor(() => !pageSecond(), 10000), "and the dead window is destroyed");
     ok(/stopped responding/.test((await m.textContent("footer.status")) || ""), "the person is told why");
     // (b) closing a crashed window 2 with its close button.
@@ -382,9 +392,12 @@ const scenarios = {
     await waitFor(async () => (await tabNames(m)).length === 2, 60000, 500);
     await m.locator("[role=tab], .tab").filter({ hasText: "big.csv" }).first().click();
     await waitFor(async () => /1,000,000 rows/.test((await m.textContent("footer.status")) || ""), 90000, 500);
-    await m.locator("input.goto").fill("R500000 C3");
-    await m.keyboard.press("Enter");
-    await sleep(600);
+    for (let i = 0; i < 6; i++) {
+      await m.locator("input.goto").fill("R500000 C3");
+      await m.keyboard.press("Enter");
+      await sleep(800);
+      if (/R500000 C3/.test(await m.locator("input.goto").inputValue())) break;
+    }
     const before = await invoke(m, "doc_info", { doc: 1 });
     const mem0 = mem();
     // Frame times scrolling main with only one window.
@@ -519,6 +532,32 @@ const scenarios = {
       }
     }
     ok(closed, "the cleanup on exit ran (the 'closed' line is in the log)");
+  },
+
+  // A minimised window 2 keeps its tab: its page is slowed by the engine, which must not look like a crash.
+  async minimized() {
+    const m = await start([first]);
+    await secondLaunch(second);
+    const w2 = await moveActiveToSecond(m);
+    await edit(w2, "M");
+    ok((await tabNames(w2)).some((t) => /●.*second\.csv/.test(t)), "an unsaved edit in window 2");
+    say("minimise window 2: " + osShow("Natendo Data Edit (window 2)", 6));
+    const t0 = Date.now();
+    const minutes = Number(process.env.MINIMIZED_MINUTES || 6);
+    while (Date.now() - t0 < minutes * 60000) {
+      await sleep(30000);
+      if (!pageSecond() || !alive()) break;
+    }
+    ok(alive() && !!pageSecond(), `window 2 is still there after ${minutes} minutes minimised`);
+    ok(!(await tabNames(m)).some((t) => /second\.csv/.test(t)), "and its tab did not fall back to main");
+    say("restore window 2: " + osShow("Natendo Data Edit (window 2)", 9));
+    await sleep(4000);
+    ok(!!pageSecond() && (await tabNames(pageSecond())).some((t) => /●.*second\.csv/.test(t)), "restored: the tab is still in window 2 with its unsaved edit");
+    // It still works: an edit after restoring, and the app is not told it is dead.
+    await edit(pageSecond(), "R");
+    ok((await tabNames(pageSecond())).some((t) => /●.*second\.csv/.test(t)) && alive(), "and window 2 still takes edits");
+    await sleep(15000);
+    ok(!!pageSecond() && !(await tabNames(m)).some((t) => /second\.csv/.test(t)), "and stays in window 2 after the clock starts again");
   },
 
   // Screenshots for the README: two real windows (made-up data).

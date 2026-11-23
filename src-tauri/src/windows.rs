@@ -27,7 +27,10 @@ pub const SECOND: &str = "w2";
 /// A move window 2 has not taken within this long goes back to main.
 pub const TAKE_WITHIN: Duration = Duration::from_secs(10);
 /// Window 2 owns files but has not reported for this long: it is gone.
-pub const BEAT_WITHIN: Duration = Duration::from_secs(12);
+/// A page that is hidden or covered is slowed by the browser engine (timers
+/// run about once a minute after a while), so this is well over two of those;
+/// a minimised window 2 is never counted at all (see `touch`).
+pub const BEAT_WITHIN: Duration = Duration::from_secs(150);
 
 /// A tab on its way between windows (or its last known state, kept so a file
 /// window 2 held can come back as it was).
@@ -143,6 +146,15 @@ impl Windows {
             }
         }
         s.beat = Some(now);
+    }
+
+    /// Window 2 is minimised or hidden: its page is slowed on purpose, so the
+    /// silence is not counted. The clock starts again when it is back.
+    pub fn touch(&self, now: Instant) {
+        let mut s = self.lock();
+        if s.beat.is_some() {
+            s.beat = Some(now);
+        }
     }
 
     /// Every file window 2 holds goes back to main, as it was last reported.
@@ -349,6 +361,13 @@ pub fn maybe_close_second(app: &AppHandle) {
 pub fn watchdog(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(2));
+        if let Some(w) = app.get_webview_window(SECOND) {
+            // A minimised or hidden window has its page slowed by the
+            // engine on purpose: that silence is not a crash.
+            if w.is_minimized().unwrap_or(false) || !w.is_visible().unwrap_or(true) {
+                app.state::<Windows>().touch(Instant::now());
+            }
+        }
         let e = app.state::<Windows>().expire(Instant::now());
         if e.second_dead {
             if let Some(w) = app.get_webview_window(SECOND) {
@@ -457,13 +476,32 @@ mod tests {
         w.sync(vec![h(7)], at(8));
         assert_eq!(w.expire(at(15)), Expired::default());
         // Silence past BEAT_WITHIN: window 2 crashed without a Destroyed.
-        let e = w.expire(at(8 + 12));
+        // (Well over the one-a-minute a slowed page still manages.)
+        assert!(BEAT_WITHIN >= Duration::from_secs(120));
+        let e = w.expire(at(8 + BEAT_WITHIN.as_secs()));
         assert!(e.second_dead);
         assert_eq!(e.rolled_back, vec![7]);
         assert_eq!(w.owner_of(7), MAIN);
         assert_eq!(w.take(MAIN, at(21)).len(), 1);
         // No files, no beat: nothing to watch.
         assert_eq!(w.expire(at(100)), Expired::default());
+    }
+
+    #[test]
+    fn a_minimised_window_two_is_never_counted_as_silent() {
+        let w = Windows::default();
+        w.move_to_second(h(7), at(0));
+        w.take(SECOND, at(1));
+        w.sync(vec![h(7)], at(2));
+        // Minimised for an hour: the watchdog keeps touching the clock.
+        for t in (4..3600).step_by(2) {
+            w.touch(at(t));
+            assert_eq!(w.expire(at(t)), Expired::default());
+        }
+        assert_eq!(w.owner_of(7), SECOND);
+        // Restored, then really silent: the clock runs from the last touch.
+        let e = w.expire(at(3598 + BEAT_WITHIN.as_secs()));
+        assert!(e.second_dead);
     }
 
     #[test]
