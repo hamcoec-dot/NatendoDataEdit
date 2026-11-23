@@ -303,6 +303,9 @@ everything is also in command search.
 - Tabs for each open file, frozen rows and columns, insert, delete, move,
   hide, resize and auto-fit columns, hide and show rows (Ctrl+9,
   Ctrl+Shift+9).
+- **Drag cells onto another tab:** select a block, drag its outline onto the tab of another open file and let go: the block is copied there, with its top-left at that tab's selected cell (the file grows if it needs more rows). Hold Shift when you let go to move it instead (copied there first, then cleared here; each file has its own Ctrl+Z, and the message says so). The tab under the pointer is outlined, Esc stops the drag, and you stay on the file you dragged from (a Go to link takes you to the other one). No mouse? Edit > Copy selection to another file / Move selection to another file (or Alt+Q) lists the open files. Cells from a private or encrypted file are never put into a file that is not private; with hidden rows, the copy and the clear skip the same rows. Not yet: dragging to a tab in another window, or dragging several selected areas.
+
+![A block of cells being dragged from one file onto the tab of another, which is outlined](docs/screenshots/tab-drag.png)
 - **A tab in its own window:** right-click a tab (or File menu, or Alt+Q) and
   choose Move tab to a new window to see two files side by side, on two
   screens if you like. The tab keeps its cell, selection, scroll position,

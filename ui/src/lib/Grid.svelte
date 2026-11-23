@@ -58,6 +58,12 @@
     /** The selected block was dragged by its outline to start at (row, col);
      *  `copy`: Ctrl was held, so copy it instead. */
     onMoveCells?: (from: Rect, row: number, col: number, copy: boolean) => void;
+    /** A block dragged by its outline is over something outside the grid
+     *  (the tab bar): the pointer's place, or null when it is back or the
+     *  drag ended. */
+    onCellsOver?: (clientX: number | null, clientY: number | null) => void;
+    /** The block was let go outside the grid; `shift`: Shift was held. */
+    onCellsDropOutside?: (from: Rect, clientX: number, clientY: number, shift: boolean) => void;
     /** Ctrl+arrow (to the edge of the data), after Enter mode keeps an edit. */
     onJump?: (dir: "up" | "down" | "left" | "right", extend: boolean) => void;
     /** Double-click on a column heading: rename the column. */
@@ -75,7 +81,7 @@
      *  (the title-row question): the active cell scrolls clear of them. */
     bottomInset?: number;
   }
-  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onRenameCol, onInsight, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0 }: Props = $props();
+  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onCellsOver, onCellsDropOutside, onRenameCol, onInsight, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0 }: Props = $props();
   // Where this pane is scrolled to (a split view's second pane keeps its own).
   const view = $derived(pane === "split" ? tab.splitScroll : tab);
 
@@ -695,6 +701,8 @@
     refuse?: string;
     /** The pointer is over a place the block cannot go (hidden columns). */
     blocked?: boolean;
+    /** The pointer is outside the grid (maybe over a tab). */
+    outside?: boolean;
   };
   let moving: Moving | null = null;
   const MOVE_SLOP = 4;
@@ -825,6 +833,7 @@
 
   function cancelMove(): void {
     if (!moving && !freezing) return;
+    if (moving?.outside) onCellsOver?.(null, null);
     moving = null;
     freezing = null;
     cursor = "default";
@@ -1877,6 +1886,10 @@
         }
         m.active = true;
       }
+      if (m.outside) {
+        m.outside = false;
+        onCellsOver?.(null, null);
+      }
       cursor = m.kind === "cells" && e.ctrlKey ? "copy" : "grabbing";
       // Scroll when the pointer leaves the body, along the axis that moves.
       if (m.kind !== "cols") {
@@ -1991,7 +2004,11 @@
       const m = moving;
       moving = null;
       cursor = "default";
-      if (m.active && !m.to && m.blocked) {
+      if (m.outside) {
+        // Let go outside the grid: over a tab means drop the cells there.
+        onCellsOver?.(null, null);
+        if (m.active && m.kind === "cells") onCellsDropOutside?.(m.from, e.clientX, e.clientY, e.shiftKey);
+      } else if (m.active && !m.to && m.blocked) {
         onMessage("Cells can't be dropped over hidden columns. Show them first (Ctrl+Shift+0).");
       } else if (m.active && m.to) {
         if (m.kind === "cols") onMoveCols?.(m.from.col, m.from.cols, m.to.col);
@@ -2538,6 +2555,20 @@
     };
     media.addEventListener("change", onScheme);
     window.addEventListener("mouseup", onMouseUp);
+    // A block dragged out of the grid (onto a tab) is followed over the rest
+    // of the window; the canvas only hears the pointer while it is on it.
+    const onWindowMove = (e: MouseEvent) => {
+      const m = moving;
+      if (!m || m.kind !== "cells" || !m.active || !onCellsOver) return;
+      const r = canvas.getBoundingClientRect();
+      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return;
+      m.outside = true;
+      m.to = null;
+      cursor = e.shiftKey ? "grabbing" : "copy";
+      onCellsOver(e.clientX, e.clientY);
+      redraw();
+    };
+    window.addEventListener("mousemove", onWindowMove);
     // Esc while dragging to move: drop nothing.
     const onKey = (e: KeyboardEvent) => {
       if ((moving || freezing) && e.key === "Escape") {
@@ -2553,6 +2584,7 @@
       host.removeEventListener("scroll", noNativeScroll);
       media.removeEventListener("change", onScheme);
       window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("mousemove", onWindowMove);
       if (frame) cancelAnimationFrame(frame);
     };
   });

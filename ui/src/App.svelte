@@ -312,8 +312,8 @@
   const hasTab = () => !!tab;
 
   /** Run an engine call for the active tab and take the new document state. */
-  async function apply(f: (t: Tab) => Promise<DocInfo>, dataChanged = true): Promise<boolean> {
-    const t = tab;
+  async function apply(f: (t: Tab) => Promise<DocInfo>, dataChanged = true, of?: Tab): Promise<boolean> {
+    const t = of ?? tab;
     if (!t) return false;
     try {
       const info = await f(t);
@@ -2358,13 +2358,13 @@
   /** A paste taller than the shown rows left while rows are hidden: ask
    *  first. "stop" fills the shown rows and leaves the rest out, "add" puts
    *  the rest in new rows at the end, null is Cancel. */
-  async function askOverflow(t: Tab, row: number, height: number): Promise<"stop" | "add" | "fits" | null> {
+  async function askOverflow(t: Tab, row: number, height: number, into?: string): Promise<"stop" | "add" | "fits" | null> {
     const left = t.info.rows - row;
     if (!rowsHidden(t) || height <= left) return "fits";
     const extra = height - left;
     const hidden = Math.max(0, t.info.total_rows - t.info.rows);
     const a = await ask(
-      `You're pasting ${plural(height, "row")}, but only ${plural(left, "row")} ${left === 1 ? "is" : "are"} showing from here down`,
+      `You're pasting ${plural(height, "row")}${into ? ` into ${into}` : ""}, but only ${plural(left, "row")} ${left === 1 ? "is" : "are"} showing from here down`,
       `${t.filter ? "A filter is on" : "Some rows are hidden"}, so Natendo pastes into the rows you can see and leaves the ${plural(hidden, "hidden row")} alone.`,
       [
         { id: "stop", label: `Fill the ${plural(left, "shown row")} and stop`, primary: true },
@@ -2383,8 +2383,8 @@
     return n > 0 ? ` ${plural(n, "hidden row")} between them ${n === 1 ? "was" : "were"} left as ${n === 1 ? "it was" : "they were"}.` : "";
   }
 
-  async function runOp(op: DataOp, label: string): Promise<OpReport | null> {
-    const t = tab;
+  async function runOp(op: DataOp, label: string, of?: Tab): Promise<OpReport | null> {
+    const t = of ?? tab;
     if (!t) return null;
     // What can't be seen isn't touched: hidden columns are passed over.
     const hide = hiddenColsOf(t);
@@ -3316,6 +3316,150 @@
       const n = cellCount(from);
       say(`${copy ? "Copied" : "Moved"} ${n.toLocaleString()} cell${n === 1 ? "" : "s"}. Ctrl+Z undoes it.`);
     }
+  }
+
+  // ---- cells dropped on another tab (copy, Shift: move) ----------------------
+  /** The tab the cell drag is over (outlined in the bar), if any. */
+  let cellDropTab = $state<number | null>(null);
+
+  /** The tab under a point in the tab bar (not the active one: dropping on
+   *  the tab the cells come from does nothing). */
+  function tabUnder(x: number, y: number): Tab | null {
+    const el = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-tab-index]");
+    const i = el ? Number(el.dataset.tabIndex) : -1;
+    const t = i >= 0 ? tabs[i] : undefined;
+    return t && t !== tab ? t : null;
+  }
+
+  function cellsOver(x: number | null, y: number | null): void {
+    cellDropTab = x === null || y === null ? null : (tabUnder(x, y)?.id ?? null);
+  }
+
+  /** Why a tab's cells may not go to another file, or "". Private and
+   *  encrypted data never goes into a file that is not private. */
+  async function sensitive(t: Tab): Promise<boolean> {
+    if (t.private.file || t.private.folder) return true;
+    return !!(await backend().encryptedOrigin(t.id).catch(() => null));
+  }
+
+  /** The paste half of Paste, into any tab at a place: asks about rows
+   *  that do not fit while rows are hidden, writes one undo step, and says
+   *  how many rows were added. null: nothing was written. */
+  async function pasteInto(dst: Tab, text: string, row: number, col: number): Promise<{ rows: number; added: number } | null> {
+    const rows = parseTsv(text);
+    if (rows.length === 0) return null;
+    const fit = await askOverflow(dst, row, rows.length, dst.info.name);
+    if (!fit) return null;
+    const before = dst.info.rows;
+    const done = await runOp({ op: "paste", spec: { row, col, op: "none", skip_blanks: false, transpose: false, stop_at_end: fit === "stop" }, text }, "Pasting", dst);
+    if (!done) return null;
+    return { rows: rows.length, added: Math.max(0, dst.info.rows - before) };
+  }
+
+  /** What a source tab looked like when its cells were copied: a change
+   *  after that stops a move from clearing it. */
+  const sourceKey = (t: Tab): string => `${t.info.history_pos}|${t.info.rows}|${t.info.total_rows}|${JSON.stringify(t.filter ?? null)}`;
+
+  /** Cells dropped on another tab: copied to that tab's active cell (Shift
+   *  or "Move": then cleared here, but only once the other file has them;
+   *  two files, so two undo steps). The source tab is the one the drag began
+   *  in, whatever tab is active when the drop finishes. */
+  async function dropCellsOnTab(src: Tab, r: Rect, dst: Tab, move: boolean): Promise<void> {
+    if (dst === src) return;
+    if (!src.info.indexed || !dst.info.indexed || src.busy || dst.busy) {
+      say("Please wait until both files have been read, then try again.");
+      return;
+    }
+    if (dst.info.read_only || dst.peeking || dst.info.peeking) {
+      say(`${dst.info.name} is read-only (or showing an earlier step), so nothing can be put in it.`);
+      return;
+    }
+    const n = cellCount(r);
+    if (n * (move ? 2 : 1) > MAX_CELLS_PER_CHANGE) {
+      say(
+        move
+          ? `Moving cells to another file works on up to ${(MAX_CELLS_PER_CHANGE / 2).toLocaleString()} at once. Use Copy and Paste for more.`
+          : `Dropping cells on a tab copies up to ${MAX_CELLS_PER_CHANGE.toLocaleString()} cells at once. For more, use Copy (Ctrl+C) and Paste (Ctrl+V).`,
+      );
+      return;
+    }
+    if (src.columns.hiddenIn(r.col, r.col + r.cols)) {
+      say("The selection has hidden columns, so it can't be dropped on another file. Show them first (Ctrl+Shift+0).");
+      return;
+    }
+    if ((await sensitive(src)) && !(await sensitive(dst))) {
+      say(`${src.info.name} is private (or from an encrypted file), so its cells are not copied into ${dst.info.name}, which is not. Make ${dst.info.name} private first, or copy them by hand.`);
+      return;
+    }
+    const key = sourceKey(src);
+    let text: string;
+    try {
+      text = await backend().copyCells(src.id, r.row, r.rows, r.col, r.cols, hiddenColsOf(src));
+    } catch (e) {
+      say(errorText(e));
+      return;
+    }
+    const at = dst.rect;
+    const put = await pasteInto(dst, text, at.row, at.col);
+    if (!put) {
+      say(`Nothing was copied to ${dst.info.name}.`);
+      return;
+    }
+    const added = put.added > 0 ? `, added ${plural(put.added, "row")}` : "";
+    const goTo = () => {
+      const i = tabs.indexOf(dst);
+      if (i >= 0) active = i;
+    };
+    if (!move) {
+      say(`Copied ${plural(n, "cell")} to ${dst.info.name}${added}. Undo there with Ctrl+Z.`);
+      messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
+      return;
+    }
+    // Move: the other file has the cells; only now clear the source tab,
+    // which must still be what was copied (same changes, same rows, same filter).
+    if (!tabs.includes(src) || sourceKey(src) !== key) {
+      say(`Copied ${plural(n, "cell")} to ${dst.info.name}${added}, not removed from ${src.info.name}: it changed meanwhile.`);
+      messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
+      return;
+    }
+    src.whatNext = "moving cells to another file";
+    const cleared = await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, "", hiddenColsOf(x)), true, src);
+    if (!cleared) {
+      say(`Copied ${plural(n, "cell")} to ${dst.info.name}${added}, not removed from ${src.info.name}.`);
+      messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
+      return;
+    }
+    say(`Moved ${plural(n, "cell")} to ${dst.info.name}${added}. Ctrl+Z in each file undoes its half.`);
+    messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
+  }
+
+  /** Released outside the grid: on a tab means drop there (Shift: move). */
+  function cellsDropOutside(from: Rect, x: number, y: number, shift: boolean): void {
+    cellDropTab = null;
+    const src = tab;
+    const dst = tabUnder(x, y);
+    if (src && dst) void dropCellsOnTab(src, from, dst, shift).finally(() => void tick().then(() => grid?.focus()));
+  }
+
+  /** Copy or move the selection to a tab picked from a list (the keyboard
+   *  and menu way of the same drop). */
+  async function cellsToTab(move: boolean): Promise<void> {
+    const src = tab;
+    if (!src || !ready()) return;
+    const others = tabs.filter((x) => x !== src);
+    if (!others.length) {
+      say("Open a second file first.");
+      return;
+    }
+    const shown = others.slice(0, 12);
+    const a = await ask(
+      move ? "Move the selected cells to which file?" : "Copy the selected cells to which file?",
+      `They go in at that file's selected cell${move ? ", and are cleared here once they are there" : ""}.${others.length > shown.length ? ` (Only the first ${shown.length} other files are listed.)` : ""}`,
+      [...shown.map((x, i) => ({ id: String(i), label: x.info.name, primary: i === 0 })), { id: "cancel", label: "Cancel" }],
+      "cancel",
+    );
+    const dst = a === "cancel" ? undefined : shown[Number(a)];
+    if (dst && tabs.includes(src)) await dropCellsOnTab(src, src.rect, dst, move);
   }
 
   // ---- file tabs: drag one along the bar to put it elsewhere -----------------
@@ -5384,6 +5528,8 @@
     })),
     { id: "window.next", label: "Next file", keys: ["Ctrl+PageDown", "Ctrl+Tab", "Ctrl+Shift+PageDown"], run: () => switchTab(1), enabled: () => tabs.length > 1 },
     { id: "window.prev", label: "Previous file", keys: ["Ctrl+PageUp", "Ctrl+Shift+Tab", "Ctrl+Shift+PageUp"], run: () => switchTab(-1), enabled: () => tabs.length > 1 },
+    { id: "edit.copyToTab", label: "Copy selection to another file…", run: () => void cellsToTab(false), enabled: () => ready() && tabs.length > 1 },
+    { id: "edit.moveToTab", label: "Move selection to another file…", run: () => void cellsToTab(true), enabled: () => ready() && !tab?.info.read_only && tabs.length > 1 },
     { id: "window.moveToNew", label: "Move tab to a new window", run: () => void moveTabToWindow(), enabled: () => !SECOND_WINDOW && ready() },
     { id: "window.moveToMain", label: "Move tab back to the main window", run: () => void moveTabBack(), enabled: () => SECOND_WINDOW && !!tab },
     { id: "window.moveTabLeft", label: "Move file tab left", keys: ["Ctrl+Alt+Shift+PageUp"], run: () => moveTab(-1), enabled: () => active > 0 },
@@ -5538,7 +5684,7 @@
     {
       label: "&Edit",
       items: [
-        "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-",
+        "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-",
         "edit.copyNames", "edit.copyNamesText", "edit.copyWithNames", "edit.pasteNames", "-",
         "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "edit.gotoSpecial", "-", "edit.note", "edit.changes", "-",
         "edit.deleteRows", "edit.deleteCols", "edit.moveRowsUp", "edit.moveRowsDown", "edit.moveColsLeft", "edit.moveColsRight",
@@ -5601,7 +5747,7 @@
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
@@ -6723,7 +6869,7 @@
   <!-- Double-clicking the empty part of the bar starts a new file. -->
   <div class="tabs" class:tab-dragging={tabDrag?.moved} role="tablist" aria-label="Open files" tabindex="-1" bind:this={tabBar} ondblclick={(e) => { if (e.target === e.currentTarget) void newFile(); }}>
     {#each tabs as t, i (t.id)}
-      <div class="tab" class:active={i === active} class:dragging={tabDrag?.moved && tabs[tabDrag.from] === t} style:transform={tabShift(i)} role="tab" aria-selected={i === active} tabindex="-1" title={t.info.path ?? t.info.name}
+      <div class="tab" class:active={i === active} class:dragging={tabDrag?.moved && tabs[tabDrag.from] === t} class:drop={cellDropTab === t.id} style:transform={tabShift(i)} role="tab" aria-selected={i === active} tabindex="-1" title={t.info.path ?? t.info.name}
         data-tab-index={i}
         onmousedown={(e) => { if (e.button === 1) { e.preventDefault(); void closeTab(i); } }}
         oncontextmenu={(e) => tabMenu(e, i)}
@@ -6789,6 +6935,8 @@
                   onMoveCols={(at, count, to) => void dragCols(at, count, to)}
                   onMoveRows={(at, count, to) => void dragRows(at, count, to)}
                   onMoveCells={(from, row, col, copy) => void dragCells(from, row, col, copy)}
+                  onCellsOver={cellsOver}
+                  onCellsDropOutside={cellsDropOutside}
                   onJump={(dir, extend) => void jump(dir, extend)}
                 />
             </div>
@@ -6818,6 +6966,8 @@
                   onMoveCols={(at, count, to) => void dragCols(at, count, to)}
                   onMoveRows={(at, count, to) => void dragRows(at, count, to)}
                   onMoveCells={(from, row, col, copy) => void dragCells(from, row, col, copy)}
+                  onCellsOver={cellsOver}
+                  onCellsDropOutside={cellsDropOutside}
                   onJump={(dir, extend) => void jump(dir, extend)}
                 />
             </div>
@@ -6847,6 +6997,8 @@
           onMoveCols={(at, count, to) => void dragCols(at, count, to)}
           onMoveRows={(at, count, to) => void dragRows(at, count, to)}
           onMoveCells={(from, row, col, copy) => void dragCells(from, row, col, copy)}
+                  onCellsOver={cellsOver}
+                  onCellsDropOutside={cellsDropOutside}
           onJump={(dir, extend) => void jump(dir, extend)}
         />
         {/if}
@@ -7891,6 +8043,12 @@
     background: var(--surface);
     color: var(--text);
     box-shadow: inset 0 2px 0 var(--accent);
+  }
+  .tab.drop {
+    background: var(--surface);
+    color: var(--text);
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
   .tab.dragging {
     position: relative;
