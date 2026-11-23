@@ -29,7 +29,7 @@ const url = process.argv[3] || "http://localhost:5194";
   const sel = () =>
     p.evaluate(() => {
       const t = window.__nde.tab;
-      return { cell: { ...t.cell }, rect: { ...t.rect }, editing: window.__nde.grid.isEditing() };
+      return { cell: { ...t.cell }, rect: { ...t.drawRect }, editing: window.__nde.grid.isEditing() };
     });
   const start = async (row, col, row2 = row, col2 = col) => {
     await p.evaluate(([r, c, r2, c2]) => {

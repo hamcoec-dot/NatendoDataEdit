@@ -6,7 +6,7 @@
   import { onMount, tick, untrack } from "svelte";
   import type { Tab } from "./tab.svelte";
   import { enterStep, prefs } from "./prefs.svelte";
-  import { contains, rectOf, type Cell, type Rect, type Selection } from "./selection";
+  import { contains, rectOf, type Cell, type Rect, type Selection, touching, containsAny, MAX_AREAS } from "./selection";
   import { blockTarget, dropIndex, gapAt, onOutline } from "./dragmove";
   import type { ViewportData } from "./binary";
   import { backend, errorText, type Dir } from "./backend";
@@ -310,8 +310,12 @@
     ctx.fillRect(0, 0, w, h);
     ctx.textBaseline = "middle";
 
-    const sel = tab.rect;
+    const sel = tab.drawRect;
     const active = tab.cell;
+    // The earlier blocks of a Ctrl+click selection that are on screen (only those are tested per cell).
+    const extras = tab.extra.length
+      ? touching(tab.extra, Math.min(rows.frozen.start, rows.body.start), Math.max(rows.frozen.end, rows.body.end), Math.min(cols.frozen.start, cols.body.start), Math.max(cols.frozen.end, cols.body.end))
+      : [];
     const rowSpans = [rows.frozen, rows.body];
     const colSpans = [cols.frozen, cols.body];
 
@@ -332,7 +336,7 @@
         ctx.beginPath();
         ctx.rect(clipX, clipY, clipW, clipH);
         ctx.clip();
-        drawCells(ctx, rs, cs, sel, active);
+        drawCells(ctx, rs, cs, sel, active, extras);
         ctx.restore();
       }
     }
@@ -482,6 +486,7 @@
       ctx.fillText("1", rowHeaderW - 10 - ctx.measureText("1").width, lineH / 2);
     }
     drawFillHandle(ctx, w, h);
+    drawAreas(ctx, w, h, extras);
     drawMove(ctx, w, h);
     drawCut(ctx, w, h);
     drawFreezeDrag(ctx, w, h);
@@ -626,10 +631,26 @@
     return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
   }
 
+  /** An outline round each earlier block of a Ctrl+click selection. */
+  function drawAreas(ctx: CanvasRenderingContext2D, w: number, h: number, extras: Rect[]): void {
+    if (!extras.length) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rowHeaderW, headH, w - rowHeaderW, h - headH);
+    ctx.clip();
+    ctx.strokeStyle = colors.accent;
+    ctx.lineWidth = 2;
+    for (const r of extras) {
+      const b = screenBox(r.row, r.col, r.row + r.rows - 1, r.col + r.cols - 1, w, h);
+      ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
+    }
+    ctx.restore();
+  }
+
   function drawFillHandle(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     handle = null;
-    if (readOnly || locked || editing || tab.info.rows === 0) return;
-    const sel = tab.rect;
+    if (readOnly || locked || editing || tab.info.rows === 0 || tab.extra.length) return;
+    const sel = tab.drawRect;
     const corner = cellRect({ row: sel.row + sel.rows - 1, col: sel.col + sel.cols - 1 });
     ctx.save();
     ctx.beginPath();
@@ -716,7 +737,8 @@
 
   /** The selection's outline on screen, where a block can be picked up. */
   function onSelOutline(px: number, py: number): boolean {
-    const r = tab.rect;
+    if (tab.extra.length) return false;
+    const r = tab.drawRect;
     if (tab.info.rows === 0 || wholeColsSel(r) || wholeRowsSel(r)) return false;
     const b = screenBox(r.row, r.col, r.row + r.rows - 1, r.col + r.cols - 1, viewW(), viewH());
     return px >= rowHeaderW && py >= headH && onOutline(px, py, b);
@@ -724,7 +746,7 @@
 
   /** Which side of the selection's outline (px, py) is on. */
   function outlineSide(px: number, py: number): "up" | "down" | "left" | "right" {
-    const r = tab.rect;
+    const r = tab.drawRect;
     const b = screenBox(r.row, r.col, r.row + r.rows - 1, r.col + r.cols - 1, viewW(), viewH());
     const d: [number, "up" | "down" | "left" | "right"][] = [
       [Math.abs(py - b.y), "up"],
@@ -938,7 +960,7 @@
   /** The fill a pointer over cell (row, col) asks for: along the axis it
    *  moved furthest from the selection, as Excel does. */
   function fillTarget(row: number, col: number): { dir: Dir; count: number; clear?: boolean } | null {
-    const s = tab.rect;
+    const s = tab.drawRect;
     // Dragged back inside the selection: the cells passed over are cleared
     // (as in Excel), from the bottom (or the right) up to the pointer.
     if (row >= s.row && row < s.row + s.rows && col >= s.col && col < s.col + s.cols) {
@@ -1044,6 +1066,7 @@
     cs: Span,
     sel: { row: number; col: number; rows: number; cols: number },
     active: Cell,
+    extras: Rect[],
   ): void {
     const pad = Math.round(fontPx * 0.45);
     // Widths and value types are kept between frames (scrolling draws the
@@ -1107,7 +1130,7 @@
           ctx.fillRect(x, y, cw, rowH);
           ctx.globalAlpha = 1;
         }
-        if (contains(sel, r, c) && !(r === active.row && c === active.col)) {
+        if ((contains(sel, r, c) || (extras.length > 0 && containsAny(extras, r, c))) && !(r === active.row && c === active.col)) {
           ctx.fillStyle = colors.accent;
           ctx.globalAlpha = 0.12;
           ctx.fillRect(x, y, cw, rowH);
@@ -1419,7 +1442,7 @@
    *  (off for whole rows/columns, which keep the view where it is).
    *  `active`: the active cell when it is not the anchor (kept only while
    *  inside the block). */
-  export function select(anchor: Cell, focus: Cell = anchor, scroll = true, active?: Cell): void {
+  export function select(anchor: Cell, focus: Cell = anchor, scroll = true, active?: Cell, keep = false): void {
     const clamp = (c: Cell): Cell => ({
       row: Math.min(Math.max(tab.firstRow, c.row), lastRow()),
       col: Math.min(Math.max(0, c.col), Math.max(0, tab.info.cols - 1)),
@@ -1430,9 +1453,24 @@
       const a = clamp(active);
       if ((a.row !== sel.anchor.row || a.col !== sel.anchor.col) && contains(rectOf(sel), a.row, a.col)) sel.active = a;
     }
-    tab.sel = sel;
+    // `keep`: move the last block only and leave the earlier ones (Shift+click, Shift+arrows).
+    if (keep) tab.setPrimary(sel);
+    else tab.sel = sel;
     if (scroll) scrollIntoView(tab.sel.focus);
     else redraw();
+  }
+
+  /** (Ctrl+click adds blocks only while the grid can be selected in.) */
+  const readOnlyAreas = (): boolean => tab.info.rows === 0;
+
+  /** Ctrl+click and Ctrl+drag: add a block, the last one picked. */
+  function addBlock(anchor: Cell, focus: Cell = anchor): void {
+    const clamp = (c: Cell): Cell => ({
+      row: Math.min(Math.max(tab.firstRow, c.row), lastRow()),
+      col: Math.min(Math.max(0, c.col), Math.max(0, tab.info.cols - 1)),
+    });
+    if (!tab.addArea({ anchor: clamp(anchor), focus: clamp(focus) })) onMessage(`That is as many blocks as one selection holds (${MAX_AREAS.toLocaleString()}). Click once to start a new selection.`);
+    redraw();
   }
 
   /** Arrow keys: a plain move starts from the active cell (and leaves the
@@ -1441,7 +1479,7 @@
     const f = extend ? tab.sel.focus : tab.cell;
     const col = dc === 0 ? f.col : tab.columns.step(f.col, dc > 0 ? 1 : -1, Math.abs(dc));
     const next = { row: f.row + dr, col };
-    if (extend) select(tab.sel.anchor, next, true, tab.sel.active);
+    if (extend) select(tab.sel.anchor, next, true, tab.sel.active, tab.extra.length > 0);
     else select(next);
   }
 
@@ -1454,7 +1492,7 @@
   export function advance(dr: number, dc: number): void {
     // Enter set to stay put (Options): nothing moves.
     if (dr === 0 && dc === 0) return;
-    const r = tab.rect;
+    const r = tab.drawRect;
     const a = tab.cell;
     advancing = true;
     try {
@@ -1712,14 +1750,14 @@
     const fullCols = Math.max(0, tab.info.cols - 1);
     if (e.button === 2) {
       // Right-click inside the selection keeps it; elsewhere selects the target.
-      const r = tab.rect;
+      const r = tab.drawRect;
       if (h.area === "cell" && !contains(r, h.row, h.col)) select({ row: h.row, col: h.col });
       if (h.area === "row" && !(h.row >= r.row && h.row < r.row + r.rows)) select({ row: h.row, col: 0 }, { row: h.row, col: fullCols }, false);
       if (h.area === "col" && !(h.col >= r.col && h.col < r.col + r.cols)) select({ row: tab.firstRow, col: h.col }, { row: lastRow(), col: h.col }, false);
       return;
     }
     if (e.button !== 0) return;
-    if (onHandle(x, y) && onFill) {
+    if (!tab.extra.length && onHandle(x, y) && onFill) {
       if (e.detail === 2) onFillAuto?.();
       else {
         drag = { kind: "fill" };
@@ -1748,8 +1786,8 @@
           break;
         }
         // The outline first, Ctrl or not: Ctrl+drag copies the block.
-        if (!e.shiftKey && e.detail === 1 && onMoveCells && !readOnly && onSelOutline(x, y)) {
-          const from = tab.rect;
+        if (!e.shiftKey && e.detail === 1 && onMoveCells && !readOnly && !tab.extra.length && onSelOutline(x, y)) {
+          const from = tab.drawRect;
           moving = { kind: "cells", from, startX: x, startY: y, active: false, grab: { row: h.row, col: h.col }, to: null, px: x, py: y, offset: 0 };
           if (tab.columns.hiddenIn(from.col, from.col + from.cols)) moving.refuse = "The selection has hidden columns, so it can't be dragged. Show them first (Ctrl+Shift+0).";
           break;
@@ -1772,20 +1810,26 @@
           void toggleTick(h.row, h.col);
           break;
         }
-        // Shift+click: from the active cell to here.
-        if (e.shiftKey) select(tab.cell, { row: h.row, col: h.col });
+        // Ctrl+click adds a block (Ctrl+drag grows it); Shift+click extends the last one.
+        if (e.ctrlKey && !e.shiftKey && !readOnlyAreas()) {
+          addBlock({ row: h.row, col: h.col });
+          drag = { kind: "select" };
+          break;
+        }
+        if (e.shiftKey) select(tab.cell, { row: h.row, col: h.col }, true, undefined, tab.extra.length > 0);
         else select({ row: h.row, col: h.col });
         drag = { kind: "select" };
         if (e.detail === 2 && !(onActivate?.() ?? false)) startEdit();
         break;
       case "row": {
-        const r = tab.rect;
-        if (!e.shiftKey && !e.ctrlKey && onMoveRows && !readOnly && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) {
+        const r = tab.drawRect;
+        if (!e.shiftKey && !e.ctrlKey && onMoveRows && !readOnly && !tab.extra.length && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) {
           moving = { kind: "rows", from: r, startX: x, startY: y, active: false, grab: { row: h.row, col: 0 }, to: null, px: x, py: y, offset: y - rowY(r.row, visibleRows()) };
           if (tab.info.filtered) moving.refuse = "Rows can't be moved while a filter is on. Clear the filter first (Filtered ✕).";
           break;
         }
-        if (e.shiftKey) select({ row: tab.sel.anchor.row, col: 0 }, { row: h.row, col: fullCols }, false, tab.cell);
+        if (e.ctrlKey && !e.shiftKey) addBlock({ row: h.row, col: 0 }, { row: h.row, col: fullCols });
+        else if (e.shiftKey) select({ row: tab.sel.anchor.row, col: 0 }, { row: h.row, col: fullCols }, false, tab.cell, tab.extra.length > 0);
         else select({ row: h.row, col: 0 }, { row: h.row, col: fullCols }, false);
         drag = { kind: "rows" };
         break;
@@ -1820,7 +1864,7 @@
           const right = colX(h.col, cols) + tab.columns.width(h.col);
           if (x >= right - FILTER_BTN - 4 && tab.columns.width(h.col) > FILTER_BTN + 24) {
             e.stopPropagation();
-            const r = tab.rect;
+            const r = tab.drawRect;
             if (h.col < r.col || h.col >= r.col + r.cols || !wholeColsSel(r)) select({ row: tab.firstRow, col: h.col }, { row: lastRow(), col: h.col }, false);
             const b = canvas.getBoundingClientRect();
             onContext(b.left + right - FILTER_BTN - 2, b.top + headH, "col", h.col);
@@ -1848,13 +1892,14 @@
           break;
         }
         {
-          const r = tab.rect;
-          if (!e.shiftKey && !e.ctrlKey && onMoveCols && !readOnly && wholeColsSel(r) && h.col >= r.col && h.col < r.col + r.cols) {
+          const r = tab.drawRect;
+          if (!e.shiftKey && !e.ctrlKey && onMoveCols && !readOnly && !tab.extra.length && wholeColsSel(r) && h.col >= r.col && h.col < r.col + r.cols) {
             moving = { kind: "cols", from: r, startX: x, startY: y, active: false, grab: { row: 0, col: h.col }, to: null, px: x, py: y, offset: x - colX(r.col, visibleCols()) };
             break;
           }
         }
-        if (e.shiftKey) select({ row: tab.firstRow, col: tab.sel.anchor.col }, { row: lastRow(), col: h.col }, false, tab.cell);
+        if (e.ctrlKey && !e.shiftKey) addBlock({ row: tab.firstRow, col: h.col }, { row: lastRow(), col: h.col });
+        else if (e.shiftKey) select({ row: tab.firstRow, col: tab.sel.anchor.col }, { row: lastRow(), col: h.col }, false, tab.cell, tab.extra.length > 0);
         else select({ row: tab.firstRow, col: h.col }, { row: lastRow(), col: h.col }, false);
         drag = { kind: "cols" };
         break;
@@ -1918,7 +1963,7 @@
       const link = h.area === "cell" ? linkAt(h.row, h.col) : null;
       tip = link ? `${link}\nCtrl+click to open` : "";
       const pointer = h.area === "cell" && ((e.ctrlKey && !!linkAt(h.row, h.col)) || onTickBox(x, y, h.row, h.col) || onPickButton(x, y, h.row, h.col));
-      const r = tab.rect;
+      const r = tab.drawRect;
       const grab =
         !readOnly &&
         ((h.area === "col" && h.edge === null && !!onMoveCols && wholeColsSel(r) && h.col >= r.col && h.col < r.col + r.cols) ||
@@ -1961,15 +2006,15 @@
       return;
     }
     const fullCols = Math.max(0, tab.info.cols - 1);
-    if (drag.kind === "select") tab.sel = { anchor: tab.sel.anchor, focus: { row: Math.max(h.row, tab.firstRow), col: h.col } };
-    else if (drag.kind === "rows") tab.sel = { anchor: tab.sel.anchor, focus: { row: Math.max(h.row, tab.firstRow), col: fullCols } };
-    else if (drag.kind === "cols") tab.sel = { anchor: tab.sel.anchor, focus: { row: lastRow(), col: h.col } };
+    if (drag.kind === "select") tab.setPrimary({ anchor: tab.sel.anchor, focus: { row: Math.max(h.row, tab.firstRow), col: h.col } });
+    else if (drag.kind === "rows") tab.setPrimary({ anchor: tab.sel.anchor, focus: { row: Math.max(h.row, tab.firstRow), col: fullCols } });
+    else if (drag.kind === "cols") tab.setPrimary({ anchor: tab.sel.anchor, focus: { row: lastRow(), col: h.col } });
     redraw();
   }
 
   /** The whole-column selection holding column `c`, when it has more than one. */
   function selectedColsWith(c: number): Rect | null {
-    const r = tab.rect;
+    const r = tab.drawRect;
     return wholeColsSel(r) && r.cols > 1 && c >= r.col && c < r.col + r.cols ? r : null;
   }
   const MAX_FIT_COLS = 500;
@@ -2034,7 +2079,7 @@
       fillTo = null;
       redraw();
       if (f?.clear) {
-        const s = tab.rect;
+        const s = tab.drawRect;
         const r = f.dir === "up" ? { row: s.row + s.rows - f.count, rows: f.count, col: s.col, cols: s.cols } : { row: s.row, rows: s.rows, col: s.col + s.cols - f.count, cols: f.count };
         select({ row: s.row, col: s.col }, f.dir === "up" ? { row: s.row + s.rows - 1 - f.count, col: s.col + s.cols - 1 } : { row: s.row + s.rows - 1, col: s.col + s.cols - 1 - f.count });
         onFillClear?.(r);
@@ -2050,7 +2095,7 @@
     if (h.area === "none") return;
     // Outside the selection, a right-click picks what it is on first (as
     // in Sheets), so the menu acts on that column, row or cell.
-    const r = tab.rect;
+    const r = tab.drawRect;
     const fullCols = Math.max(0, tab.info.cols - 1);
     if (h.area === "col" && h.edge === null && (h.col < r.col || h.col >= r.col + r.cols || !wholeColsSel(r)))
       select({ row: tab.firstRow, col: h.col }, { row: lastRow(), col: h.col }, false);

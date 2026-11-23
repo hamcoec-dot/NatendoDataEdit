@@ -11,7 +11,16 @@ export interface Command {
   checked?: () => boolean;
   /** F4 ("Repeat") runs the last command marked repeatable again. */
   repeatable?: boolean;
+  /** Works on a selection of several blocks (Ctrl+click) and has a handler
+   *  for it. A command without this is refused while several blocks are
+   *  selected, so a command added later is safe without anyone listing it. */
+  multiArea?: true;
 }
+
+/** Commands that never use the selection (files, view, help, windows) may
+ *  run while several blocks are selected; any other command needs
+ *  `multiArea` (see `Command`) or is refused. A test lists the groups. */
+export const SELECTION_FREE = /^(file|view|help|window)\./;
 
 export type MenuItem = string | "-";
 
@@ -90,6 +99,14 @@ function keyText(e: KeyboardEvent, alt: boolean): string {
 }
 
 export class Registry {
+  /** Says why a command may not run now (null: it may). Checked FIRST, before
+   *  the command's own `enabled` and before any of its code. */
+  guard: ((c: Command) => string | null) | null = null;
+  /** Told when `guard` refused a command (the window shows it). */
+  onRefuse: ((why: string) => void) | null = null;
+  /** True while a command that handles several blocks is running: the write
+   *  helpers let it through, everything else stays refused. */
+  multiOk = false;
   private byId = new Map<string, Command>();
   private byKey = new Map<string, Command>();
   lastRepeatable: string | null = null;
@@ -115,23 +132,46 @@ export class Registry {
 
   enabled(id: string): boolean {
     const c = this.byId.get(id);
-    return !!c && (c.enabled?.() ?? true);
+    return !!c && !this.guard?.(c) && (c.enabled?.() ?? true);
   }
 
   /** The label of the command running now (Undo names the change it made). */
   active: string | null = null;
 
+  /** Run `f` as work that handles several blocks (a gesture or a command with
+   *  its own several-blocks code that is not itself a registry command). */
+  async withMulti<T>(f: () => Promise<T>): Promise<T> {
+    const outer = this.multiOk;
+    this.multiOk = true;
+    try {
+      return await f();
+    } finally {
+      this.multiOk = outer;
+    }
+  }
+
   async run(id: string): Promise<boolean> {
     const c = this.byId.get(id);
-    if (!c || !(c.enabled?.() ?? true)) return false;
+    if (!c) return false;
+    // The several-blocks guard first: nothing of the command runs, and the
+    // person is told why even when the command would also be disabled.
+    const why = this.guard?.(c);
+    if (why) {
+      this.onRefuse?.(why);
+      return false;
+    }
+    if (!(c.enabled?.() ?? true)) return false;
     if (c.repeatable) this.lastRepeatable = id;
     const label = c.label.replace(/&/g, "").replace(/…$/, "");
     const outer = this.active;
+    const outerMulti = this.multiOk;
     this.active = label;
+    this.multiOk = !!c.multiArea;
     try {
       await c.run();
     } finally {
       this.active = outer;
+      this.multiOk = outerMulti;
     }
     return true;
   }

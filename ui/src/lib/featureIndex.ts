@@ -104,6 +104,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "a spreadsheet style grid that stays": ["help.keys", "edit.repeat", "data.filter"],
   "a tab in its own window": ["window.moveToNew", "window.moveToMain"],
   "drag cells onto another tab": ["edit.copyToTab", "edit.moveToTab"],
+  "select several blocks with ctrl+click": ["edit.clear", "edit.copy", "format.alignLeft"],
   "tabs for each open file": [
     "window.next", "window.prev", "window.moveTabLeft", "window.moveTabRight", "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze",
     "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "edit.moveColsLeft", "edit.moveColsRight",
