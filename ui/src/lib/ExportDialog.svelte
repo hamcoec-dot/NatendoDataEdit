@@ -21,10 +21,12 @@
     tabList?: { id: number; name: string; why: string }[];
     /** Column widths set on screen (pixels; 0 for the default). */
     widths?: number[];
+    /** Rows with a height of their own, as [shown row, pixels] (none while a filter is on). */
+    rowHeights?: [number, number][];
     onExport: (o: ExportOptions, to: "file" | "clipboard", tabIds?: number[]) => void;
     onClose: () => void;
   }
-  let { doc, name, header, filtered, titles, rows = 0, tabList = [], widths = [], onExport, onClose }: Props = $props();
+  let { doc, name, header, filtered, titles, rows = 0, tabList = [], widths = [], rowHeights = [], onExport, onClose }: Props = $props();
 
   /** Data rows a sheet holds under the title row. */
   const SHEET_ROWS = 1_048_575;
@@ -96,6 +98,7 @@
     if (snap.format === "xlsx") {
       snap.part_rows = partRows.trim() ? perPart : 0;
       snap.widths = widths;
+      snap.row_heights = rowHeights;
       if (parts > 1)
         try {
           localStorage.setItem(SPLIT_KEY, snap.split_files ? "files" : "sheets");

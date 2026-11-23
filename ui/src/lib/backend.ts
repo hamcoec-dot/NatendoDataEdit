@@ -1105,6 +1105,8 @@ export interface ExportOptions {
   look?: boolean;
   /** Excel: column widths in screen pixels (0: fit the values). */
   widths?: number[];
+  /** Excel: rows with a height of their own, [shown row, pixels], rows increasing. */
+  row_heights?: [number, number][];
   /** Excel: data rows per part (0: as many as a sheet holds). */
   part_rows?: number;
   /** Excel: parts as files of their own instead of sheets of one workbook. */

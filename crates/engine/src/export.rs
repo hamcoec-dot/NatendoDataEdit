@@ -103,6 +103,10 @@ pub struct ExportOptions {
     pub look: bool,
     /// Excel: column widths in screen pixels (0 or missing: fit the values).
     pub widths: Vec<u32>,
+    /// Excel: rows with a height of their own, as (shown row, pixels) with
+    /// rows increasing (what the grid shows: none while a filter is on).
+    #[serde(default)]
+    pub row_heights: Vec<(u64, u32)>,
     /// Excel: data rows per part (0: as many as a sheet holds). A longer
     /// table goes on in parts, each with the title row.
     pub part_rows: u64,
@@ -137,6 +141,7 @@ impl Default for ExportOptions {
             numbers: true,
             look: true,
             widths: Vec::new(),
+            row_heights: Vec::new(),
             part_rows: 0,
             split_files: false,
             read: Default::default(),
@@ -1192,6 +1197,89 @@ mod tests {
                 &Progress::new()
             )
             .is_err());
+    }
+
+    #[test]
+    fn xlsx_writes_a_height_for_rows_that_have_one() {
+        let d = doc("a,b\n1,x\n2,y\n3,z\n");
+        let mut out = Vec::new();
+        d.export(
+            &mut out,
+            &ExportOptions {
+                format: ExportFormat::Xlsx,
+                // Shown rows 2 and 3 (the titles are row 0): 40 px and 400 px.
+                row_heights: vec![(2, 40), (3, 400)],
+                ..Default::default()
+            },
+            None,
+            &Progress::new(),
+        )
+        .unwrap();
+        let z = crate::zipread::Zip::open(&out).unwrap();
+        let sheet = z.read_string("xl/worksheets/sheet1.xml", 1 << 20).unwrap();
+        // Excel rows are one-based: shown row 2 is row 3. Pixels to points: 3 / 4.
+        assert!(
+            sheet.contains("<row r=\"3\" ht=\"30\" customHeight=\"1\">"),
+            "{sheet}"
+        );
+        assert!(
+            sheet.contains("<row r=\"4\" ht=\"300\" customHeight=\"1\">"),
+            "{sheet}"
+        );
+        // The others have no height of their own.
+        assert!(sheet.contains("<row r=\"1\">") && sheet.contains("<row r=\"2\">"));
+        assert_eq!(sheet.matches("customHeight").count(), 2);
+        // None given: no custom heights at all.
+        let mut plain = Vec::new();
+        d.export(
+            &mut plain,
+            &ExportOptions {
+                format: ExportFormat::Xlsx,
+                ..Default::default()
+            },
+            None,
+            &Progress::new(),
+        )
+        .unwrap();
+        let z = crate::zipread::Zip::open(&plain).unwrap();
+        let sheet = z.read_string("xl/worksheets/sheet1.xml", 1 << 20).unwrap();
+        assert!(!sheet.contains("customHeight"));
+    }
+
+    #[test]
+    fn xlsx_heights_given_unsorted_repeated_or_out_of_range_are_still_right() {
+        let d = doc("a,b
+1,x
+2,y
+3,z
+");
+        let mut out = Vec::new();
+        d.export(
+            &mut out,
+            &ExportOptions {
+                format: ExportFormat::Xlsx,
+                row_heights: vec![(3, 9999), (2, 40), (2, 60), (1, 2)],
+                ..Default::default()
+            },
+            None,
+            &Progress::new(),
+        )
+        .unwrap();
+        let z = crate::zipread::Zip::open(&out).unwrap();
+        let sheet = z.read_string("xl/worksheets/sheet1.xml", 1 << 20).unwrap();
+        assert!(
+            sheet.contains("<row r=\"2\" ht=\"10.5\" customHeight=\"1\">"),
+            "{sheet}"
+        );
+        assert!(
+            sheet.contains("<row r=\"3\" ht=\"45\" customHeight=\"1\">"),
+            "{sheet}"
+        );
+        assert!(
+            sheet.contains("<row r=\"4\" ht=\"300\" customHeight=\"1\">"),
+            "{sheet}"
+        );
+        assert_eq!(sheet.matches("customHeight").count(), 3);
     }
 
     #[test]

@@ -15,7 +15,11 @@ use crate::docs::{CmdError, CmdResult};
 pub const MAX_SESSION_TABS: usize = 50;
 /// Largest view kept for one tab (bytes of JSON); a bigger one is dropped
 /// and the file reopens with the plain view.
-pub const MAX_VIEW_BYTES: usize = 512 << 10;
+/// One tab's saved look: widths, freeze, hidden columns and up to 100,000 row
+/// heights (about 1.2 MB of JSON) fit; past this, the heights alone are dropped.
+pub const MAX_VIEW_BYTES: usize = 2 << 20;
+/// What a tab's look may take without its row heights.
+pub const MAX_VIEW_BYTES_NO_HEIGHTS: usize = 512 << 10;
 /// Largest session file read back.
 const MAX_SESSION_FILE: u64 = 32 << 20;
 
@@ -139,10 +143,7 @@ impl Session {
             let Some((size, modified)) = stamp(&path) else {
                 continue;
             };
-            let view = t
-                .view
-                .map(layout_only)
-                .filter(|v| serde_json::to_vec(v).is_ok_and(|b| b.len() <= MAX_VIEW_BYTES));
+            let view = t.view.map(layout_only).and_then(fit_view);
             entries.push(Entry {
                 path: path.to_string_lossy().into_owned(),
                 size,
@@ -241,6 +242,19 @@ impl Session {
 /// A view with only its layout: filters, highlight rules and data checks
 /// can hold values from the file (a picked name, "contains Smith"), and
 /// nothing from the cells is ever written here; sorting is not replayed.
+/// A tab's look as it is kept: whole if it fits, otherwise without its row
+/// heights (the widths, freeze and the rest still come back), otherwise nothing.
+fn fit_view(mut v: serde_json::Value) -> Option<serde_json::Value> {
+    let size = |v: &serde_json::Value| serde_json::to_vec(v).map(|b| b.len()).unwrap_or(usize::MAX);
+    if size(&v) <= MAX_VIEW_BYTES {
+        return Some(v);
+    }
+    if let Some(o) = v.as_object_mut() {
+        o.remove("row_heights");
+    }
+    (size(&v) <= MAX_VIEW_BYTES_NO_HEIGHTS).then_some(v)
+}
+
 fn layout_only(mut v: serde_json::Value) -> serde_json::Value {
     if let Some(o) = v.as_object_mut() {
         o.insert("filter".into(), serde_json::Value::Null);
@@ -254,6 +268,24 @@ fn layout_only(mut v: serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tab_with_100k_row_heights_keeps_its_whole_look() {
+        let heights: Vec<(u64, u32)> = (0..100_000u64)
+            .map(|i| (i * 3, 30 + (i % 50) as u32))
+            .collect();
+        let view =
+            serde_json::json!({"widths": [120, 80], "freeze_rows": 1, "row_heights": heights});
+        let kept = fit_view(layout_only(view)).expect("kept");
+        assert_eq!(kept["row_heights"].as_array().map(Vec::len), Some(100_000));
+        assert_eq!(kept["widths"], serde_json::json!([120, 80]));
+        // Far more than the heights can hold: they alone go; the look stays.
+        let huge: Vec<(u64, u32)> = (0..300_000u64).map(|i| (i * 7, 30)).collect();
+        let big = serde_json::json!({"widths": [120, 80], "row_heights": huge});
+        let kept = fit_view(layout_only(big)).expect("look kept without heights");
+        assert!(kept.get("row_heights").is_none());
+        assert_eq!(kept["widths"], serde_json::json!([120, 80]));
+    }
 
     #[test]
     fn never_keeps_values_from_the_file() {

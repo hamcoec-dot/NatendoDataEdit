@@ -631,6 +631,9 @@ pub(crate) fn write_book_on(
         let read = opts.read;
         // Rows to XML and compressed in parallel, a batch of blocks at a
         // time, written in order.
+        // Heights as given may be unsorted, repeated or out of range: sort, the last of
+        // a repeated row wins, clamp to 14..=400 px.
+        let heights = normalize_row_heights(&opts.row_heights);
         let first_row = row_no + 1;
         let start = sh.rows.start;
         let total = sh.rows.end - start;
@@ -650,7 +653,19 @@ pub(crate) fn write_book_on(
                         let row_no = first_row + (r - start);
                         let id = d.id_at(r).ok_or(Error::OutOfRange)?;
                         reader.read(d, id, &mut buf);
-                        let _ = write!(s, "<row r=\"{row_no}\">");
+                        match heights.binary_search_by_key(&r, |&(row, _)| row) {
+                            // A row with a height of its own (pixels to points: 3 / 4).
+                            Ok(i) => {
+                                let _ = write!(
+                                    s,
+                                    "<row r=\"{row_no}\" ht=\"{}\" customHeight=\"1\">",
+                                    f64::from(heights[i].1) * 0.75
+                                );
+                            }
+                            Err(_) => {
+                                let _ = write!(s, "<row r=\"{row_no}\">");
+                            }
+                        }
                         for k in 0..n {
                             let v = reader.get(&buf, k);
                             if v.is_empty() {
@@ -821,6 +836,22 @@ pub(crate) fn write_book_on(
     report.sheets = k as u32;
     report.bytes = counter.n;
     Ok(report)
+}
+
+/// Row heights sorted by row, one per row (the last given wins), each clamped to
+/// 14..=400 pixels, ready for a binary search.
+fn normalize_row_heights(raw: &[(u64, u32)]) -> Vec<(u64, u32)> {
+    let mut v: Vec<(u64, u32)> = raw.iter().map(|&(r, px)| (r, px.clamp(14, 400))).collect();
+    // A stable sort keeps the given order among equal rows, so the last stays last.
+    v.sort_by_key(|&(r, _)| r);
+    let mut out: Vec<(u64, u32)> = Vec::with_capacity(v.len());
+    for e in v {
+        match out.last_mut() {
+            Some(l) if l.0 == e.0 => *l = e,
+            _ => out.push(e),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

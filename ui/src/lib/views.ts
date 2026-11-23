@@ -97,6 +97,8 @@ export interface View {
   banded?: boolean;
   /** Lines of text per row (1 to 10). */
   row_lines?: number;
+  /** Rows with a height of their own: [row, pixels], rows increasing (older views have none). */
+  row_heights?: [number, number][];
   /** The filter panel's cards (older views have none). */
   facets?: { col: number; kind: "values" | "numbers" | "dates" }[];
 }

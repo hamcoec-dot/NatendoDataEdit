@@ -6,6 +6,7 @@
   import { onMount, tick, untrack } from "svelte";
   import type { Tab } from "./tab.svelte";
   import { enterStep, prefs } from "./prefs.svelte";
+  import { MAX_CUSTOM_ROWS } from "./rowheights";
   import { contains, rectOf, type Cell, type Rect, type Selection, touching, containsAny, MAX_AREAS } from "./selection";
   import { blockTarget, dropIndex, gapAt, onOutline } from "./dragmove";
   import type { ViewportData } from "./binary";
@@ -118,7 +119,69 @@
   const headH = $derived(lineH + stripH);
   /** Extra height per extra line of text. */
   const textLineH = $derived(Math.round(fontPx * 1.35));
-  const rowH = $derived(lineH + (Math.max(1, Math.min(MAX_ROW_LINES, tab.rowLines)) - 1) * textLineH);
+  // ---- row geometry: the ONLY place that knows how tall rows are -------------
+  // Every other place asks `geom` (a scan test fails on any other use of the
+  // old constant). With no custom height in force, each answer is the plain
+  // `row * height` arithmetic of a grid whose rows are all alike.
+  const uniformRowH = $derived(lineH + (Math.max(1, Math.min(MAX_ROW_LINES, tab.rowLines)) - 1) * textLineH);
+  /** The custom heights in force, or null: none set, or a filter / hidden rows
+   *  change which rows are shown (they come back when the rows do). */
+  const customHeights = $derived.by(() => {
+    void tab.version;
+    return tab.rowHeights.empty || tab.info.filtered ? null : tab.rowHeights;
+  });
+  const geom = {
+    /** The row has a height of its own in force. */
+    isCustom(r: number): boolean {
+      const c = customHeights;
+      return !!c && c.custom(r) !== null;
+    },
+    /** Text lines a row holds: the plain count, or what its own height gives. */
+    lines(r: number, plain: number): number {
+      const c = customHeights;
+      const px = c ? c.custom(r) : null;
+      return px === null || px === undefined ? plain : Math.max(1, Math.min(60, Math.floor((px - lineH) / textLineH) + 1));
+    },
+    /** One row's height. */
+    h(r: number): number {
+      const c = customHeights;
+      return c ? c.heightOf(r, uniformRowH) : uniformRowH;
+    },
+    /** Distance from the top of row 0 to the top of row r. */
+    top(r: number): number {
+      const c = customHeights;
+      return c ? c.offsetOf(r, uniformRowH) : r * uniformRowH;
+    },
+    /** Height of rows a..b-1. */
+    between(a: number, b: number): number {
+      const c = customHeights;
+      return c ? c.offsetOf(b, uniformRowH) - c.offsetOf(a, uniformRowH) : (b - a) * uniformRowH;
+    },
+    /** The row at distance y from the top of row 0. */
+    rowAt(y: number): number {
+      const c = customHeights;
+      return c ? c.rowAt(y, uniformRowH) : Math.floor(y / uniformRowH);
+    },
+    /** A scrollbar drag lands on a row's top: `value` pixels below row `from`. */
+    snapScroll(value: number, from: number): number {
+      const c = customHeights;
+      if (!c) return Math.round(value / uniformRowH) * uniformRowH;
+      const base = c.offsetOf(from, uniformRowH);
+      const r = c.rowAt(base + Math.max(0, value), uniformRowH);
+      const a = c.offsetOf(r, uniformRowH) - base;
+      const b = c.offsetOf(r + 1, uniformRowH) - base;
+      return value - a < b - value ? a : b;
+    },
+    /** A scroll step, wheel unit or edge margin: the plain row height. */
+    get step(): number {
+      return uniformRowH;
+    },
+    /** The most a tick box may be tall (it keeps to the plain row). */
+    get tickRoom(): number {
+      return uniformRowH - 6;
+    },
+  };
+  // ---- end of row geometry ---------------------------------------------------
   const font = $derived(`${fontPx}px ${prefs.data.font}`);
   const headerFont = $derived(`600 ${fontPx}px ${prefs.data.font}`);
   let rowHeaderW = 56;
@@ -133,7 +196,7 @@
     return Math.min(tab.frozenCols, tab.info.cols);
   }
   function bodyTop(): number {
-    return headH + frozenRows() * rowH;
+    return headH + geom.between(tab.firstRow, tab.firstRow + frozenRows());
   }
   function bodyLeft(): number {
     return rowHeaderW + tab.columns.x(frozenCols());
@@ -145,9 +208,9 @@
     return Math.max(0, height - SCROLLBAR);
   }
   function maxScrollY(): number {
-    const content = (dataRows() - frozenRows()) * rowH;
+    const content = geom.between(tab.firstRow + frozenRows(), tab.firstRow + dataRows());
     // Room to scroll the last rows clear of anything floating at the bottom.
-    return Math.max(0, content - (viewH() - bodyTop()) + rowH + bottomInset);
+    return Math.max(0, content - (viewH() - bodyTop()) + geom.step + bottomInset);
   }
   function maxScrollX(): number {
     const content = tab.columns.total() - tab.columns.x(frozenCols());
@@ -180,7 +243,13 @@
     if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
-      draw();
+      // A test can set window.__ndeDrawLog = [] to collect the time each draw takes.
+      const log = (window as unknown as { __ndeDrawLog?: number[] }).__ndeDrawLog;
+      if (log) {
+        const t0 = performance.now();
+        draw();
+        if (log.length < 5000) log.push(performance.now() - t0);
+      } else draw();
     });
   }
 
@@ -260,12 +329,16 @@
     const off = tab.firstRow;
     const fr = frozenRows();
     const frozen = { start: off, end: off + fr, pos: headH };
-    const first = off + fr + Math.floor(view.scrollY / rowH);
-    const count = Math.ceil((viewH() - bodyTop()) / rowH) + 1;
-    const end = Math.min(tab.info.rows, first + count);
+    const bodyAt = geom.top(off + fr);
+    const first = geom.rowAt(bodyAt + view.scrollY);
+    const pos = bodyTop() - (bodyAt + view.scrollY - geom.top(first));
+    // Rows until the bottom of the view is covered (one more, as ever).
+    let end = first;
+    for (let y = pos; end < tab.info.rows && y < viewH(); end++) y += geom.h(end);
+    end = Math.min(tab.info.rows, end + 1);
     return {
       frozen,
-      body: { start: Math.min(first, end), end, pos: bodyTop() - (view.scrollY % rowH) },
+      body: { start: Math.min(first, end), end, pos },
     };
   }
 
@@ -276,7 +349,7 @@
   }
 
   function rowY(r: number, rows: { frozen: Span; body: Span }): number {
-    return r < rows.frozen.end ? headH + (r - rows.frozen.start) * rowH : rows.body.pos + (r - rows.body.start) * rowH;
+    return r < rows.frozen.end ? headH + geom.top(r) - geom.top(rows.frozen.start) : rows.body.pos + geom.top(r) - geom.top(rows.body.start);
   }
 
   function draw(): void {
@@ -435,33 +508,34 @@
       ctx.clip();
       for (let r = rs.start; r < rs.end; r++) {
         const y = rowY(r, rows);
+        const rh = geom.h(r);
         const inSel = r >= sel.row && r < sel.row + sel.rows;
         if (inSel) {
           ctx.fillStyle = colors.accent;
           ctx.globalAlpha = 0.18;
-          ctx.fillRect(0, y, rowHeaderW, rowH);
+          ctx.fillRect(0, y, rowHeaderW, rh);
           ctx.globalAlpha = 1;
         }
         // Filtered: row numbers in the accent colour, as a reminder that
         // rows are hidden in between.
         ctx.fillStyle = tab.info.filtered ? colors.accent : inSel ? colors.text : colors.muted;
         const label = rowLabel(r);
-        ctx.fillText(label, rowHeaderW - 10 - ctx.measureText(label).width, y + rowH / 2);
+        ctx.fillText(label, rowHeaderW - 10 - ctx.measureText(label).width, y + rh / 2);
         const note = tab.rowNotes.get(r);
         if (note) {
           if (note.flag) {
             ctx.fillStyle = FLAG_COLORS[note.flag] ?? colors.accent;
-            ctx.fillRect(0, y + 1, 5, rowH - 2);
+            ctx.fillRect(0, y + 1, 5, rh - 2);
           }
           if (note.text) {
             ctx.fillStyle = colors.accent;
             ctx.beginPath();
-            ctx.arc(11, y + rowH / 2, 2.5, 0, Math.PI * 2);
+            ctx.arc(11, y + rh / 2, 2.5, 0, Math.PI * 2);
             ctx.fill();
           }
         }
         ctx.fillStyle = colors.border;
-        ctx.fillRect(0, y + rowH - 1, rowHeaderW, 1);
+        ctx.fillRect(0, y + rh - 1, rowHeaderW, 1);
       }
       ctx.restore();
     }
@@ -622,12 +696,12 @@
   function screenBox(r0: number, c0: number, r1: number, c1: number, w: number, h: number) {
     const rows = visibleRows();
     const cols = visibleCols();
-    const ry = (r: number) => (r < rows.body.start && r >= rows.frozen.end ? bodyTop() : r >= rows.body.end ? h + rowH : rowY(r, rows));
+    const ry = (r: number) => (r < rows.body.start && r >= rows.frozen.end ? bodyTop() : r >= rows.body.end ? h + geom.step : rowY(r, rows));
     const cx = (c: number) => (c < cols.body.start && c >= cols.frozen.end ? bodyLeft() : c >= cols.body.end ? w + 40 : colX(c, cols));
     const x0 = cx(c0);
     const y0 = ry(r0);
     const x1 = c1 >= cols.body.end ? w + 40 : cx(c1) + tab.columns.width(c1);
-    const y1 = r1 >= rows.body.end ? h + rowH : ry(r1) + rowH;
+    const y1 = r1 >= rows.body.end ? h + geom.step : ry(r1) + geom.h(r1);
     return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
   }
 
@@ -772,7 +846,7 @@
       const h = hit(1, y);
       if (h.area !== "row") return null;
       const top = rowY(h.row, visibleRows());
-      const to = dropIndex(m.from.row, m.from.rows, gapAt(h.row, y - top, rowH), tab.info.rows, tab.firstRow);
+      const to = dropIndex(m.from.row, m.from.rows, gapAt(h.row, y - top, geom.h(h.row)), tab.info.rows, tab.firstRow);
       return to === null ? null : { row: to, col: 0 };
     }
     const h = hit(x, y);
@@ -796,7 +870,7 @@
       ctx.fillRect(m.px - m.offset, 0, bw, h);
       ctx.restore();
     } else if (m.kind === "rows") {
-      const bh = Math.min(h, m.from.rows * rowH);
+      const bh = Math.min(h, geom.between(m.from.row, m.from.row + m.from.rows));
       ctx.save();
       ctx.fillStyle = colors.accent;
       ctx.globalAlpha = 0.15;
@@ -816,7 +890,7 @@
     } else if (m.kind === "rows") {
       const gap = m.to.row < m.from.row ? m.to.row : m.to.row + m.from.rows;
       const rows = visibleRows();
-      const y = gap >= tab.info.rows ? rowY(gap - 1, rows) + rowH : rowY(gap, rows);
+      const y = gap >= tab.info.rows ? rowY(gap - 1, rows) + geom.h(gap - 1) : rowY(gap, rows);
       if (y >= headH - 2 && y <= h + 2) ctx.fillRect(0, y - 2, w, 4);
     } else {
       ctx.beginPath();
@@ -933,8 +1007,19 @@
 
   function freezeCount(kind: "rows" | "cols", px: number, py: number): number {
     if (kind === "rows") {
-      const most = Math.max(0, Math.min(dataRows(), Math.floor((viewH() - headH) / rowH) - 1));
-      return Math.min(most, Math.max(0, Math.round((py - headH) / rowH)));
+      // The count of rows whose bottom edge is nearest the pointer, leaving room below.
+      const off = tab.firstRow;
+      const room = viewH() - headH - geom.step;
+      let n = 0;
+      let best = Math.abs(py - headH);
+      for (let k = 1; k <= dataRows() && geom.between(off, off + k) <= room; k++) {
+        const d = Math.abs(py - headH - geom.between(off, off + k));
+        if (d < best) {
+          best = d;
+          n = k;
+        }
+      }
+      return n;
     }
     const x = px - rowHeaderW;
     if (x <= 0 || tab.info.cols === 0) return 0;
@@ -952,7 +1037,7 @@
     ctx.save();
     ctx.fillStyle = colors.accent;
     ctx.globalAlpha = 0.7;
-    if (f.kind === "rows") ctx.fillRect(0, headH + f.n * rowH - 2, w, 4);
+    if (f.kind === "rows") ctx.fillRect(0, headH + geom.between(tab.firstRow, tab.firstRow + f.n) - 2, w, 4);
     else ctx.fillRect(rowHeaderW + tab.columns.x(f.n) - 2, 0, 4, h);
     ctx.restore();
   }
@@ -1026,7 +1111,7 @@
   }
 
   function drawTick(ctx: CanvasRenderingContext2D, x: number, y: number, cw: number, on: boolean): void {
-    const size = Math.min(14, rowH - 6, cw - 6);
+    const size = Math.min(14, geom.tickRoom, cw - 6);
     if (size < 6) return;
     const bx = Math.round(x + (cw - size) / 2) + 0.5;
     const by = Math.round(y + (lineH - size) / 2) + 0.5;
@@ -1107,7 +1192,7 @@
     const typeColour = { number: "#2f6fd0", date: "#2e8b57" } as const;
     // Long text that spills into the empty cells to its right, drawn after
     // every column (so the next cells' backgrounds don't cover it).
-    const spills: { text: string; x: number; y: number; to: number; colour: string }[] = [];
+    const spills: { text: string; x: number; y: number; to: number; h: number; colour: string }[] = [];
     let x = cs.pos;
     for (let c = cs.start; c < cs.end; c++) {
       const cw = tab.columns.width(c);
@@ -1115,53 +1200,56 @@
       const fmt = tab.columns.formats.get(c);
       const scale = tab.scales.length ? tab.scales.find((s) => s.col === c) : undefined;
       const range = scale ? tab.ranges.get(c) : undefined;
-      const wrap = lines > 1 && tab.columns.wraps.has(c);
+      const wrapCol = tab.columns.wraps.has(c);
       const align = tab.columns.aligns.get(c);
       const clipText = tab.columns.clips.has(c);
       let y = rs.pos;
       ctx.save();
       ctx.beginPath();
-      ctx.rect(x, rs.pos, cw, (rs.end - rs.start) * rowH);
+      ctx.rect(x, rs.pos, cw, geom.between(rs.start, rs.end));
       ctx.clip();
-      for (let r = rs.start; r < rs.end; r++, y += rowH) {
+      for (let r = rs.start; r < rs.end; r++, y += geom.h(r - 1)) {
+        const rh = geom.h(r);
+        const rl = geom.lines(r, lines);
+        const wrap = wrapCol && rl > 1;
         if (tab.banded && (r - tab.firstRow) % 2 === 1) {
           ctx.fillStyle = colors.accent;
           ctx.globalAlpha = 0.08;
-          ctx.fillRect(x, y, cw, rowH);
+          ctx.fillRect(x, y, cw, rh);
           ctx.globalAlpha = 1;
         }
         if ((contains(sel, r, c) || (extras.length > 0 && containsAny(extras, r, c))) && !(r === active.row && c === active.col)) {
           ctx.fillStyle = colors.accent;
           ctx.globalAlpha = 0.12;
-          ctx.fillRect(x, y, cw, rowH);
+          ctx.fillRect(x, y, cw, rh);
           ctx.globalAlpha = 1;
         }
         if (tab.findHits.size && tab.findHits.has(`${r}:${c}`)) {
           // Every match of the find bar's search, lit up.
           ctx.fillStyle = FIND_COLOR;
           ctx.globalAlpha = 0.35;
-          ctx.fillRect(x, y, cw, rowH);
+          ctx.fillRect(x, y, cw, rh);
           ctx.globalAlpha = 1;
         }
         if (tab.picked.size && tab.picked.has(`${r}:${c}`)) {
           // Cells Go To Special picked.
           ctx.fillStyle = colors.accent;
           ctx.globalAlpha = 0.3;
-          ctx.fillRect(x, y, cw, rowH);
+          ctx.fillRect(x, y, cw, rh);
           ctx.globalAlpha = 1;
           ctx.strokeStyle = colors.accent;
-          ctx.strokeRect(x + 1.5, y + 1.5, cw - 3, rowH - 3);
+          ctx.strokeRect(x + 1.5, y + 1.5, cw - 3, rh - 3);
         }
         const mark = tab.marks.size ? (tab.marks.get(`${r}:${c}`) ?? tab.marks.get(`${r}:*`)) : undefined;
         if (mark !== undefined) {
           ctx.fillStyle = mark === PROBLEM ? PROBLEM_COLOR : (PALETTE[mark]?.color ?? colors.accent);
           ctx.globalAlpha = 0.28;
-          ctx.fillRect(x, y, cw, rowH);
+          ctx.fillRect(x, y, cw, rh);
           ctx.globalAlpha = 1;
         }
         if (tab.showEdits && tab.edits.has(`${r}:${c}`)) {
           // My edits: a small triangle in the top right corner.
-          const k = Math.min(8, rowH / 2);
+          const k = Math.min(8, rh / 2);
           ctx.fillStyle = EDIT_COLOR;
           ctx.beginPath();
           ctx.moveTo(x + cw - k, y);
@@ -1179,11 +1267,11 @@
               const b = barSpan(v, range[0], range[1]);
               ctx.fillStyle = v < 0 ? PROBLEM_COLOR : colors.accent;
               ctx.globalAlpha = 0.35;
-              ctx.fillRect(x + 2 + b.from * (cw - 4), y + 3, Math.max(1, (b.to - b.from) * (cw - 4)), rowH - 6);
+              ctx.fillRect(x + 2 + b.from * (cw - 4), y + 3, Math.max(1, (b.to - b.from) * (cw - 4)), rh - 6);
               ctx.globalAlpha = 1;
             } else {
               ctx.fillStyle = scaleColour(scale.kind, scalePos(v, range[0], range[1]));
-              ctx.fillRect(x, y, cw, rowH);
+              ctx.fillRect(x, y, cw, rh);
               filled = true;
             }
           }
@@ -1191,7 +1279,7 @@
         const tick = t !== undefined && fmt?.kind === "checkbox" && !(tab.header && r === 0) ? tickOf(t) : null;
         if (t === undefined) {
           ctx.fillStyle = colors.border;
-          ctx.fillRect(x + pad, y + rowH / 2 - 1, Math.min(24, cw - 2 * pad), 2);
+          ctx.fillRect(x + pad, y + rh / 2 - 1, Math.min(24, cw - 2 * pad), 2);
         } else if (tick !== null) {
           drawTick(ctx, x, y, cw, tick);
         } else if (t !== "") {
@@ -1219,14 +1307,14 @@
             let text = runs.map((r) => r.text).join("");
             if (cut) text += "…";
             let tx = at(measure(text));
-            const ty = y + rowH / 2 + 0.5;
+            const ty = y + rh / 2 + 0.5;
             const plain = ctx.fillStyle;
             for (const run of runs) {
               const w = measure(run.text);
               if (run.kind === "odd") {
                 ctx.fillStyle = ODD_COLOR;
                 ctx.globalAlpha = 0.25;
-                ctx.fillRect(tx, y + 3, w, rowH - 6);
+                ctx.fillRect(tx, y + 3, w, rh - 6);
                 ctx.globalAlpha = 1;
               }
               ctx.fillStyle = run.kind === "odd" ? ODD_COLOR : run.kind === "mark" ? colors.muted : plain;
@@ -1237,17 +1325,17 @@
             ctx.fillStyle = plain;
             if (cut) ctx.fillText("…", tx, ty);
           } else if (wrap) {
-            const out = wrapLines(shown, Math.max(8, cw - 2 * pad), measure, lines);
+            const out = wrapLines(shown, Math.max(8, cw - 2 * pad), measure, rl);
             if (cut && out.length) out[out.length - 1] += "…";
             // The block of lines sits in the middle of the row, as one-line text does.
-            const top = y + rowH / 2 + 0.5 - ((out.length - 1) * textLineH) / 2;
+            const top = y + rh / 2 + 0.5 - ((out.length - 1) * textLineH) / 2;
             out.forEach((line, i) => ctx.fillText(line, at(measure(line)), top + i * textLineH));
           } else {
             let text = displayText(shown);
             if (cut) text += "…";
             const w = measure(text);
             const tx = at(w);
-            const ty = y + rowH / 2 + 0.5;
+            const ty = y + rh / 2 + 0.5;
             // Too long for its cell: left-aligned text spills into the empty
             // cells to its right, as in Excel (unless the column clips).
             let to = x + cw;
@@ -1259,24 +1347,24 @@
                 to += kw;
               }
             }
-            if (to > x + cw) spills.push({ text, x: tx, y: ty, to, colour: ctx.fillStyle as string });
+            if (to > x + cw) spills.push({ text, x: tx, y: ty, to, h: rh, colour: ctx.fillStyle as string });
             else ctx.fillText(text, tx, ty);
             if (link) ctx.fillRect(tx, ty + Math.round(fontPx * 0.55), Math.min(w, cw - 2 * pad), 1);
           }
         }
         if (prefs.data.gridLines) {
           ctx.fillStyle = colors.border;
-          ctx.fillRect(x, y + rowH - 1, cw, 1);
+          ctx.fillRect(x, y + rh - 1, cw, 1);
         }
         if (under.has(r)) {
           ctx.fillStyle = colors.accent;
-          ctx.fillRect(x, y + rowH - 2, cw, 2);
+          ctx.fillRect(x, y + rh - 2, cw, 2);
         }
       }
       ctx.restore();
       if (prefs.data.gridLines) {
         ctx.fillStyle = colors.border;
-        ctx.fillRect(x + cw - 1, rs.pos, 1, (rs.end - rs.start) * rowH);
+        ctx.fillRect(x + cw - 1, rs.pos, 1, geom.between(rs.start, rs.end));
       }
       x += cw;
     }
@@ -1290,7 +1378,7 @@
         ctx.fillStyle = colors.muted;
         for (let r = rs.start; r < rs.end; r++) {
           if ((tab.header && r === 0) || (r === active.row && c === active.col)) continue;
-          const cy = rs.pos + (r - rs.start) * rowH + lineH / 2;
+          const cy = rs.pos + geom.top(r) - geom.top(rs.start) + lineH / 2;
           ctx.beginPath();
           ctx.moveTo(cx - 3, cy - 1.5);
           ctx.lineTo(cx + 3, cy - 1.5);
@@ -1303,7 +1391,7 @@
     for (const sp of spills) {
       ctx.save();
       ctx.beginPath();
-      ctx.rect(sp.x, sp.y - rowH / 2, sp.to - sp.x - 1, rowH);
+      ctx.rect(sp.x, sp.y - sp.h / 2, sp.to - sp.x - 1, sp.h);
       ctx.clip();
       ctx.fillStyle = sp.colour;
       ctx.fillText(sp.text, sp.x, sp.y);
@@ -1312,17 +1400,18 @@
     // Active cell outline.
     if (active.row >= rs.start && active.row < rs.end && active.col >= cs.start && active.col < cs.end) {
       const ax = cs.pos + tab.columns.x(active.col) - tab.columns.x(cs.start);
-      const ay = rs.pos + (active.row - rs.start) * rowH;
+      const ay = rs.pos + geom.top(active.row) - geom.top(rs.start);
+      const ah = geom.h(active.row);
       const aw = tab.columns.width(active.col);
       ctx.strokeStyle = colors.accent;
       ctx.lineWidth = 2;
-      ctx.strokeRect(ax + 1, ay + 1, aw - 2, rowH - 2);
+      ctx.strokeRect(ax + 1, ay + 1, aw - 2, ah - 2);
       ctx.lineWidth = 1;
       // A pick-list arrow on cells of a column with a list of allowed values.
       if (listCols.has(active.col) && !readOnly && !(tab.header && active.row === 0) && aw > PICK_BTN + 8) {
         const bx = ax + aw - PICK_BTN - 2;
         ctx.fillStyle = colors.surface;
-        ctx.fillRect(bx, ay + 3, PICK_BTN, Math.min(lineH, rowH) - 6);
+        ctx.fillRect(bx, ay + 3, PICK_BTN, Math.min(lineH, ah) - 6);
         ctx.fillStyle = colors.accent;
         ctx.beginPath();
         const cx = bx + PICK_BTN / 2;
@@ -1398,7 +1487,7 @@
   type Hit =
     | { area: "cell"; row: number; col: number }
     | { area: "col"; col: number; edge: number | null; strip?: boolean }
-    | { area: "row"; row: number }
+    | { area: "row"; row: number; edge?: number }
     | { area: "corner" }
     | { area: "none" };
 
@@ -1415,7 +1504,7 @@
     }
     let row = -1;
     if (py >= headH) {
-      row = py < bodyTop() ? rows.frozen.start + Math.floor((py - headH) / rowH) : rows.body.start + Math.floor((py - rows.body.pos) / rowH);
+      row = py < bodyTop() ? geom.rowAt(geom.top(rows.frozen.start) + (py - headH)) : geom.rowAt(geom.top(rows.body.start) + (py - rows.body.pos));
       if (row >= tab.info.rows) row = tab.info.rows - 1;
     }
     if (py < headH && px < rowHeaderW) return { area: "corner" };
@@ -1428,7 +1517,17 @@
       else if (Math.abs(px - prevRight) <= 4 && col > 0) edge = tab.columns.step(col, -1);
       return { area: "col", col, edge, strip: stripH > 0 && py >= lineH && edge === null };
     }
-    if (px < rowHeaderW && row >= 0) return { area: "row", row };
+    if (px < rowHeaderW && row >= 0) {
+      // Near the bottom edge of a row number: the row's height can be dragged
+      // (not while a filter is on, and the freeze line has the place it is on).
+      let edge: number | undefined;
+      if (!tab.info.filtered && !onFreezeEdge(px, py)) {
+        const y0 = rowY(row, rows);
+        if (py >= y0 + geom.h(row) - 4) edge = row;
+        else if (py < y0 + 3 && row > tab.firstRow) edge = row - 1;
+      }
+      return edge === undefined ? { area: "row", row } : { area: "row", row, edge };
+    }
     if (row >= 0 && col >= 0) return { area: "cell", row, col };
     return { area: "none" };
   }
@@ -1546,7 +1645,8 @@
   }
 
   export function pageRows(): number {
-    return Math.max(1, Math.floor((viewH() - bodyTop()) / rowH) - 1);
+    const f = tab.firstRow + frozenRows();
+    return Math.max(1, geom.rowAt(geom.top(f) + (viewH() - bodyTop())) - f - 1);
   }
 
   /** How many visible columns fit on screen (Alt+PgDn moves this far). */
@@ -1580,10 +1680,11 @@
     const fr = frozenRows();
     const off = tab.firstRow;
     if (c.row >= off + fr) {
-      const y = (c.row - off - fr) * rowH;
-      const vis = Math.max(rowH, viewH() - bodyTop() - bottomInset);
+      const y = geom.top(c.row) - geom.top(off + fr);
+      const rh = geom.h(c.row);
+      const vis = Math.max(rh, viewH() - bodyTop() - bottomInset);
       if (y < view.scrollY) view.scrollY = y;
-      else if (y + rowH > view.scrollY + vis) view.scrollY = y + rowH - vis;
+      else if (y + rh > view.scrollY + vis) view.scrollY = y + rh - vis;
     }
     if (c.col >= frozenCols()) {
       const x = tab.columns.x(c.col) - tab.columns.x(frozenCols());
@@ -1730,7 +1831,7 @@
   }
 
   // ---- mouse -----------------------------------------------------------------
-  let drag: { kind: "select" | "resize" | "rows" | "cols" | "fill"; col?: number; startX?: number; startW?: number } | null = null;
+  let drag: { kind: "select" | "resize" | "rowresize" | "rows" | "cols" | "fill"; col?: number; startX?: number; startW?: number; row?: number; startY?: number; startH?: number } | null = null;
 
   function local(e: MouseEvent): [number, number] {
     const r = canvas.getBoundingClientRect();
@@ -1822,6 +1923,16 @@
         if (e.detail === 2 && !(onActivate?.() ?? false)) startEdit();
         break;
       case "row": {
+        if (h.edge !== undefined) {
+          const rows = selectedRowsWith(h.edge);
+          if (e.detail === 2) {
+            // Double-click: fit to the text (every selected row when the row is one of them).
+            fitRowHeights(rows ? rowList(rows) : [h.edge]);
+            break;
+          }
+          drag = { kind: "rowresize", row: h.edge, startY: y, startH: geom.h(h.edge) };
+          break;
+        }
         const r = tab.drawRect;
         if (!e.shiftKey && !e.ctrlKey && onMoveRows && !readOnly && !tab.extra.length && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) {
           moving = { kind: "rows", from: r, startX: x, startY: y, active: false, grab: { row: h.row, col: 0 }, to: null, px: x, py: y, offset: y - rowY(r.row, visibleRows()) };
@@ -1938,8 +2049,8 @@
       cursor = m.kind === "cells" && e.ctrlKey ? "copy" : "grabbing";
       // Scroll when the pointer leaves the body, along the axis that moves.
       if (m.kind !== "cols") {
-        if (y > viewH() - 4) view.scrollY += rowH;
-        if (y < bodyTop() && view.scrollY > 0) view.scrollY -= rowH;
+        if (y > viewH() - 4) view.scrollY += geom.step;
+        if (y < bodyTop() && view.scrollY > 0) view.scrollY -= geom.step;
       }
       if (m.kind !== "rows") {
         if (x > viewW() - 4) view.scrollX += 40;
@@ -1949,6 +2060,14 @@
       m.px = x;
       m.py = y;
       m.to = moveTarget(m, x, y);
+      redraw();
+      return;
+    }
+    if (drag?.kind === "rowresize" && drag.row !== undefined) {
+      // The dragged row follows the pointer (the other selected rows join when it is let go).
+      tab.rowHeights.set([drag.row], (drag.startH ?? 0) + (y - (drag.startY ?? y)));
+      cursor = "row-resize";
+      tab.bump();
       redraw();
       return;
     }
@@ -1970,6 +2089,10 @@
           (h.area === "row" && !!onMoveRows && !tab.info.filtered && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) ||
           (h.area === "cell" && !!onMoveCells && !editing && onSelOutline(x, y)));
       const fz = onFreezeEdge(x, y);
+      if (!fz && !onHandle(x, y) && h.area === "row" && h.edge !== undefined) {
+        cursor = "row-resize";
+        return;
+      }
       cursor = fz
         ? fz === "rows"
           ? "row-resize"
@@ -1993,8 +2116,8 @@
       return;
     }
     // Drag-select, scrolling when the pointer leaves the body.
-    if (y > viewH() - 4) view.scrollY += rowH;
-    if (y < bodyTop() && view.scrollY > 0) view.scrollY -= rowH;
+    if (y > viewH() - 4) view.scrollY += geom.step;
+    if (y < bodyTop() && view.scrollY > 0) view.scrollY -= geom.step;
     if (x > viewW() - 4) view.scrollX += 40;
     if (x < bodyLeft() && view.scrollX > 0) view.scrollX -= 40;
     clampScroll();
@@ -2013,6 +2136,89 @@
   }
 
   /** The whole-column selection holding column `c`, when it has more than one. */
+  /** The selected block when the row is one of several selected rows. */
+  function selectedRowsWith(row: number): Rect | null {
+    const r = tab.drawRect;
+    return wholeRowsSel(r) && r.rows > 1 && row >= r.row && row < r.row + r.rows ? r : null;
+  }
+  /** The rows of a block, the data rows only. */
+  function rowList(r: Rect): number[] {
+    const out: number[] = [];
+    for (let i = Math.max(r.row, tab.firstRow); i < r.row + r.rows && out.length < MAX_CUSTOM_ROWS + 1; i++) out.push(i);
+    return out;
+  }
+
+  /** Give rows a height (Format › Row height…, the drag). False: refused (said). */
+  export function setRowsHeight(rows: number[], px: number): boolean {
+    if (tab.info.filtered) {
+      onMessage("Row heights can't be changed while a filter is on or rows are hidden (the heights you set are kept and come back with the rows). Clear the filter first.");
+      return false;
+    }
+    if (!tab.rowHeights.set(rows, px)) {
+      onMessage(`Only ${MAX_CUSTOM_ROWS.toLocaleString()} rows can have a height of their own.`);
+      return false;
+    }
+    tab.bump();
+    redraw();
+    return true;
+  }
+
+  /** Back to the plain height for these rows. */
+  export function resetRowsHeight(rows: number[]): void {
+    tab.rowHeights.reset(rows);
+    tab.bump();
+    redraw();
+  }
+
+  /** Fit rows to their wrapped text (the rows on screen: only they have been read). */
+  export function fitRowHeights(rows: number[]): void {
+    if (tab.info.filtered) {
+      onMessage("Row heights can't be changed while a filter is on or rows are hidden. Clear the filter first.");
+      return;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.font = font;
+    const pad = Math.round(fontPx * 0.45);
+    const shownCols: number[] = [];
+    for (let c = 0; c < tab.info.cols && shownCols.length < MAX_FIT_COLS; c++) if (tab.columns.width(c) > 0) shownCols.push(c);
+    const MOST = 1000;
+    let fitted = 0;
+    let unread = 0;
+    const heights: [number, number][] = [];
+    for (const r of rows.slice(0, MOST)) {
+      let lines = 1;
+      let any = false;
+      for (const c of shownCols) {
+        const t = tab.cache.get(r, c);
+        if (t === undefined) continue;
+        any = true;
+        if (!tab.columns.wraps.has(c) || !t) continue;
+        const fmt = tab.columns.formats.get(c);
+        const shown = fmt ? formatCell(t, fmt) : t;
+        lines = Math.max(lines, wrapLines(shown, Math.max(8, tab.columns.width(c) - 2 * pad), (x) => ctx.measureText(x).width, 60).length);
+      }
+      if (!any) {
+        unread++;
+        continue;
+      }
+      heights.push([r, lineH + (lines - 1) * textLineH]);
+      fitted++;
+    }
+    // One height per distinct value keeps the set short.
+    const byPx = new Map<number, number[]>();
+    for (const [r, px] of heights) (byPx.get(px) ?? byPx.set(px, []).get(px)!).push(r);
+    for (const [px, list] of byPx) {
+      if (px === geom.step) tab.rowHeights.reset(list);
+      else if (!tab.rowHeights.set(list, px)) break;
+    }
+    tab.bump();
+    redraw();
+    onMessage(
+      `Fitted ${fitted.toLocaleString()} row${fitted === 1 ? "" : "s"} to their text.${unread ? ` ${unread.toLocaleString()} not on screen yet kept their height: scroll to them and fit again.` : ""}${rows.length > MOST ? ` Only the first ${MOST.toLocaleString()} were fitted.` : ""}`,
+    );
+  }
+
   function selectedColsWith(c: number): Rect | null {
     const r = tab.drawRect;
     return wholeColsSel(r) && r.cols > 1 && c >= r.col && c < r.col + r.cols ? r : null;
@@ -2035,6 +2241,21 @@
       cursor = "default";
       clampScroll();
       tab.bump();
+      return;
+    }
+    if (drag?.kind === "rowresize" && drag.row !== undefined) {
+      const row = drag.row;
+      const rows = selectedRowsWith(row);
+      const px = tab.rowHeights.custom(row);
+      drag = null;
+      // Dragging one selected row's edge sets all of them.
+      if (rows && px !== null) {
+        const list = rowList(rows);
+        if (!tab.rowHeights.set(list, px)) onMessage(`Only ${MAX_CUSTOM_ROWS.toLocaleString()} rows can have a height of their own.`);
+      }
+      cursor = "default";
+      tab.bump();
+      redraw();
       return;
     }
     if (drag?.kind === "resize" && drag.col !== undefined) {
@@ -2113,7 +2334,7 @@
       return;
     }
     e.preventDefault();
-    const unit = e.deltaMode === 1 ? rowH : e.deltaMode === 2 ? viewH() : 1;
+    const unit = e.deltaMode === 1 ? geom.step : e.deltaMode === 2 ? viewH() : 1;
     if (e.shiftKey && e.deltaX === 0) view.scrollX += e.deltaY * unit;
     else {
       view.scrollY += e.deltaY * unit;
@@ -2154,7 +2375,7 @@
       const delta = (axis === "y" ? ev.clientY : ev.clientX) - start;
       const free = Math.max(1, t.track - t.size);
       const value = startScroll + (delta / free) * t.max;
-      if (axis === "y") view.scrollY = Math.round(value / rowH) * rowH;
+      if (axis === "y") view.scrollY = geom.snapScroll(value, tab.firstRow + frozenRows());
       else view.scrollX = value;
       clampScroll();
       redraw();
@@ -2187,7 +2408,7 @@
     const inRows = (c.row >= rows.frozen.start && c.row < rows.frozen.end) || (c.row >= rows.body.start && c.row < rows.body.end);
     const inCols = c.col < cols.frozen.end || (c.col >= cols.body.start && c.col < cols.body.end);
     if (!inRows || !inCols) return null;
-    return { x: colX(c.col, cols), y: rowY(c.row, rows), w: tab.columns.width(c.col), h: rowH };
+    return { x: colX(c.col, cols), y: rowY(c.row, rows), w: tab.columns.width(c.col), h: geom.h(c.row) };
   }
 
   function positionEditor(): void {
@@ -2237,7 +2458,7 @@
         return;
       }
     }
-    const r = cellRect(c) ?? { x: rowHeaderW, y: rowH, w: 120, h: rowH };
+    const r = cellRect(c) ?? { x: rowHeaderW, y: geom.step, w: 120, h: geom.step };
     pickTyped = initial !== undefined;
     enterMode = initial !== undefined;
     pickIndex = -1;
@@ -2297,7 +2518,7 @@
     if (t === undefined || tickOf(t) === null) return false;
     const r = cellRect({ row, col });
     if (!r) return false;
-    const size = Math.min(14, rowH - 6, r.w - 6) + 6;
+    const size = Math.min(14, geom.tickRoom, r.w - 6) + 6;
     const cx = r.x + r.w / 2;
     const cy = r.y + lineH / 2;
     return Math.abs(px - cx) <= size / 2 && Math.abs(py - cy) <= size / 2;
@@ -2700,7 +2921,7 @@
         class="fxhelp"
         role="status"
         style:left="{editing.x}px"
-        style:top="{Math.max(0, editing.y - rowH - 2)}px"
+        style:top="{Math.max(0, editing.y - geom.step - 2)}px"
       >
         {#if fx.suggest.length}<span class="fxs">{fx.suggest.map((s) => s.label).join("  ")}</span> <span class="fxk">Tab</span>{/if}
         {#if fx.hint}<span class="fxh">{fx.hint}</span>{/if}
