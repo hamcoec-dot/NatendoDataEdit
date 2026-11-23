@@ -3162,6 +3162,17 @@ async fn value_tally(
     blocking(move || docs.value_tally(doc, &spec)).await
 }
 
+/// Group the values of a column that look alike by sound or spelling.
+#[tauri::command]
+async fn lookalike_groups(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::editing::LookAlikeSpec,
+) -> CmdResult<natendo_engine::editing::LookAlikes> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.lookalike_groups(doc, &spec)).await
+}
+
 /// How the first rows would look after a join, with counts.
 #[tauri::command]
 async fn join_preview(
@@ -3668,6 +3679,7 @@ pub fn run() {
             facet_forget,
             join_preview,
             value_tally,
+            lookalike_groups,
             join_list,
             join_close,
             lookup_close,

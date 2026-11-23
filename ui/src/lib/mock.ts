@@ -48,7 +48,7 @@ import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
 import type { CellFormula, FacetCard, Facets, FormulaReport, Insights, InsightSpec, Profile, ProfileSpec } from "./backend";
-import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally } from "./backend";
+import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally, LookAlikeSpec, LookAlikes } from "./backend";
 import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
 import { mockEval } from "./mockexpr";
 import { rewriteA1 } from "./cellformula";
@@ -2979,6 +2979,49 @@ export class MockBackend implements Backend {
     });
     const look_alikes = [...by.values()].filter((m) => m.length > 1).map((members) => ({ members })).sort((a, b) => a.members[0]! - b.members[0]!);
     return { values: values.slice(0, 100_000), blanks, rows: rows - (spec.keep_first ? 1 : 0), complete: values.length <= 100_000 && (spec.limit == null || values.length <= spec.limit), look_alikes };
+  }
+
+  /** A stand-in for the engine's grouping: a rough sound key, and spelling
+   *  within one slip for values of 4 or more letters. */
+  async lookalikeGroups(doc: number, spec: LookAlikeSpec): Promise<LookAlikes> {
+    const t = await this.valueTally(doc, { col: spec.col, keep_first: spec.keep_first });
+    const fold = (v: string) => v.toLowerCase().normalize("NFD").replace(/[^\p{L}\p{N}]/gu, "");
+    const sound = (v: string) => {
+      const w = fold(v).replace(/\d/g, "");
+      const digits = fold(v).replace(/\D/g, "");
+      const k = w.replace(/^kn|^gn|^pn|^wr/, (m) => m[1]!).replace(/ph/g, "f").replace(/th/g, "0").replace(/[cq]/g, "k").replace(/ck/g, "k").replace(/v/g, "f").replace(/z/g, "s").replace(/(.)\1+/g, "$1");
+      return k.slice(0, 1) + k.slice(1).replace(/[aeiouyhw]/g, "") + digits;
+    };
+    const near = (a: string, b: string): boolean => {
+      if (a === b) return true;
+      if (Math.abs(a.length - b.length) > 1) return false;
+      let i = 0;
+      while (i < a.length && i < b.length && a[i] === b[i]) i++;
+      const sub = a.slice(i + 1) === b.slice(i + 1);
+      const del = a.slice(i + 1) === b.slice(i);
+      const ins = a.slice(i) === b.slice(i + 1);
+      const swap = a[i] === b[i + 1] && a[i + 1] === b[i] && a.slice(i + 2) === b.slice(i + 2);
+      return sub || del || ins || swap;
+    };
+    const vals = t.values;
+    const taken = new Set<number>();
+    const groups: { value: string; count: number }[][] = [];
+    for (let h = 0; h < vals.length; h++) {
+      if (taken.has(h)) continue;
+      const hk = fold(vals[h]!.value);
+      const members = [h];
+      for (let j = h + 1; j < vals.length; j++) {
+        if (taken.has(j)) continue;
+        const jk = fold(vals[j]!.value);
+        const bySound = spec.method !== "spelling" && hk.length >= 3 && jk.length >= 3 && sound(vals[h]!.value).replace(/\d/g, "").length >= 2 && sound(vals[h]!.value) === sound(vals[j]!.value);
+        const bySpelling = spec.method !== "sounds" && hk.length >= 4 && jk.length >= 4 && hk.replace(/\D/g, "") === jk.replace(/\D/g, "") && near(hk, jk);
+        if (bySound || bySpelling) members.push(j);
+      }
+      if (members.length < 2) continue;
+      members.forEach((m) => taken.add(m));
+      groups.push(members.map((m) => vals[m]!));
+    }
+    return { groups, values: vals.length, complete: t.complete, too_long: 0, crowded: 0 };
   }
 
   private joinLists = new Map<number, string>();

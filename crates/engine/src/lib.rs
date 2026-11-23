@@ -41,6 +41,7 @@ pub mod index;
 pub mod insight;
 pub mod join;
 pub mod logs;
+pub mod lookalike;
 pub mod mail;
 pub mod notes;
 pub mod ops;

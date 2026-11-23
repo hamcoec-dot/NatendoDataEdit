@@ -135,6 +135,8 @@
   let importing = $state<ImportStart | null>(null);
   let joinKind = $state<"join" | "append" | null>(null);
   let valuesOpen = $state(false);
+  /** How the value editor groups look-alikes when it opens. */
+  let valuesMethod = $state<"letters" | "sounds" | "spelling" | "both">("letters");
   let datePick = $state<{ row: number; col: number; text: string } | null>(null);
   let privacyOpen = $state(false);
   /** Label sheets, once the mail screen is open. */
@@ -5331,7 +5333,8 @@
     { id: "data.join", label: "&Join with another table…", run: () => { joinKind = "join"; }, enabled: ready },
     { id: "data.street", label: "Look up by &street range (precinct, district)…", run: () => { streetOpen = true; }, enabled: ready },
     { id: "data.match", label: "&Match people (spelled differently)…", run: () => { matchOpen = true; }, enabled: ready },
-    { id: "data.values", label: "Edit &values (rename, merge, translate)…", run: () => { valuesOpen = true; }, enabled: ready },
+    { id: "data.values", label: "Edit &values (rename, merge, translate)…", run: () => { valuesMethod = "letters"; valuesOpen = true; }, enabled: ready },
+    { id: "data.valuesLookalikes", label: "Group look-alike values by sound or spelling…", run: () => { valuesMethod = "both"; valuesOpen = true; }, enabled: ready },
     { id: "data.group", label: "&Group figures (count, total, rank)…", run: () => { editKind = "group"; }, enabled: ready },
     { id: "data.arrange", label: "Choose and &order columns…", run: () => { editKind = "arrange"; }, enabled: ready },
     { id: "data.extract", label: "E&xtract into a column…", run: () => { editKind = "extract"; }, enabled: ready },
@@ -5411,7 +5414,7 @@
         "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.fieldCheck", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "-",
-        "data.values", "data.group", "data.arrange", "data.extract", "data.build", "-",
+        "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",
         "find.find", "find.replace", "find.batch", "find.next", "find.prev",
       ],
     },
@@ -5446,7 +5449,7 @@
     tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
 
@@ -7082,6 +7085,7 @@
     titles={shownTitles(tab)}
     col={tab.cell.col}
     header={tab.header}
+    startMethod={valuesMethod}
     others={otherTables()}
     {titlesOf}
     onRun={(op, header) => { valuesOpen = false; void runDialog({ data: op }, header); grid?.focus(); }}

@@ -84,6 +84,31 @@ pub struct ValueTally {
     pub look_alikes: Vec<LookAlike>,
 }
 
+/// What to group: the values of a column that look alike by sound or spelling.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LookAlikeSpec {
+    pub col: u32,
+    pub keep_first: bool,
+    pub method: crate::lookalike::Method,
+}
+
+/// The groups found: each group's values with their counts, the suggested
+/// spelling (most common, then properly capitalised) first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LookAlikes {
+    pub groups: Vec<Vec<Tally>>,
+    /// Distinct values looked at.
+    pub values: u32,
+    /// False when the column has more values than the editor lists (only the
+    /// most common were looked at).
+    pub complete: bool,
+    /// Values left out of spelling grouping for being too long.
+    pub too_long: u32,
+    /// Deleted forms skipped for being shared by too many values.
+    pub crowded: u32,
+}
+
 /// The look-alike key: lower case, accents folded, letters and digits only.
 pub fn look_alike_key(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -564,6 +589,40 @@ impl Document {
             rows: r1 - r0,
             complete,
             look_alikes,
+        })
+    }
+
+    /// Group the look-alikes (by sound, spelling or both) among the values of
+    /// a column. Counts the values first (as [`Document::value_tally`]), then
+    /// groups the listed ones; `progress` covers both and cancels either.
+    pub fn lookalike_groups(
+        &self,
+        spec: &LookAlikeSpec,
+        progress: &Progress,
+    ) -> Result<LookAlikes, Error> {
+        let tally = self.value_tally(
+            &TallySpec {
+                col: spec.col,
+                keep_first: spec.keep_first,
+                limit: None,
+            },
+            progress,
+        )?;
+        let grouping = crate::lookalike::group_lookalikes(&tally.values, spec.method, progress)?;
+        Ok(LookAlikes {
+            groups: grouping
+                .groups
+                .iter()
+                .map(|g| {
+                    g.iter()
+                        .map(|&i| tally.values[i as usize].clone())
+                        .collect()
+                })
+                .collect(),
+            values: tally.values.len() as u32,
+            complete: tally.complete,
+            too_long: grouping.too_long,
+            crowded: grouping.crowded,
         })
     }
 

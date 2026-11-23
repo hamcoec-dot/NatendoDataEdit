@@ -184,6 +184,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "compare two columns": ["data.compareCols"],
   "random and audit samples": ["tools.sample"],
   "value editor": ["data.values"],
+  "group look alikes by sound or spelling": ["data.valuesLookalikes", "data.values"],
   // Checking data
   "data checks": ["data.checks", "data.unmarkChecks", "data.clearChecks"],
   "check fields with patterns": ["data.fieldCheck"],

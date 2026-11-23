@@ -5,7 +5,7 @@
   // (old → new) pasted in or read from two columns of another tab. One undo
   // step; with a filter on, only shown rows change.
   import { untrack } from "svelte";
-  import { backend, errorText, type DataOp, type ValueTally } from "./backend";
+  import { backend, errorText, isCmdError, type DataOp, type LookAlikeMethod, type LookAlikes, type ValueTally } from "./backend";
   import { editPairs, parsePairs } from "./editing";
   import FormShell from "./FormShell.svelte";
   import type { OtherTable } from "./transfer";
@@ -15,12 +15,14 @@
     titles: string[];
     col: number;
     header: boolean;
+    /** How look-alikes are grouped when it opens. */
+    startMethod?: "letters" | LookAlikeMethod;
     others: OtherTable[];
     titlesOf: (id: number, header: boolean) => Promise<string[]>;
     onRun: (op: DataOp, header: boolean) => void;
     onClose: () => void;
   }
-  let { doc, titles, col: startCol, header, others, titlesOf, onRun, onClose }: Props = $props();
+  let { doc, titles, col: startCol, header, startMethod = "letters", others, titlesOf, onRun, onClose }: Props = $props();
 
   let col = $state(untrack(() => startCol));
   let myHeader = $state(untrack(() => header));
@@ -42,6 +44,97 @@
   let loose = $state(true);
 
   const SHOWN = 2000;
+
+  // Group look-alikes by sound or spelling (the first choice is the groups
+  // the list already shows: the same letters in other case, spacing or accents).
+  let method = $state<"letters" | LookAlikeMethod>(untrack(() => startMethod));
+  let found = $state<LookAlikes | null>(null);
+  let grouping = $state(false);
+  let groupProgress = $state<number | null>(null);
+  let groupProblem = $state("");
+  /** Values ticked out of their group, by group number then value. */
+  let dropped = $state(new Map<string, string>());
+  /** Group number → the value the group becomes (default: the first). */
+  let winners = $state(new Map<number, string>());
+  let gen = 0;
+
+  $effect(() => {
+    const m = method;
+    const c = col;
+    const h = myHeader;
+    found = null;
+    groupProblem = "";
+    dropped = new Map();
+    winners = new Map();
+    if (m === "letters") return;
+    const mine = ++gen;
+    grouping = true;
+    groupProgress = null;
+    void backend()
+      .lookalikeGroups(doc, { col: c, keep_first: h, method: m })
+      .then((r) => {
+        if (mine === gen) found = r;
+      })
+      .catch((e: unknown) => {
+        if (mine !== gen) return;
+        groupProblem = isCmdError(e) && e.kind === "cancelled" ? "Stopped." : errorText(e);
+      })
+      .finally(() => {
+        if (mine === gen) grouping = false;
+      });
+    return () => {
+      gen++;
+    };
+  });
+
+  $effect(() => {
+    if (!grouping) return;
+    const poll = window.setInterval(async () => {
+      try {
+        const j = await backend().jobProgress(doc);
+        groupProgress = j ? j.fraction : null;
+      } catch {
+        // Closed meanwhile.
+      }
+    }, 200);
+    return () => window.clearInterval(poll);
+  });
+
+  function stopGrouping(): void {
+    void backend().cancelJob(doc);
+  }
+
+  /** The value a group becomes. */
+  function winnerOf(k: number, g: { value: string }[]): string {
+    return winners.get(k) ?? g[0]!.value;
+  }
+  function isDropped(k: number, v: string): boolean {
+    return dropped.get(`${k}\u0000${v}`) !== undefined;
+  }
+  function setDropped(k: number, v: string, out: boolean): void {
+    const next = new Map(dropped);
+    if (out) next.set(`${k}\u0000${v}`, v);
+    else next.delete(`${k}\u0000${v}`);
+    dropped = next;
+  }
+  /** Put the group's ticked values into the list of changes, as the winner. */
+  function mergeGroup(k: number, g: { value: string }[]): void {
+    const to = winnerOf(k, g);
+    const next = new Map(edits);
+    for (const v of g) {
+      if (isDropped(k, v.value) || v.value === to) {
+        if (v.value === to) next.delete(v.value);
+        continue;
+      }
+      next.set(v.value, to);
+    }
+    edits = next;
+  }
+  /** Every group at once, with each group's suggested value. */
+  function mergeAll(): void {
+    if (!found) return;
+    found.groups.forEach((g, k) => mergeGroup(k, g));
+  }
 
   $effect(() => {
     const c = col;
@@ -163,7 +256,54 @@
         {#if !tally.complete}Only the {tally.values.length.toLocaleString()} most common are listed.{/if}
         Type a new value next to one to change every cell that holds it.
       </p>
-      {#if tally.look_alikes.length}
+      <div class="row">
+        <label class="row">Look-alikes:
+          <select bind:value={method} aria-label="Group look-alikes by">
+            <option value="letters">Same letters (case, spaces, accents)</option>
+            <option value="sounds">Sound alike (Smith, Smyth)</option>
+            <option value="spelling">Close spelling (Jonson, Johnson)</option>
+            <option value="both">Sound or spelling</option>
+          </select>
+        </label>
+      </div>
+      {#if method !== "letters"}
+        {#if grouping}
+          <p class="note">
+            Looking for look-alikes…{groupProgress !== null ? ` ${Math.round(groupProgress * 100)}%` : ""}
+            <button type="button" class="small" onclick={stopGrouping}>Cancel</button>
+          </p>
+        {:else if groupProblem}
+          <p class="problem" role="alert">{groupProblem}</p>
+        {:else if found}
+          <fieldset>
+            <legend>{method === "sounds" ? "Sound alike" : method === "spelling" ? "Close spelling" : "Sound or spelling"} ({found.groups.length.toLocaleString()} {found.groups.length === 1 ? "group" : "groups"})</legend>
+            {#if !found.complete}<p class="note">Only the {found.values.toLocaleString()} most common values were looked at.</p>{/if}
+            {#if found.too_long}<p class="note">{found.too_long.toLocaleString()} very long {found.too_long === 1 ? "value was" : "values were"} left out of spelling groups.</p>{/if}
+            {#if found.groups.length === 0}
+              <p class="note">No look-alikes found.</p>
+            {:else}
+              <p class="note">
+                Each group becomes the value chosen next to it (the most common one to begin with). Untick a value to leave it alone, then put the group in the list of changes.
+                <button type="button" class="small" onclick={mergeAll}>Put all groups in the list</button>
+              </p>
+              <div class="groups" aria-label="Look-alike groups">
+                {#each found.groups.slice(0, 200) as g, k (k)}
+                  <div class="row group">
+                    {#each g as v (v.value)}
+                      <label class="row"><input type="checkbox" checked={!isDropped(k, v.value)} onchange={(e) => setDropped(k, v.value, !(e.currentTarget as HTMLInputElement).checked)} aria-label={`Include ${v.value}`} /> {v.value} ({v.count.toLocaleString()})</label>
+                    {/each}
+                    <select value={winnerOf(k, g)} onchange={(e) => { const next = new Map(winners); next.set(k, (e.currentTarget as HTMLSelectElement).value); winners = next; }} aria-label="Becomes">
+                      {#each g as v (v.value)}<option value={v.value}>{v.value}</option>{/each}
+                    </select>
+                    <button type="button" class="small" onclick={() => mergeGroup(k, g)}>Put in list</button>
+                  </div>
+                {/each}
+              </div>
+              {#if found.groups.length > 200}<p class="note">Showing the first 200 groups.</p>{/if}
+            {/if}
+          </fieldset>
+        {/if}
+      {:else if tally.look_alikes.length}
         <fieldset>
           <legend>Look-alike spellings ({tally.look_alikes.length.toLocaleString()})</legend>
           <div class="groups">
@@ -249,6 +389,12 @@
   .groups {
     max-height: 140px;
     overflow: auto;
+  }
+  .group {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 2px 0;
+    border-bottom: 1px solid var(--border);
   }
   .members {
     font-size: 12px;

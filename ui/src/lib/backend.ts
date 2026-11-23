@@ -612,6 +612,25 @@ export interface ValueTally {
   /** Indexes into `values`; the first of each is the most common. */
   look_alikes: { members: number[] }[];
 }
+/** How to decide that two values look alike. */
+export type LookAlikeMethod = "sounds" | "spelling" | "both";
+export interface LookAlikeSpec {
+  col: number;
+  keep_first: boolean;
+  method: LookAlikeMethod;
+}
+export interface LookAlikes {
+  /** Each group's values with counts; the suggested spelling first. */
+  groups: { value: string; count: number }[][];
+  /** Distinct values looked at. */
+  values: number;
+  /** False when only the most common values of the column were looked at. */
+  complete: boolean;
+  /** Values too long for spelling grouping. */
+  too_long: number;
+  /** Deleted forms skipped for being shared by too many values. */
+  crowded: number;
+}
 export interface MapValues {
   cols: number[];
   pairs: [string, string][];
@@ -1302,6 +1321,9 @@ export interface Backend {
   cellFormulaOf(doc: number, row: number, col: number): Promise<string | null>;
   /** Each distinct value of a column with its count (a job). */
   valueTally(doc: number, spec: TallySpec): Promise<ValueTally>;
+  /** Group a column's values that sound or are spelled alike (a job:
+   *  jobProgress and cancelJob apply). */
+  lookalikeGroups(doc: number, spec: LookAlikeSpec): Promise<LookAlikes>;
   /** The first rows after a join, with counts for the whole table (a job). */
   joinPreview(doc: number, other: number | null, list: string | null, spec: JoinSpec, listId?: number | null): Promise<JoinPreview>;
   /** Keep a pasted list of keys for the Join screen; its number. */
@@ -1826,6 +1848,9 @@ class TauriBackend implements Backend {
   }
   computePreview(doc: number, spec: ComputeSpec) {
     return call<ComputePreview>("compute_preview", { doc, spec });
+  }
+  lookalikeGroups(doc: number, spec: LookAlikeSpec) {
+    return call<LookAlikes>("lookalike_groups", { doc, spec });
   }
   valueTally(doc: number, spec: TallySpec) {
     return call<ValueTally>("value_tally", { doc, spec });

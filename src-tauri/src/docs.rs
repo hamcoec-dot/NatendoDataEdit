@@ -4962,6 +4962,19 @@ impl Docs {
         Ok(d.column_profile(spec, &job.progress)?)
     }
 
+    /// Group the look-alikes of a column by sound, spelling or both (the
+    /// Value editor), as a job with progress and Cancel.
+    pub fn lookalike_groups(
+        &self,
+        id: u32,
+        spec: &natendo_engine::editing::LookAlikeSpec,
+    ) -> CmdResult<natendo_engine::editing::LookAlikes> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for look-alikes")?;
+        let d = entry.read();
+        Ok(d.lookalike_groups(spec, &job.progress)?)
+    }
+
     pub fn value_tally(&self, id: u32, spec: &TallySpec) -> CmdResult<ValueTally> {
         let entry = self.get(id)?;
         let job = entry.start("Counting values")?;

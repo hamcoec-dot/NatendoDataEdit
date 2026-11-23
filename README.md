@@ -717,6 +717,23 @@ everything is also in command search.
 - **Value editor:** every value in a column with its count; rename or merge
   values, group look-alikes ("Main St" / "Main Street"), or apply a
   translation list.
+- **Group look-alikes by sound or spelling:** Data > Group look-alike values
+  by sound or spelling (also in the column heading's right-click menu, or
+  the Look-alikes choice in the value editor) finds names that sound alike
+  (Smith, Smyth, Smythe; Catherine, Kathryn) or are spelled almost alike
+  (Jonson, Johnson), or either. Each group shows its values with counts,
+  suggests the most common one (the properly capitalised form wins a tie),
+  and lets you pick another, or untick a value to leave it alone; Put in list
+  adds the group to the value editor's list of changes, which is applied as
+  one undo step on the shown rows. Looks only at the distinct values, so it
+  is quick on a million rows; the 100,000 most common values are looked at.
+  Values under 3 letters are left alone, and values under 4 letters, over 32
+  letters or that differ only in digits are never grouped by spelling. One
+  slip (a letter changed, added, left out, or two neighbours swapped) counts
+  for values of 4 to 7 letters, two for longer ones. Two common values that
+  start with different letters are not joined by spelling. A group holds
+  one most-common value and what is near it, so a chain of near-misses does
+  not merge unrelated names. Nothing leaves your PC.
 
 ### Checking data
 

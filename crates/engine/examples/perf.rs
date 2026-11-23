@@ -1874,6 +1874,59 @@ fn main() {
     drop(first);
     drop(other);
 
+    // Batch 6: group look-alikes (by sound, spelling and both) among 200,000
+    // distinct made-up names with varied lengths and a few near-duplicates.
+    {
+        use natendo_engine::editing::Tally;
+        use natendo_engine::lookalike::{group_lookalikes, Method};
+        const SYL: [&str; 24] = [
+            "ma", "ri", "an", "son", "ber", "ton", "el", "la", "ke", "dro", "vin", "sha", "ne",
+            "ha", "li", "or", "ka", "tho", "wen", "pe", "sul", "mi", "gar", "den",
+        ];
+        let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut vals: Vec<Tally> = Vec::with_capacity(200_000);
+        while vals.len() < 200_000 {
+            let n = 2 + (rnd() % 4) as usize;
+            let mut name = String::new();
+            for _ in 0..n {
+                name.push_str(SYL[(rnd() % 24) as usize]);
+            }
+            let mut c = name.chars();
+            let name = c.next().unwrap().to_uppercase().collect::<String>() + c.as_str();
+            if seen.insert(name.clone()) {
+                // A long tail: a few common names, most seen once or twice.
+                let count = 1 + (rnd() % 2) + if rnd() % 500 == 0 { 40 } else { 0 };
+                vals.push(Tally { value: name, count });
+            }
+        }
+        vals.sort_by_key(|a| std::cmp::Reverse(a.count));
+        for (label, method) in [
+            ("sounds", Method::Sounds),
+            ("spelling", Method::Spelling),
+            ("sound or spelling", Method::Both),
+        ] {
+            let t = Instant::now();
+            let g = group_lookalikes(&vals, method, &p).unwrap();
+            check.budget(
+                &format!("look-alike groups by {label} (200,000 distinct names)"),
+                t.elapsed(),
+                budget(3.0),
+            );
+            println!(
+                "     {} groups, {} crowded forms skipped",
+                g.groups.len(),
+                g.crowded
+            );
+        }
+    }
+
     // Milestone 12: everyday editing tools.
     {
         use natendo_engine::editing::{
