@@ -3025,14 +3025,29 @@ export class MockBackend implements Backend {
     const vals = t.values;
     const taken = new Set<number>();
     const groups: { value: string; count: number }[][] = [];
+    const folded = vals.map((v) => fold(v.value));
+    const sounds = vals.map((v) => sound(v.value));
+    // Sound buckets, so a column of thousands of values stays quick.
+    const bySoundKey = new Map<string, number[]>();
+    if (spec.method !== "spelling") {
+      sounds.forEach((k, i) => {
+        if (folded[i]!.length < 3 || k.replace(/\d/g, "").length < 2) return;
+        const b = bySoundKey.get(k);
+        if (b) b.push(i);
+        else bySoundKey.set(k, [i]);
+      });
+    }
     for (let h = 0; h < vals.length; h++) {
       if (taken.has(h)) continue;
-      const hk = fold(vals[h]!.value);
+      const hk = folded[h]!;
       const members = [h];
-      for (let j = h + 1; j < vals.length; j++) {
+      const candidates = new Set<number>();
+      for (const j of bySoundKey.get(sounds[h]!) ?? []) if (j > h) candidates.add(j);
+      if (spec.method !== "sounds" && hk.length >= 4) for (let j = h + 1; j < vals.length; j++) if (folded[j]!.length >= 4 && Math.abs(folded[j]!.length - hk.length) <= 1) candidates.add(j);
+      for (const j of [...candidates].sort((a, b2) => a - b2)) {
         if (taken.has(j)) continue;
-        const jk = fold(vals[j]!.value);
-        const bySound = spec.method !== "spelling" && hk.length >= 3 && jk.length >= 3 && sound(vals[h]!.value).replace(/\d/g, "").length >= 2 && sound(vals[h]!.value) === sound(vals[j]!.value);
+        const jk = folded[j]!;
+        const bySound = spec.method !== "spelling" && sounds[h] === sounds[j];
         const bySpelling = spec.method !== "sounds" && hk.length >= 4 && jk.length >= 4 && hk.replace(/\D/g, "") === jk.replace(/\D/g, "") && near(hk, jk);
         if (bySound || bySpelling) members.push(j);
       }

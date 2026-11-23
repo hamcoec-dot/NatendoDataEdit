@@ -93,6 +93,38 @@ const url = process.argv[3] || "http://localhost:5211";
   col = await column();
   ok(col[4] === "Smyth" && col[6] === "Johnson" && col[7] === "Johnson", "Ctrl+Z puts all of it back at once");
 
+  // 5. Many groups at once stays quick (the real file has tens of thousands).
+  await p.keyboard.press("Control+n");
+  await wait(700);
+  const word = (i) => {
+    // Consonants with an "m" between, so no two words share a sound key and
+    // no letter doubles.
+    let s = "";
+    for (let k = 0; k < 5; k++, i = Math.floor(i / 9)) s += (k ? "m" : "") + "bdgjlnprt"[i % 9];
+    return s;
+  };
+  const many = ["name"];
+  for (let i = 0; i < 15000; i++) many.push(word(i) + "son", word(i) + "sen");
+  await p.evaluate((t) => navigator.clipboard.writeText(t), many.join("\r\n") + "\r\n");
+  await p.keyboard.press("Control+v");
+  await wait(1500);
+  await p.evaluate(() => {
+    window.__nde.tab.header = true;
+    window.__nde.tab.bump();
+    window.__nde.grid.select({ row: 1, col: 0 });
+  });
+  await command("Group look-alike values");
+  await dialog.locator("select[aria-label='Group look-alikes by']").selectOption("sounds");
+  await dialog.locator("legend:has-text('group')").waitFor({ timeout: 60000 });
+  const lg = (await dialog.locator("legend").first().textContent()) ?? "";
+  ok(/15,000 groups/.test(lg), `30,000 values make 15,000 groups (${lg.replace(/\s+/g, " ").trim()})`);
+  const t0 = Date.now();
+  await dialog.getByRole("button", { name: "Put all groups in the list" }).click();
+  await dialog.locator("p.good").first().waitFor({ timeout: 20000 });
+  const took = Date.now() - t0;
+  ok(took < 5000, `Put all groups in the list for 15,000 groups takes ${took} ms`);
+  ok(/15000 values will change|15,000 values will change/.test((await dialog.locator("p.good").first().textContent()) ?? ""), "the list holds 15,000 changes");
+
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   console.log(failed ? `${failed} FAILED` : "ALL PASS");
   await b.close();

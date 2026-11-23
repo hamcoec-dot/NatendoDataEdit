@@ -138,23 +138,30 @@
     else next.delete(`${k}\u0000${v}`);
     dropped = next;
   }
-  /** Put the group's ticked values into the list of changes, as the winner. */
-  function mergeGroup(k: number, g: { value: string }[]): void {
+  /** Add the group's ticked values to `into`, as the winner. */
+  function addGroup(into: Map<string, string>, k: number, g: { value: string }[]): void {
     const to = winnerOf(k, g);
-    const next = new Map(edits);
     for (const v of g) {
       if (isDropped(k, v.value) || v.value === to) {
-        if (v.value === to) next.delete(v.value);
+        if (v.value === to) into.delete(v.value);
         continue;
       }
-      next.set(v.value, to);
+      into.set(v.value, to);
     }
+  }
+  /** Put the group's ticked values into the list of changes, as the winner. */
+  function mergeGroup(k: number, g: { value: string }[]): void {
+    const next = new Map(edits);
+    addGroup(next, k, g);
     edits = next;
   }
-  /** Every group at once, with each group's suggested value. */
+  /** Every group at once, with each group's suggested value (one copy of the
+   *  list, not one per group: there can be tens of thousands of groups). */
   function mergeAll(): void {
     if (!found) return;
-    found.groups.forEach((g, k) => mergeGroup(k, g));
+    const next = new Map(edits);
+    found.groups.forEach((g, k) => addGroup(next, k, g));
+    edits = next;
   }
 
   $effect(() => {
@@ -213,9 +220,9 @@
   }
 
   const pairs = $derived(mode === "edit" ? editPairs(edits) : from === "paste" ? parsePairs(pasted) : []);
-  const changing = $derived(
-    mode === "edit" && tally ? editPairs(edits).reduce((n, [old]) => n + (tally!.values.find((v) => v.value === old)?.count ?? 0), 0) : 0,
-  );
+  /** How many rows hold each value (looked up once per value, not searched). */
+  const countOf = $derived(new Map((tally?.values ?? []).map((v) => [v.value, v.count] as const)));
+  const changing = $derived(mode === "edit" && tally ? pairs.reduce((n, [old]) => n + (countOf.get(old) ?? 0), 0) : 0);
 
   function run(): void {
     problem = "";
