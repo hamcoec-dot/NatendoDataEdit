@@ -38,8 +38,13 @@ const MIN_SOUND: usize = 3;
 /// Two values both seen at least this often are different names (Michael and
 /// Michelle, Robert and Roberta), never two spellings of one: by either
 /// method, they are not joined. A value seen less often than this can join a
-/// common one (Smith 990 and Smyth 12).
+/// common one (Smith 990 and Smyth 12). See [`different_names`] for small
+/// files, where every count is small.
 const COMMON: u64 = 20;
+/// The rarer of two values must be seen at least this often, and at least a
+/// quarter as often as the other, to be a name of its own in a small file
+/// (Michael 13 and Michelle 10).
+const OWN_NAME: u64 = 3;
 /// A deleted form shared by more values than this is skipped (it is too
 /// general to say anything); counted in [`Grouping::crowded`].
 const MAX_CROWD: usize = 3_000;
@@ -445,29 +450,34 @@ fn first_letter(key: &[char]) -> Option<char> {
     key.iter().copied().find(|c| c.is_alphabetic())
 }
 
-/// Two values seen so often that they are two names, not two spellings.
-fn both_common(a: &Tally, b: &Tally) -> bool {
-    a.count >= COMMON && b.count >= COMMON
+/// Two values so alike in how often they are seen that they are two names,
+/// not a name and its misspelling: both seen [`COMMON`] times or more, or the
+/// rarer seen [`OWN_NAME`] times or more and at least a quarter as often as
+/// the other. A typo is a small share of its name; two real names are of
+/// similar size, in a precinct as in a county. (Smith 19 with Smyth 2, or
+/// Philip 29,871 with Phillip 4, are one name.) Values written with the same
+/// letters (case, spaces and accents aside) are one name whatever their
+/// counts.
+fn different_names(a: &Tally, b: &Tally, same_letters: bool) -> bool {
+    if same_letters {
+        return false;
+    }
+    let (lo, hi) = (a.count.min(b.count), a.count.max(b.count));
+    lo >= COMMON || (lo >= OWN_NAME && lo.saturating_mul(4) >= hi)
 }
 
-/// Can two values that sound alike start with these letters? The same
-/// letter, or a respelling of the first sound we know (Catherine and Kathryn,
-/// Philip and Fillip, George and Jorge). "Garcia" and "Karisha" share a sound
-/// key but not a start: a name that rare does not join a common one.
+/// Can two values that sound or are spelled alike start with these letters?
+/// The same letter, or a respelling of the first sound we know (Catherine and
+/// Kathryn, Philip and Fillip, George and Jorge). "Garcia" and "Karisha"
+/// share a sound key but not a start; "Jean" and "Sean", "Zack" and "Sack",
+/// "Allen" and "Ellen" are one slip apart but are different names.
 fn same_start(a: Option<char>, b: Option<char>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => {
             a == b
                 || matches!(
                     (a.min(b), a.max(b)),
-                    ('c', 'k')
-                        | ('c', 'q')
-                        | ('k', 'q')
-                        | ('c', 's')
-                        | ('f', 'p')
-                        | ('g', 'j')
-                        | ('s', 'z')
-                        | ('s', 'x')
+                    ('c', 'k') | ('c', 'q') | ('k', 'q') | ('c', 's') | ('f', 'p') | ('g', 'j')
                 )
         }
         (None, None) => true,
@@ -536,8 +546,9 @@ pub fn group_lookalikes(
             if digits[a] != digits[b] {
                 return false;
             }
-            // Two common values are two names.
-            !both_common(&values[a], &values[b])
+            // Two names are two names, and a name starts as it starts.
+            !different_names(&values[a], &values[b], keys[a] == keys[b])
+                && same_start(first_letter(&keys[a]), first_letter(&keys[b]))
         };
         let (pairs, crowded) = spelling_pairs(&keys, &eligible, progress, &ok)?;
         result.crowded = crowded;
@@ -562,22 +573,22 @@ pub fn group_lookalikes(
             b => buckets[b as usize].as_slice(),
         };
         let hub_start = first_letter(&keys[hub]);
-        let mut take = |m: u32, sound: bool| {
+        let mut take = |m: u32| {
             let mi = m as usize;
             if mi != hub
                 && !taken[mi]
-                && !both_common(&values[hub], &values[mi])
-                && (!sound || same_start(hub_start, first_letter(&keys[mi])))
+                && !different_names(&values[hub], &values[mi], keys[hub] == keys[mi])
+                && same_start(hub_start, first_letter(&keys[mi]))
                 && !members.contains(&m)
             {
                 members.push(m);
             }
         };
         for &m in near {
-            take(m, false);
+            take(m);
         }
         for &m in same_sound {
-            take(m, true);
+            take(m);
         }
         if members.len() < 2 {
             continue;
@@ -783,6 +794,83 @@ mod tests {
             .is_empty());
     }
 
+    /// The same in a small file (one precinct), where every count is small:
+    /// two names of similar size are two names; a typo is a small share.
+    #[test]
+    fn small_files_keep_names_apart_too() {
+        let pairs = [
+            ("Michael", 13, "Michelle", 10),
+            ("Robert", 12, "Roberta", 6),
+            ("Daniel", 9, "Danielle", 7),
+            ("Brown", 11, "Byron", 3),
+            ("Cindy", 4, "Sandy", 3),
+            ("John", 18, "Joan", 8),
+            ("Mary", 16, "Mark", 14),
+            ("Allen", 5, "Ellen", 4),
+            ("Jean", 4, "Sean", 4),
+            ("Zack", 3, "Sack", 2),
+        ];
+        for (a, ca, b, cb) in pairs {
+            let t = tallies(&[(a, ca), (b, cb)]);
+            for method in [Method::Sounds, Method::Spelling, Method::Both] {
+                let g = group_lookalikes(&t, method, &Progress::new()).unwrap();
+                assert!(
+                    g.groups.is_empty(),
+                    "{a} ({ca}) + {b} ({cb}) joined by {method:?}: {:?}",
+                    names(&t, &g)
+                );
+            }
+        }
+        // A typo is a small share, however small the file.
+        let t = tallies(&[
+            ("Smith", 19),
+            ("Smyth", 2),
+            ("Philip", 30),
+            ("Phillip", 4),
+            ("Johnson", 9),
+            ("Jonson", 2),
+        ]);
+        let g = group_lookalikes(&t, Method::Both, &Progress::new()).unwrap();
+        let n = names(&t, &g);
+        for pair in [
+            ("Smith", "Smyth"),
+            ("Philip", "Phillip"),
+            ("Johnson", "Jonson"),
+        ] {
+            assert!(
+                n.iter()
+                    .any(|m| m.contains(&pair.0.to_string()) && m.contains(&pair.1.to_string())),
+                "{pair:?} not joined: {n:?}"
+            );
+        }
+    }
+
+    /// One slip apart but different first letters: different names, whatever
+    /// the counts (spelling as well as sound).
+    #[test]
+    fn spelling_pairs_need_the_same_start() {
+        let t = tallies(&[
+            ("Jean", 500),
+            ("Sean", 1),
+            ("Zack", 400),
+            ("Sack", 1),
+            ("Allen", 300),
+            ("Ellen", 1),
+        ]);
+        for method in [Method::Spelling, Method::Both] {
+            let g = group_lookalikes(&t, method, &Progress::new()).unwrap();
+            assert!(g.groups.is_empty(), "{method:?}: {:?}", names(&t, &g));
+        }
+    }
+
+    /// Case, spacing and accents make no new name, however common.
+    #[test]
+    fn the_same_letters_are_one_name() {
+        let t = tallies(&[("Michael", 900), ("MICHAEL", 400), ("michael", 100)]);
+        let g = group_lookalikes(&t, Method::Both, &Progress::new()).unwrap();
+        assert_eq!(names(&t, &g), vec![vec!["Michael", "MICHAEL", "michael"]]);
+    }
+
     /// A rare value still joins a common one.
     #[test]
     fn a_rare_value_joins_a_common_one() {
@@ -853,7 +941,7 @@ mod tests {
         let first = &t[g.groups[0][0] as usize].value;
         assert_eq!(first, "Smith");
         let g = group_lookalikes(
-            &tallies(&[("Smyth", 9), ("Smith", 3)]),
+            &tallies(&[("Smyth", 40), ("Smith", 3)]),
             Method::Sounds,
             &Progress::new(),
         )

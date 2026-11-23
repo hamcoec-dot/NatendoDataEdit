@@ -729,13 +729,18 @@ everything is also in command search.
   which is applied as one undo step on the shown rows. Groups are only
   suggestions: look them over. It looks only at the distinct values, so it is
   quick on a million rows; the 100,000 most common values are looked at.
-  What it will not join: two values that are both common (each seen 20 or
-  more times: Michael and Michelle are two people, not two spellings), values
-  that differ only in digits, sounds under 3 consonant sounds ("Moore",
-  "Mary"), values under 3 letters, and values that sound alike but start with
-  another sound (Garcia and Karisha; Catherine and Kathryn, a known
-  respelling, do join). Spelling groups need 4 to 32 letters; one slip (a
-  letter changed, added, left out, or two neighbours swapped counts as one)
+  What it will not join: two values that look like two names of similar
+  size (both seen 20 or more times, or the rarer seen 3 or more times and at
+  least a quarter as often as the other: Michael 13 and Michelle 10 are two
+  people, while Smith 19 and Smyth 2, or Philip 29,871 and Phillip 4, are one
+  name and a typo), values that differ only in digits, sounds under 3
+  consonant sounds ("Moore", "Mary"), values under 3 letters, and values that
+  start with another sound (Garcia and Karisha, Jean and Sean, Zack and
+  Sack, Allen and Ellen; Catherine and Kathryn, Philip and Fillip and
+  George and Jorge, known respellings of the first sound, do join). Names
+  written with the same letters (case, spaces, accents) are always one name.
+  Spelling groups need 4 to 32 letters; one slip (a letter changed, added,
+  left out, or two neighbours swapped counts as one)
   is allowed for values of 4 to 7 letters, two for longer ones. A group is
   the most common value and what is near it, so a chain of near-misses does
   not merge unrelated names. A nickname method (Bob, Robert) is not included.
