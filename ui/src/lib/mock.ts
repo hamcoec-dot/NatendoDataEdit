@@ -48,7 +48,7 @@ import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
 import type { CellFormula, FacetCard, Facets, FormulaReport, Insights, InsightSpec, Profile, ProfileSpec } from "./backend";
-import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally, LookAlikeSpec, LookAlikes } from "./backend";
+import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally, LookAlikeSpec, LookAlikes, HandOver, ModifiedReport } from "./backend";
 import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
 import { mockEval } from "./mockexpr";
 import { rewriteA1 } from "./cellformula";
@@ -1636,6 +1636,7 @@ export class MockBackend implements Backend {
   // Pick up where you left off: kept in the stub's memory (by path).
   private lastTabs: { path: string; view: unknown; row: number; col: number; active: boolean }[] = [];
   async sessionSave(tabs: SessionTab[]): Promise<number> {
+    this.calls.push("sessionSave");
     this.lastTabs = tabs.flatMap((t) => {
       const p = this.docs.get(t.doc)?.info.path;
       return p ? [{ path: p, view: t.view, row: t.row, col: t.col, active: t.active }] : [];
@@ -1643,6 +1644,7 @@ export class MockBackend implements Backend {
     return this.lastTabs.length;
   }
   async sessionList(): Promise<SessionItem[]> {
+    this.calls.push("sessionList");
     return this.lastTabs.map((s, index) => ({ index, name: s.path.split("/").at(-1)!, folder: "C:", changed: false, missing: false, open: this.openAt(s.path) !== null, active: s.active }));
   }
   /** Tests: last time's tabs, and a file Windows passes while the
@@ -1808,13 +1810,16 @@ export class MockBackend implements Backend {
     return { kind: "off" };
   }
   async recoveryList(): Promise<RecoveryItem[]> {
+    this.calls.push("recoveryList");
     return [];
   }
   async recoveryOpen(): Promise<DocInfo> {
     throw err("bad_request", "list the recovery copies again");
   }
   async recoveryDiscard(): Promise<void> {}
-  async versionsKeep(): Promise<void> {}
+  async versionsKeep(): Promise<void> {
+    this.calls.push("versionsKeep");
+  }
   async versionsClear(): Promise<number> {
     return 0;
   }
@@ -2959,7 +2964,50 @@ export class MockBackend implements Backend {
     return [row, c];
   }
 
-  async quitApp(): Promise<void> {}
+  /** Tests: which of the start-up and session calls the page made. */
+  calls: string[] = [];
+  /** Tests: tabs "moved" to the second window, and waiting for this one. */
+  moved: HandOver[] = [];
+  waiting: HandOver[] = [];
+  private onHandoverHandler: (() => void) | null = null;
+  async modifiedDocs(): Promise<ModifiedReport> {
+    const docs = [...this.docs.values()]
+      .filter((d) => d.info.modified)
+      .map((d) => ({ id: d.info.id, name: d.info.name, generation: d.info.history_pos }));
+    return { docs, busy: [], jobs: [] };
+  }
+  async quitApp(known: { id: number; generation: number }[]): Promise<string> {
+    this.calls.push(`quitApp:${known.map((k) => k.id).join(",")}`);
+    return "exiting";
+  }
+  async windowMove(h: HandOver): Promise<void> {
+    this.calls.push(`windowMove:${h.doc}`);
+    this.moved.push(h);
+  }
+  async windowTake(): Promise<HandOver[]> {
+    this.calls.push("windowTake");
+    return this.waiting.splice(0);
+  }
+  async windowMoveBack(h: HandOver): Promise<void> {
+    this.calls.push(`windowMoveBack:${h.doc}`);
+  }
+  async windowSync(items: HandOver[]): Promise<void> {
+    this.calls.push(`windowSync:${items.length}`);
+  }
+  async windowClaim(h: HandOver): Promise<void> {
+    this.calls.push(`windowClaim:${h.doc}`);
+  }
+  async windowCloseSelf(): Promise<void> {
+    this.calls.push("windowCloseSelf");
+  }
+  onHandover(f?: () => void): void {
+    this.onHandoverHandler = f ?? null;
+  }
+  /** Tests: a tab arrives from the other window. */
+  handoverArrives(h: HandOver): void {
+    this.waiting.push(h);
+    this.onHandoverHandler?.();
+  }
   onCloseRequested(): void {}
 
   /** Documents with a counting or grouping job running: like the backend, a
@@ -3657,6 +3705,7 @@ export class MockBackend implements Backend {
     this.osListener?.();
   }
   async takeOpened(): Promise<OsOpen[]> {
+    this.calls.push("takeOpened");
     return this.osQueue.splice(0).map((path) => {
       const name = path.split("/").at(-1)!;
       const open = this.openAt(path);
@@ -3687,6 +3736,7 @@ export class MockBackend implements Backend {
     return { ...this.agent };
   }
   async setAgentLink(on: boolean): Promise<AgentStatus> {
+    this.calls.push("setAgentLink");
     this.agent = { on, port: on ? 51234 : null };
     return { ...this.agent };
   }

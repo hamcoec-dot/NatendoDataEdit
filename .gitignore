@@ -48,3 +48,6 @@ desktop.ini
 # never in this public repo.
 /plans/
 /.claude/
+
+# Browser-suite screenshots written to the working folder
+/*.png

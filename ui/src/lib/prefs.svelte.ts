@@ -2,6 +2,7 @@
 // storage can fail (private mode, cleared data); defaults are used then.
 
 import { MAX_VIEWS, safeFont, type Shortcuts, type View } from "./views";
+import { SECOND_WINDOW } from "./windowRole";
 
 export type Theme = "system" | "light" | "dark";
 
@@ -258,8 +259,24 @@ export function savedSearches(v: unknown): SavedSearch[] {
 
 class Prefs {
   data = $state<PrefsData>(load());
+  /** Called when the second window tried to change a setting (it writes none:
+   *  they are changed in the main window). */
+  onBlockedSave: (() => void) | null = null;
+
+  constructor() {
+    // The second window follows what the main window saves.
+    if (SECOND_WINDOW && typeof window !== "undefined") {
+      window.addEventListener("storage", (e) => {
+        if (e.key === KEY) this.data = load();
+      });
+    }
+  }
 
   save(): void {
+    if (SECOND_WINDOW) {
+      this.onBlockedSave?.();
+      return;
+    }
     try {
       localStorage.setItem(KEY, JSON.stringify(this.data));
     } catch {

@@ -15,10 +15,11 @@ mod links;
 mod recovery;
 mod session;
 mod watch;
+mod windows;
 mod zips;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use agent::{Agent, AgentStatus};
@@ -47,10 +48,6 @@ struct AppInfo {
     version: &'static str,
     engine_version: &'static str,
 }
-
-/// Set when the user agreed to quit with unsaved changes.
-#[derive(Default)]
-struct Quit(AtomicBool);
 
 type DocsState<'a> = State<'a, Arc<Docs>>;
 type ImportsState<'a> = State<'a, Arc<Imports>>;
@@ -239,12 +236,16 @@ pub(crate) fn open_paths(app: &tauri::AppHandle, paths: Vec<PathBuf>, focus: boo
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .extend(results);
-        if let Some(w) = app.get_webview_window("main") {
+        // The main window gets it (any open window if main is gone: never
+        // nobody).
+        if let Some(label) = windows::event_target(&windows::open_labels(&app)) {
             if focus {
-                let _ = w.unminimize();
-                let _ = w.set_focus();
+                if let Some(w) = app.get_webview_window(&label) {
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
             }
-            let _ = w.emit("opened", ());
+            let _ = app.emit_to(label, "opened", ());
         }
     });
 }
@@ -442,8 +443,22 @@ async fn session_save(
     docs: DocsState<'_>,
     recent: RecentState<'_>,
     session: SessionState<'_>,
-    tabs: Vec<session::SessionTab>,
+    windows: State<'_, windows::Windows>,
+    mut tabs: Vec<session::SessionTab>,
 ) -> CmdResult<usize> {
+    // The files window 2 holds are remembered as ordinary tabs (they reopen
+    // in the main window).
+    for h in windows.owned_by_second() {
+        if !tabs.iter().any(|t| t.doc == h.doc) {
+            tabs.push(session::SessionTab {
+                doc: h.doc,
+                view: h.view,
+                row: h.row,
+                col: h.col,
+                active: false,
+            });
+        }
+    }
     let (docs, recent, session) = (
         docs.inner().clone(),
         recent.inner().clone(),
@@ -2415,9 +2430,17 @@ fn new_document(docs: DocsState<'_>) -> CmdResult<DocInfo> {
 }
 
 #[tauri::command]
-fn close_document(docs: DocsState<'_>, folders: FoldersState<'_>, doc: u32) {
+fn close_document(
+    app: tauri::AppHandle,
+    docs: DocsState<'_>,
+    folders: FoldersState<'_>,
+    wins: State<'_, windows::Windows>,
+    doc: u32,
+) {
     docs.close(doc);
     folders.forget(doc);
+    wins.forget(doc);
+    windows::maybe_close_second(&app);
 }
 
 #[tauri::command]
@@ -3442,10 +3465,137 @@ fn open_link(url: String) -> CmdResult<()> {
     links::open_link(&url)
 }
 
+/// What stands between the app and a quit: unsaved documents (either
+/// window), documents something holds right now, long jobs.
 #[tauri::command]
-fn quit_app(window: WebviewWindow, quit: State<'_, Quit>) {
-    quit.0.store(true, Ordering::Relaxed);
-    let _ = window.close();
+fn modified_docs(docs: DocsState<'_>) -> docs::ModifiedReport {
+    docs.modified_report()
+}
+
+/// A document as the quit question listed it.
+#[derive(serde::Deserialize)]
+struct KnownDoc {
+    id: u32,
+    generation: u64,
+}
+
+/// Quit the app. `known` is the list the question showed (document and
+/// generation): if anything is modified now that was not on it, or has been
+/// edited since, or something is held (a save), the app does not quit and the
+/// question is asked again. Only the main window can quit.
+#[tauri::command]
+fn quit_app(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    known: Vec<KnownDoc>,
+) -> &'static str {
+    if window.label() != windows::MAIN {
+        return "ignored";
+    }
+    let known: Vec<(u32, u64)> = known.iter().map(|k| (k.id, k.generation)).collect();
+    if docs.modified_report().changed_since(&known) {
+        let _ = app.emit_to(windows::MAIN, "close-requested", ());
+        return "ask_again";
+    }
+    app.exit(0);
+    "exiting"
+}
+
+/// The main window's close button: the app ends. Nothing unsaved and nothing
+/// running: at once; otherwise the main window asks first. It never waits on
+/// window 2's page.
+fn request_quit(app: &tauri::AppHandle) {
+    if app.state::<Arc<Docs>>().modified_report().is_clear() {
+        app.exit(0);
+    } else {
+        let _ = app.emit_to(windows::MAIN, "close-requested", ());
+    }
+}
+
+/// Move a tab to window 2 (opened on demand).
+#[tauri::command]
+async fn window_move(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    wins: State<'_, windows::Windows>,
+    h: windows::HandOver,
+) -> CmdResult<()> {
+    if window.label() != windows::MAIN {
+        return Err(CmdError::new(
+            "window",
+            "tabs are moved to the second window from the main window",
+        ));
+    }
+    if docs.job(h.doc)?.is_some() {
+        return Err(CmdError::new(
+            "busy",
+            "this file is busy: wait until it has finished, then move it",
+        ));
+    }
+    let doc = h.doc;
+    wins.move_to_second(h, std::time::Instant::now());
+    if let Err(e) = windows::ensure_second(&app) {
+        wins.forget(doc);
+        return Err(CmdError::new("window", e));
+    }
+    let _ = app.emit_to(windows::SECOND, "handover", ());
+    Ok(())
+}
+
+/// A window takes the tabs waiting for it.
+#[tauri::command]
+fn window_take(window: WebviewWindow, wins: State<'_, windows::Windows>) -> Vec<windows::HandOver> {
+    wins.take(window.label(), std::time::Instant::now())
+}
+
+/// Window 2 hands a tab back to the main window.
+#[tauri::command]
+fn window_move_back(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    wins: State<'_, windows::Windows>,
+    h: windows::HandOver,
+) -> CmdResult<()> {
+    if window.label() != windows::SECOND {
+        return Err(CmdError::new(
+            "window",
+            "only the second window hands tabs back",
+        ));
+    }
+    wins.move_back(h);
+    windows::tell_main(&app);
+    windows::maybe_close_second(&app);
+    Ok(())
+}
+
+/// Window 2 made a document itself (a result tab): it holds it.
+#[tauri::command]
+fn window_claim(window: WebviewWindow, wins: State<'_, windows::Windows>, h: windows::HandOver) {
+    if window.label() == windows::SECOND {
+        wins.claim(h, std::time::Instant::now());
+    }
+}
+
+/// Window 2 reports the state of its tabs (and that it is alive).
+#[tauri::command]
+fn window_sync(
+    window: WebviewWindow,
+    wins: State<'_, windows::Windows>,
+    items: Vec<windows::HandOver>,
+) {
+    if window.label() == windows::SECOND {
+        wins.sync(items, std::time::Instant::now());
+    }
+}
+
+/// Window 2 asks to be closed: its tabs go back to the main window.
+#[tauri::command]
+fn window_close_self(app: tauri::AppHandle, window: WebviewWindow) {
+    if window.label() == windows::SECOND {
+        windows::close_second(&app, None);
+    }
 }
 
 /// Setup and uninstall run the app with `--register-file-types` or
@@ -3463,9 +3613,11 @@ pub fn run() {
             let args: Vec<String> = argv.into_iter().skip(1).collect();
             let paths = arg_paths(&args, Some(std::path::Path::new(&cwd)));
             if paths.is_empty() {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.unminimize();
-                    let _ = w.set_focus();
+                if let Some(label) = windows::event_target(&windows::open_labels(app)) {
+                    if let Some(w) = app.get_webview_window(&label) {
+                        let _ = w.unminimize();
+                        let _ = w.set_focus();
+                    }
                 }
             } else {
                 open_paths(app, paths, true);
@@ -3483,6 +3635,7 @@ pub fn run() {
             if let Ok(dir) = app.path().app_log_dir() {
                 applog::init(dir);
             }
+            windows::watchdog(app.handle().clone());
             if let Ok(dir) = app.path().app_local_data_dir() {
                 recovery::init(dir);
             }
@@ -3537,19 +3690,29 @@ pub fn run() {
             }
             Ok(())
         })
-        .manage(Quit::default())
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+        .manage(windows::Windows::default())
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                 open_paths(window.app_handle(), paths.clone(), false);
             }
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let app = window.app_handle();
-                let agreed = app.state::<Quit>().0.load(Ordering::Relaxed);
-                if !agreed && app.state::<Arc<Docs>>().any_modified() {
+            // Closing the main window ends the app (asking first when
+            // anything is unsaved); closing window 2 hands its tabs back.
+            tauri::WindowEvent::CloseRequested { api, .. } => match window.label() {
+                windows::MAIN => {
                     api.prevent_close();
-                    let _ = window.emit("close-requested", ());
+                    request_quit(window.app_handle());
                 }
+                windows::SECOND => {
+                    api.prevent_close();
+                    windows::begin_close_second(window.app_handle());
+                }
+                _ => {}
+            },
+            // Window 2 gone, however it went: its files are main's again.
+            tauri::WindowEvent::Destroyed if window.label() == windows::SECOND => {
+                windows::close_second(window.app_handle(), None);
             }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -3749,7 +3912,14 @@ pub fn run() {
             set_agent_link,
             log_event,
             open_log_folder,
-            quit_app
+            quit_app,
+            modified_docs,
+            window_move,
+            window_take,
+            window_move_back,
+            window_sync,
+            window_claim,
+            window_close_self
         ])
         .build(tauri::generate_context!())
         .expect("error while starting Natendo Data Edit");

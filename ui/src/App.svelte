@@ -4,8 +4,9 @@
   import { namesFromText } from "./lib/columnNames";
   import { onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
-  import { backend, errorText, isCmdError, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
-  import { Tab } from "./lib/tab.svelte";
+  import { backend, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
+  import { Tab, exportHandTab, importHandTab, type HandTab } from "./lib/tab.svelte";
+  import { SECOND_WINDOW } from "./lib/windowRole";
   import { invisibleNote } from "./lib/invisible";
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu } from "./lib/commands";
@@ -345,12 +346,14 @@
   }
 
   // ---- documents -----------------------------------------------------------------
-  function addTab(d: DocInfo, guess = true): void {
+  function addTab(d: DocInfo, guess = true, fromOtherWindow = false): void {
     const t = new Tab(d, DEFAULT_COL_WIDTH);
     tabs.push(t);
     active = tabs.length - 1;
     void tick().then(() => grid?.focus());
     if (guess) void guessHeader(t);
+    // A document the second window makes itself (a result tab) is its own.
+    if (SECOND_WINDOW && !fromOtherWindow) void backend().windowClaim(handOverOf(t)).catch(() => {});
     void backend()
       .privateState(t.id)
       .then((p) => {
@@ -1417,6 +1420,114 @@
     return true;
   }
 
+  // ---- a tab in its own window ----
+  /** A tab's look and place, to show it in the other window (the file itself
+   *  is not read again: documents and undo history are shared). */
+  function handOverOf(t: Tab): HandOver {
+    return {
+      doc: t.id,
+      state: exportHandTab(t),
+      // The same layout-only view the remembered session keeps.
+      view: sessionView(currentView(t, t.info.name)),
+      row: t.cell.row,
+      col: t.cell.col,
+    };
+  }
+
+  /** The tab leaves this window; its file stays open (it is shown elsewhere). */
+  function detachTab(i: number): void {
+    const t = tabs[i];
+    if (!t) return;
+    if (copiedFrom === t.id) copiedFrom = null;
+    tabs.splice(i, 1);
+    active = Math.min(active, Math.max(0, tabs.length - 1));
+    void tick().then(() => grid?.focus());
+  }
+
+  async function moveTabToWindow(): Promise<void> {
+    const t = tab;
+    if (!t || SECOND_WINDOW) return;
+    if (!t.info.indexed) {
+      say("Wait until the file has been read, then move it.");
+      return;
+    }
+    if (t.busy) {
+      say("This file is busy: wait until it has finished, then move it.");
+      return;
+    }
+    try {
+      await backend().windowMove(handOverOf(t));
+      sessionKey = ""; // the next save (10 s) adds the file window 2 now holds
+    } catch (e) {
+      say(errorText(e));
+      return;
+    }
+    detachTab(tabs.indexOf(t));
+    say(`Moved ${t.info.name} to a new window. Edit > ... or the tab's right-click menu moves it back.`);
+  }
+
+  async function moveTabBack(): Promise<void> {
+    const t = tab;
+    if (!t || !SECOND_WINDOW) return;
+    try {
+      await backend().windowMoveBack(handOverOf(t));
+    } catch (e) {
+      say(errorText(e));
+      return;
+    }
+    detachTab(tabs.indexOf(t));
+  }
+
+  /** A tab arrives from the other window (or comes back on its own). */
+  async function adoptHandOver(h: HandOver): Promise<void> {
+    const have = tabs.findIndex((x) => x.id === h.doc);
+    if (have >= 0) {
+      active = have;
+      if (h.note) say(h.note);
+      return;
+    }
+    try {
+      const d = await backend().docInfo(h.doc);
+      addTab(d, false, true);
+      const t = tabs[tabs.length - 1]!;
+      const st = h.state as HandTab | null;
+      if (st && typeof st === "object" && "snap" in st) importHandTab(t, st);
+      else void guessHeader(t);
+      active = tabs.length - 1;
+      await tick();
+      grid?.select(t.sel.anchor, t.sel.focus, true, t.sel.active);
+      if (h.note) say(h.note);
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  async function takeHandovers(): Promise<void> {
+    let list: HandOver[];
+    try {
+      list = await backend().windowTake();
+    } catch {
+      return;
+    }
+    for (const h of list) await adoptHandOver(h);
+  }
+
+  /** The second window tells the app what it holds, and that it is alive. */
+  function syncSecond(): void {
+    void backend().windowSync(tabs.map(handOverOf)).catch(() => {});
+  }
+
+  /** The second window closes: its latest views first, then the app hands every
+   *  tab back to the main window (it does so without us, if we cannot). */
+  async function closeSecond(): Promise<void> {
+    try {
+      await backend().windowSync(tabs.map(handOverOf));
+    } catch {
+      // The app returns the files from what it last had.
+    }
+    await backend().windowCloseSelf().catch(() => {});
+  }
+
   // ---- pick up where you left off ----
   /** Tabs are remembered only once the start-up offer is settled (so the
    *  empty start does not overwrite last time's list). */
@@ -1426,7 +1537,7 @@
   let launchTab: Tab | null = null;
   let sessionKey = "";
 
-  async function saveSession(): Promise<void> {
+  async function saveSession(force = false): Promise<void> {
     if (!sessionReady || prefs.data.reopenLast === "never") return;
     const list = tabs
       .filter((t) => t.info.path && !t.private?.file && !t.private?.folder)
@@ -1439,7 +1550,8 @@
         active: t === tab,
       }));
     const key = JSON.stringify(list);
-    if (key === sessionKey) return;
+    // (forced when quitting: the files held by window 2 are added by the app, so this window's list can look unchanged)
+    if (key === sessionKey && !force) return;
     sessionKey = key;
     try {
       await backend().sessionSave(list);
@@ -1523,23 +1635,63 @@
     if (fresh.length) say(`${fresh.join(", ")} changed since last time, so ${fresh.length === 1 ? "it was" : "they were"} opened fresh (the view was not put back).`);
   }
 
+  /** The quit question is open (a second close request meanwhile is ignored). */
+  let quitAsking = false;
+
+  /** Quit: ask about what is unsaved in EITHER window (the app knows, not this
+   *  window's tab list), then hand the app the list the question showed. If
+   *  something else was changed meanwhile, the app does not quit and the
+   *  question comes round again (with the new list). */
   async function quit(): Promise<void> {
-    const unsaved = tabs.filter((t) => t.info.modified);
-    if (unsaved.length) {
-      const a = await ask(
-        "Quit without saving?",
-        `${unsaved.length === 1 ? "1 file has" : `${unsaved.length} files have`} unsaved changes: ${unsaved.map((t) => t.info.name).join(", ")}.`,
-        [
-          { id: "quit", label: "Quit and lose changes", danger: true },
-          { id: "cancel", label: "Cancel", primary: true },
-        ],
-        "cancel",
-      );
-      if (a !== "quit") return;
+    if (SECOND_WINDOW) {
+      await closeSecond();
+      return;
     }
-    await Promise.all(tabs.filter((t) => !t.info.modified).map((t) => rememberTab(t)));
-    await saveSession();
-    await backend().quitApp();
+    if (quitAsking) return;
+    quitAsking = true;
+    try {
+      // The app says "ask_again" when something changed after the question was
+      // shown; the question then comes round again with the new list.
+      for (;;) {
+      let r: ModifiedReport;
+      try {
+        r = await backend().modifiedDocs();
+      } catch (e) {
+        say(errorText(e));
+        return;
+      }
+      if (r.busy.length) {
+        await ask(
+          "A file is still being saved or changed",
+          `${r.busy.join(", ")} ${r.busy.length === 1 ? "is" : "are"} still busy. Wait until it has finished, then quit.`,
+          [{ id: "ok", label: "OK", primary: true }],
+          "ok",
+        );
+        return;
+      }
+      if (r.docs.length || r.jobs.length) {
+        const parts: string[] = [];
+        if (r.docs.length) parts.push(`${r.docs.length === 1 ? "1 file has" : `${r.docs.length} files have`} unsaved changes: ${r.docs.map((d) => d.name).join(", ")}.`);
+        if (r.jobs.length) parts.push(`Still running, and quitting stops it: ${r.jobs.join(", ")}.`);
+        const a = await ask(
+          r.docs.length ? "Quit without saving?" : "Quit now?",
+          parts.join(" "),
+          [
+            { id: "quit", label: r.docs.length ? "Quit and lose changes" : "Quit", danger: true },
+            { id: "cancel", label: "Cancel", primary: true },
+          ],
+          "cancel",
+        );
+        if (a !== "quit") return;
+      }
+      await Promise.all(tabs.filter((t) => !t.info.modified).map((t) => rememberTab(t)));
+      await saveSession(true);
+      const reply = await backend().quitApp(r.docs.map((d) => ({ id: d.id, generation: d.generation }))).catch(() => "exiting");
+      if (reply !== "ask_again") return;
+      }
+    } finally {
+      quitAsking = false;
+    }
   }
 
   /** Document whose "File layout" dialog is open. */
@@ -5031,7 +5183,7 @@
     { id: "tools.recipe", label: "&Recipe (save or run steps)…", run: () => void openRecipes(), enabled: ready },
     { id: "tools.searchFolder", label: "Search a &folder of files…", keys: ["Ctrl+Shift+F"], run: () => { folderSearchOpen = true; } },
     { id: "view.showEdits", label: "Show my &edits", run: () => setShowEdits(!tab?.showEdits), enabled: hasTab, checked: () => !!tab?.showEdits },
-    { id: "file.options", label: "Op&tions…", run: () => { optionsOpen = true; } },
+    { id: "file.options", label: "Op&tions…", run: () => { optionsOpen = true; }, enabled: () => !SECOND_WINDOW },
     { id: "data.profile", label: "Column &profile…", run: () => { profileCol = tab?.cell.col ?? null; }, enabled: ready },
     { id: "data.counts", label: "Cou&nt values in a new tab", keys: ["Alt+Shift+F"], run: () => void openCounts(), enabled: ready },
     { id: "data.countsShow", label: "Show these rows", run: () => void countsShow(false), enabled: () => ready() && !!tab?.countsOf },
@@ -5232,6 +5384,8 @@
     })),
     { id: "window.next", label: "Next file", keys: ["Ctrl+PageDown", "Ctrl+Tab", "Ctrl+Shift+PageDown"], run: () => switchTab(1), enabled: () => tabs.length > 1 },
     { id: "window.prev", label: "Previous file", keys: ["Ctrl+PageUp", "Ctrl+Shift+Tab", "Ctrl+Shift+PageUp"], run: () => switchTab(-1), enabled: () => tabs.length > 1 },
+    { id: "window.moveToNew", label: "Move tab to a new window", run: () => void moveTabToWindow(), enabled: () => !SECOND_WINDOW && ready() },
+    { id: "window.moveToMain", label: "Move tab back to the main window", run: () => void moveTabBack(), enabled: () => SECOND_WINDOW && !!tab },
     { id: "window.moveTabLeft", label: "Move file tab left", keys: ["Ctrl+Alt+Shift+PageUp"], run: () => moveTab(-1), enabled: () => active > 0 },
     { id: "window.moveTabRight", label: "Move file tab right", keys: ["Ctrl+Alt+Shift+PageDown"], run: () => moveTab(1), enabled: () => active >= 0 && active < tabs.length - 1 },
     { id: "data.sortAsc", label: "Sort &A → Z", run: () => sortByColumn(false), enabled: ready, repeatable: true },
@@ -5380,7 +5534,7 @@
   reg.setOverrides(cleanShortcuts(prefs.data.shortcuts, (id) => !!reg.get(id)));
 
   const menus: Menu[] = [
-    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "-", "file.recover", "file.versions", "-", "file.options", "-", "file.close", "file.closeOthers", "file.closeUnchanged", "file.reopenClosed", "file.quit"] },
+    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "-", "file.recover", "file.versions", "-", "window.moveToNew", "window.moveToMain", "-", "file.options", "-", "file.close", "file.closeOthers", "file.closeUnchanged", "file.reopenClosed", "file.quit"] },
     {
       label: "&Edit",
       items: [
@@ -5446,7 +5600,7 @@
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
-    tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
+    tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
@@ -6178,15 +6332,23 @@
   // ---- loading progress -------------------------------------------------------------
   onMount(() => {
     const unwatchAlt = watchAlt(window);
-    backend().onOpened(() => void takeOpened());
-    void takeOpened();
+    // Tabs moved between windows, and (in the main window only) files from
+    // Windows and a second launch.
+    backend().onHandover(() => void takeHandovers());
+    void takeHandovers();
+    if (SECOND_WINDOW) {
+      prefs.onBlockedSave = () => say("Settings are changed in the main window.");
+    } else {
+      backend().onOpened(() => void takeOpened());
+      void takeOpened();
+    }
     backend().onAgentGoto((g) => {
       const i = tabs.findIndex((t) => t.id === g.doc);
       if (i < 0) return;
       active = i;
       void tick().then(() => grid?.select({ row: Math.min(g.row, tabs[i]!.info.rows - 1), col: Math.min(g.col, tabs[i]!.info.cols - 1) }));
     });
-    if (prefs.data.agentLink) void backend().setAgentLink(true).catch(() => {});
+    if (!SECOND_WINDOW && prefs.data.agentLink) void backend().setAgentLink(true).catch(() => {});
     void backend()
       .appInfo()
       .then((i) => (info = i));
@@ -6194,12 +6356,17 @@
     backend().onCloseRequested(() => void quit());
     // Work left unsaved by a run that stopped is offered back once, at
     // start; otherwise the files open last time are.
-    void showRecovery(true).then(() => {
-      if (recovery) sessionReady = true;
-      else void startSession();
-    });
-    const sessionSaver = window.setInterval(() => void saveSession(), 10_000);
-    void backend().versionsKeep(prefs.data.keepEarlierSaves).catch(() => {});
+    // (The second window offers nothing at start and remembers nothing: the
+    // main window owns those. It reports to the app instead, which also tells
+    // the app it is alive.)
+    if (!SECOND_WINDOW) {
+      void showRecovery(true).then(() => {
+        if (recovery) sessionReady = true;
+        else void startSession();
+      });
+    }
+    const sessionSaver = window.setInterval(() => (SECOND_WINDOW ? syncSecond() : void saveSession()), SECOND_WINDOW ? 3_000 : 10_000);
+    if (!SECOND_WINDOW) void backend().versionsKeep(prefs.data.keepEarlierSaves).catch(() => {});
     const autosaver = window.setInterval(() => void autosaveTick(), 15_000);
     const timer = window.setInterval(async () => {
       for (const t of tabs) {

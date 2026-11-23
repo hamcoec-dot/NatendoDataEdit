@@ -336,6 +336,43 @@ pub struct JobInfo {
     pub fraction: f64,
 }
 
+/// A document with unsaved changes, as the quit question lists it.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct ModifiedDoc {
+    pub id: u32,
+    pub name: String,
+    /// Counts every edit, undo and redo (it never goes back).
+    pub generation: u64,
+}
+
+/// What stands between the app and a quit: unsaved documents (any window),
+/// documents something holds right now (a save, a long change) and the long
+/// jobs running.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, Default)]
+pub struct ModifiedReport {
+    pub docs: Vec<ModifiedDoc>,
+    pub busy: Vec<String>,
+    pub jobs: Vec<String>,
+}
+
+impl ModifiedReport {
+    /// Nothing to ask about: quit at once.
+    pub fn is_clear(&self) -> bool {
+        self.docs.is_empty() && self.busy.is_empty() && self.jobs.is_empty()
+    }
+
+    /// Has anything changed since the question was asked about `known`
+    /// (document, generation)? A document modified now that was not listed, one
+    /// edited since, or anything held: the person has not agreed to lose it.
+    pub fn changed_since(&self, known: &[(u32, u64)]) -> bool {
+        !self.busy.is_empty()
+            || self
+                .docs
+                .iter()
+                .any(|d| !known.contains(&(d.id, d.generation)))
+    }
+}
+
 /// Most columns whose names are read at once (for rules that follow a
 /// rename, and views): 20,000 names of at most 200 characters.
 pub const MAX_NAME_COLS: usize = 20_000;
@@ -1386,13 +1423,48 @@ impl Docs {
     /// Some document has unsaved changes. Never waits: a document whose
     /// lock is held (a save or another change is running) counts as
     /// modified, so closing the window asks instead of freezing.
-    pub fn any_modified(&self) -> bool {
-        let entries: Vec<_> = self.map().values().cloned().collect();
-        entries.iter().any(|e| match e.doc.try_read() {
-            Ok(d) => d.is_modified(),
-            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner().is_modified(),
-            Err(std::sync::TryLockError::WouldBlock) => true,
-        })
+    /// Every document with unsaved changes (in any window), the ones that
+    /// cannot be looked at right now because something holds them (a save or
+    /// a long change), and the long jobs running. `generation` counts every
+    /// edit, undo and redo of the document (it never goes back), so a change
+    /// made after a question was asked is seen even when the undo position is
+    /// the same again.
+    pub fn modified_report(&self) -> ModifiedReport {
+        let entries: Vec<(u32, Arc<Entry>)> =
+            self.map().iter().map(|(k, v)| (*k, v.clone())).collect();
+        let mut report = ModifiedReport::default();
+        for (id, e) in entries {
+            let name = e
+                .current_path()
+                .as_deref()
+                .and_then(Path::file_name)
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Untitled".into());
+            if let Some(j) = e.jobs().as_ref() {
+                report.jobs.push(j.label.to_string());
+            }
+            let seen = match e.doc.try_read() {
+                Ok(d) => Some((d.is_modified(), d.revision())),
+                Err(std::sync::TryLockError::Poisoned(p)) => {
+                    let d = p.into_inner();
+                    Some((d.is_modified(), d.revision()))
+                }
+                Err(std::sync::TryLockError::WouldBlock) => None,
+            };
+            match seen {
+                Some((true, generation)) => report.docs.push(ModifiedDoc {
+                    id,
+                    name,
+                    generation,
+                }),
+                Some((false, _)) => {}
+                None => report.busy.push(name),
+            }
+        }
+        report.docs.sort_by_key(|d| d.id);
+        report.busy.sort();
+        report.jobs.sort();
+        report
     }
 
     fn insert(&self, doc: Document, line_by_line: bool) -> CmdResult<(u32, Arc<Entry>)> {
@@ -2702,6 +2774,15 @@ impl Docs {
                 .filter(|_| !entry.private.load(Ordering::SeqCst))
             {
                 crate::recovery::keep_version(target);
+            }
+            // Test builds only (feature `test-slow-save`, off in a release):
+            // hold the document locked for a while, as a very big save would.
+            #[cfg(feature = "test-slow-save")]
+            if let Some(ms) = std::env::var("NATENDO_TEST_SAVE_DELAY_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
             }
             d.save(SaveOptions {
                 path,
@@ -9108,12 +9189,85 @@ B,y
         let docs = Docs::default();
         let id = docs.open_path(&p, false).unwrap().id;
         wait(&docs, id);
-        assert!(!docs.any_modified());
+        assert!(docs.modified_report().is_clear());
         let e = docs.get(id).unwrap();
         let held = e.write(); // as a save does
-        assert!(docs.any_modified());
+        let r = docs.modified_report();
+        assert_eq!(
+            r.busy,
+            vec!["closecheck.csv".to_string()],
+            "held: not looked inside, named"
+        );
+        assert!(r.docs.is_empty() && !r.is_clear());
         drop(held);
-        assert!(!docs.any_modified());
+        assert!(docs.modified_report().is_clear());
+    }
+
+    /// The quit question's list: a document edited, then undone, then edited
+    /// again has the same undo position as after the first edit, but its
+    /// generation is new, so a change made while the question was open is seen.
+    #[test]
+    fn generation_goes_up_on_every_edit_undo_and_redo() {
+        let p = tmp("generation.csv", b"a,b\r\n1,2\r\n");
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        assert!(docs.modified_report().is_clear());
+        docs.set_cells(id, vec![(0, 0, "x".into())]).unwrap();
+        let first = docs.modified_report();
+        assert_eq!(first.docs.len(), 1);
+        assert_eq!(first.docs[0].name, "generation.csv");
+        let pos_first = docs.info(id).unwrap().history_pos;
+        let g1 = first.docs[0].generation;
+        // The question was asked now: it knows (id, g1).
+        let known = [(id, g1)];
+        assert!(!first.changed_since(&known), "nothing new yet");
+        // Undo (the document is clean again), then a different edit: the
+        // undo position is the same as after the first edit.
+        docs.undo(id).unwrap();
+        let after_undo = docs.modified_report();
+        assert!(after_undo.docs.is_empty());
+        docs.set_cells(id, vec![(0, 1, "y".into())]).unwrap();
+        assert_eq!(docs.info(id).unwrap().history_pos, pos_first);
+        let now = docs.modified_report();
+        let g3 = now.docs[0].generation;
+        assert!(
+            g3 > g1,
+            "generation {g3} must be past {g1} though the undo position repeats"
+        );
+        assert!(
+            now.changed_since(&known),
+            "the new edit is not the one the person agreed to lose"
+        );
+        // Redo counts too.
+        docs.undo(id).unwrap();
+        docs.redo(id).unwrap();
+        let g4 = docs.modified_report().docs[0].generation;
+        assert!(g4 > g3);
+    }
+
+    #[test]
+    fn a_document_modified_after_the_question_is_not_agreed_to() {
+        let a = tmp("quit-a.csv", b"a\r\n1\r\n");
+        let b = tmp("quit-b.csv", b"a\r\n1\r\n");
+        let docs = Docs::default();
+        let ia = docs.open_path(&a, false).unwrap().id;
+        let ib = docs.open_path(&b, false).unwrap().id;
+        wait(&docs, ia);
+        wait(&docs, ib);
+        docs.set_cells(ia, vec![(0, 0, "x".into())]).unwrap();
+        let r = docs.modified_report();
+        let known = [(ia, r.docs[0].generation)];
+        assert!(!r.changed_since(&known));
+        // An edit in the other file (the other window), after the question.
+        docs.set_cells(ib, vec![(0, 0, "y".into())]).unwrap();
+        let r2 = docs.modified_report();
+        assert_eq!(r2.docs.len(), 2);
+        assert!(
+            r2.changed_since(&known),
+            "quit_app must not exit: it asks again"
+        );
+        assert!(!r2.changed_since(&[(ia, r2.docs[0].generation), (ib, r2.docs[1].generation)]));
     }
 
     #[test]
