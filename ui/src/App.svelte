@@ -2132,7 +2132,7 @@
     let rows = parseTsv(text);
     if (rows.length === 0) return;
     const r = t.rect;
-    let width = Math.max(...rows.map((x) => x.length));
+    let width = widest(rows);
     // A block pasted into a bigger selection that it fits a whole number of
     // times repeats to fill it (as in Excel and Google Sheets).
     // Hidden columns are passed over, so only the shown ones count.
@@ -3350,6 +3350,13 @@
     return !!(await backend().encryptedOrigin(t.id).catch(() => null));
   }
 
+  /** The most cells in any row (a loop: spreading a long list into Math.max overflows the stack). */
+  function widest(rows: string[][]): number {
+    let w = 0;
+    for (const r of rows) if (r.length > w) w = r.length;
+    return w;
+  }
+
   /** The paste half of Paste, into any tab at a place: asks about rows
    *  that do not fit while rows are hidden, writes one undo step, and says
    *  how many rows were added. null: nothing was written. */
@@ -3361,7 +3368,7 @@
     const before = dst.info.rows;
     const done = await runOp({ op: "paste", spec: { row, col, op: "none", skip_blanks: false, transpose: false, stop_at_end: fit === "stop" }, text }, "Pasting", dst);
     if (!done) return null;
-    return { rows: rows.length, width: Math.max(...rows.map((x) => x.length)), added: Math.max(0, dst.info.rows - before) };
+    return { rows: rows.length, width: widest(rows), added: Math.max(0, dst.info.rows - before) };
   }
 
   /** What a source tab looked like when its cells were copied: a change
