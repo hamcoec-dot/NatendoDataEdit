@@ -58,20 +58,38 @@
   let winners = $state(new Map<number, string>());
   let gen = 0;
 
+  /** Run `f`, trying again for a few seconds while another job on the file
+   *  is finishing (the file does one thing at a time). */
+  async function whenFree<T>(f: () => Promise<T>, alive: () => boolean): Promise<T> {
+    for (let i = 0; ; i++) {
+      try {
+        return await f();
+      } catch (e) {
+        if (i < 20 && alive() && errorText(e).includes("still running")) {
+          await new Promise((r) => setTimeout(r, 300));
+          continue;
+        }
+        throw e;
+      }
+    }
+  }
+
+  // Looks only once the values are counted (the file does one job at a time).
   $effect(() => {
     const m = method;
     const c = col;
     const h = myHeader;
+    const counted = !loading && tally !== null;
     found = null;
     groupProblem = "";
     dropped = new Map();
     winners = new Map();
-    if (m === "letters") return;
+    if (m === "letters" || !counted) return;
     const mine = ++gen;
+    let running = true;
     grouping = true;
     groupProgress = null;
-    void backend()
-      .lookalikeGroups(doc, { col: c, keep_first: h, method: m })
+    whenFree(() => backend().lookalikeGroups(doc, { col: c, keep_first: h, method: m }), () => mine === gen)
       .then((r) => {
         if (mine === gen) found = r;
       })
@@ -80,10 +98,13 @@
         groupProblem = isCmdError(e) && e.kind === "cancelled" ? "Stopped." : errorText(e);
       })
       .finally(() => {
+        running = false;
         if (mine === gen) grouping = false;
       });
     return () => {
       gen++;
+      // Changed while looking: stop, so the next job can start.
+      if (running) void backend().cancelJob(doc);
     };
   });
 
@@ -143,8 +164,7 @@
     problem = "";
     edits = new Map();
     let live = true;
-    backend()
-      .valueTally(doc, { col: c, keep_first: h })
+    whenFree(() => backend().valueTally(doc, { col: c, keep_first: h }), () => live)
       .then((t) => {
         if (live) tally = t;
       })

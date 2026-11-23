@@ -2956,7 +2956,23 @@ export class MockBackend implements Backend {
   async quitApp(): Promise<void> {}
   onCloseRequested(): void {}
 
+  /** Documents with a counting or grouping job running: like the backend, a
+   *  second one is refused until the first ends. */
+  private jobs = new Set<number>();
+  private async oneJob<T>(doc: number, f: () => Promise<T>): Promise<T> {
+    if (this.jobs.has(doc)) throw err("busy", "another operation is still running on this file");
+    this.jobs.add(doc);
+    try {
+      await new Promise((r) => setTimeout(r, 30));
+      return await f();
+    } finally {
+      this.jobs.delete(doc);
+    }
+  }
   async valueTally(doc: number, spec: TallySpec): Promise<ValueTally> {
+    return this.oneJob(doc, () => this.valueTallyNow(doc, spec));
+  }
+  private async valueTallyNow(doc: number, spec: TallySpec): Promise<ValueTally> {
     const d = this.get(doc);
     const counts = new Map<string, number>();
     let blanks = 0;
@@ -2984,7 +3000,10 @@ export class MockBackend implements Backend {
   /** A stand-in for the engine's grouping: a rough sound key, and spelling
    *  within one slip for values of 4 or more letters. */
   async lookalikeGroups(doc: number, spec: LookAlikeSpec): Promise<LookAlikes> {
-    const t = await this.valueTally(doc, { col: spec.col, keep_first: spec.keep_first });
+    return this.oneJob(doc, () => this.lookalikeGroupsNow(doc, spec));
+  }
+  private async lookalikeGroupsNow(doc: number, spec: LookAlikeSpec): Promise<LookAlikes> {
+    const t = await this.valueTallyNow(doc, { col: spec.col, keep_first: spec.keep_first });
     const fold = (v: string) => v.toLowerCase().normalize("NFD").replace(/[^\p{L}\p{N}]/gu, "");
     const sound = (v: string) => {
       const w = fold(v).replace(/\d/g, "");
