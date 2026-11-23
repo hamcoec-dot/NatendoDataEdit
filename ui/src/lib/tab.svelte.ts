@@ -8,6 +8,7 @@ import type { SortSpec } from "./backend";
 import { backend, type DocInfo, type FilterSpec } from "./backend";
 import { CellCache } from "./cache";
 import { Columns, type ColSnap } from "./columns";
+import { RowHeights, type RowHeightSnap } from "./rowheights";
 import { single, type Selection, rectOf, type Rect, type Cell, activeOf, MAX_AREAS, sameRect, rectInside } from "./selection";
 
 /** Characters per cell fetched for display (the backend caps this too). */
@@ -32,6 +33,8 @@ export interface ViewLook {
   banded: boolean;
   divider: number | null;
   rowLines: number;
+  /** Custom row heights (shared by reference while unchanged). */
+  rows: RowHeightSnap;
   checks: Check[];
 }
 /** The look, plus the last sort (it changes with an engine undo step, so
@@ -48,12 +51,26 @@ export interface LookStep {
   after: ViewLook;
 }
 
+/** Two sets of custom row heights are the same (shared, or equal). */
+function sameRows(a: RowHeightSnap, b: RowHeightSnap): boolean {
+  if (a === b || (a.rows === b.rows && a.px === b.px)) return true;
+  if (a.rows.length !== b.rows.length) return false;
+  for (let i = 0; i < a.rows.length; i++) if (a.rows[i] !== b.rows[i] || a.px[i] !== b.px[i]) return false;
+  return true;
+}
+
+/** A change to the rows that the heights must follow, set just before the
+ *  change is made and used when the new state arrives (`update`). "reset":
+ *  the rows cannot be followed exactly (some are hidden), so the heights go. */
+export type RowMap = { kind: "insert"; at: number; count: number } | { kind: "delete"; at: number; count: number } | { kind: "move"; at: number; count: number; to: number } | { kind: "reset" };
+
 /** Two looks hold the same values (parts shared or equal). */
 function sameLook(a: ViewLook, b: ViewLook): boolean {
   return (
     a.banded === b.banded &&
     a.divider === b.divider &&
     a.rowLines === b.rowLines &&
+    sameRows(a.rows, b.rows) &&
     (a.cols === b.cols || JSON.stringify(a.cols) === JSON.stringify(b.cols)) &&
     (a.highlights === b.highlights || JSON.stringify(a.highlights) === JSON.stringify(b.highlights)) &&
     (a.scales === b.scales || JSON.stringify(a.scales) === JSON.stringify(b.scales)) &&
@@ -62,6 +79,12 @@ function sameLook(a: ViewLook, b: ViewLook): boolean {
 }
 
 export class Tab {
+  /** Rows with a height of their own (none: every row is the plain height). */
+  rowHeights = new RowHeights();
+  /** How the heights must follow the row change about to be made (see `RowMap`). */
+  pendingRows: RowMap | null = null;
+  /** Said with the next message: the heights were cleared (and why). */
+  rowHeightsNote = "";
   info = $state<DocInfo>() as DocInfo;
   private _sel = $state<Selection>(single({ row: 0, col: 0 }));
   /** The selected block (the last one picked when several are selected).
@@ -385,7 +408,8 @@ export class Tab {
       same(refs.sort, this.sort) &&
       last.look.banded === this.banded &&
       last.look.divider === this.divider &&
-      last.look.rowLines === this.rowLines
+      last.look.rowLines === this.rowLines &&
+      this.rowHeights.sameAs(last.look.rows)
     )
       return last;
     let bytes = 64;
@@ -403,9 +427,12 @@ export class Tab {
       banded: this.banded,
       divider: this.divider,
       rowLines: this.rowLines,
+      rows: this.rowHeights.snapshot(),
       checks: copy<Check[]>(!refs || !same(refs.checks, this.checks), last?.look.checks, this.checks),
     };
     if (colsChanged) bytes += cols.length * 2;
+    // The heights are shared by reference unless they changed: count them once.
+    if (!last || !sameRows(last.look.rows, look.rows)) bytes += this.rowHeights.bytes;
     const sort = copy<SortSpec | null>(!refs || !same(refs.sort, this.sort), last?.sort, this.sort);
     this.lastRefs = { cols, highlights: this.highlights, scales: this.scales, checks: this.checks, sort: this.sort };
     this.lookSize.set(look, bytes);
@@ -526,6 +553,8 @@ export class Tab {
     this.banded = l.banded;
     this.divider = l.divider;
     this.rowLines = l.rowLines;
+    // (A look from before heights existed has none.)
+    this.rowHeights.restore(l.rows ?? { rows: [], px: [], sum: [0] });
     if (engine) {
       this.sort = s.sort ? structuredClone(s.sort) : null;
     } else {
@@ -561,6 +590,7 @@ export class Tab {
     // Several blocks stand for rows and columns as they were: other rows
     // (a filter, undo, redo) or a changed shape make them stale.
     if (this.extra.length && (structural || after < before || this.redoing > 0 || info.has_filter !== this.info.has_filter || info.hidden_rows !== this.info.hidden_rows)) this.extra = [];
+    this.followRows(info);
     // Any change, and any change of which rows are shown (a filter), drops a
     // pending cut: its rows would now be other rows.
     if (dataChanged || after !== before || structural || info.has_filter !== this.info.has_filter || info.hidden_rows !== this.info.hidden_rows) {
@@ -606,6 +636,29 @@ export class Tab {
     this.columns.setCount(info.cols);
     if (dataChanged || structural) this.cache.invalidate();
     this.bump();
+  }
+
+  /** Custom row heights follow the rows they belong to, or go with a note when
+   *  that cannot be done exactly. Undo and Redo put them back with the look. */
+  private followRows(info: DocInfo): void {
+    const pend = this.pendingRows;
+    this.pendingRows = null;
+    if (this.rowHeights.empty) return;
+    const before = this.info.history_pos;
+    const after = info.history_pos;
+    if (after < before || this.redoing > 0) return;
+    const added = info.total_rows !== this.info.total_rows;
+    if (after === before && !added) return;
+    if (pend && pend.kind !== "reset" && after > before) {
+      if (pend.kind === "insert") this.rowHeights.insertRows(pend.at, pend.count);
+      else if (pend.kind === "delete") this.rowHeights.deleteRows(pend.at, pend.count);
+      else this.rowHeights.moveRows(pend.at, pend.count, pend.to);
+      return;
+    }
+    if (added || (pend && pend.kind === "reset" && after > before)) {
+      this.rowHeights.clear();
+      this.rowHeightsNote = "The custom row heights were cleared because rows changed and the grid cannot tell which rows kept theirs (Ctrl+Z brings them back).";
+    }
   }
 
   /** Something visible changed: redraw. */

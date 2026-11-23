@@ -15,6 +15,8 @@ export const MOUSE_MOVES: { label: string; keys: string }[] = [
   { label: "Copy the selected cells to another open file", keys: "Drag the outline onto that file's tab" },
   { label: "Move the selected cells to another open file", keys: "Drag the outline onto its tab and let go with Shift held" },
   { label: "Stop a drag", keys: "Esc before letting go" },
+  { label: "Make a row taller or shorter (all selected rows)", keys: "Drag the line under its row number" },
+  { label: "Fit a row (all selected rows) to its text", keys: "Double-click that line" },
   { label: "Resize a column (all selected ones)", keys: "Drag the line right of its heading" },
   { label: "Fit a column (all selected ones) to its text", keys: "Double-click that line" },
   { label: "Show hidden columns", keys: "Click the small arrow on the next heading" },

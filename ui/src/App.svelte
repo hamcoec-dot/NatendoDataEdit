@@ -5,7 +5,8 @@
   import { onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
   import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
-  import { Tab, exportHandTab, importHandTab, type HandTab } from "./lib/tab.svelte";
+  import { Tab, exportHandTab, importHandTab, type HandTab, type RowMap } from "./lib/tab.svelte";
+import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowheights";
   import { SECOND_WINDOW } from "./lib/windowRole";
   import { invisibleNote } from "./lib/invisible";
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
@@ -273,6 +274,9 @@
   /** Cells the last change left alone in protected columns, said with the
    *  change's own message (or on its own, just after). */
   let protectNote = 0;
+  /** Said with the next message (or alone a moment later): custom row heights
+   *  were cleared because rows changed in a way they cannot follow. */
+  let rowNote = "";
   function noteProtected(info: DocInfo): void {
     const n = info.protected_skipped ?? 0;
     if (!n) return;
@@ -314,6 +318,10 @@
   }
 
   function say(text: string): void {
+    if (rowNote) {
+      text = text ? `${text} ${rowNote}` : rowNote;
+      rowNote = "";
+    }
     if (protectNote) {
       const n = protectNote;
       protectNote = 0;
@@ -348,6 +356,14 @@
     try {
       const info = await f(t);
       t.update(info, dataChanged);
+      if (t.rowHeightsNote) {
+        rowNote = t.rowHeightsNote;
+        t.rowHeightsNote = "";
+        // The caller's own message takes it along; otherwise it is said alone.
+        window.setTimeout(() => {
+          if (rowNote) say("");
+        }, 60);
+      }
       noteProtected(info);
       // Any other change after undoing an added header row ends its redo,
       // so redo can no longer switch the header back on.
@@ -880,6 +896,7 @@
       })),
       banded: t.banded,
       row_lines: t.rowLines,
+      row_heights: t.rowHeights.empty ? undefined : t.rowHeights.toView(),
       facets: t.facetCards.map((c) => ({ col: c.col, kind: c.kind })),
       freeze_rows: t.frozenRows,
       freeze_cols: t.frozenCols,
@@ -1038,6 +1055,13 @@
       return c === null || c === undefined || c < 0 ? [] : [{ col: c, kind: f.kind === "numbers" || f.kind === "dates" ? f.kind : "values", range: null }];
     });
     t.rowLines = Math.min(MAX_ROW_LINES, Math.max(1, Math.round(v.row_lines ?? 1) || 1));
+    {
+      // Rows past this file's end (a view from another file) are dropped, not an error.
+      const { heights, dropped } = RowHeights.fromView(v.row_heights ?? [], t.info.total_rows);
+      t.rowHeights.restore(heights.snapshot());
+      // (Said with the message that follows: "Applied the view".)
+      if (dropped) rowNote = `${plural(dropped, "row height")} in that view did not fit this file and ${dropped === 1 ? "was" : "were"} left out.`;
+    }
     t.frozenRows = Math.min(v.freeze_rows, Math.max(0, t.info.rows - 1));
     t.frozenCols = Math.min(v.freeze_cols, Math.max(0, t.info.cols - 1));
     t.highlights = v.highlights.flatMap((h) => {
@@ -3066,9 +3090,25 @@
     delete_col_list: "deleting columns",
   };
 
+  /** How custom row heights must follow a change to the rows (null: not
+   *  needed). Shown rows are the file's rows unless some are hidden or filtered
+   *  out; then the heights cannot be followed exactly, so they are cleared. */
+  function rowMapFor(t: Tab, c: Change): RowMap | null {
+    if (t.rowHeights.empty) return null;
+    if (c.op !== "insert_rows" && c.op !== "delete_rows" && c.op !== "move_rows") return null;
+    if (t.info.filtered || t.info.rows !== t.info.total_rows) return { kind: "reset" };
+    if (c.op === "insert_rows") return { kind: "insert", at: c.at, count: c.count };
+    if (c.op === "delete_rows") return { kind: "delete", at: c.at, count: c.count };
+    return { kind: "move", at: c.at, count: c.count, to: c.to };
+  }
+
   async function change(c: Change, dataChanged = true): Promise<boolean> {
-    if (tab && c.op !== "undo" && c.op !== "redo") tab.whatNext = CHANGE_WHAT[c.op] ?? null;
-    return apply((x) => backend().change(x.id, c), dataChanged);
+    const t = tab;
+    if (t && c.op !== "undo" && c.op !== "redo") t.whatNext = CHANGE_WHAT[c.op] ?? null;
+    if (t) t.pendingRows = rowMapFor(t, c);
+    const ok = await apply((x) => backend().change(x.id, c), dataChanged);
+    if (t) t.pendingRows = null;
+    return ok;
   }
 
   async function insertRows(below: boolean, howMany?: number): Promise<void> {
@@ -4638,6 +4678,52 @@
     };
   }
 
+  /** The data rows of the selected block (the rows a height applies to). */
+  function selectedRowList(t: Tab): number[] | null {
+    const r = oneBlock(t);
+    if (!r) return null;
+    const out: number[] = [];
+    for (let i = Math.max(r.row, t.firstRow); i < r.row + r.rows && out.length <= MAX_CUSTOM_ROWS; i++) out.push(i);
+    if (out.length > MAX_CUSTOM_ROWS) {
+      say(`Row heights work on up to ${MAX_CUSTOM_ROWS.toLocaleString()} rows at once. Select fewer rows.`);
+      return null;
+    }
+    return out;
+  }
+
+  function askRowsPx(): void {
+    const t = tab;
+    if (!t) return;
+    const rows = selectedRowList(t);
+    if (!rows || !rows.length) return;
+    prompt = {
+      title: "Height of the selected rows",
+      label: "Height in pixels",
+      value: String(t.rowHeights.custom(rows[0]!) ?? ""),
+      note: `${MIN_ROW_PX} to ${MAX_ROW_PX}. Only the ${plural(rows.length, "selected row")} change; drag the line under a row number to do the same with the mouse. Reset puts them back to the height every row has.`,
+      check: (v) => (/^\d+$/.test(v.trim()) && Number(v) >= MIN_ROW_PX && Number(v) <= MAX_ROW_PX ? "" : `Type a whole number from ${MIN_ROW_PX} to ${MAX_ROW_PX}.`),
+      done: (v) => {
+        if (grid?.setRowsHeight(rows, Number(v))) say(`${plural(rows.length, "row")} now ${v} pixels tall. Ctrl+Z undoes it.`);
+      },
+    };
+  }
+
+  function fitSelectedRows(): void {
+    const t = tab;
+    if (!t) return;
+    const rows = selectedRowList(t);
+    if (rows && rows.length) grid?.fitRowHeights(rows);
+  }
+
+  function resetSelectedRows(): void {
+    const t = tab;
+    if (!t) return;
+    const rows = selectedRowList(t);
+    if (!rows) return;
+    grid?.resetRowsHeight(rows);
+    say(`${plural(rows.length, "row")} back to the height every row has. Ctrl+Z undoes it.`);
+  }
+
   function askRowLines(): void {
     const t = tab;
     if (!t) return;
@@ -5759,7 +5845,10 @@
     },
     { id: "view.alignNumbers", label: "&Numbers on the right", run: () => { prefs.data.alignNumbers = !prefs.data.alignNumbers; prefs.save(); }, checked: () => prefs.data.alignNumbers },
     { id: "format.wrap", label: "&Wrap text", multiArea: true, run: toggleWrap, enabled: hasTab, checked: () => !!tab && selectedCols(tab).length > 0 && selectedCols(tab).every((c) => tab!.columns.wraps.has(c)) },
-    { id: "format.rowHeight", label: "Row &height (lines)…", run: askRowLines, enabled: hasTab },
+    { id: "format.rowHeight", label: "Row &height of every row (lines)…", run: askRowLines, enabled: hasTab },
+    { id: "format.rowHeightSet", label: "Height of the selected rows (pixels)…", run: askRowsPx, enabled: hasTab },
+    { id: "format.rowHeightFit", label: "Fit the selected rows to their text", run: fitSelectedRows, enabled: hasTab },
+    { id: "format.rowHeightReset", label: "Reset the height of the selected rows", run: resetSelectedRows, enabled: () => !!tab && !tab.rowHeights.empty },
     { id: "format.fitRows", label: "Fit row height to wrapped text", run: () => grid?.fitRowLines(), enabled: () => !!tab && tab.columns.wraps.size > 0 },
     { id: "format.display", label: "&Display format (numbers, dates, tick boxes)…", keys: ["Ctrl+1"], run: openFormat, enabled: hasTab },
     { id: "format.asNumber", label: "Show as number (1,234.00)", multiArea: true, keys: ["Ctrl+Shift+1", "Ctrl+Shift+!"], run: () => quickFormat("number"), enabled: hasTab },
@@ -5899,7 +5988,7 @@
       ],
     },
     { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.symbol"] },
-    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "format.forgetHeader", "format.forgetHeaders", "format.askHeader", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
+    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "format.forgetHeader", "format.forgetHeaders", "format.askHeader", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
     {
       label: "&Data",
       items: [
@@ -5945,7 +6034,7 @@
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
-    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
+    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -6852,6 +6941,7 @@
         ? `${Math.max(0, d.rows - t.firstRow).toLocaleString()} of ${Math.max(0, d.total_rows - t.firstRow).toLocaleString()} rows shown × ${d.cols.toLocaleString()} columns`
         : `${Math.max(0, d.rows - t.firstRow).toLocaleString()} ${d.rows - t.firstRow === 1 ? "row" : "rows"} × ${d.cols.toLocaleString()} ${d.cols === 1 ? "column" : "columns"}`,
       hidden: d.hidden_rows,
+      heightsHidden: d.filtered && !t.rowHeights.empty,
       filter: d.has_filter || d.filter_on_deleted
         ? [
             ...(t.filter?.columns ?? []).map((c) => `${columnTitle(t, c.col)} ${describeRule(c.rule)}`),
@@ -7291,6 +7381,7 @@
     {#if status}
       {#if tab}<QuickTotals {tab} />{/if}
       {#if status.sel}<span>{status.sel}</span>{/if}
+      {#if status.heightsHidden}<span title="The rows you gave a height keep it and get it back when the filter or the hidden rows are cleared.">Custom row heights hidden while filtered</span>{/if}
       {#if status.hidden}
         <button type="button" class="small filtered" title="Hidden rows are still saved. Click to show them all again." onclick={() => void showRows(true)}>{plural(status.hidden, "hidden row")} ✕</button>
       {/if}
@@ -7425,6 +7516,7 @@
     rows={tab.info.rows}
     tabList={exportTabs}
     widths={Array.from({ length: Math.min(tab.info.cols, 16_384) }, (_, c) => tab!.columns.customWidth(c) ?? 0)}
+    rowHeights={tab.info.filtered ? [] : tab.rowHeights.toView()}
     onExport={(o, to, ids) => void exportRun(o, to, ids)}
     onClose={() => { exportOpen = false; grid?.focus(); }}
   />

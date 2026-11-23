@@ -22,8 +22,12 @@ const MAX_RECENT_FILE: u64 = 64 << 10;
 /// Most entries listed from a folder.
 pub const MAX_LISTED: usize = 2_000;
 /// Largest view file, in bytes.
-pub const MAX_VIEW_FILE: u64 = 1 << 20;
+pub const MAX_VIEW_FILE: u64 = 4 << 20;
 pub const VIEW_EXT: &str = "ndview";
+/// Most rows a view may give a height of their own, and the range of a height.
+pub const MAX_ROW_HEIGHTS: usize = 100_000;
+pub const MIN_ROW_PX: u32 = 14;
+pub const MAX_ROW_PX: u32 = 400;
 
 fn io(what: &str) -> impl Fn(std::io::Error) -> CmdError + '_ {
     move |e| CmdError::new("io", format!("{what}: {e}"))
@@ -579,6 +583,9 @@ pub struct View {
     /// Lines of text per row (1 to 10; 0 in older views means 1).
     #[serde(default)]
     pub row_lines: u8,
+    /// Rows with a height of their own: (row, pixels), rows increasing.
+    #[serde(default)]
+    pub row_heights: Vec<(u64, u32)>,
 }
 
 fn one() -> u32 {
@@ -613,6 +620,21 @@ impl View {
         if self.row_lines > 10 {
             return bad("rows can be at most 10 lines tall");
         }
+        if self.row_heights.len() > MAX_ROW_HEIGHTS {
+            return bad("the view gives too many rows a height of their own");
+        }
+        if self
+            .row_heights
+            .iter()
+            .any(|&(_, px)| !(MIN_ROW_PX..=MAX_ROW_PX).contains(&px))
+        {
+            return bad("a row height must be from 14 to 400 pixels");
+        }
+        if self.row_heights.windows(2).any(|w| w[0].0 >= w[1].0) {
+            return bad(
+                "the rows with a height of their own must be in increasing order, each once",
+            );
+        }
         if self.freeze_rows > 1_000 || self.freeze_cols > 1_000 {
             return bad("the view freezes too many rows or columns");
         }
@@ -638,7 +660,7 @@ impl View {
         if bytes.len() as u64 > MAX_VIEW_FILE {
             return Err(CmdError::new(
                 "too_large",
-                "a view file can be at most 1 MB",
+                "a view file can be at most 4 MB",
             ));
         }
         let v: View = serde_json::from_slice(bytes).map_err(|e| {
@@ -731,6 +753,42 @@ pub fn write_atomic_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_heights_in_a_view_are_checked() {
+        let with = |h: &str| format!(r#"{{"name":"Mine","row_heights":{h}}}"#);
+        // Good: increasing rows, heights from 14 to 400, none at all (older views).
+        let v = View::from_json(with("[[0,30],[5,14],[9,400]]").as_bytes()).unwrap();
+        assert_eq!(v.row_heights, vec![(0, 30), (5, 14), (9, 400)]);
+        assert!(View::from_json(br#"{"name":"Mine"}"#)
+            .unwrap()
+            .row_heights
+            .is_empty());
+        // Bad: out of range heights, unsorted or repeated rows, a negative row, junk.
+        for bad in [
+            "[[1,13]]",
+            "[[1,401]]",
+            "[[1,0]]",
+            "[[5,30],[2,30]]",
+            "[[5,30],[5,40]]",
+            "[[-1,30]]",
+            "[[1,30,7]]",
+            r#"[["a",30]]"#,
+            "5",
+        ] {
+            assert!(
+                View::from_json(with(bad).as_bytes()).is_err(),
+                "{bad} should be refused"
+            );
+        }
+        // The cap: 100,000 are accepted, one more is not.
+        let list = |n: usize| {
+            let parts: Vec<String> = (0..n).map(|i| format!("[{i},40]")).collect();
+            format!("[{}]", parts.join(","))
+        };
+        assert!(View::from_json(with(&list(MAX_ROW_HEIGHTS)).as_bytes()).is_ok());
+        assert!(View::from_json(with(&list(MAX_ROW_HEIGHTS + 1)).as_bytes()).is_err());
+    }
 
     #[test]
     fn view_files_are_checked() {

@@ -650,7 +650,22 @@ pub(crate) fn write_book_on(
                         let row_no = first_row + (r - start);
                         let id = d.id_at(r).ok_or(Error::OutOfRange)?;
                         reader.read(d, id, &mut buf);
-                        let _ = write!(s, "<row r=\"{row_no}\">");
+                        match opts
+                            .row_heights
+                            .binary_search_by_key(&r, |&(row, _)| row)
+                        {
+                            // A row with a height of its own (pixels to points: 3 / 4).
+                            Ok(i) => {
+                                let _ = write!(
+                                    s,
+                                    "<row r=\"{row_no}\" ht=\"{}\" customHeight=\"1\">",
+                                    f64::from(opts.row_heights[i].1) * 0.75
+                                );
+                            }
+                            Err(_) => {
+                                let _ = write!(s, "<row r=\"{row_no}\">");
+                            }
+                        }
                         for k in 0..n {
                             let v = reader.get(&buf, k);
                             if v.is_empty() {
