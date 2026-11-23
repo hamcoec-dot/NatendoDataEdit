@@ -105,12 +105,12 @@ const killApp = async () => {
 };
 const pageMain = () => ctx.pages().find((p) => !p.url().includes("window=2"));
 const pageSecond = () => ctx.pages().find((p) => p.url().includes("window=2"));
-const start = async (files) => {
+const start = async (files, extraEnv = {}, exePath = exe) => {
   await killApp();
   wipeRecovery();
   if (running()) throw new Error("another Natendo Data Edit is running: close it first (this test never stops an app it did not start)");
-  const child = spawn(exe, files, {
-    env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, WEBVIEW2_USER_DATA_FOLDER: path.join(WORK, "wv2") },
+  const child = spawn(exePath, files, {
+    env: { ...process.env, ...extraEnv, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, WEBVIEW2_USER_DATA_FOLDER: path.join(WORK, "wv2") },
     stdio: "ignore",
     detached: true,
   });
@@ -521,35 +521,31 @@ const scenarios = {
     ok(closed, "the cleanup on exit ran (the 'closed' line is in the log)");
   },
 
-  // A save in progress blocks the quit.
+  // A save in progress blocks the quit. Needs the test-hook build (feature
+  // test-slow-save: a save holds the document for NATENDO_TEST_SAVE_DELAY_MS);
+  // its path is in SAVE_HOOK_EXE. A release build has no such hook.
   async saving() {
-    const big = path.join(WORK, "big-save.csv");
-    fs.copyFileSync(bigCsv, big);
-    const m = await start([big]);
-    await waitFor(async () => /1,000,000 rows/.test((await m.textContent("footer.status")) || ""), 60000, 500);
-    let seen = false;
-    for (let attempt = 0; attempt < 4 && !seen; attempt++) {
-      await edit(m, "S" + attempt);
-      await m.keyboard.press("Control+s");
-      await sleep(30);
-      say("close main during the save: " + CLOSE_MAIN());
-      await sleep(400);
-      if (!alive()) {
-        info("the save had finished when the close request came, so the app (rightly) quit at once with nothing unsaved");
-        break;
-      }
-      const t = await dialogText(m);
-      if (/Still running|still being saved or changed|still busy/.test(t)) {
-        seen = true;
-        ok(alive(), `a save in progress blocks the quit (${t.slice(0, 100)})`);
-        await dialog(m).getByRole("button", { name: "OK" }).click().catch(() => {});
-      } else {
-        info(`attempt ${attempt + 1}: the save had finished or the question was another (${t.slice(0, 60)})`);
-        await dialog(m).getByRole("button", { name: "Cancel" }).click().catch(() => {});
-        await sleep(2500);
-      }
+    const hook = process.env.SAVE_HOOK_EXE;
+    if (!hook || !fs.existsSync(hook)) {
+      failed++;
+      say("FAIL saving: SAVE_HOOK_EXE (the test-slow-save build) is not set, so a running save could not be held");
+      return;
     }
-    if (!seen) info("the save finished before the close request each time; the held-document case is covered by the Rust test close_check_never_waits_for_a_busy_document");
+    const m = await start([first], { NATENDO_TEST_SAVE_DELAY_MS: "6000" }, hook);
+    await edit(m, "S");
+    await m.keyboard.press("Control+s");
+    await sleep(800); // the save is now holding the document (6 s)
+    ok(alive(), "the save is running (the document is held for 6 s by the test hook)");
+    say("close main during the save: " + CLOSE_MAIN());
+    const asked = await waitFor(async () => /still busy|still being saved/.test(await dialogText(m)), 8000, 200);
+    const t = await dialogText(m);
+    ok(asked && alive(), `a running save blocks the quit: the app does not exit and says so (${t.slice(0, 120)})`);
+    await dialog(m).getByRole("button", { name: "OK" }).click().catch(() => {});
+    // The save finishes; with nothing unsaved the next close ends the app.
+    await sleep(6500);
+    ok((await tabNames(m)).every((x) => !/●/.test(x)), "the save finished (the tab is no longer marked unsaved)");
+    say("close main after the save: " + CLOSE_MAIN());
+    ok(await waitFor(() => !alive(), 10000), "with the save finished and nothing unsaved, closing main ends the app");
   },
 };
 

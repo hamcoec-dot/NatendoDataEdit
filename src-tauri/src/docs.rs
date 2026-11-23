@@ -2775,6 +2775,15 @@ impl Docs {
             {
                 crate::recovery::keep_version(target);
             }
+            // Test builds only (feature `test-slow-save`, off in a release):
+            // hold the document locked for a while, as a very big save would.
+            #[cfg(feature = "test-slow-save")]
+            if let Some(ms) = std::env::var("NATENDO_TEST_SAVE_DELAY_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
             d.save(SaveOptions {
                 path,
                 overwrite_changed,

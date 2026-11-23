@@ -11,6 +11,11 @@ rust-version.workspace = true
 name = "natendo_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Test builds only (never in a release): makes a save hold the document for
+# NATENDO_TEST_SAVE_DELAY_MS, so a test can close the app while a save runs.
+test-slow-save = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
