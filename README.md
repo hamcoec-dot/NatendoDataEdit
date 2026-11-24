@@ -132,7 +132,11 @@ Bigger jobs
 | Mailing labels for 1M rows (30 per page) | 7.5 s |
 
 The speed checks live in `crates/engine/examples/perf.rs`; run them with
-`cargo run --release -p natendo-engine --example perf`.
+`cargo run --release -p natendo-engine --example perf`. A busy computer can make one
+check miss by a few percent, so `pwsh scripts/perf-gate.ps1 [rows]` runs them as a gate: a
+check that misses is timed again (the whole suite, up to two more times), and only a check
+that misses all three runs fails ("missed once, passed on retry" is printed for the others).
+A run of 1,000,000 rows is a quick smoke test; the 10,000,000-row run is the real gate.
 
 ## Features
 
@@ -1079,6 +1083,7 @@ npm test               # screen tests
 cargo test --workspace # engine, command line and app tests
 pwsh scripts/ci.ps1    # every check (add -UiOnly to skip Rust)
 cargo run --release -p natendo-engine --example perf   # the 10-million-row speed checks
+pwsh scripts/perf-gate.ps1 10000000   # the same, re-timing a missed check twice
 ```
 
 The installer lands in `target/release/bundle/nsis/`.
