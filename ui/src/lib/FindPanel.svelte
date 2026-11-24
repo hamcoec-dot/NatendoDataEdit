@@ -11,7 +11,7 @@
   import { clearFindHistory, findHistory, rememberFind, rememberReplace, stepHistory } from "./findHistory.svelte";
   import type { Tab } from "./tab.svelte";
   import { findSpecOf, type FindOptions } from "./filters";
-  import { rectOf, type Rect } from "./selection";
+  import { cellCountAreas, rectOf, type Rect } from "./selection";
   import { colLetters } from "./goto";
 
   interface Props {
@@ -25,6 +25,9 @@
      *  when Find opened (or the scope was picked): a hit selects one cell,
      *  so the live selection can't be used after the first Find next. */
     block: Rect | null;
+    /** The blocks of a Ctrl+click selection that "Selection" searches (kept from
+     *  when Find opened or the scope was picked); empty with one block or none. */
+    blocks: Rect[];
     /** Every open tab ("All open tabs" searches them all). */
     tabs: Tab[];
     /** A change to a tab (the one shown unless `t` says another). */
@@ -41,7 +44,7 @@
     onCopy: (text: string, tabs: Tab[]) => Promise<boolean>;
     onClose: () => void;
   }
-  let { tab, tabs, replace = $bindable(), options = $bindable(), block = $bindable(), run, onSelect, onChanged, onGoTab, onNewTab, onRenameColumns, onBatch, onCopy, onClose }: Props = $props();
+  let { tab, tabs, replace = $bindable(), options = $bindable(), block = $bindable(), blocks = $bindable(), run, onSelect, onChanged, onGoTab, onNewTab, onRenameColumns, onBatch, onCopy, onClose }: Props = $props();
 
   /** Number, date and similar patterns test the whole cell; the text
    *  options don't apply to them. */
@@ -59,17 +62,43 @@
     const s = options.scope;
     if (s === lastScope) return;
     lastScope = s;
-    if (s === "all" || s === "pick" || s === "tabs") block = null;
-    else {
-      // One block only: with several blocks selected there is no one block to
-      // search, so "Selection" searches the whole file.
+    if (s === "all" || s === "pick" || s === "tabs") {
+      block = null;
+      blocks = [];
+    } else if (tab.extra.length > 0) {
+      // Several blocks selected: all of them are searched.
+      blocks = tab.areas.map((r) => ({ ...r }));
+      block = null;
+    } else {
       const r = tab.singleRect();
       block = r && r.rows * r.cols > 1 ? { ...r } : null;
+      blocks = [];
     }
+  });
+
+  // The blocks are cell positions among the shown rows: when those rows change
+  // (a filter, hidden rows, a sort, rows added or taken away) they would point
+  // at other rows, so they are let go and the whole file is searched.
+  const rowsKey = $derived(`${tab.info.rows}:${tab.info.total_rows}:${tab.info.filtered}:${tab.info.hidden_rows}:${tab.sort ? JSON.stringify($state.snapshot(tab.sort)) : ""}`);
+  let lastRowsKey = untrack(() => rowsKey);
+  $effect(() => {
+    const k = rowsKey;
+    if (k === lastRowsKey) return;
+    lastRowsKey = k;
+    untrack(() => {
+      if (blocks.length < 2) return;
+      blocks = [];
+      block = null;
+      options.scope = "all";
+      lastScope = "all";
+      status = "The rows shown changed, so the selected blocks were let go. Searching the whole file.";
+    });
   });
 
   // The block in the scope box, so it is clear which one is searched.
   const blockCells = $derived(block ? `${colLetters(block.col)}${block.row + 1}:${colLetters(block.col + block.cols - 1)}${block.row + block.rows}` : "");
+  const blocksCells = $derived(blocks.length > 1 ? `${blocks.length} blocks, ${cellCountAreas(blocks).toLocaleString()} cells` : "");
+  const blocksCols = $derived(blocks.length > 1 ? `${blocks.length} blocks` : "");
   const blockCols = $derived(block ? (block.cols > 1 ? `${colLetters(block.col)}:${colLetters(block.col + block.cols - 1)}` : colLetters(block.col)) : "");
 
   let findInput = $state<HTMLInputElement>();
@@ -214,8 +243,8 @@
 
   /** Several blocks are selected (Ctrl+click) and the scope asks for one:
    *  nothing is searched (and nothing is quietly widened to the whole file). */
-  const scopeNeedsOne = $derived(tab.extra.length > 0 && (options.scope === "selection" || options.scope === "column"));
-  const NEEDS_ONE = "Searching in a selection works on one block. Click once to select a single block, or choose Whole file.";
+  const scopeNeedsOne = $derived(tab.extra.length > 0 && blocks.length === 0 && (options.scope === "selection" || options.scope === "column"));
+  const NEEDS_ONE = "These blocks were selected after Find opened. Choose Selection again to search them, or click once for a single block.";
 
   /** There is something to look for (in the cells, not the notes). */
   function searching(): boolean {
@@ -226,9 +255,10 @@
   function spec(): FindSpec {
     const r = options.scope !== "all" && block ? block : (tab.singleRect() ?? { row: 0, rows: 0, col: 0, cols: 0 });
     const o = { ...options, cols: [...options.cols] };
-    if (o.scope === "selection" && r.rows * r.cols <= 1) o.scope = "all";
+    const several = blocks.length > 1 && (o.scope === "selection" || o.scope === "column");
+    if (o.scope === "selection" && !several && r.rows * r.cols <= 1) o.scope = "all";
     if (o.scope === "tabs") o.scope = "all";
-    return findSpecOf(o, { row: r.row, rows: r.rows, col: r.col, cols: r.cols }, tab.header, tab.columns.hiddenList());
+    return findSpecOf(o, { row: r.row, rows: r.rows, col: r.col, cols: r.cols }, tab.header, tab.columns.hiddenList(), several ? blocks : []);
   }
 
   /** The search for another tab (all of it). */
@@ -535,7 +565,9 @@
     if (!ready()) return;
     rememberReplace(replacement);
     const f = tab.cell;
-    const one: FindSpec = { ...spec(), scope: { kind: "range", row: f.row, rows: 1, col: f.col, cols: 1 }, skip_first: false };
+    const cell = { row: f.row, rows: 1, col: f.col, cols: 1 };
+    // With several blocks selected the one cell is given as a block, the form the guard lets through.
+    const one: FindSpec = { ...spec(), scope: blocks.length > 1 ? { kind: "areas", areas: [cell] } : { kind: "range", ...cell }, skip_first: false };
     try {
       const r = await backend().replaceCell(tab.id, one, replacement);
       if (r.info) onChanged(r.info);
@@ -843,8 +875,8 @@
     <button type="button" title="Find all (Alt+Enter)" onclick={() => void findAll()}>Find all</button>
     <select aria-label="Search in" title="Alt+L: selection or whole file" bind:value={options.scope}>
       <option value="all">Whole file</option>
-      <option value="selection" disabled={tab.extra.length > 0 && options.scope !== "selection"} title={tab.extra.length > 0 ? NEEDS_ONE : undefined}>{blockCells && options.scope === "selection" ? `Selection ${blockCells}` : "Selection"}</option>
-      <option value="column" disabled={tab.extra.length > 0 && options.scope !== "column"} title={tab.extra.length > 0 ? NEEDS_ONE : undefined}>{blockCols && options.scope === "column" ? `Selected columns ${blockCols}` : "Selected columns"}</option>
+      <option value="selection">{blocksCells && options.scope === "selection" ? `Selection (${blocksCells})` : blockCells && options.scope === "selection" ? `Selection ${blockCells}` : "Selection"}</option>
+      <option value="column">{blocksCols && options.scope === "column" ? `Selected columns (${blocksCols})` : blockCols && options.scope === "column" ? `Selected columns ${blockCols}` : "Selected columns"}</option>
       <option value="pick">{options.scope === "pick" && options.cols.length ? `Columns: ${options.cols.length} picked` : "Columns…"}</option>
       <option value="tabs">All open tabs</option>
     </select>

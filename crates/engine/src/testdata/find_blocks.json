@@ -1,0 +1,421 @@
+{
+ "about": "Find over several blocks: the cells that must be found (row, column), in reading order. The engine (find.rs) and the browser stand-in (mock.ts) both run these cases.",
+ "grid": [
+  [
+   "k",
+   "x",
+   "y",
+   "z"
+  ],
+  [
+   "a",
+   "ab",
+   "",
+   "b"
+  ],
+  [
+   "b",
+   "a",
+   "a",
+   "ba"
+  ],
+  [
+   "ab",
+   "",
+   "b",
+   "a"
+  ],
+  [
+   "",
+   "a",
+   "ab",
+   ""
+  ],
+  [
+   "a",
+   "b",
+   "a",
+   "ab"
+  ],
+  [
+   "b",
+   "ab",
+   "",
+   "a"
+  ],
+  [
+   "aa",
+   "",
+   "a",
+   "b"
+  ]
+ ],
+ "cases": [
+  {
+   "name": "side by side",
+   "areas": [
+    {
+     "row": 1,
+     "rows": 3,
+     "col": 0,
+     "cols": 1
+    },
+    {
+     "row": 1,
+     "rows": 3,
+     "col": 2,
+     "cols": 2
+    }
+   ],
+   "skip_first": false,
+   "skip_cols": [],
+   "pattern": "a",
+   "hits": [
+    [
+     1,
+     0
+    ],
+    [
+     2,
+     2
+    ],
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     3
+    ]
+   ]
+  },
+  {
+   "name": "stacked",
+   "areas": [
+    {
+     "row": 1,
+     "rows": 2,
+     "col": 1,
+     "cols": 2
+    },
+    {
+     "row": 5,
+     "rows": 3,
+     "col": 1,
+     "cols": 2
+    }
+   ],
+   "skip_first": false,
+   "skip_cols": [],
+   "pattern": "a",
+   "hits": [
+    [
+     1,
+     1
+    ],
+    [
+     2,
+     1
+    ],
+    [
+     2,
+     2
+    ],
+    [
+     5,
+     2
+    ],
+    [
+     6,
+     1
+    ],
+    [
+     7,
+     2
+    ]
+   ]
+  },
+  {
+   "name": "overlapping",
+   "areas": [
+    {
+     "row": 1,
+     "rows": 4,
+     "col": 0,
+     "cols": 3
+    },
+    {
+     "row": 3,
+     "rows": 4,
+     "col": 1,
+     "cols": 3
+    }
+   ],
+   "skip_first": false,
+   "skip_cols": [],
+   "pattern": "a",
+   "hits": [
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     2,
+     1
+    ],
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     3
+    ],
+    [
+     4,
+     1
+    ],
+    [
+     4,
+     2
+    ],
+    [
+     5,
+     2
+    ],
+    [
+     5,
+     3
+    ],
+    [
+     6,
+     1
+    ],
+    [
+     6,
+     3
+    ]
+   ]
+  },
+  {
+   "name": "unsorted, repeated and past the end",
+   "areas": [
+    {
+     "row": 5,
+     "rows": 2,
+     "col": 2,
+     "cols": 2
+    },
+    {
+     "row": 1,
+     "rows": 1,
+     "col": 0,
+     "cols": 4
+    },
+    {
+     "row": 5,
+     "rows": 2,
+     "col": 2,
+     "cols": 2
+    },
+    {
+     "row": 6,
+     "rows": 99,
+     "col": 3,
+     "cols": 99
+    },
+    {
+     "row": 40,
+     "rows": 2,
+     "col": 0,
+     "cols": 2
+    }
+   ],
+   "skip_first": false,
+   "skip_cols": [],
+   "pattern": "a",
+   "hits": [
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     5,
+     2
+    ],
+    [
+     5,
+     3
+    ],
+    [
+     6,
+     3
+    ]
+   ]
+  },
+  {
+   "name": "title row left out of every block",
+   "areas": [
+    {
+     "row": 0,
+     "rows": 3,
+     "col": 0,
+     "cols": 2
+    },
+    {
+     "row": 1,
+     "rows": 3,
+     "col": 2,
+     "cols": 2
+    }
+   ],
+   "skip_first": true,
+   "skip_cols": [],
+   "pattern": "a",
+   "hits": [
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     2,
+     1
+    ],
+    [
+     2,
+     2
+    ],
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     3
+    ]
+   ]
+  },
+  {
+   "name": "title row kept",
+   "areas": [
+    {
+     "row": 0,
+     "rows": 3,
+     "col": 0,
+     "cols": 2
+    },
+    {
+     "row": 1,
+     "rows": 3,
+     "col": 2,
+     "cols": 2
+    }
+   ],
+   "skip_first": false,
+   "skip_cols": [],
+   "pattern": "a",
+   "hits": [
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     2,
+     1
+    ],
+    [
+     2,
+     2
+    ],
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     3
+    ]
+   ]
+  },
+  {
+   "name": "a hidden column",
+   "areas": [
+    {
+     "row": 1,
+     "rows": 4,
+     "col": 0,
+     "cols": 4
+    },
+    {
+     "row": 5,
+     "rows": 3,
+     "col": 1,
+     "cols": 2
+    }
+   ],
+   "skip_first": false,
+   "skip_cols": [
+    2
+   ],
+   "pattern": "a",
+   "hits": [
+    [
+     1,
+     0
+    ],
+    [
+     1,
+     1
+    ],
+    [
+     2,
+     1
+    ],
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     0
+    ],
+    [
+     3,
+     3
+    ],
+    [
+     4,
+     1
+    ],
+    [
+     6,
+     1
+    ]
+   ]
+  }
+ ]
+}

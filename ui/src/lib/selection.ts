@@ -162,3 +162,85 @@ export function colsOfAreas(areas: readonly Rect[]): number[] {
   for (const r of areas) for (let c = r.col; c < r.col + r.cols; c++) set.add(c);
   return [...set].sort((a, b) => a - b);
 }
+
+/** One step of the active cell through ONE block, as Enter (down each column,
+ *  up with `dr` -1) and Tab (along each row, back with `dc` -1) do. `wrapped`:
+ *  it went past the last cell (or before the first) to the other end. Hidden
+ *  columns are passed over (up to a thousand in a row); null when the block
+ *  shows no column. */
+export function stepInBlock(r: Rect, a: Cell, dr: number, dc: number, hidden: (col: number) => boolean): { cell: Cell; wrapped: boolean } | null {
+  let { row, col } = a;
+  let wrapped = false;
+  for (let i = 0; i < 1_000; i++) {
+    if (dc !== 0) {
+      col += dc;
+      if (col >= r.col + r.cols) {
+        col = r.col;
+        if (row + 1 >= r.row + r.rows) {
+          row = r.row;
+          wrapped = true;
+        } else row += 1;
+      } else if (col < r.col) {
+        col = r.col + r.cols - 1;
+        if (row - 1 < r.row) {
+          row = r.row + r.rows - 1;
+          wrapped = true;
+        } else row -= 1;
+      }
+    } else {
+      row += dr;
+      if (row >= r.row + r.rows) {
+        row = r.row;
+        if (col + 1 >= r.col + r.cols) {
+          col = r.col;
+          wrapped = true;
+        } else col += 1;
+      } else if (row < r.row) {
+        row = r.row + r.rows - 1;
+        if (col - 1 < r.col) {
+          col = r.col + r.cols - 1;
+          wrapped = true;
+        } else col -= 1;
+      }
+    }
+    if (!hidden(col)) return { cell: { row, col }, wrapped };
+    // Down or up a column that is hidden: do not walk its rows one by one (a block
+    // thousands of rows tall would use up the steps), go straight on to the next column.
+    if (dc === 0) row = dr > 0 ? r.row + r.rows - 1 : r.row;
+  }
+  return null;
+}
+
+/** Where the walk enters a block: its first shown cell (the last one going back). */
+export function entryCell(r: Rect, backward: boolean, hidden: (col: number) => boolean): Cell | null {
+  if (!backward) {
+    for (let c = r.col; c < r.col + r.cols; c++) if (!hidden(c)) return { row: r.row, col: c };
+  } else {
+    for (let c = r.col + r.cols - 1; c >= r.col; c--) if (!hidden(c)) return { row: r.row + r.rows - 1, col: c };
+  }
+  return null;
+}
+
+/** Enter or Tab with several blocks selected, as in Excel: the active cell walks
+ *  the last picked block, then goes on to the NEXT block in the order the blocks
+ *  were picked (the first one again after the last), and back the other way with
+ *  Shift. `blocks` is in pick order, the active block last; the result has the
+ *  blocks turned round so the block the cell is in is last, and the new cell.
+ *  The blocks are walked as picked (not as the pieces `disjoint` makes), so a cell
+ *  in two blocks is visited in each. Null when no block shows a column. */
+export function stepAcrossBlocks(blocks: readonly Rect[], a: Cell, dr: number, dc: number, hidden: (col: number) => boolean): { blocks: Rect[]; cell: Cell } | null {
+  const n = blocks.length;
+  if (n === 0) return null;
+  const backward = dr < 0 || dc < 0;
+  const inside = stepInBlock(blocks[n - 1]!, a, dr, dc, hidden);
+  if (n === 1) return inside ? { blocks: [{ ...blocks[0]! }], cell: inside.cell } : null;
+  if (inside && !inside.wrapped) return { blocks: blocks.map((b) => ({ ...b })), cell: inside.cell };
+  let order = blocks.map((b) => ({ ...b }));
+  for (let k = 0; k < n; k++) {
+    // Forward: the oldest pick becomes the last (active). Back: the one before the active one.
+    order = backward ? [order[n - 1]!, ...order.slice(0, n - 1)] : [...order.slice(1), order[0]!];
+    const cell = entryCell(order[n - 1]!, backward, hidden);
+    if (cell) return { blocks: order, cell };
+  }
+  return null;
+}

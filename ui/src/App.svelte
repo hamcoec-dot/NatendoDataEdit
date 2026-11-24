@@ -172,6 +172,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   let findPanel = $state<ReturnType<typeof FindPanel>>();
   /** The block Find and Replace keep to (see FindPanel's `block`). */
   let findBlock = $state<Rect | null>(null);
+  /** The blocks of a Ctrl+click selection that Find's "Selection" searches. */
+  let findBlocks = $state<Rect[]>([]);
   let findOptions = $state<FindOptions>({ ...FIND_DEFAULTS });
   /** Search inside the expanded cell bar (the multi-line editor). */
   let cellFind = $state<{ text: string; hits: [number, number][]; at: number } | null>(null);
@@ -5393,13 +5395,18 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     // taken; one cell (a hit) keeps the block searched so far.
     const t = tab;
     const r = t?.singleRect();
-    if (t && r && cellCount(r) > 1) {
+    if (t && !r && t.extra.length > 0) {
+      // Several blocks selected: Find looks in all of them (kept whatever a hit selects).
+      findOptions.scope = "selection";
+      findBlocks = t.areas.map((a) => ({ ...a }));
+      findBlock = null;
+    } else if (t && r && cellCount(r) > 1) {
+      findBlocks = [];
       findOptions.scope = wholeCols(r, t) && !wholeRows(r, t) ? "column" : wholeRows(r, t) && wholeCols(r, t) ? "all" : "selection";
       // The block searched stays the one selected now, whatever a hit selects.
       findBlock = findOptions.scope !== "all" ? { ...r } : null;
     } else if (t && r && !findOpen) {
-      // (With several blocks selected the scope is left as it is: if it is Selection, the
-      // panel says Find in a selection works on one block, rather than widening quietly.)
+      findBlocks = [];
       if (findOptions.scope === "selection") findOptions.scope = "all";
       findBlock = null;
     }
@@ -5950,10 +5957,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "clean.tools", label: "&Cleaning tools…", keys: ["Ctrl+Shift+K"], run: () => { cleanTool = "spaces"; }, enabled: ready },
     ...TOOLS.map((tl) => ({ id: `clean.tool.${tl.id}`, label: `${tl.label}…`, run: () => { cleanTool = tl.id; }, enabled: ready })),
     { id: "find.find", label: "&Find…", multiArea: true, keys: ["Ctrl+F", "Shift+F5"], run: () => openFind(false), enabled: hasTab },
-    { id: "find.replace", label: "&Replace…", keys: ["Ctrl+H"], run: () => openFind(true), enabled: ready },
+    { id: "find.replace", label: "&Replace…", multiArea: true, keys: ["Ctrl+H"], run: () => openFind(true), enabled: ready },
     { id: "find.batch", label: "Replace from a &list…", run: () => { batchOpen = true; }, enabled: ready },
-    { id: "find.next", label: "Find &next", keys: ["F3", "Shift+F4"], run: () => findAgain(false), enabled: hasTab },
-    { id: "find.prev", label: "Find &previous", keys: ["Shift+F3"], run: () => findAgain(true), enabled: hasTab },
+    { id: "find.next", label: "Find &next", multiArea: true, keys: ["F3", "Shift+F4"], run: () => findAgain(false), enabled: hasTab },
+    { id: "find.prev", label: "Find &previous", multiArea: true, keys: ["Shift+F3"], run: () => findAgain(true), enabled: hasTab },
     { id: "find.thisValue", label: "Find this &value", run: () => findValue("find"), enabled: hasTab },
     { id: "find.replaceValue", label: "Replace this val&ue…", run: () => findValue("replace"), enabled: ready },
     { id: "find.allInColumn", label: "Find all &like this in the column", run: () => findValue("column"), enabled: hasTab },
@@ -7142,10 +7149,21 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         bind:options={findOptions}
         run={runJob}
         bind:block={findBlock}
+        bind:blocks={findBlocks}
         onSelect={(row, col) => {
           // Inside the block searched, only the active cell moves and the
-          // block stays selected (as in Excel).
+          // block stays selected (as in Excel). With several blocks, all of
+          // them stay selected and the block holding the hit becomes the last.
           const b = findBlock;
+          if (findBlocks.length > 1 && (findOptions.scope === "selection" || findOptions.scope === "column")) {
+            if (tab?.selectBlocks(findBlocks, { row, col })) {
+              grid?.scrollIntoView({ row, col });
+              grid?.redraw();
+              return;
+            }
+            grid?.select({ row, col });
+            return;
+          }
           if (b && findOptions.scope !== "all" && row >= b.row && row < b.row + b.rows && col >= b.col && col < b.col + b.cols) {
             grid?.select({ row: b.row, col: b.col }, { row: b.row + b.rows - 1, col: b.col + b.cols - 1 }, false, { row, col });
             grid?.scrollIntoView({ row, col });
@@ -7177,7 +7195,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
             return false;
           }
         }}
-        onClose={() => { findOpen = false; findBlock = null; grid?.focus(); }}
+        onClose={() => { findOpen = false; findBlock = null; findBlocks = []; grid?.focus(); }}
       />
     {/if}
   {/if}

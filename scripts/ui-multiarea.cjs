@@ -189,7 +189,7 @@ const url = process.argv[3] || "http://localhost:5214";
   await p.waitForTimeout(600);
   ok((await valueAt(2, 0)) === "single" && (await valueAt(4, 2)) === "single", "one value pastes into every block");
 
-  // ---- Find in a selection with several blocks is not quietly widened ----
+  // ---- Find in a selection with several blocks searches all of them ----
   await p.mouse.click(cx(0), ry(1));
   await p.keyboard.down("Shift");
   await p.mouse.click(cx(1), ry(2));
@@ -201,35 +201,38 @@ const url = process.argv[3] || "http://localhost:5214";
   await ctrlClick(cx(3), ry(4));
   await p.waitForTimeout(300);
   const sel1 = JSON.stringify(await areas());
+  // Blocks picked after Find opened are not searched until Ctrl+F takes them: nothing is quietly widened.
   await p.getByRole("button", { name: "Find next" }).click();
   await p.waitForTimeout(400);
   const needText = await p.locator(".find").first().textContent();
-  ok(/works on one block/.test(needText ?? "") && JSON.stringify(await areas()) === sel1, "Find in 'Selection' with several blocks says it works on one block and searches nothing");
+  ok(/selected after Find opened/.test(needText ?? "") && JSON.stringify(await areas()) === sel1, "blocks picked after Find opened are not searched, and it says so");
+  await p.keyboard.press("Control+f");
+  await p.waitForTimeout(300);
+  const scopeText = await p.evaluate(() => {
+    const s = document.querySelector("select[aria-label='Search in']");
+    return s.options[s.selectedIndex].textContent;
+  });
+  ok(/2 blocks/.test(scopeText), `Ctrl+F takes the blocks: Selection names them (${scopeText})`);
   const optDisabled = await p.locator("select[aria-label='Search in'] option[value='column']").isDisabled();
-  ok(optDisabled, "and 'Selected columns' is greyed out while several blocks are selected");
+  ok(!optDisabled, "and 'Selected columns' can be picked");
+  await p.getByRole("button", { name: "Find next" }).click();
+  await p.waitForTimeout(500);
+  const hit = await p.evaluate(() => [window.__nde.tab.cell.row, window.__nde.tab.cell.col, window.__nde.tab.areas.length]);
+  ok(hit[0] === 2 && hit[1] === 0 && hit[2] === 2, `Find next finds the hit inside the blocks and keeps both selected (${JSON.stringify(hit)})`);
   await p.locator("select[aria-label='Search in']").selectOption("all");
   await p.getByRole("button", { name: "Find next" }).click();
   await p.waitForTimeout(500);
   ok((await areas()).length === 1, "Whole file searches, and the hit selects one cell (the earlier blocks go)");
   await p.keyboard.press("Escape");
 
-  // ---- Ctrl+F with several blocks keeps a Selection scope (and says so) instead of switching to the whole file ----
-  await p.mouse.click(cx(0), ry(1));
-  await p.keyboard.down("Shift");
-  await p.mouse.click(cx(1), ry(2));
-  await p.keyboard.up("Shift");
-  await p.keyboard.press("Control+f");
-  await p.waitForTimeout(300);
-  await p.locator("select[aria-label='Search in']").selectOption("selection");
-  await p.keyboard.press("Escape");
-  await p.waitForTimeout(300);
+  // ---- Ctrl+F with several blocks searches them (the scope is Selection) ----
   await p.mouse.click(cx(0), ry(5));
   await ctrlClick(cx(2), ry(6));
   await p.keyboard.press("Control+f");
   await p.waitForTimeout(400);
   const scopeNow = await p.locator("select[aria-label='Search in']").inputValue();
   const noteNow = (await p.locator(".find").first().textContent()) ?? "";
-  ok(scopeNow === "selection" && /works on one block/.test(noteNow), `Ctrl+F with several blocks keeps the Selection scope and says it works on one block (scope ${scopeNow})`);
+  ok(scopeNow === "selection" && !/works on one block/.test(noteNow), `Ctrl+F with several blocks gives the Selection scope and no refusal (scope ${scopeNow})`);
   await p.locator("select[aria-label='Search in']").selectOption("all");
   await p.keyboard.press("Escape");
   await p.waitForTimeout(200);
@@ -249,6 +252,7 @@ const url = process.argv[3] || "http://localhost:5214";
   await p.keyboard.press("Control+f");
   await p.waitForTimeout(300);
   await p.keyboard.type("Ada");
+  await p.locator("select[aria-label='Search in']").selectOption("all");
   await p.waitForTimeout(500);
   await p.getByRole("button", { name: "Find next" }).click();
   await p.waitForTimeout(900);
@@ -372,6 +376,48 @@ const url = process.argv[3] || "http://localhost:5214";
     return res;
   });
   ok(refused.length === 0, `the backend refuses every write while several blocks are selected (${refused.join("; ") || "all refused"})`);
+
+  // ---- Enter and Tab walk the blocks in the order they were picked ----
+  await p.keyboard.press("Escape");
+  await p.mouse.click(cx(0), ry(1)); // block 1 (picked first)
+  await ctrlClick(cx(2), ry(3)); // block 2
+  await ctrlDrag(cx(1), ry(6), cx(2), ry(7)); // block 3: 2 x 2 (picked last, active)
+  const active = () => p.evaluate(() => [window.__nde.tab.cell.row, window.__nde.tab.cell.col]);
+  const picks = await areas(); // in the order picked, the active one last
+  ok(picks.length === 3, `three blocks picked (${JSON.stringify(picks)})`);
+  const start = await active();
+  // The slow model: the cells of each block along its rows, blocks in pick order and round again.
+  const rowsOf = (b) => {
+    const l = [];
+    for (let r = b.row; r < b.row + b.rows; r++) for (let c = b.col; c < b.col + b.cols; c++) l.push([r, c]);
+    return l;
+  };
+  const ring = picks.flatMap(rowsOf);
+  const lastOff = picks.slice(0, -1).reduce((n, b) => n + b.rows * b.cols, 0);
+  const at0 = lastOff + rowsOf(picks[picks.length - 1]).findIndex(([r, c]) => r === start[0] && c === start[1]);
+  const want = Array.from({ length: 7 }, (_, i) => ring[(at0 + 1 + i) % ring.length]);
+  const seq = [];
+  for (let i = 0; i < 7; i++) {
+    await p.keyboard.press("Tab");
+    await p.waitForTimeout(120);
+    seq.push(await active());
+  }
+  ok(JSON.stringify(seq) === JSON.stringify(want), `Tab goes block to block in the order picked, along each block's rows, and wraps (${JSON.stringify(seq)} vs ${JSON.stringify(want)})`);
+  ok((await areas()).length === 3, "all three blocks stay selected while Tab moves");
+  // Shift+Tab goes back the same way: two steps back from where the seven Tabs ended.
+  await p.keyboard.press("Shift+Tab");
+  await p.keyboard.press("Shift+Tab");
+  await p.waitForTimeout(200);
+  const back = await active();
+  const wantBack = ring[(at0 + 1 + 6 - 2 + ring.length * 2) % ring.length];
+  ok(back[0] === wantBack[0] && back[1] === wantBack[1], `Shift+Tab goes back through the cells and blocks (${JSON.stringify(back)} vs ${JSON.stringify(wantBack)})`);
+  // Enter goes down each column of a block (and on to the next block past its last cell).
+  const beforeEnter = await active();
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(150);
+  const afterEnter = await active();
+  ok(JSON.stringify(afterEnter) !== JSON.stringify(beforeEnter) && (await areas()).length === 3, `Enter moves the active cell and keeps the blocks (${JSON.stringify(beforeEnter)} -> ${JSON.stringify(afterEnter)})`);
+  await p.keyboard.press("Escape");
 
   ok(errors.length === 0, `no page errors ${errors.join(" | ")}`);
   console.log(failed ? `${failed} FAILED` : "ALL PASS");

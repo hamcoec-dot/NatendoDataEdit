@@ -251,6 +251,8 @@ export function findSpecOf(
   sel: { row: number; rows: number; col: number; cols: number },
   header: boolean,
   hidden: number[] = [],
+  /** Several selected blocks (Ctrl+click): Selection searches all of them. */
+  blocks: { row: number; rows: number; col: number; cols: number }[] = [],
 ): FindSpec {
   // Empty cells: a regular expression the engine matches specially.
   const pattern: Pattern = o.blank
@@ -265,7 +267,9 @@ export function findSpecOf(
         escapes: o.escapes,
       };
   let scope: Scope = { kind: "all" };
-  if (o.scope === "selection") scope = { kind: "range", ...sel };
+  const several = blocks.length > 1;
+  if (o.scope === "selection") scope = several ? { kind: "areas", areas: blocks.map((b) => ({ row: b.row, rows: b.rows, col: b.col, cols: b.cols })) } : { kind: "range", ...sel };
+  else if (o.scope === "column" && several) scope = { kind: "columns", cols: [...new Set(blocks.flatMap((b) => Array.from({ length: b.cols }, (_, i) => b.col + i)))].sort((a, b) => a - b) };
   else if (o.scope === "column") scope = { kind: "columns", cols: Array.from({ length: sel.cols }, (_, i) => sel.col + i) };
   else if (o.scope === "pick") scope = { kind: "columns", cols: [...(o.cols ?? [])].sort((a, b) => a - b) };
   if (o.preserveCase && !o.blank) pattern.preserve_case = true;

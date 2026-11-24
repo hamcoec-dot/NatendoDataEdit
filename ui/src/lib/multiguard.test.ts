@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backend, WRITE_METHODS, writeGuard } from "./backend";
+import { AREAS_SPEC_METHODS, backend, WRITE_METHODS, writeGuard } from "./backend";
 import { Registry, SELECTION_FREE } from "./commands";
 
 const sources = import.meta.glob(["../**/*.ts", "../**/*.svelte", "!../**/*.test.ts"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
@@ -49,7 +49,6 @@ const NOT_WRITES = [
   "findCount",
   "findMarks",
   "replacePreview",
-  "findRows",
   "findNotes",
   "showChanged",
   "columnPairs",
@@ -233,6 +232,34 @@ describe("every call that changes a file is guarded while several blocks are sel
       // Passed through: setCells works again.
       const info = await backend().setCells(doc, [[0, 0, "x"]]);
       expect(info.id).toBe(doc);
+    } finally {
+      writeGuard.check = null;
+    }
+  });
+
+  it("only Replace all, its confirm step, Replace of one cell and Find's row actions pass, and only with a search over the blocks", async () => {
+    expect(Object.keys(AREAS_SPEC_METHODS).sort()).toEqual(["findRows", "replaceAll", "replaceCell", "replaceConfirm"]);
+    for (const m of Object.keys(AREAS_SPEC_METHODS)) expect(WRITE_METHODS).toContain(m);
+    const b = backend() as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    const doc = (await backend().newDocument()).id;
+    const pattern = { text: "x", kind: "plain", match_case: false, whole_cell: false };
+    const over = (kind: string) => ({ pattern, skip_first: false, scope: kind === "areas" ? { kind, areas: [{ row: 0, rows: 1, col: 0, cols: 1 }] } : { kind, row: 0, rows: 1, col: 0, cols: 1 } });
+    writeGuard.check = () => "That works on one block.";
+    try {
+      // With a search over the blocks the guard lets the call through (what the call does then is its own business).
+      for (const m of Object.keys(AREAS_SPEC_METHODS)) {
+        const r = await b[m]!(doc, over("areas"), "y", { kind: "count" }).then(
+          () => null,
+          (e: { kind?: string }) => e,
+        );
+        expect(r?.kind, `${m} with areas`).not.toBe("one_block");
+        // With any other scope it is refused as before.
+        for (const k of ["range", "all", "columns"]) await expect(b[m]!(doc, over(k), "y", { kind: "count" }), `${m} with ${k}`).rejects.toMatchObject({ kind: "one_block" });
+      }
+      // The other writes that take a search stay refused even with one over the blocks.
+      for (const m of ["replaceTitles", "batchConfirm"]) {
+        await expect(b[m]!(doc, over("areas"), "y"), m).rejects.toMatchObject({ kind: "one_block" });
+      }
     } finally {
       writeGuard.check = null;
     }
