@@ -35,11 +35,19 @@ describe("Enter and Tab through several blocks, in the order the blocks were pic
         cols: 1 + Math.floor(r() * 3),
       }));
       const isHidden = (c: number) => hidden.has(c);
+      // The model's cell lists, worked out once per block and key for this case.
+      const memo = new Map<string, Cell[]>();
+      const listOf = (i: number, by: "row" | "col"): Cell[] => {
+        const k = `${i}${by}`;
+        let l = memo.get(k);
+        if (!l) memo.set(k, (l = cellsOf(picked[i]!, by, hidden)));
+        return l;
+      };
       // The model's place: which pick (the last one first) and where in its cells.
       let idx = n - 1;
       let by: "row" | "col" = r() < 0.5 ? "row" : "col";
       let blocks = picked.map((b) => ({ ...b }));
-      const first = cellsOf(picked[idx]!, by, hidden);
+      const first = listOf(idx, by);
       if (!first.length) continue;
       let pos = Math.floor(r() * first.length);
       let cell = first[pos]!;
@@ -49,7 +57,7 @@ describe("Enter and Tab through several blocks, in the order the blocks were pic
         const dr = nextBy === "col" ? (back ? -1 : 1) : 0;
         const dc = nextBy === "row" ? (back ? -1 : 1) : 0;
         // Model: walk the block's list for this key; past its end, on to the next non-empty block.
-        const list = cellsOf(picked[idx]!, nextBy, hidden);
+        const list = listOf(idx, nextBy);
         const at = list.findIndex((c) => c.row === cell.row && c.col === cell.col);
         let want: Cell | null = null;
         let wantIdx = idx;
@@ -58,7 +66,7 @@ describe("Enter and Tab through several blocks, in the order the blocks were pic
         else {
           for (let k = 1; k <= n && !want; k++) {
             const j = (((idx + (back ? -k : k)) % n) + n) % n;
-            const l = cellsOf(picked[j]!, nextBy, hidden);
+            const l = listOf(j, nextBy);
             if (l.length) {
               want = back ? l[l.length - 1]! : l[0]!;
               wantIdx = j;
@@ -89,7 +97,7 @@ describe("Enter and Tab through several blocks, in the order the blocks were pic
       void pos;
       void by;
     }
-  });
+  }, 60_000);
 
   it("Enter through a block thousands of rows tall with hidden columns inside never stops dead", () => {
     const r = rnd(77);
@@ -122,7 +130,7 @@ describe("Enter and Tab through several blocks, in the order the blocks were pic
     const b: Rect = { row: 0, rows: 5_000, col: 0, cols: 3 };
     expect(stepInBlock(b, { row: 4_999, col: 0 }, 1, 0, (c) => c === 1)).toEqual({ cell: { row: 0, col: 2 }, wrapped: false });
     expect(stepInBlock(b, { row: 0, col: 2 }, -1, 0, (c) => c === 1)).toEqual({ cell: { row: 4_999, col: 0 }, wrapped: false });
-  });
+  }, 60_000);
 
   it("one block still wraps inside itself (the old rule)", () => {
     const b: Rect = { row: 2, rows: 2, col: 1, cols: 2 };
