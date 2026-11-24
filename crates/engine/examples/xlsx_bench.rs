@@ -1,7 +1,7 @@
 //! Time of the Excel export of every row in parts (split_files), for the speed gate:
 //!
 //! ```text
-//! cargo run --release -p natendo-engine --example xlsx_bench -- [rows] [repeats] [shuffled]
+//! cargo run --release -p natendo-engine --example xlsx_bench -- [rows] [repeats] [shuffled|plain] [folder] [part_rows]
 //! ```
 //! Prints the best and every time in milliseconds (default 1,000,000 rows, 3 repeats). With `shuffled`
 //! the rows are shuffled first, as in the perf run (rows read out of file order).
@@ -51,7 +51,11 @@ fn main() {
         .and_then(|a| a.parse().ok())
         .unwrap_or(1_000_000);
     let repeats: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(3);
-    let dir = std::env::temp_dir().join("nde-find-bench");
+    // Where the fixture and the output go (default: the temp folder; perf uses target/perf).
+    let dir = args.get(3).map_or_else(
+        || std::env::temp_dir().join("nde-find-bench"),
+        std::path::PathBuf::from,
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("fixture-{rows}.csv"));
     if !path.exists() {
@@ -63,7 +67,9 @@ fn main() {
         let plan = d.plan_shuffle(1, rows - 1, 7, &p).unwrap();
         d.apply_shuffle(plan).unwrap();
     }
-    let out = dir.join("xlsx-parts");
+    // Data rows per part (0: as many as a sheet holds, so 1,048,575 and files only past that).
+    let part_rows: u64 = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(0);
+    let out = dir.join("xlsx-bench-parts");
     let mut times = Vec::new();
     for _ in 0..repeats {
         let _ = std::fs::remove_dir_all(&out);
@@ -75,6 +81,7 @@ fn main() {
                 &ExportOptions {
                     format: ExportFormat::Xlsx,
                     split_files: true,
+                    part_rows,
                     ..Default::default()
                 },
                 &p,
