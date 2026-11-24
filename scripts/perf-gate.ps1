@@ -1,3 +1,4 @@
+#Requires -Version 7
 # The speed gate with a re-time: runs the perf budget check (crates/engine/examples/perf.rs)
 # and, when some check misses its budget, runs the whole check again, up to two more times.
 # A check fails the gate only if it missed on all three runs; a check that missed once and
