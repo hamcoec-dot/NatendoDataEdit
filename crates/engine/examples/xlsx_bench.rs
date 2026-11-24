@@ -1,7 +1,7 @@
 //! Time of the Excel export of every row in parts (split_files), for the speed gate:
 //!
 //! ```text
-//! cargo run --release -p natendo-engine --example xlsx_bench -- [rows] [repeats] [shuffled|plain] [folder] [part_rows]
+//! cargo run --release -p natendo-engine --example xlsx_bench -- [rows] [repeats] [shuffled|plain|session] [folder] [part_rows]
 //! ```
 //! Prints the best and every time in milliseconds (default 1,000,000 rows, 3 repeats). With `shuffled`
 //! the rows are shuffled first, as in the perf run (rows read out of file order).
@@ -11,6 +11,9 @@ use std::io::{BufWriter, Write};
 use std::time::Instant;
 
 use natendo_engine::export::{ExportFormat, ExportOptions};
+use natendo_engine::expr::ComputeSpec;
+use natendo_engine::find::{FindSpec, Pattern, PatternKind};
+use natendo_engine::sort::{SortKey, SortKind, SortSpec};
 use natendo_engine::{Document, OpenOptions, Progress};
 
 const COLS: usize = 20;
@@ -63,7 +66,62 @@ fn main() {
     }
     let mut d = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
     let p = Progress::new();
-    if args.get(2).is_some_and(|a| a == "shuffled") {
+    if args.get(2).is_some_and(|a| a == "session") {
+        // A working session: sort, filter by a formula, Find all, clear the filter, undo,
+        // sort again, edit a few cells; then export.
+        let key = |col, kind| SortSpec {
+            keys: vec![SortKey {
+                col,
+                descending: false,
+                kind,
+                match_case: false,
+            }],
+            keep_first: true,
+            read: Default::default(),
+            lists: Vec::new(),
+        };
+        let plan = d.plan_sort(&key(2, SortKind::Number), &p).unwrap();
+        d.apply_sort(plan).unwrap();
+        let (plan, _) = d
+            .plan_formula_filter(
+                &ComputeSpec {
+                    expr: "AND(VALUE([col2]) > 500, LEN([col4]) = 8)".into(),
+                    keep_first: true,
+                    ..Default::default()
+                },
+                &p,
+            )
+            .unwrap();
+        d.apply_rows(plan).unwrap();
+        let find = FindSpec {
+            pattern: Pattern {
+                text: "City 7".into(),
+                kind: PatternKind::Plain,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        d.find_all(&find, 1_000, &p).unwrap();
+        d.clear_filter();
+        d.undo();
+        let plan = d.plan_sort(&key(1, SortKind::Auto), &p).unwrap();
+        d.apply_sort(plan).unwrap();
+        d.clear_filter();
+        let shown = d.row_count();
+        for i in 0..200u64 {
+            d.set_cell(
+                1 + (i * (rows / 250).max(1)) % (shown - 1),
+                3,
+                format!("edited {i}"),
+            )
+            .unwrap();
+        }
+        println!(
+            "(session done: {} rows shown, {} undo steps)",
+            d.row_count(),
+            d.can_undo() as u8
+        );
+    } else if args.get(2).is_some_and(|a| a == "shuffled") {
         let plan = d.plan_shuffle(1, rows - 1, 7, &p).unwrap();
         d.apply_shuffle(plan).unwrap();
     }

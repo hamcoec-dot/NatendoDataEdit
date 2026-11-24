@@ -183,7 +183,9 @@ mod tests {
             .collect();
         let t = std::time::Instant::now();
         let d = disjoint(&areas);
-        assert!(t.elapsed().as_millis() < 100, "{:?}", t.elapsed());
+        // 100 ms in a release build (about 6 ms here); a debug build on a slow runner is far slower.
+        let limit = if cfg!(debug_assertions) { 1_500 } else { 100 };
+        assert!(t.elapsed().as_millis() < limit, "{:?}", t.elapsed());
         assert!(!d.is_empty());
     }
 }

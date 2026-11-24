@@ -100,12 +100,12 @@ fn multi_area_checks(
             cols: 1,
         };
         // The same number of cells as one block of three columns next to each other.
-        // One warm-up of each (the file's pages are read in), then the best of three,
+        // One warm-up of each (the file's pages are read in), then the best of five,
         // so a busy moment of the machine cannot fail a ratio gate.
         let best = |f: &mut dyn FnMut()| {
             f();
             let mut best = Duration::MAX;
-            for _ in 0..3 {
+            for _ in 0..5 {
                 let t = Instant::now();
                 f();
                 best = best.min(t.elapsed());
@@ -731,7 +731,9 @@ fn main() {
         check.budget(
             "paste 100k rows over a protected column",
             t.elapsed(),
-            budget(1.0),
+            // The input is always 100,000 rows, whatever the file's size: one second
+            // (what the 10M run has), not scaled by the rows.
+            Duration::from_secs(1),
         );
         doc.undo();
         doc.set_protected(&[]);
@@ -1120,11 +1122,29 @@ fn main() {
             &p,
         )
         .unwrap();
-    let took = t.elapsed();
+    let first = t.elapsed();
+    // The best of three (the first run also reads the file in): a busy moment of the
+    // machine cannot fail the gate; the first run is printed too.
+    let mut took = first;
+    for _ in 0..2 {
+        let t = Instant::now();
+        small
+            .export_file(
+                &xlsx,
+                &ExportOptions {
+                    format: ExportFormat::Xlsx,
+                    ..Default::default()
+                },
+                &p,
+            )
+            .unwrap();
+        took = took.min(t.elapsed());
+    }
     println!(
-        "     export .xlsx: {} rows, {:.0} MB",
+        "     export .xlsx: {} rows, {:.0} MB, first run {:?}",
         r.rows,
-        r.bytes as f64 / 1e6
+        r.bytes as f64 / 1e6,
+        first
     );
     check.budget("export .xlsx (1M rows)", took, budget(3.0));
     let data = fs::read(&xlsx).unwrap();
@@ -1898,7 +1918,8 @@ fn main() {
     check.budget(
         "clean-up suggestions (first 2,000,000 rows)",
         t.elapsed(),
-        budget(4.0),
+        // 4 s for the 2,000,000 rows it reads at 10M; a smaller file has fewer rows to read.
+        Duration::from_secs_f64(4.0 * rows.min(2_000_000) as f64 / 2_000_000.0),
     );
     assert!(s.rows > 0);
     // A recovery copy stops at 200 MB (the app's cap); time the first
