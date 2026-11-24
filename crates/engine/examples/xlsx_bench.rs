@@ -1,9 +1,10 @@
 //! Time of the Excel export of every row in parts (split_files), for the speed gate:
 //!
 //! ```text
-//! cargo run --release -p natendo-engine --example xlsx_bench -- [rows] [repeats]
+//! cargo run --release -p natendo-engine --example xlsx_bench -- [rows] [repeats] [shuffled]
 //! ```
-//! Prints the best and every time in milliseconds (default 1,000,000 rows, 3 repeats).
+//! Prints the best and every time in milliseconds (default 1,000,000 rows, 3 repeats). With `shuffled`
+//! the rows are shuffled first, as in the perf run (rows read out of file order).
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -56,8 +57,12 @@ fn main() {
     if !path.exists() {
         generate(&path, rows).unwrap();
     }
-    let d = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
+    let mut d = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
     let p = Progress::new();
+    if args.get(2).is_some_and(|a| a == "shuffled") {
+        let plan = d.plan_shuffle(1, rows - 1, 7, &p).unwrap();
+        d.apply_shuffle(plan).unwrap();
+    }
     let out = dir.join("xlsx-parts");
     let mut times = Vec::new();
     for _ in 0..repeats {

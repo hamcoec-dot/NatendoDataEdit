@@ -2170,10 +2170,18 @@ fn main() {
         ] {
             let t = Instant::now();
             let g = group_lookalikes(&vals, method, &p).unwrap();
+            let took = t.elapsed();
+            // 3 s per 200,000 names (the module's own gate), tied to the number of names
+            // and not to the size of the file; the speed is printed too.
+            let limit = Duration::from_secs_f64(3.0 * vals.len() as f64 / 200_000.0);
             check.budget(
-                &format!("look-alike groups by {label} (200,000 distinct names)"),
-                t.elapsed(),
-                budget(3.0),
+                &format!(
+                    "look-alike groups by {label} ({} distinct names, {:.0} names/s)",
+                    vals.len(),
+                    vals.len() as f64 / took.as_secs_f64().max(1e-9)
+                ),
+                took,
+                limit,
             );
             println!(
                 "     {} groups, {} crowded forms skipped",
