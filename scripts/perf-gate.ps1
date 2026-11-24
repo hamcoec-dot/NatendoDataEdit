@@ -11,10 +11,12 @@ param([int]$Rows = 1000000)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
-cargo build --release -p natendo-engine --examples
-if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+if (-not $env:NDE_PERF_EXE) {
+  cargo build --release -p natendo-engine --examples
+  if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+}
 $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
-$exe = Join-Path $targetDir 'release\examples\perf.exe'
+$exe = if ($env:NDE_PERF_EXE) { $env:NDE_PERF_EXE } else { Join-Path $targetDir 'release\examples\perf.exe' }  # (NDE_PERF_EXE: a stand-in, for testing this script)
 New-Item -ItemType Directory -Force -Path (Join-Path $root 'target\perf') | Out-Null
 
 # The name of a check as printed on a FAIL line, without the numbers that change from run to run.
