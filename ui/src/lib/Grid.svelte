@@ -7,7 +7,7 @@
   import type { Tab } from "./tab.svelte";
   import { enterStep, prefs } from "./prefs.svelte";
   import { MAX_CUSTOM_ROWS } from "./rowheights";
-  import { contains, rectOf, type Cell, type Rect, type Selection, touching, containsAny, MAX_AREAS } from "./selection";
+  import { contains, rectOf, type Cell, type Rect, type Selection, touching, containsAny, MAX_AREAS, stepAcrossBlocks, stepInBlock } from "./selection";
   import { blockTarget, dropIndex, gapAt, onOutline } from "./dragmove";
   import type { ViewportData } from "./binary";
   import { backend, errorText, type Dir } from "./backend";
@@ -1595,39 +1595,22 @@
     const a = tab.cell;
     advancing = true;
     try {
+      // Several blocks: through each in the order they were picked, then the next block.
+      if (tab.extra.length > 0) {
+        const go = stepAcrossBlocks(tab.areas, a, dr, dc, (c) => tab.columns.isHidden(c));
+        if (!go) return;
+        tab.setBlocks(go.blocks, go.cell);
+        scrollIntoView(go.cell);
+        redraw();
+        return;
+      }
       if (r.rows * r.cols > 1) {
-        let { row, col } = a;
         // Hidden columns are passed over (up to a thousand in a row); if
         // the block shows no column at all, nothing moves.
-        let found = false;
-        for (let i = 0; i < 1_000; i++) {
-          if (dc !== 0) {
-            col += dc;
-            if (col >= r.col + r.cols) {
-              col = r.col;
-              row = row + 1 >= r.row + r.rows ? r.row : row + 1;
-            } else if (col < r.col) {
-              col = r.col + r.cols - 1;
-              row = row - 1 < r.row ? r.row + r.rows - 1 : row - 1;
-            }
-          } else {
-            row += dr;
-            if (row >= r.row + r.rows) {
-              row = r.row;
-              col = col + 1 >= r.col + r.cols ? r.col : col + 1;
-            } else if (row < r.row) {
-              row = r.row + r.rows - 1;
-              col = col - 1 < r.col ? r.col + r.cols - 1 : col - 1;
-            }
-          }
-          if (!tab.columns.isHidden(col)) {
-            found = true;
-            break;
-          }
-        }
-        if (!found) return;
-        select(tab.sel.anchor, tab.sel.focus, false, { row, col });
-        scrollIntoView({ row, col });
+        const go = stepInBlock(r, a, dr, dc, (c) => tab.columns.isHidden(c));
+        if (!go) return;
+        select(tab.sel.anchor, tab.sel.focus, false, go.cell);
+        scrollIntoView(go.cell);
         return;
       }
       if (dc !== 0) {

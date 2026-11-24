@@ -986,7 +986,14 @@ pub enum Scope {
         col: u32,
         cols: u32,
     },
+    /// Several selected blocks of shown rows and columns (Ctrl+click). The
+    /// engine makes them disjoint itself, so a cell in two blocks is searched,
+    /// counted and replaced once. At most [`MAX_FIND_BLOCKS`].
+    Areas { areas: Vec<crate::areas::Area> },
 }
+
+/// Most blocks one search may be given (as for the other multi-block commands).
+pub const MAX_FIND_BLOCKS: usize = 10_000;
 
 /// A search: what and where.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1173,6 +1180,53 @@ pub(crate) struct Area {
     /// slot in that list (`None`: past the column map, always empty).
     wanted: Vec<u32>,
     slot: Vec<Option<usize>>,
+    /// Several blocks: which of `cols` (by index) are searched in each band of
+    /// rows. `rows` and `cols` are then the bounding box. `None`: every column
+    /// of every row (one block, or a whole file), the same loop as ever.
+    mask: Option<Mask>,
+}
+
+/// Bands of rows (sorted, not overlapping) with the columns searched in each.
+#[derive(Clone)]
+pub(crate) struct Mask {
+    starts: Vec<u64>,
+    ends: Vec<u64>,
+    /// For each band the indexes into `Area::cols`, ascending.
+    ks: Vec<Vec<usize>>,
+}
+
+impl Mask {
+    /// The columns searched in `row` (none outside every band).
+    fn ks_of(&self, row: u64) -> &[usize] {
+        let i = self.starts.partition_point(|&s| s <= row);
+        if i == 0 || row >= self.ends[i - 1] {
+            return &[];
+        }
+        &self.ks[i - 1]
+    }
+
+    /// The same bands for the one column `k` alone (as index 0).
+    fn only(&self, k: usize) -> Mask {
+        let mut m = Mask {
+            starts: Vec::new(),
+            ends: Vec::new(),
+            ks: Vec::new(),
+        };
+        for ((&a, &b), ks) in self.starts.iter().zip(&self.ends).zip(&self.ks) {
+            if ks.binary_search(&k).is_err() {
+                continue;
+            }
+            match m.ends.last_mut() {
+                Some(e) if *e == a => *e = b,
+                _ => {
+                    m.starts.push(a);
+                    m.ends.push(b);
+                    m.ks.push(vec![0]);
+                }
+            }
+        }
+        m
+    }
 }
 
 /// Text for a one-line list: a line break shows as ⏎ (one for `\r\n`), a
@@ -1231,6 +1285,62 @@ pub(crate) fn short(s: &str) -> String {
     visible(&t)
 }
 
+/// A block in the area's row coordinates and logical columns:
+/// (first row, past the last row, first column, past the last column).
+type Block = (u64, u64, u32, u32);
+
+/// The bands of rows of the blocks with, in each, the searched columns as
+/// indexes into `cols` (sorted). Neighbouring bands with the same columns join.
+fn band_mask(blocks: &[Block], cols: &[u32]) -> Mask {
+    let mut ys: Vec<u64> = blocks.iter().flat_map(|b| [b.0, b.1]).collect();
+    ys.sort_unstable();
+    ys.dedup();
+    // Each block as the index range of `cols` it covers.
+    let mut order: Vec<(u64, u64, usize, usize)> = blocks
+        .iter()
+        .map(|b| {
+            (
+                b.0,
+                b.1,
+                cols.partition_point(|&c| c < b.2),
+                cols.partition_point(|&c| c < b.3),
+            )
+        })
+        .filter(|b| b.2 < b.3)
+        .collect();
+    order.sort_unstable_by_key(|b| b.0);
+    let mut m = Mask {
+        starts: Vec::new(),
+        ends: Vec::new(),
+        ks: Vec::new(),
+    };
+    let mut next = 0;
+    let mut active: Vec<(u64, usize, usize)> = Vec::new();
+    for w in ys.windows(2) {
+        let (y, y2) = (w[0], w[1]);
+        while next < order.len() && order[next].0 <= y {
+            active.push((order[next].1, order[next].2, order[next].3));
+            next += 1;
+        }
+        active.retain(|a| a.0 > y);
+        if active.is_empty() {
+            continue;
+        }
+        let mut ks: Vec<usize> = active.iter().flat_map(|a| a.1..a.2).collect();
+        ks.sort_unstable();
+        ks.dedup();
+        match (m.ends.last_mut(), m.ks.last()) {
+            (Some(e), Some(last)) if *e == y && *last == ks => *e = y2,
+            _ => {
+                m.starts.push(y);
+                m.ends.push(y2);
+                m.ks.push(ks);
+            }
+        }
+    }
+    m
+}
+
 impl Document {
     pub(crate) fn area(&self, spec: &FindSpec) -> Result<Area, Error> {
         // Hidden rows too: document positions instead of shown rows.
@@ -1241,14 +1351,14 @@ impl Document {
             self.row_count()
         };
         let first = u64::from(spec.skip_first && n > 0);
-        let (rows, cols): (Range<u64>, Vec<u32>) = match &spec.scope {
-            Scope::All => (first..n, (0..self.col_count()).collect()),
+        let (rows, cols, blocks): (Range<u64>, Vec<u32>, Option<Vec<Block>>) = match &spec.scope {
+            Scope::All => (first..n, (0..self.col_count()).collect(), None),
             Scope::Columns { cols } => {
                 let mut c = cols.clone();
                 c.sort_unstable();
                 c.dedup();
                 c.retain(|&x| x < self.col_count());
-                (first..n, c)
+                (first..n, c, None)
             }
             Scope::Range {
                 row,
@@ -1273,7 +1383,64 @@ impl Document {
                 } else {
                     ((*row).min(n), row.saturating_add(*rows).min(n))
                 };
-                (r0..r1, (*col..c1).collect())
+                (r0..r1, (*col..c1).collect(), None)
+            }
+            Scope::Areas { areas } => {
+                if areas.len() > MAX_FIND_BLOCKS {
+                    return Err(Error::Invalid(format!(
+                        "Find works on up to {MAX_FIND_BLOCKS} blocks at once"
+                    )));
+                }
+                // Cut to the table, leave out the title row when asked, make
+                // the blocks disjoint (a cell in two is searched once).
+                let shown = self.row_count();
+                let ncols = self.col_count();
+                let mut cut = Vec::with_capacity(areas.len());
+                for a in areas {
+                    let r0 = a.row.max(first);
+                    let r1 = a.row.saturating_add(a.rows).min(shown);
+                    let c1 = a.col.saturating_add(a.cols).min(ncols);
+                    if r0 < r1 && a.col < c1 {
+                        cut.push(crate::areas::Area {
+                            row: r0,
+                            rows: r1 - r0,
+                            col: a.col,
+                            cols: c1 - a.col,
+                        });
+                    }
+                }
+                let mut blocks: Vec<Block> = Vec::new();
+                for b in crate::areas::disjoint(&cut) {
+                    let (r0, r1) = (b.row, b.row + b.rows);
+                    // With hidden rows included, the document positions the
+                    // block's shown rows span (the hidden ones between).
+                    let (p0, p1) = if all {
+                        (
+                            self.row_number(r0).unwrap_or(r0),
+                            self.row_number(r1 - 1).map_or(r1, |x| x + 1),
+                        )
+                    } else {
+                        (r0, r1)
+                    };
+                    blocks.push((p0, p1, b.col, b.col + b.cols));
+                }
+                if blocks.is_empty() {
+                    (0..0, Vec::new(), None)
+                } else {
+                    let r0 = blocks.iter().map(|b| b.0).min().unwrap_or(0);
+                    let r1 = blocks.iter().map(|b| b.1).max().unwrap_or(0);
+                    let mut cs: Vec<u32> = Vec::new();
+                    let mut spans: Vec<(u32, u32)> = blocks.iter().map(|b| (b.2, b.3)).collect();
+                    spans.sort_unstable();
+                    let mut next = 0u32;
+                    for (c0, c1) in spans {
+                        for c in c0.max(next)..c1 {
+                            cs.push(c);
+                        }
+                        next = next.max(c1);
+                    }
+                    (r0..r1, cs, Some(blocks))
+                }
             }
         };
         let mut cols = cols;
@@ -1299,6 +1466,7 @@ impl Document {
             .filter(|c| cols.contains(c))
             .collect();
         hidden_cols.sort_unstable();
+        let mask = blocks.map(|b| band_mask(&b, &cols));
         Ok(Area {
             rows,
             all,
@@ -1306,6 +1474,7 @@ impl Document {
             cols,
             wanted,
             slot,
+            mask,
         })
     }
 
@@ -1342,6 +1511,7 @@ impl Document {
                 .map(|s| vec![area.wanted[s]])
                 .unwrap_or_default(),
             slot: vec![area.slot[k].map(|_| 0)],
+            mask: area.mask.as_ref().map(|m| m.only(k)),
         }
     }
 
@@ -1355,15 +1525,27 @@ impl Document {
         buf: &mut Vec<Cow<'a, str>>,
         mut f: impl FnMut(usize, &str) -> Option<T>,
     ) -> Option<T> {
+        // Several blocks: a row between them is not read at all.
+        let ks = match &area.mask {
+            Some(m) => {
+                let ks = m.ks_of(row);
+                if ks.is_empty() {
+                    return None;
+                }
+                Some(ks)
+            }
+            None => None,
+        };
         let id = if area.all {
             self.id_of_pos(row)?
         } else {
             self.id_at(row)?
         };
         self.read_cells(id, &area.wanted, buf);
-        let n = area.cols.len();
+        let n = ks.map_or(area.cols.len(), <[usize]>::len);
         for i in 0..n {
-            let k = if rev { n - 1 - i } else { i };
+            let j = if rev { n - 1 - i } else { i };
+            let k = ks.map_or(j, |v| v[j]);
             let text = area.slot[k].map_or("", |s| &buf[s]);
             if let Some(t) = f(k, text) {
                 return Some(t);
@@ -3112,6 +3294,399 @@ x,q
             "id,name\r\n1,Anne\r\n2,\"bob, jr\"\r\n3,Anne-marie\r\n"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- Find in several blocks (Scope::Areas) ----
+
+    use crate::areas::Area as Block;
+
+    fn lcg(seed: u64) -> impl FnMut() -> u64 {
+        let mut x = seed;
+        move || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            x >> 33
+        }
+    }
+
+    /// A random grid of "a", "b", "ab" and empty cells as CSV, and the grid.
+    fn grid(
+        r: &mut impl FnMut() -> u64,
+        rows: usize,
+        cols: usize,
+    ) -> (String, Vec<Vec<&'static str>>) {
+        const W: [&str; 4] = ["a", "b", "ab", ""];
+        let g: Vec<Vec<&str>> = (0..rows)
+            .map(|_| (0..cols).map(|_| W[(r() % 4) as usize]).collect())
+            .collect();
+        let csv: String = g.iter().map(|row| row.join(",") + "\r\n").collect();
+        (csv, g)
+    }
+
+    fn random_blocks(r: &mut impl FnMut() -> u64, rows: u64, cols: u32) -> Vec<Block> {
+        (0..1 + r() % 5)
+            .map(|_| Block {
+                // Some reach past the table and some are empty on purpose.
+                row: r() % (rows + 2),
+                rows: r() % (rows / 2 + 2),
+                col: (r() % (u64::from(cols) + 1)) as u32,
+                cols: (r() % (u64::from(cols) / 2 + 2)) as u32,
+            })
+            .collect()
+    }
+
+    /// The cells of the union of the blocks that the table has, once each.
+    fn union_cells(
+        blocks: &[Block],
+        rows: u64,
+        cols: u32,
+        skip_row0: bool,
+    ) -> std::collections::BTreeSet<(u64, u32)> {
+        let mut out = std::collections::BTreeSet::new();
+        for b in blocks {
+            for row in b.row..(b.row + b.rows).min(rows) {
+                if skip_row0 && row == 0 {
+                    continue;
+                }
+                for col in b.col..(b.col.saturating_add(b.cols)).min(cols) {
+                    out.insert((row, col));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn areas_scope_matches_a_cell_by_cell_model_on_random_blocks() {
+        let p = Progress::new();
+        let mut r = lcg(11);
+        for case in 0..400 {
+            let (rows, cols) = (2 + (r() % 12) as usize, 1 + (r() % 5) as usize);
+            let (csv, g) = grid(&mut r, rows, cols);
+            let d = doc(&csv);
+            let blocks = random_blocks(&mut r, rows as u64, cols as u32);
+            let by_columns = case % 3 == 0;
+            let skip_first = case % 4 == 0;
+            let mut s = spec(pat("a", PatternKind::Plain));
+            s.by_columns = by_columns;
+            s.skip_first = skip_first;
+            s.scope = Scope::Areas {
+                areas: blocks.clone(),
+            };
+            let cells = union_cells(&blocks, rows as u64, cols as u32, skip_first);
+            let mut hits: Vec<(u64, u32)> = cells
+                .iter()
+                .copied()
+                .filter(|&(row, col)| g[row as usize][col as usize].contains('a'))
+                .collect();
+            // The list is in reading order (row by row).
+            let all = d.find_all(&s, 1_000, &p).unwrap();
+            assert_eq!(all.cells, hits.len() as u64, "case {case}: count");
+            assert_eq!(
+                all.hits.iter().map(|h| (h.row, h.col)).collect::<Vec<_>>(),
+                hits,
+                "case {case}: list"
+            );
+            // Per column counts add up.
+            assert_eq!(
+                all.per_col.iter().map(|x| x.1).sum::<u64>(),
+                all.cells,
+                "case {case}"
+            );
+            // Find next from every cell and from nowhere, both ways, with wrap.
+            let order: Vec<(u64, u32)> = if by_columns {
+                hits.sort_by_key(|&(row, col)| (col, row));
+                hits.clone()
+            } else {
+                hits.clone()
+            };
+            let key = |c: (u64, u32)| {
+                if by_columns {
+                    (u64::from(c.1), c.0)
+                } else {
+                    (c.0, u64::from(c.1))
+                }
+            };
+            let mut starts: Vec<Option<(u64, u32)>> = vec![None];
+            for row in 0..rows as u64 {
+                for col in 0..cols as u32 {
+                    starts.push(Some((row, col)));
+                }
+            }
+            // A start outside the searched rows (their bounding band) begins at the
+            // start or the end, without a wrap, as for one block.
+            let (lo, hi) = cells.iter().fold((u64::MAX, 0), |(a, b), &(row, _)| {
+                (a.min(row), b.max(row + 1))
+            });
+            for from in starts {
+                let from0 = from;
+                let from = from.filter(|f| (lo..hi).contains(&f.0));
+                for backward in [false, true] {
+                    let got = d.find_next(&s, from0, backward, &p).unwrap();
+                    let want: Option<((u64, u32), bool)> = if order.is_empty() {
+                        None
+                    } else {
+                        match (from, backward) {
+                            (None, false) => Some((order[0], false)),
+                            (None, true) => Some((order[order.len() - 1], false)),
+                            (Some(f), false) => order
+                                .iter()
+                                .find(|&&c| key(c) > key(f))
+                                .map(|&c| (c, false))
+                                .or(Some((order[0], true))),
+                            (Some(f), true) => order
+                                .iter()
+                                .rev()
+                                .find(|&&c| key(c) < key(f))
+                                .map(|&c| (c, false))
+                                .or(Some((order[order.len() - 1], true))),
+                        }
+                    };
+                    assert_eq!(
+                        got, want,
+                        "case {case}: next from {from:?} backward {backward}, blocks {blocks:?}"
+                    );
+                }
+            }
+            // The count before a cell is the matches before it in that order.
+            let c = d.find_count(&s, Some((0, 0)), &p).unwrap();
+            assert_eq!(c.cells, hits.len() as u64, "case {case}: find_count");
+            // Lit-up matches in a window.
+            let marks = d.find_marks(&s, 0, rows as u64, 0, cols as u32).unwrap();
+            let mut m = marks.clone();
+            m.sort_unstable();
+            let mut h = hits.clone();
+            h.sort_unstable();
+            assert_eq!(m, h, "case {case}: marks");
+            // Rows that match.
+            let mrows = d.matching_rows(&s, &p).unwrap();
+            let mut want: Vec<u64> = hits.iter().map(|x| x.0).collect();
+            want.sort_unstable();
+            want.dedup();
+            assert_eq!(mrows, want, "case {case}: matching rows");
+            // Replace all changes only cells of the blocks, and one Undo undoes it.
+            let mut d = d;
+            let plan = d.plan_replace(&s, "X", 5, &p).unwrap();
+            assert_eq!(plan.cells, hits.len() as u64, "case {case}: plan cells");
+            d.apply_replace(plan).unwrap();
+            for (row, line) in g.iter().enumerate() {
+                for (col, text) in line.iter().enumerate() {
+                    let now = d.cell(row as u64, col as u32).unwrap();
+                    if cells.contains(&(row as u64, col as u32)) && text.contains('a') {
+                        assert_eq!(
+                            now,
+                            text.replace('a', "X"),
+                            "case {case}: changed ({row},{col})"
+                        );
+                    } else {
+                        assert_eq!(&now, text, "case {case}: untouched ({row},{col})");
+                    }
+                }
+            }
+            if !hits.is_empty() {
+                assert!(d.undo());
+                for (row, line) in g.iter().enumerate() {
+                    for (col, text) in line.iter().enumerate() {
+                        assert_eq!(
+                            &d.cell(row as u64, col as u32).unwrap(),
+                            text,
+                            "case {case}: undone"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn one_block_as_areas_is_the_range_scope() {
+        let p = Progress::new();
+        let mut r = lcg(5);
+        for _ in 0..200 {
+            let (csv, _) = grid(&mut r, 9, 4);
+            let d = doc(&csv);
+            let (row, rows, col, cols) =
+                (r() % 9, r() % 9 + 1, (r() % 4) as u32, (r() % 4) as u32 + 1);
+            let mut a = spec(pat("a", PatternKind::Plain));
+            let mut b = a.clone();
+            a.scope = Scope::Range {
+                row,
+                rows,
+                col,
+                cols,
+            };
+            b.scope = Scope::Areas {
+                areas: vec![Block {
+                    row,
+                    rows,
+                    col,
+                    cols,
+                }],
+            };
+            assert_eq!(
+                d.find_all(&a, 100, &p).unwrap(),
+                d.find_all(&b, 100, &p).unwrap()
+            );
+            for from in [None, Some((row, col)), Some((8, 3))] {
+                assert_eq!(
+                    d.find_next(&a, from, false, &p).unwrap(),
+                    d.find_next(&b, from, false, &p).unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn areas_overlap_is_counted_once_and_junk_blocks_are_dropped() {
+        let d = doc("a,a,a\r\na,a,a\r\na,a,a\r\n");
+        let p = Progress::new();
+        let mut s = spec(pat("a", PatternKind::Plain));
+        let b = |row, rows, col, cols| Block {
+            row,
+            rows,
+            col,
+            cols,
+        };
+        // Two blocks overlapping in four cells: 9 distinct cells, not 12.
+        s.scope = Scope::Areas {
+            areas: vec![b(0, 2, 0, 2), b(1, 2, 1, 2), b(1, 2, 1, 2)],
+        };
+        assert_eq!(d.find_all(&s, 100, &p).unwrap().cells, 7);
+        // Empty, out of range and huge blocks are cut or dropped, not an error.
+        s.scope = Scope::Areas {
+            areas: vec![
+                b(0, 0, 0, 3),
+                b(0, 3, 0, 0),
+                b(50, 3, 0, 3),
+                b(1, u64::MAX, 2, u32::MAX),
+            ],
+        };
+        assert_eq!(d.find_all(&s, 100, &p).unwrap().cells, 2);
+        s.scope = Scope::Areas { areas: Vec::new() };
+        assert_eq!(d.find_all(&s, 100, &p).unwrap().cells, 0);
+        assert!(d.find_next(&s, None, false, &p).unwrap().is_none());
+    }
+
+    #[test]
+    fn more_than_the_most_blocks_is_refused_before_any_work() {
+        let d = doc("a\r\n");
+        let mut s = spec(pat("a", PatternKind::Plain));
+        let blocks = vec![
+            Block {
+                row: 0,
+                rows: 1,
+                col: 0,
+                cols: 1
+            };
+            MAX_FIND_BLOCKS + 1
+        ];
+        s.scope = Scope::Areas { areas: blocks };
+        assert!(d.find_all(&s, 10, &Progress::new()).is_err());
+        s.scope = Scope::Areas {
+            areas: vec![
+                Block {
+                    row: 0,
+                    rows: 1,
+                    col: 0,
+                    cols: 1
+                };
+                MAX_FIND_BLOCKS
+            ],
+        };
+        assert_eq!(d.find_all(&s, 10, &Progress::new()).unwrap().cells, 1);
+    }
+
+    #[test]
+    fn the_title_row_is_left_out_of_every_block_when_asked() {
+        let d = doc("a,a\r\na,a\r\na,a\r\n");
+        let p = Progress::new();
+        let mut s = spec(pat("a", PatternKind::Plain));
+        s.skip_first = true;
+        // One block starts at the title row and one does not.
+        s.scope = Scope::Areas {
+            areas: vec![
+                Block {
+                    row: 0,
+                    rows: 2,
+                    col: 0,
+                    cols: 1,
+                },
+                Block {
+                    row: 1,
+                    rows: 2,
+                    col: 1,
+                    cols: 1,
+                },
+            ],
+        };
+        let all = d.find_all(&s, 100, &p).unwrap();
+        assert_eq!(
+            all.hits.iter().map(|h| (h.row, h.col)).collect::<Vec<_>>(),
+            vec![(1, 0), (1, 1), (2, 1)]
+        );
+        s.skip_first = false;
+        assert_eq!(d.find_all(&s, 100, &p).unwrap().cells, 4);
+    }
+
+    #[test]
+    fn areas_with_hidden_rows_included_follow_the_blocks_like_a_range() {
+        let mut d = doc("k,v
+a,x
+b,x
+a,x
+b,y
+");
+        filter_a(&mut d);
+        let p = Progress::new();
+        let mut s = spec(pat("x", PatternKind::Plain));
+        s.hidden_rows = true;
+        let range = Scope::Range {
+            row: 1,
+            rows: 2,
+            col: 1,
+            cols: 1,
+        };
+        // One block, and the same cells as two blocks (which join).
+        for areas in [
+            vec![Block {
+                row: 1,
+                rows: 2,
+                col: 1,
+                cols: 1,
+            }],
+            vec![
+                Block {
+                    row: 1,
+                    rows: 1,
+                    col: 1,
+                    cols: 1,
+                },
+                Block {
+                    row: 2,
+                    rows: 1,
+                    col: 1,
+                    cols: 1,
+                },
+            ],
+        ] {
+            s.scope = range.clone();
+            let want = d.find_all(&s, 10, &p).unwrap();
+            s.scope = Scope::Areas { areas };
+            let got = d.find_all(&s, 10, &p).unwrap();
+            assert_eq!(got, want);
+            assert_eq!(got.cells, 3);
+            assert_eq!(got.hits.iter().filter(|h| h.hidden).count(), 1);
+        }
+        // Find next and the lit-up matches stay on shown rows.
+        assert_eq!(
+            d.find_next(&s, Some((1, 1)), false, &p).unwrap(),
+            Some(((2, 1), false))
+        );
+        assert_eq!(
+            d.find_marks(&s, 0, 10, 0, 10).unwrap(),
+            vec![(1, 1), (2, 1)]
+        );
     }
 
     #[test]

@@ -139,6 +139,163 @@ fn multi_area_checks(
         );
         assert!(!d.is_empty());
     }
+    find_block_checks(big, rows, p, check);
+}
+
+/// Find over several blocks: the same cells as one block should cost about the
+/// same, and many blocks must not make a search slow.
+fn find_block_checks(big: &Document, rows: u64, p: &Progress, check: &mut Check) {
+    use natendo_engine::areas::Area;
+    let rs = (rows as f64 / 1e7).max(0.05);
+    let budget = |secs: f64| Duration::from_secs_f64(secs * rs);
+    let spec = |text: &str, scope: Scope| FindSpec {
+        pattern: Pattern {
+            text: text.into(),
+            kind: PatternKind::Plain,
+            ..Default::default()
+        },
+        scope,
+        ..Default::default()
+    };
+    let area = |row: u64, rows: u64, col: u32, cols: u32| Area {
+        row,
+        rows,
+        col,
+        cols,
+    };
+    let time = |f: &mut dyn FnMut()| {
+        // The best of three: a search is a few hundred milliseconds and the disk cache is warm.
+        let mut best = Duration::MAX;
+        for _ in 0..3 {
+            let t = Instant::now();
+            f();
+            best = best.min(t.elapsed());
+        }
+        best
+    };
+    let n = rows - 1;
+    // One block of three columns: the Range scope and the same block as an Areas scope.
+    let range = spec(
+        "City 7",
+        Scope::Range {
+            row: 1,
+            rows: n,
+            col: 4,
+            cols: 3,
+        },
+    );
+    let one = spec(
+        "City 7",
+        Scope::Areas {
+            areas: vec![area(1, n, 4, 3)],
+        },
+    );
+    let mut cells = 0;
+    let t_range = time(&mut || cells = big.find_count(&range, None, p).unwrap().cells);
+    let t_one = time(&mut || assert_eq!(big.find_count(&one, None, p).unwrap().cells, cells));
+    println!("  [find blocks] count: Range {t_range:?}, the same block as Areas {t_one:?}");
+    check.budget(
+        "find count: one block as Areas within 1.2x of Range",
+        t_one,
+        t_range.mul_f64(1.2) + Duration::from_millis(10),
+    );
+    // 1,000 blocks that are half of the rows (a gap between each), against one block of half the rows.
+    let chunk = (n / 2_000).max(1);
+    let thousand: Vec<Area> = (0..1_000u64)
+        .map(|i| area(1 + i * 2 * chunk, chunk, 4, 3))
+        .collect();
+    let half = spec(
+        "City 7",
+        Scope::Range {
+            row: 1,
+            rows: 1_000 * chunk,
+            col: 4,
+            cols: 3,
+        },
+    );
+    let many = spec(
+        "City 7",
+        Scope::Areas {
+            areas: thousand.clone(),
+        },
+    );
+    let t_half = time(&mut || {
+        big.find_count(&half, None, p).unwrap();
+    });
+    let t_many = time(&mut || {
+        big.find_count(&many, None, p).unwrap();
+    });
+    println!("  [find blocks] count: one block of 1,000 chunks' cells {t_half:?}, 1,000 blocks {t_many:?}");
+    check.budget(
+        "find count: 1,000 blocks within 2x of one block of the same cells",
+        t_many,
+        t_half.mul_f64(2.0) + Duration::from_millis(20),
+    );
+    let t_list_half = time(&mut || {
+        big.find_all(&half, 1_000, p).unwrap();
+    });
+    let t_list_many = time(&mut || {
+        big.find_all(&many, 1_000, p).unwrap();
+    });
+    println!("  [find blocks] find all: one block {t_list_half:?}, 1,000 blocks {t_list_many:?}");
+    check.budget(
+        "find all: 1,000 blocks within 2x of one block of the same cells",
+        t_list_many,
+        t_list_half.mul_f64(2.0) + Duration::from_millis(20),
+    );
+    // Find next with no match anywhere reads every searched cell (the worst case).
+    let nomatch_half = spec("zzzz", half.scope.clone());
+    let nomatch_many = spec("zzzz", many.scope.clone());
+    let t_next_half = time(&mut || {
+        assert!(big
+            .find_next(&nomatch_half, None, false, p)
+            .unwrap()
+            .is_none());
+    });
+    let t_next_many = time(&mut || {
+        assert!(big
+            .find_next(&nomatch_many, None, false, p)
+            .unwrap()
+            .is_none());
+    });
+    println!("  [find blocks] find next, no match: one block {t_next_half:?}, 1,000 blocks {t_next_many:?}");
+    check.budget(
+        "find next (no match): 1,000 blocks within 2x of one block",
+        t_next_many,
+        t_next_half.mul_f64(2.0) + Duration::from_millis(20),
+    );
+    // 10,000 one-row blocks scattered over the file.
+    let scattered: Vec<Area> = (0..10_000u64)
+        .map(|i| area(1 + (i * 7919) % n, 1, 4, 3))
+        .collect();
+    let scat = spec("City 7", Scope::Areas { areas: scattered });
+    let t_scat = time(&mut || {
+        big.find_count(&scat, None, p).unwrap();
+    });
+    println!("  [find blocks] count over 10,000 scattered blocks: {t_scat:?}");
+    check.budget(
+        "find count: 10,000 scattered one-row blocks",
+        t_scat,
+        budget(3.0),
+    );
+    // Replace preview over the 1,000 blocks: the plan, then a page of it.
+    let t0 = Instant::now();
+    let plan = big.plan_replace(&many, "Town 7", 50, p).unwrap();
+    let t_plan = t0.elapsed();
+    let t1 = Instant::now();
+    let page = big.replace_page(&plan, 0, 50).unwrap();
+    let t_page = t1.elapsed();
+    println!(
+        "  [find blocks] replace plan over 1,000 blocks ({} cells): {t_plan:?}, a page of the preview: {t_page:?}",
+        plan.cells
+    );
+    assert!(!page.is_empty() || plan.cells == 0);
+    check.budget("replace plan over 1,000 blocks", t_plan, budget(3.0));
+    check.budget(
+        "a page of the replace preview",
+        t_page,
+        Duration::from_millis(200),
+    );
 }
 
 fn main() {
@@ -1251,12 +1408,14 @@ fn main() {
             t.elapsed(),
             Duration::from_millis(400),
         );
-        // Two whole columns of 5M rows: running totals only, no text kept.
+        // Two whole columns (row 2 to the last row): running totals only, no
+        // text kept. Sized from the file, so a 1M-row run does not reach past its end.
+        let last = big.row_count();
         let t = Instant::now();
         let res = big
             .run_cell_formula(
                 &CellFormula {
-                    formula: "=SUM(C2:D5000001)".into(),
+                    formula: format!("=SUM(C2:D{last})"),
                     row: 1,
                     col: 0,
                     keep_first: true,
@@ -1266,10 +1425,14 @@ fn main() {
             )
             .unwrap();
         assert_eq!(res.cells.len(), 1);
+        let summed = 2 * last.saturating_sub(1);
         check.budget(
-            "cell formula summing 10M cells (2 columns of 5M rows)",
+            &format!(
+                "cell formula summing {summed} cells (2 columns of {} rows)",
+                last.saturating_sub(1)
+            ),
             t.elapsed(),
-            Duration::from_secs(1),
+            Duration::from_secs_f64((summed as f64 / 1e7).max(0.05)),
         );
         // A 200-cell range filled down 100k cells, and a running total down
         // 100k rows: each range is worked out from running totals.
@@ -1701,7 +1864,9 @@ fn main() {
         }
     }
     let t = Instant::now();
-    let r = big.write_copy(&mut Upto(200 << 20));
+    // (A small file is smaller than the cap: half of it then, so the cap still bites.)
+    let cap = (200u64 << 20).min(size / 2);
+    let r = big.write_copy(&mut Upto(cap));
     check.budget(
         "recovery copy up to its 200 MB cap, shuffled rows",
         t.elapsed(),
@@ -2323,8 +2488,10 @@ fn main() {
         use natendo_engine::updates::{compare_newer, Choice, UpdateChoice, UpdateSpec};
         let mut old = Document::open_indexed(&small_path, OpenOptions::default(), None).unwrap();
         let mut new = Document::open_indexed(&small_path, OpenOptions::default(), None).unwrap();
+        // Spread over the file whatever its size (at 1M rows the file has 100k rows).
+        let stride = (small_rows / 1_000).clamp(1, 997);
         for i in 0..1_000u64 {
-            new.set_cell(i * 997 + 1, 3, format!("changed {i}"))
+            new.set_cell(i * stride + 1, 3, format!("changed {i}"))
                 .unwrap();
         }
         let spec = UpdateSpec {
@@ -2591,8 +2758,10 @@ fn main() {
         use natendo_engine::updates::{compare_newer, Choice, UpdateChoice, UpdateSpec};
         let mut old = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
         let mut new = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
+        // Spread over the file whatever its size (4,999 apart at 10M rows).
+        let stride = (rows / 2_000).clamp(1, 4_999);
         for i in 0..2_000u64 {
-            new.set_cell(i * 4_999 + 1, (i % 19 + 1) as u32, format!("newer {i}"))
+            new.set_cell(i * stride + 1, (i % 19 + 1) as u32, format!("newer {i}"))
                 .unwrap();
         }
         let spec = UpdateSpec {
@@ -2631,8 +2800,12 @@ fn main() {
         use natendo_engine::recipe::{Recipe, RecipeOp, RECIPE_VERSION};
         let mut doc = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
         for i in 0..1_000u64 {
-            doc.set_cell(i * 9_000 + 1, (i % 5) as u32, format!("edited {i}"))
-                .unwrap();
+            doc.set_cell(
+                i * (rows / 1_100).clamp(1, 9_000) + 1,
+                (i % 5) as u32,
+                format!("edited {i}"),
+            )
+            .unwrap();
         }
         let t = Instant::now();
         let list = doc.change_list(&p).unwrap();

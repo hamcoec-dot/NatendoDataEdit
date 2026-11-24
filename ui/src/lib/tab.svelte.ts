@@ -119,6 +119,28 @@ export class Tab {
     this._sel = v;
     return true;
   }
+  /** Select these blocks again with the active cell inside one of them (that block
+   *  becomes the last one), as Find does when a hit lies in one of the blocks it
+   *  searches. False (nothing changes) when the cell is in none of them. */
+  selectBlocks(blocks: readonly Rect[], cell: { row: number; col: number }): boolean {
+    const at = blocks.findIndex((b) => cell.row >= b.row && cell.row < b.row + b.rows && cell.col >= b.col && cell.col < b.col + b.cols);
+    if (at < 0) return false;
+    const b = blocks[at]!;
+    const sel: Selection = { anchor: { row: b.row, col: b.col }, focus: { row: b.row + b.rows - 1, col: b.col + b.cols - 1 } };
+    if (cell.row !== sel.anchor.row || cell.col !== sel.anchor.col) sel.active = { ...cell };
+    this._sel = sel;
+    this.extra = blocks.filter((_, i) => i !== at).map((r) => ({ ...r }));
+    return true;
+  }
+  /** Select these blocks in this order (the last is the active block) with the
+   *  active cell at `cell` (Enter and Tab moving between blocks). */
+  setBlocks(blocks: readonly Rect[], cell: { row: number; col: number }): void {
+    const b = blocks[blocks.length - 1]!;
+    const sel: Selection = { anchor: { row: b.row, col: b.col }, focus: { row: b.row + b.rows - 1, col: b.col + b.cols - 1 } };
+    if (cell.row !== sel.anchor.row || cell.col !== sel.anchor.col) sel.active = { ...cell };
+    this._sel = sel;
+    this.extra = blocks.slice(0, -1).map((r) => ({ ...r }));
+  }
   /** Every selected block: the earlier ones, then the last. */
   get areas(): Rect[] {
     return [...this.extra, rectOf(this._sel)];

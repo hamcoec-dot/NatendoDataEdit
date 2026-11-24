@@ -1177,7 +1177,7 @@ export class MockBackend implements Backend {
   }
 
   /** Cells a search covers: shown rows and logical columns. */
-  private area(d: MockDoc, spec: FindSpec): { r0: number; r1: number; cols: number[] } {
+  private area(d: MockDoc, spec: FindSpec): { r0: number; r1: number; cols: number[]; member?: (r: number, c: number) => boolean } {
     const n = this.rowCount(d);
     const first = spec.skip_first && n > 0 ? 1 : 0;
     const skip = new Set(spec.skip_cols ?? []);
@@ -1195,6 +1195,17 @@ export class MockBackend implements Backend {
           cols: all.filter((c) => c >= g.col && c < g.col + g.cols),
         };
       }
+      case "areas": {
+        // Several blocks: the bounding box, and a test for a cell in one of them
+        // (the engine makes the blocks disjoint; here a cell is in or out).
+        const blocks = spec.scope.areas.filter((b) => b.rows > 0 && b.cols > 0);
+        if (blocks.length > 10_000) throw err("invalid", "Find works on up to 10,000 blocks at once");
+        const inBlock = (r: number, c: number) => blocks.some((b) => r >= b.row && r < b.row + b.rows && c >= b.col && c < b.col + b.cols);
+        const rows = blocks.map((b) => [Math.max(b.row, first), Math.min(n, b.row + b.rows)] as const).filter(([a, z]) => a < z);
+        const cols = all.filter((c) => blocks.some((b) => c >= b.col && c < b.col + b.cols));
+        if (!rows.length || !cols.length) return { r0: 0, r1: 0, cols: [], member: () => false };
+        return { r0: Math.min(...rows.map((x) => x[0])), r1: Math.max(...rows.map((x) => x[1])), cols, member: (r, c) => r >= first && inBlock(r, c) };
+      }
     }
   }
 
@@ -1202,15 +1213,28 @@ export class MockBackend implements Backend {
     const d = this.get(doc);
     if (!spec.pattern.text) throw err("bad_pattern", "the pattern is not valid: enter something to look for");
     const re = regexOf(spec.pattern);
-    const { r0, r1, cols } = this.area(d, spec);
+    const { r0, r1, cols, member } = this.area(d, spec);
     const cells: [number, number][] = [];
     // Row-major list is too big for a million rows; walk instead.
     const total = (r1 - r0) * cols.length;
     if (total <= 0) return null;
+    if (member && !spec.by_columns) {
+      // Several blocks: the matches in reading order, then the next after `from`.
+      const list: [number, number][] = [];
+      for (let r = r0; r < r1; r++) for (const c of cols) if (member(r, c) && re.test(this.value(d, r, c))) list.push([r, c]);
+      if (!list.length) return null;
+      const outside = from && !(from[0] >= r0 && from[0] < r1);
+      const f = outside ? null : from;
+      const after = (r: number, c: number) => (f ? r > f[0] || (r === f[0] && c > f[1]) : true);
+      const before = (r: number, c: number) => (f ? r < f[0] || (r === f[0] && c < f[1]) : true);
+      const pick = backward ? [...list].reverse().find(([r, c]) => before(r, c)) : list.find(([r, c]) => after(r, c));
+      const hit = pick ?? (backward ? list[list.length - 1]! : list[0]!);
+      return { row: hit[0], col: hit[1], wrapped: !pick && !!f };
+    }
     if (spec.by_columns) {
       // Down each column, then the next column.
       const list: [number, number][] = [];
-      for (const c of cols) for (let r = r0; r < r1; r++) if (re.test(this.value(d, r, c))) list.push([r, c]);
+      for (const c of cols) for (let r = r0; r < r1; r++) if ((!member || member(r, c)) && re.test(this.value(d, r, c))) list.push([r, c]);
       if (!list.length) return null;
       const key = (r: number, c: number) => cols.indexOf(c) * (r1 + 1) + r;
       const here = from ? key(from[0], from[1]) : backward ? Infinity : -1;
@@ -1239,11 +1263,12 @@ export class MockBackend implements Backend {
     const d = this.get(doc);
     if (!spec.pattern.text) throw err("bad_pattern", "the pattern is not valid: enter something to look for");
     const re = regexOf(spec.pattern);
-    const { r0, r1, cols } = this.area(d, spec);
+    const { r0, r1, cols, member } = this.area(d, spec);
     const out: FindCount = { cells: 0, before: 0, here: false };
     for (let r = r0; r < r1; r++)
       for (let k = 0; k < cols.length; k++) {
         const c = cols[k]!;
+        if (member && !member(r, c)) continue;
         if (!re.test(this.value(d, r, c))) continue;
         out.cells++;
         const earlier = spec.by_columns ? c < (at?.[1] ?? 0) || (c === at?.[1] && r < at[0]) : at && (r < at[0] || (r === at[0] && c < at[1]));
@@ -1263,7 +1288,9 @@ export class MockBackend implements Backend {
     const vis = this.visible(d);
     if (!spec.hidden_rows || !vis) return [];
     const shown = new Set(vis);
-    const { cols } = this.area(d, spec);
+    const { cols, member } = this.area(d, spec);
+    // (With several blocks the browser preview does not search hidden rows.)
+    if (member) return [];
     const out: [number, number][] = [];
     for (let p = spec.skip_first ? 1 : 0; p < this.totalRows(d); p++) if (!shown.has(p)) for (const c of cols) if (re.test(this.valueAt(d, p, c))) out.push([p, c]);
     return out;
@@ -1276,18 +1303,19 @@ export class MockBackend implements Backend {
     const a = this.area(d, spec);
     const out: [number, number][] = [];
     for (let r = Math.max(row, a.r0); r < Math.min(row + rows, a.r1); r++)
-      for (const c of a.cols) if (c >= col && c < col + cols && re.test(this.value(d, r, c))) out.push([r, c]);
+      for (const c of a.cols) if (c >= col && c < col + cols && (!a.member || a.member(r, c)) && re.test(this.value(d, r, c))) out.push([r, c]);
     return out;
   }
 
   async findAll(doc: number, spec: FindSpec): Promise<FindAll> {
     const d = this.get(doc);
     const re = regexOf(spec.pattern);
-    const { r0, r1, cols } = this.area(d, spec);
+    const { r0, r1, cols, member } = this.area(d, spec);
     const hits: FindAll["hits"] = [];
     let cells = 0;
     for (let r = r0; r < r1; r++)
       for (const c of cols) {
+        if (member && !member(r, c)) continue;
         const v = this.value(d, r, c);
         const m = re.exec(v);
         if (!m) continue;
@@ -1313,14 +1341,14 @@ export class MockBackend implements Backend {
 
   private *matchingCells(d: MockDoc, spec: FindSpec): Generator<[number, number]> {
     const re = regexOf(spec.pattern);
-    const { r0, r1, cols } = this.area(d, spec);
-    for (let r = r0; r < r1; r++) for (const c of cols) if (re.test(this.value(d, r, c))) yield [r, c];
+    const { r0, r1, cols, member } = this.area(d, spec);
+    for (let r = r0; r < r1; r++) for (const c of cols) if ((!member || member(r, c)) && re.test(this.value(d, r, c))) yield [r, c];
   }
 
   private planReplace(d: MockDoc, spec: FindSpec, rep: string) {
     const re = regexOf(spec.pattern, true);
     if (spec.pattern.escapes || spec.pattern.kind === "regex") rep = unescapeText(rep);
-    const { r0, r1, cols } = this.area(d, spec);
+    const { r0, r1, cols, member } = this.area(d, spec);
     const changes: [number, number, string][] = [];
     const preview: ReplaceReport["preview"] = [];
     const hiddenCols = new Set(spec.hidden_cols ?? []);
@@ -1328,6 +1356,7 @@ export class MockBackend implements Backend {
     let hiddenCells = 0;
     for (let r = r0; r < r1; r++)
       for (const c of cols) {
+        if (member && !member(r, c)) continue;
         const v = this.value(d, r, c);
         let n = 0;
         const out = v.replace(re, (m, ...rest) => {
@@ -1367,9 +1396,9 @@ export class MockBackend implements Backend {
 
   private matchingRows(d: MockDoc, spec: FindSpec): number[] {
     const re = regexOf(spec.pattern);
-    const { r0, r1, cols } = this.area(d, spec);
+    const { r0, r1, cols, member } = this.area(d, spec);
     const out: number[] = [];
-    for (let r = r0; r < r1; r++) if (cols.some((c) => re.test(this.value(d, r, c)))) out.push(r);
+    for (let r = r0; r < r1; r++) if (cols.some((c) => (!member || member(r, c)) && re.test(this.value(d, r, c)))) out.push(r);
     return out;
   }
 

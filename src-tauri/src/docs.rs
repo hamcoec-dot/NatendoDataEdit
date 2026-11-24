@@ -3339,6 +3339,17 @@ impl Docs {
                 (*col..col + cols).collect()
             }
             natendo_engine::find::Scope::Range { .. } => Vec::new(),
+            natendo_engine::find::Scope::Areas { areas } => {
+                // The columns of the blocks that reach the title row.
+                let mut v: Vec<u32> = areas
+                    .iter()
+                    .filter(|a| a.row == 0 && a.rows > 0)
+                    .flat_map(|a| a.col..a.col.saturating_add(a.cols).min(d.col_count()))
+                    .collect();
+                v.sort_unstable();
+                v.dedup();
+                v
+            }
             natendo_engine::find::Scope::All => (0..d.col_count()).collect(),
         };
         let mut out = Vec::new();

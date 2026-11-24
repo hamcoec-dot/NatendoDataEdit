@@ -483,7 +483,9 @@ export interface PrivateState {
 export type Scope =
   | { kind: "all" }
   | { kind: "columns"; cols: number[] }
-  | { kind: "range"; row: number; rows: number; col: number; cols: number };
+  | { kind: "range"; row: number; rows: number; col: number; cols: number }
+  /** Several selected blocks (Ctrl+click); a cell in two is searched once. */
+  | { kind: "areas"; areas: { row: number; rows: number; col: number; cols: number }[] };
 export interface FindSpec {
   pattern: Pattern;
   scope: Scope;
@@ -2180,6 +2182,7 @@ export const WRITE_METHODS: readonly string[] = [
   "setFilter",
   "clearFilter",
   "replaceConfirm",
+  "findRows",
   "replaceCell",
   "replaceTitles",
   "replaceAll",
@@ -2196,6 +2199,23 @@ export const WRITE_METHODS: readonly string[] = [
   "streetLookup",
 ];
 
+/** The writes that MAY run while several blocks are selected, but only when the
+ *  search they carry is over those blocks (scope kind "areas"): method name ->
+ *  the position of its FindSpec among the arguments. Each is named here on
+ *  purpose (Replace all, its confirm step, Replace of one cell, and Find's row actions) and has a
+ *  test; every other write stays refused, with any scope. */
+export const AREAS_SPEC_METHODS: Readonly<Record<string, number>> = {
+  replaceAll: 1,
+  replaceConfirm: 1,
+  replaceCell: 1,
+  findRows: 1,
+};
+
+function overBlocks(spec: unknown): boolean {
+  const sc = (spec as { scope?: { kind?: string } } | null | undefined)?.scope;
+  return sc?.kind === "areas";
+}
+
 /** Returns the reason a write to this file must not happen now, or null. The
  *  window installs it. */
 export const writeGuard: { check: ((doc: number) => string | null) | null } = { check: null };
@@ -2208,6 +2228,8 @@ function guarded(b: Backend): Backend {
       const v = Reflect.get(target, prop, receiver);
       if (typeof prop !== "string" || !WRITES.has(prop) || typeof v !== "function") return v;
       return (...args: unknown[]) => {
+        const at = AREAS_SPEC_METHODS[prop];
+        if (at !== undefined && overBlocks(args[at])) return (v as (...a: unknown[]) => unknown).apply(target, args);
         const why = writeGuard.check?.(args[0] as number) ?? null;
         if (why) return Promise.reject({ kind: "one_block", message: why });
         return (v as (...a: unknown[]) => unknown).apply(target, args);

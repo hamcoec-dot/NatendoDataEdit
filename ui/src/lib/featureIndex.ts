@@ -106,6 +106,8 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "drag cells onto another tab": ["edit.copyToTab", "edit.moveToTab"],
   "row heights": ["format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "format.rowHeight"],
   "select several blocks at once": ["edit.clear", "edit.copy", "format.alignLeft"],
+  "find in several blocks": ["find.find", "find.replace", "find.next", "find.prev"],
+  "enter and tab between blocks": ["help.keys"],
   "tabs for each open file": [
     "window.next", "window.prev", "window.moveTabLeft", "window.moveTabRight", "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze",
     "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "edit.moveColsLeft", "edit.moveColsRight",
