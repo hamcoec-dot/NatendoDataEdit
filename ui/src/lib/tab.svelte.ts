@@ -263,6 +263,8 @@ export class Tab {
   /** The steps panel shows the table as it was after an earlier step
    *  (it cannot be edited until it goes back to the latest). */
   peeking = $state(false);
+  /** Bumped when a checkpoint is named, so the Checkpoints list reads again. */
+  checkpointTick = $state(0);
   /** The filter panel's cards (kept with views). */
   facetCards = $state<{ col: number; kind: "values" | "numbers" | "dates"; range: [number, number] | null }[]>([]);
   /** A counts tab: the tab and columns it counts (a line can show its

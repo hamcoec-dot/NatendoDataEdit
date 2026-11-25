@@ -868,6 +868,29 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     prefs.save();
   }
 
+  /** Name this moment: a checkpoint in the undo history (a few bytes; the Steps panel lists it). */
+  function nameMoment(): void {
+    const t = tab;
+    if (!t) return;
+    prompt = {
+      title: "Name this moment",
+      label: "Name",
+      value: "",
+      note: "A checkpoint remembers exactly how the table looks now, so you can come back to it from the Steps panel. It costs almost nothing. It is lost when the undo history is trimmed past it, when a new change replaces what you undid, when you save the file, and when the tab closes.",
+      check: (v) => (!v.trim() ? "Give the checkpoint a name." : v.trim().length > 100 ? "Use 100 characters or fewer." : ""),
+      done: (name) => {
+        void backend()
+          .checkpointAdd(t.id, name)
+          .then(() => {
+            t.checkpointTick++;
+            showPanel("steps");
+            say(`Named this moment “${name.trim()}”. It is at the top of the Steps panel.`);
+          })
+          .catch((e: unknown) => say(errorText(e)));
+      },
+    };
+  }
+
   function shownTitles(t: Tab): string[] {
     return Array.from({ length: Math.min(t.info.cols, 2000) }, (_, c) => columnTitle(t, c));
   }
@@ -5824,6 +5847,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "file.mail", label: "&Mailing labels and letters…", run: () => void openMail(), enabled: ready },
     { id: "edit.note", label: "&Note and flag on this row…", keys: ["Shift+F2"], run: () => { const t = tab; if (t) notesRow = t.cell.row; }, enabled: ready },
     { id: "edit.changes", label: "List of &my changes…", run: () => void openChanges(), enabled: ready },
+    { id: "edit.checkpoint", label: "&Name this moment (checkpoint)…", keys: ["Ctrl+Alt+K"], run: () => nameMoment(), enabled: hasTab },
     { id: "tools.recipe", label: "&Recipe (save or run steps)…", run: () => void openRecipes(), enabled: ready },
     { id: "tools.searchFolder", label: "Search a &folder of files…", keys: ["Ctrl+Shift+F"], run: () => { folderSearchOpen = true; } },
     { id: "view.showEdits", label: "Show my &edits", run: () => setShowEdits(!tab?.showEdits), enabled: hasTab, checked: () => !!tab?.showEdits },
@@ -6213,7 +6237,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       items: [
         "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-",
         "edit.copyNames", "edit.copyNamesText", "edit.copyWithNames", "edit.pasteNames", "-",
-        "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "edit.gotoSpecial", "-", "edit.note", "edit.changes", "-",
+        "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "edit.gotoSpecial", "-", "edit.note", "edit.changes", "edit.checkpoint", "-",
         "edit.deleteRows", "edit.deleteCols", "edit.moveRowsUp", "edit.moveRowsDown", "edit.moveColsLeft", "edit.moveColsRight",
       ],
     },

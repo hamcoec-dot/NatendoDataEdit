@@ -8,6 +8,7 @@
   import { backend, errorText, type DocInfo } from "./backend";
   import { questionNameOk, type RecipeStep, type StepChange, type StepsView } from "./recipe";
   import type { Tab } from "./tab.svelte";
+  import CheckpointsPanel from "./CheckpointsPanel.svelte";
 
   interface Props {
     tab: Tab;
@@ -137,6 +138,7 @@
 <svelte:window onpointerdown={(e) => { if (menu && !(e.target as HTMLElement | null)?.closest?.(".step-menu")) menu = null; }} onkeydown={(e) => { if (menu && e.key === "Escape") menu = null; }} />
 
 <div class="steps-panel">
+  <CheckpointsPanel {tab} {onInfo} />
   {#if menu && view?.steps[menu.k]}
     {@const k = menu.k}
     {@const s = view.steps[k]!}

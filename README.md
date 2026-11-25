@@ -1112,6 +1112,21 @@ selection, a column or the whole table:
 
 ![The recipe steps panel looking at the table after step 1](docs/screenshots/steps-panel.png)
 *Looking back at the table after step 1; step 4, a paste, can't be part of a recipe.*
+- **Checkpoints** (Edit > Name this moment, Ctrl+Alt+K; the list is at the top of
+  the Steps panel): name how the table looks now and come back to it later in
+  one jump, forward or back. A checkpoint is a name and a mark in the undo
+  history, a few bytes: nothing of the table is copied, so it costs nothing on a
+  10,000,000-row file. The app also names a moment before risky changes (Replace
+  all, batch replace, remove duplicates, blank rows or columns, Split into rows,
+  Merge rows, a clean-up, Delete hidden rows, deleting several rows, a paste of
+  1,000 cells or more, a join, an append, matching people, taking changes from a
+  newer file) as "Before ...": 20 at most per tab, the oldest goes first, yours
+  stay. Going to a checkpoint keeps the moment you left as "Before restoring ...",
+  so the way back is one click. **Limits:** a checkpoint is greyed ("no longer
+  reachable") when the undo history is trimmed past it (10,000 steps or 512 MB),
+  when a new change replaces what you had undone, and when you save the file,
+  because saving starts the undo history again. Checkpoints are not saved to disk
+  and go when the tab closes.
 - **Recipe questions:** in the steps panel, press ? on a step to have the
   recipe ask for one of its values each time it runs ("Which county?",
   "Election date?"), with the last answer filled in. One recipe then serves
