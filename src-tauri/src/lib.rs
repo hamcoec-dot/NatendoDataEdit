@@ -2203,6 +2203,42 @@ async fn steps_goto(docs: DocsState<'_>, doc: u32, k: Option<usize>) -> CmdResul
     blocking(move || docs.steps_goto(doc, k)).await
 }
 
+/// The tab's checkpoints, each with whether the undo history still reaches it.
+#[tauri::command]
+async fn checkpoint_list(docs: DocsState<'_>, doc: u32) -> CmdResult<Vec<docs::CheckpointInfo>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.checkpoint_list(doc)).await
+}
+
+/// Name this moment.
+#[tauri::command]
+async fn checkpoint_add(
+    docs: DocsState<'_>,
+    doc: u32,
+    name: String,
+) -> CmdResult<Vec<docs::CheckpointInfo>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.checkpoint_add(doc, &name)).await
+}
+
+/// Forget a checkpoint (the table does not change).
+#[tauri::command]
+async fn checkpoint_remove(
+    docs: DocsState<'_>,
+    doc: u32,
+    checkpoint: u32,
+) -> CmdResult<Vec<docs::CheckpointInfo>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.checkpoint_remove(doc, checkpoint)).await
+}
+
+/// Go to the state a checkpoint names.
+#[tauri::command]
+async fn checkpoint_restore(docs: DocsState<'_>, doc: u32, checkpoint: u32) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.checkpoint_restore(doc, checkpoint)).await
+}
+
 /// Change a step; the steps after it run again.
 #[tauri::command]
 async fn steps_change(
@@ -4097,6 +4133,10 @@ pub fn run() {
             watch_stop,
             steps_view,
             steps_goto,
+            checkpoint_list,
+            checkpoint_add,
+            checkpoint_remove,
+            checkpoint_restore,
             steps_change,
             steps_ask,
             batch_pick,
