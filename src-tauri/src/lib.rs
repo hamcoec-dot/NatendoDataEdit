@@ -3396,6 +3396,55 @@ async fn checks_sidecar_keep(
     blocking(move || docs.checks_sidecar_keep(doc, checks, keep_first)).await
 }
 
+/// Compare two tabs by key and open the differences.
+#[tauri::command]
+async fn diff_files(
+    docs: DocsState<'_>,
+    a: u32,
+    b: u32,
+    spec: natendo_engine::diff::DiffSpec,
+) -> CmdResult<docs::DiffReportOut> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.diff_files(a, b, spec)).await
+}
+
+/// The differences in a window of a tab that is in a diff.
+#[tauri::command]
+async fn diff_marks(
+    docs: DocsState<'_>,
+    doc: u32,
+    row: u64,
+    rows: u64,
+    col: u32,
+    cols: u32,
+) -> CmdResult<docs::DiffMarksOut> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.diff_marks(doc, row, rows, col, cols)).await
+}
+
+/// The next (previous) difference.
+#[tauri::command]
+async fn diff_next(
+    docs: DocsState<'_>,
+    doc: u32,
+    row: u64,
+    backward: bool,
+) -> CmdResult<Option<docs::DiffJump>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.diff_next(doc, row, backward)).await
+}
+
+/// Take the differences off a tab (and the tabs compared with it).
+#[tauri::command]
+async fn diff_clear(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        docs.diff_clear(doc);
+        Ok(())
+    })
+    .await
+}
+
 /// Largest checks file read.
 const MAX_CHECKS_FILE: u64 = 4 << 20;
 
@@ -3885,6 +3934,10 @@ pub fn run() {
             replace_ghosts,
             replace_count,
             replace_count_cancel,
+            diff_files,
+            diff_marks,
+            diff_next,
+            diff_clear,
             set_doc_title,
             find_count_cancel,
             replace_confirm,

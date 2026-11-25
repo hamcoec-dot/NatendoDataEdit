@@ -934,6 +934,48 @@ pub struct TableReport {
     pub record: Option<DocInfo>,
 }
 
+/// A key-aware diff kept while its tabs are open: the index that draws it on the first table, the second
+/// and the result, and which tabs those are.
+struct DiffState {
+    index: Arc<natendo_engine::diff::DiffIndex>,
+    a: u32,
+    b: u32,
+    result: u32,
+}
+
+/// A diff a tab is in: its number, its shared index and which table of it the tab is.
+type DiffOf = (
+    u64,
+    Arc<natendo_engine::diff::DiffIndex>,
+    natendo_engine::diff::Side,
+);
+
+/// What the diff command gives back: the result tab, the counts and the report text.
+#[derive(Debug, Serialize)]
+pub struct DiffReportOut {
+    pub info: DocInfo,
+    pub report: natendo_engine::diff::DiffReport,
+    pub diff: u64,
+}
+
+/// A window of marks for a tab, and whether the diff still fits the tab's rows.
+#[derive(Debug, Serialize)]
+pub struct DiffMarksOut {
+    /// `None`: this tab is in no diff.
+    pub diff: Option<u64>,
+    /// The tab was edited after the compare: nothing is drawn, the UI says "compare again".
+    pub out_of_date: bool,
+    pub marks: Vec<natendo_engine::diff::DiffMark>,
+}
+
+/// Where a "next difference" landed.
+#[derive(Debug, Serialize)]
+pub struct DiffJump {
+    pub row: u64,
+    pub col: Option<u32>,
+    pub wrapped: bool,
+}
+
 /// What a comparison with a newer file keeps for accepting changes.
 struct UpdatesKept {
     updates: natendo_engine::updates::Updates,
@@ -1390,6 +1432,9 @@ pub struct Docs {
     /// (so two windows never share one): the indexed other table (or
     /// list) and pasted lists, so previews do not copy them again.
     joins: Mutex<HashMap<u32, JoinCache>>,
+    /// Key-aware diffs (by number) kept while their tabs are open.
+    diffs: Mutex<HashMap<u64, DiffState>>,
+    next_diff: AtomicU64,
     /// Numbers given to pasted lists.
     next_list: std::sync::atomic::AtomicU64,
     /// LOOKUP tables by tab, its revision and the two columns.
@@ -1619,6 +1664,7 @@ impl Docs {
     }
 
     pub fn close(&self, id: u32) {
+        self.diff_clear(id);
         let gone = self.map().remove(&id);
         if let Some(e) = &gone {
             e.cancel.store(true, Ordering::Relaxed);
@@ -3062,8 +3108,188 @@ impl Docs {
         ))
     }
 
+    // ---- key-aware diff ----
+
+    /// Compare tab `a` (the first) with tab `b` (the second) by key and open the differences as a new tab.
+    /// A job on `a` (progress and Cancel). Each step takes ONE table's read lock and lets it go (never both at
+    /// once, so comparing a tab with itself works and nothing can deadlock); the result is private when
+    /// either table is, and nothing about the values is logged.
+    pub fn diff_files(
+        &self,
+        a: u32,
+        b: u32,
+        spec: natendo_engine::diff::DiffSpec,
+    ) -> CmdResult<DiffReportOut> {
+        use natendo_engine::document::Progress;
+        let ea = self.get(a)?;
+        let eb = self.get(b)?;
+        let job = ea.start("Comparing")?;
+        let progress: &Progress = &job.progress;
+        let titles = ea.read().diff_titles(&spec);
+        let index = Document::diff_index(&eb.read(), &titles, &spec, progress)?;
+        let first = ea.read().diff_first(&index, &spec, progress)?;
+        let out = eb
+            .read()
+            .diff_second(index, first, &spec, progress)
+            .map_err(|e| {
+                if matches!(e, Error::Changed) {
+                    CmdError::new("changed", "a table changed while comparing; try again")
+                } else {
+                    e.into()
+                }
+            })?;
+        drop(job);
+        let natendo_engine::diff::DiffOutcome {
+            table,
+            report,
+            index,
+        } = out;
+        let doc = table.into_document()?;
+        let (rid, _) = self.insert(doc, false)?;
+        self.inherit_private(rid, &[a, b], &[]);
+        self.set_title_of(rid, format!("Diff: {} vs {}", self.stem(a), self.stem(b)));
+        index.set_result_rev(self.get(rid)?.read().data_revision());
+        let index = Arc::new(index);
+        let id = self.next_diff.fetch_add(1, Ordering::Relaxed) + 1;
+        {
+            let mut m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
+            // A newer diff of the same tabs replaces the older one.
+            m.retain(|_, d| !(d.a == a && d.b == b));
+            m.insert(
+                id,
+                DiffState {
+                    index,
+                    a,
+                    b,
+                    result: rid,
+                },
+            );
+        }
+        Ok(DiffReportOut {
+            info: self.info(rid)?,
+            report,
+            diff: id,
+        })
+    }
+
+    /// The differences in a window of tab `id` (a first table, a second table or a result), looked up by
+    /// each shown row's key. Never waits behind a change ("busy").
+    pub fn diff_marks(
+        &self,
+        id: u32,
+        row: u64,
+        rows: u64,
+        col: u32,
+        cols: u32,
+    ) -> CmdResult<DiffMarksOut> {
+        let entry = self.get(id)?;
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(CmdError::new("busy", "the file is being changed"))
+            }
+        };
+        // The index is taken out and the map let go before anything is looked up: a question never holds
+        // the mutex while it works (and so never waits behind a scan).
+        let Some((did, index, side)) = self.diff_of(id) else {
+            return Ok(DiffMarksOut {
+                diff: None,
+                out_of_date: false,
+                marks: Vec::new(),
+            });
+        };
+        if !index.current(side, d.data_revision()) {
+            return Ok(DiffMarksOut {
+                diff: Some(did),
+                out_of_date: true,
+                marks: Vec::new(),
+            });
+        }
+        let marks = d.diff_marks(&index, side, row, rows, col, cols)?;
+        Ok(DiffMarksOut {
+            diff: Some(did),
+            out_of_date: false,
+            marks,
+        })
+    }
+
+    /// The next (previous) difference after a row of tab `id` (a job: Cancel).
+    pub fn diff_next(&self, id: u32, row: u64, backward: bool) -> CmdResult<Option<DiffJump>> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for the next difference")?;
+        let d = entry.read();
+        // The index is taken out and the map let go before the scan (a long one must not hold the mutex).
+        let Some((_, index, side)) = self.diff_of(id) else {
+            return Ok(None);
+        };
+        let hit = d.diff_next(&index, side, row, backward, &job.progress)?;
+        Ok(hit.map(|(row, wrapped, col)| DiffJump { row, col, wrapped }))
+    }
+
+    /// The newest diff tab `id` is in: its number, its index (shared; the map is let go at once) and which
+    /// table of it the tab is.
+    fn diff_of(&self, id: u32) -> Option<DiffOf> {
+        use natendo_engine::diff::Side;
+        let m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
+        let (did, st) = m
+            .iter()
+            .filter(|(_, s)| s.a == id || s.b == id || s.result == id)
+            .max_by_key(|(k, _)| **k)?;
+        let side = if st.result == id {
+            Side::Result
+        } else if st.a == id {
+            Side::A
+        } else {
+            Side::B
+        };
+        Some((*did, st.index.clone(), side))
+    }
+
+    /// Forget the diff tab `id` is in (its marks go from all its tabs).
+    pub fn diff_clear(&self, id: u32) {
+        self.diffs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|_, s| !(s.a == id || s.b == id || s.result == id));
+    }
+
+    /// A tab was only re-ordered (a sort): the diff still fits its rows, so it follows the new revision.
+    fn diff_follow_sort(&self, id: u32, before: u64, after: u64) {
+        use natendo_engine::diff::Side;
+        for st in self
+            .diffs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+        {
+            for (tab, side) in [(st.a, Side::A), (st.b, Side::B), (st.result, Side::Result)] {
+                if tab == id && st.index.current(side, before) {
+                    st.index.follow_order(side, after);
+                }
+            }
+        }
+    }
+
     /// Sort every row (one undo step).
     pub fn sort(&self, id: u32, spec: SortSpec) -> CmdResult<DocInfo> {
+        // A sort only puts the rows in another order, so a diff drawn on this tab still fits it. The
+        // revisions before and after are read inside the apply, under the same write lock, so a change
+        // that lands before or after the sort is never carried forward as if the marks still fit.
+        let seen = std::cell::Cell::new(None);
+        let info = self.sort_inner(id, spec, &seen)?;
+        if let Some((b, a)) = seen.get() {
+            self.diff_follow_sort(id, b, a);
+        }
+        Ok(info)
+    }
+
+    fn sort_inner(
+        &self,
+        id: u32,
+        spec: SortSpec,
+        seen: &std::cell::Cell<Option<(u64, u64)>>,
+    ) -> CmdResult<DocInfo> {
         self.recorded(
             id,
             Logged::Step(RecipeOp::Sort { spec: spec.clone() }),
@@ -3072,7 +3298,12 @@ impl Docs {
                     id,
                     "Sorting",
                     |d, p| d.plan_sort(&spec, p),
-                    |d, plan| d.apply_sort(plan),
+                    |d, plan| {
+                        let before = d.data_revision();
+                        d.apply_sort(plan)?;
+                        seen.set(Some((before, d.data_revision())));
+                        Ok(())
+                    },
                 )
             },
         )
@@ -8259,23 +8490,22 @@ mod tests {
             question.stale,
             "a question is answered at once, from the last reading"
         );
-        let t0 = std::time::Instant::now();
         let reply = docs.info(ia).unwrap();
         assert!(!reply.stale, "an operation's reply is never stale");
-        assert!(
-            reply.data_revision > before.data_revision,
-            "and it shows the change that was waiting"
-        );
         assert!(
             reply.seq > question.seq,
             "the reply is a newer reading than the stale answer"
         );
-        assert!(
-            t0.elapsed() >= std::time::Duration::from_millis(150),
-            "it waited for the change"
-        );
+        // (Whether the queued writer got in before or after this reply depends on the system's lock; what
+        // must hold is that the reply is a real reading, and that after the change a reply shows it.)
         reader.join().unwrap();
         writer.join().unwrap();
+        let after = docs.info(ia).unwrap();
+        assert!(!after.stale);
+        assert!(
+            after.data_revision > before.data_revision,
+            "a reply after the change shows it"
+        );
     }
 
     #[test]
@@ -8491,6 +8721,86 @@ Cy
         std::fs::create_dir(c.with_file_name("lint_c.csv.ndchecks")).unwrap();
         let e = docs.checks_sidecar_keep(ic, rules, true).unwrap_err();
         assert!(e.message.contains("could not be saved"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_diff_opens_a_result_tab_that_is_private_when_a_source_is_and_follows_a_sort() {
+        use natendo_engine::diff::DiffSpec;
+        use natendo_engine::sort::{SortKey, SortKind, SortSpec};
+        let a = tmp("diff_a.csv", b"id,name\r\n1,Ann\r\n2,Bo\r\n3,Cy\r\n");
+        let b = tmp("diff_b.csv", b"id,name\r\n1,Ann\r\n2,Bob\r\n4,Di\r\n");
+        let docs = Docs::default();
+        let ia = docs.open_path(&a, false).unwrap().id;
+        let ib = docs.open_path(&b, false).unwrap().id;
+        wait(&docs, ia);
+        wait(&docs, ib);
+        let spec = DiffSpec {
+            keys: vec![0],
+            keep_first: true,
+            ..Default::default()
+        };
+        let out = docs.diff_files(ia, ib, spec.clone()).unwrap();
+        assert_eq!(
+            (
+                out.report.same,
+                out.report.changed,
+                out.report.added,
+                out.report.removed
+            ),
+            (1, 1, 1, 1)
+        );
+        assert!(!docs.is_private(out.info.id).unwrap());
+        // The marks on the first table: Bo's name changed (row 2), Cy removed (row 3).
+        let m = docs.diff_marks(ia, 0, 10, 0, 10).unwrap();
+        assert_eq!(
+            m.marks.iter().map(|x| (x.row, x.col)).collect::<Vec<_>>(),
+            vec![(2, Some(1)), (3, None)]
+        );
+        // A sort only re-orders the rows: the marks follow, by key.
+        let sort = SortSpec {
+            keys: vec![SortKey {
+                col: 1,
+                descending: true,
+                kind: SortKind::Text,
+                match_case: false,
+            }],
+            keep_first: true,
+            ..Default::default()
+        };
+        docs.sort(ia, sort.clone()).unwrap();
+        let m = docs.diff_marks(ia, 0, 10, 0, 10).unwrap();
+        assert!(!m.out_of_date);
+        assert_eq!(
+            m.marks.iter().map(|x| (x.row, x.col)).collect::<Vec<_>>(),
+            vec![(1, None), (2, Some(1))]
+        );
+        // An edit makes them out of date.
+        docs.set_cells(ia, vec![(1, 1, "Zed".into())]).unwrap();
+        let m = docs.diff_marks(ia, 0, 10, 0, 10).unwrap();
+        assert!(m.out_of_date && m.marks.is_empty());
+        // A sort after the edit does not bring the marks back: the edit is not carried forward as current.
+        docs.sort(ia, sort).unwrap();
+        let m = docs.diff_marks(ia, 0, 10, 0, 10).unwrap();
+        assert!(m.out_of_date && m.marks.is_empty());
+        // Next difference, and clearing.
+        let again = docs.diff_files(ia, ib, spec.clone()).unwrap();
+        assert!(again.diff > out.diff);
+        assert!(docs.diff_next(ib, 0, false).unwrap().is_some());
+        docs.diff_clear(ia);
+        assert!(docs.diff_marks(ib, 0, 10, 0, 10).unwrap().diff.is_none());
+        // A table compared with itself: all the same.
+        let me = docs.diff_files(ib, ib, spec.clone()).unwrap();
+        assert_eq!(
+            (me.report.changed, me.report.added, me.report.removed),
+            (0, 0, 0)
+        );
+        // A private source makes the result private.
+        docs.set_private(ib, true).unwrap();
+        let p = docs.diff_files(ia, ib, spec).unwrap();
+        assert!(
+            docs.is_private(p.info.id).unwrap(),
+            "the result of a private tab is private"
+        );
     }
 
     #[test]

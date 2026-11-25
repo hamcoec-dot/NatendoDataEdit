@@ -1,0 +1,27 @@
+{
+  "about": "two tables, the key-aware diff of them and what it must say; the engine (diff.rs) and the browser stand-in (mock.ts) are both tested against this file",
+  "a": "id,name,city\r\n1,Ann,Dayton\r\n2,Bo,Lisbon\r\n3,Cy,Perth\r\n4,Di,Quito\r\n",
+  "b": "city,id,name,zip\r\nDayton,1,Ann,45402\r\nOsaka,2,Bo,100\r\nPerth,3,Cyd,6000\r\nNew,5,Eve,1\r\n",
+  "keys": [
+    0
+  ],
+  "report": {
+    "same": 1,
+    "changed": 2,
+    "added": 1,
+    "removed": 1,
+    "cells": 2,
+    "only_a": [],
+    "only_b": [
+      "zip"
+    ],
+    "moved": 3
+  },
+  "lines": [
+    "Change,Row (first),Row (second),id,name,city,zip,What changed",
+    "removed,5,,4,Di,Quito,,",
+    "changed,3,,2,Bo,Osaka,100,city: Lisbon → Osaka",
+    "changed,4,,3,Cyd,Perth,6000,name: Cy → Cyd",
+    "added,,,5,Eve,New,1,"
+  ]
+}

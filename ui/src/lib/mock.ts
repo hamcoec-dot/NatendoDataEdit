@@ -1129,7 +1129,160 @@ export class MockBackend implements Backend {
     if (hit && doc !== undefined) this.cancelled.add(doc);
   }
 
+  // ---- key-aware diff (the same rules as the engine's diff.rs: shared fixture in diff.test.ts) ----
+  private diffStates = new Map<number, { a: number; b: number; result: number; keys: number[]; keysB: number[]; spec: import("./backend").DiffSpec; aSide: Map<string, { kind: number; cols: number[] }>; bSide: Map<string, { kind: number; cols: number[] }>; rev: Record<number, number> }>();
+  private diffNo = 0;
+  async diffFiles(a: number, b: number, spec: import("./backend").DiffSpec): Promise<import("./backend").DiffReportOut> {
+    this.calls.push("diffFiles");
+    const da = this.get(a);
+    const db = this.get(b);
+    const norm = (v: string) => (spec.trim ? v.trim() : v).toString()[spec.match_case ? "toString" : "toLowerCase"]();
+    const colsA = this.colCount(da);
+    const colsB = this.colCount(db);
+    const first = spec.keep_first ? 1 : 0;
+    const titleOf = (d: MockDoc, c: number, n: number) => (spec.keep_first ? this.value(d, 0, c) : "") || `Column ${c + 1}`;
+    void colsB;
+    // A's column -> B's column: by title (repeated titles pair in order) or by position
+    const titlesA = Array.from({ length: colsA }, (_, c) => titleOf(da, c, colsA));
+    const titlesB = Array.from({ length: colsB }, (_, c) => titleOf(db, c, colsB));
+    const queue = new Map<string, number[]>();
+    titlesB.forEach((t, j) => queue.set(t.trim().toLowerCase(), [...(queue.get(t.trim().toLowerCase()) ?? []), j]));
+    const map: (number | null)[] = titlesA.map((t, c) => (spec.keep_first ? (queue.get(t.trim().toLowerCase())?.shift() ?? null) : c < colsB ? c : null));
+    if (spec.keep_first && map.every((m) => m === null)) throw err("invalid", "no column title of this table is in the other file; untick the first row is titles to pair columns by position");
+    const keysB = spec.keys.map((k) => map[k] ?? -1);
+    if (keysB.some((k) => k < 0)) throw err("invalid", `the key column ${titlesA[spec.keys.find((k) => map[k] === null) ?? 0]} is not in the other file`);
+    const key = (d: MockDoc, r: number, cols: number[]) => cols.map((c) => norm(this.value(d, r, c))).join("\u001f");
+    const blank = (d: MockDoc, r: number, cols: number[]) => cols.every((c) => (spec.trim ? this.value(d, r, c).trim() : this.value(d, r, c)) === "");
+    // B rows by key (repeats in file order)
+    const bRows = new Map<string, number[]>();
+    for (let r = first; r < this.rowCount(db); r++) if (!blank(db, r, keysB)) bRows.set(key(db, r, keysB), [...(bRows.get(key(db, r, keysB)) ?? []), r]);
+    const used = new Set<number>();
+    const onlyB = titlesB.map((t, j) => ({ t, j })).filter(({ j }) => !map.includes(j));
+    const rows: string[][] = [];
+    const aSide = new Map<string, { kind: number; cols: number[] }>();
+    const bSide = new Map<string, { kind: number; cols: number[] }>();
+    const rep: import("./backend").DiffReport = { same: 0, changed: 0, added: 0, removed: 0, cells: 0, listed: 0, truncated: false, only_a: titlesA.filter((_, c) => map[c] === null), only_b: onlyB.map((x) => x.t), moved: map.filter((m, c) => m !== null && m !== c).length, repeated: 0, dup_a: [], dup_b: [], empty_a: 0, empty_b: 0 };
+    const removedRows: string[][] = [];
+    const changedRows: string[][] = [];
+    const seenA = new Map<string, number>();
+    for (let r = first; r < this.rowCount(da); r++) {
+      const vals = Array.from({ length: colsA }, (_, c) => this.value(da, r, c));
+      if (blank(da, r, spec.keys)) {
+        rep.empty_a++;
+        rep.removed++;
+        removedRows.push(["removed", String(this.pos(da, r) + 1), "", ...vals, ...onlyB.map(() => ""), ""]);
+        continue;
+      }
+      const k = key(da, r, spec.keys);
+      seenA.set(k, (seenA.get(k) ?? 0) + 1);
+      const cand = (bRows.get(k) ?? []).filter((x) => !used.has(x));
+      const j = cand[0];
+      if (j === undefined) {
+        rep.removed++;
+        if ((seenA.get(k) ?? 0) > 1) rep.repeated++;
+        removedRows.push(["removed", String(this.pos(da, r) + 1), "", ...vals, ...onlyB.map(() => ""), ""]);
+        aSide.set(k, { kind: 2, cols: [] });
+        continue;
+      }
+      used.add(j);
+      const newer = map.map((m) => (m === null ? "" : this.value(db, j, m)));
+      const cols: number[] = [];
+      const what: string[] = [];
+      for (let c = 0; c < colsA; c++) if (map[c] !== null && vals[c] !== newer[c]) {
+        cols.push(c);
+        what.push(`${titlesA[c]}: ${vals[c]} → ${newer[c]}`);
+      }
+      if (!cols.length) {
+        rep.same++;
+        continue;
+      }
+      rep.changed++;
+      rep.cells += cols.length;
+      changedRows.push(["changed", String(this.pos(da, r) + 1), "", ...newer.map((v, c) => (map[c] === null ? (vals[c] ?? "") : v)), ...onlyB.map((x) => this.value(db, j!, x.j)), what.join("; ")]);
+      aSide.set(k, { kind: 0, cols });
+      bSide.set(k, { kind: 0, cols: cols.map((c) => map[c]!) });
+    }
+    const addedRows: string[][] = [];
+    for (let r = first; r < this.rowCount(db); r++) {
+      if (blank(db, r, keysB)) {
+        rep.empty_b++;
+        continue;
+      }
+      if (used.has(r)) continue;
+      rep.added++;
+      const vals = map.map((m) => (m === null ? "" : this.value(db, r, m)));
+      addedRows.push(["added", "", "", ...vals, ...onlyB.map((x) => this.value(db, r, x.j)), ""]);
+      bSide.set(key(db, r, keysB), { kind: 1, cols: [] });
+    }
+    for (const [k, n] of seenA) if (n > 1) rep.dup_a.push(k.split("\u001f").join(" | "));
+    rep.dup_a = rep.dup_a.slice(0, 10);
+    for (const [k, rs] of bRows) if (rs.length > 1 && rep.dup_b.length < 10) rep.dup_b.push(k.split("\u001f").join(" | "));
+    rep.repeated = Math.max(rep.repeated, rep.dup_a.length + rep.dup_b.length);
+    rows.push(["Change", "Row (first)", "Row (second)", ...titlesA, ...onlyB.map((x) => x.t), "What changed"], ...removedRows, ...changedRows, ...addedRows);
+    rep.listed = rows.length - 1;
+    const width = rows[0]!.length;
+    const info = this.make("Untitled", rows.length, width);
+    await this.setCells(info.id, rows.flatMap((r, ri) => r.map((v, c) => [ri, c, v] as [number, number, string])));
+    const named = await this.setDocTitle(info.id, `Diff: ${da.info.name.replace(/\.[^. ]{1,5}$/, "")} vs ${db.info.name.replace(/\.[^. ]{1,5}$/, "")}`);
+    const id = ++this.diffNo;
+    this.diffStates.set(id, { a, b, result: info.id, keys: spec.keys, keysB, spec, aSide, bSide, rev: { [a]: da.info.data_revision ?? 0, [b]: db.info.data_revision ?? 0, [info.id]: this.get(info.id).info.data_revision ?? 0 } });
+    return { info: named, report: rep, diff: id };
+  }
+  async diffMarks(doc: number, row: number, rows: number, col: number, cols: number): Promise<import("./backend").DiffMarksOut> {
+    this.calls.push("diffMarks");
+    const d = this.get(doc);
+    const found = [...this.diffStates.entries()].filter(([, s]) => s.a === doc || s.b === doc || s.result === doc).sort((x, y) => y[0] - x[0])[0];
+    if (!found) return { diff: null, out_of_date: false, marks: [] };
+    const [id, s] = found;
+    if ((d.info.data_revision ?? 0) !== s.rev[doc]) return { diff: id, out_of_date: true, marks: [] };
+    const side = s.result === doc ? "result" : s.a === doc ? "a" : "b";
+    const keys = side === "a" ? s.keys : side === "b" ? s.keysB : s.keys.map((k) => k + 3);
+    const norm = (v: string) => (s.spec.trim ? v.trim() : v)[s.spec.match_case ? "toString" : "toLowerCase"]();
+    const first = side === "result" || s.spec.keep_first ? 1 : 0;
+    const marks: import("./backend").DiffMark[] = [];
+    for (let r = Math.max(row, first); r < Math.min(row + rows, this.rowCount(d)); r++) {
+      const parts = keys.map((c) => this.value(d, r, c));
+      if (parts.every((p) => (s.spec.trim ? p.trim() : p) === "")) continue;
+      const k = parts.map(norm).join("\u001f");
+      const e = side === "a" ? s.aSide.get(k) : side === "b" ? s.bSide.get(k) : (s.aSide.get(k) ?? s.bSide.get(k));
+      if (!e) continue;
+      if (e.kind === 0) for (const c of e.cols) {
+        const shown = side === "result" ? c + 3 : c;
+        if (shown >= col && shown < col + cols) marks.push({ row: r, col: shown, kind: 0 });
+      }
+      else marks.push({ row: r, col: null, kind: e.kind });
+    }
+    return { diff: id, out_of_date: false, marks };
+  }
+  async diffNext(doc: number, row: number, backward: boolean): Promise<import("./backend").DiffJump | null> {
+    this.calls.push("diffNext");
+    const d = this.get(doc);
+    const n = this.rowCount(d);
+    const all: { row: number; col: number | null }[] = [];
+    for (let r = 0; r < n; r += 500) for (const m of (await this.diffMarks(doc, r, 500, 0, 1000)).marks) all.push({ row: m.row, col: m.col });
+    all.sort((x, y) => x.row - y.row || (x.col ?? -1) - (y.col ?? -1));
+    const rowsHit = [...new Set(all.map((x) => x.row))];
+    if (!rowsHit.length) return null;
+    const next = backward ? [...rowsHit].reverse().find((r) => r < row) : rowsHit.find((r) => r > row);
+    const hit = next ?? (backward ? rowsHit.at(-1)! : rowsHit[0]!);
+    const cols = all.filter((x) => x.row === hit && x.col !== null).map((x) => x.col!);
+    return { row: hit, col: cols.length ? Math.min(...cols) : null, wrapped: next === undefined };
+  }
+  async diffClear(doc: number): Promise<void> {
+    this.calls.push("diffClear");
+    for (const [id, s] of [...this.diffStates]) if (s.a === doc || s.b === doc || s.result === doc) this.diffStates.delete(id);
+  }
+  /** A sort only reorders the rows: a diff drawn on the tab still fits (as in the engine's shell). */
+  private diffFollow(doc: number, before: number, after: number): void {
+    for (const s of this.diffStates.values()) if (s.rev[doc] === before) s.rev[doc] = after;
+  }
   async sortRows(doc: number, spec: SortSpec): Promise<DocInfo> {
+    const before = this.get(doc).info.data_revision ?? 0;
+    const info = await this.sortRowsInner(doc, spec);
+    this.diffFollow(doc, before, info.data_revision ?? 0);
+    return info;
+  }
+  async sortRowsInner(doc: number, spec: SortSpec): Promise<DocInfo> {
     const d = this.get(doc);
     const n = this.totalRows(d);
     const first = spec.keep_first && n > 0 ? 1 : 0;

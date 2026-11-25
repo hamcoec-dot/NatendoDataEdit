@@ -211,6 +211,51 @@ export interface CompareReport {
   removed: number;
   cells: number;
 }
+/** What a key-aware diff compares (the second table's columns are paired with the first's by title). */
+export interface DiffSpec {
+  keys: number[];
+  keep_first: boolean;
+  match_case: boolean;
+  trim: boolean;
+}
+export interface DiffReport {
+  same: number;
+  changed: number;
+  added: number;
+  removed: number;
+  cells: number;
+  listed: number;
+  truncated: boolean;
+  only_a: string[];
+  only_b: string[];
+  moved: number;
+  repeated: number;
+  dup_a: string[];
+  dup_b: string[];
+  empty_a: number;
+  empty_b: number;
+}
+export interface DiffReportOut {
+  info: DocInfo;
+  report: DiffReport;
+  diff: number;
+}
+/** A difference on screen: `col` null for a whole row; kind 0 changed cell, 1 added row, 2 removed row. */
+export interface DiffMark {
+  row: number;
+  col: number | null;
+  kind: number;
+}
+export interface DiffMarksOut {
+  diff: number | null;
+  out_of_date: boolean;
+  marks: DiffMark[];
+}
+export interface DiffJump {
+  row: number;
+  col: number | null;
+  wrapped: boolean;
+}
 export interface TableReport {
   info: DocInfo;
   compare: CompareReport | null;
@@ -1568,6 +1613,12 @@ export interface Backend {
   /** Forget the kept scramble key (its screens closed). */
   forgetScrambleKey(): Promise<void>;
   runChecks(doc: number, spec: CheckSpec): Promise<CheckReport>;
+  /** Compare two open tabs by key (a job): the differences open as a new tab. */
+  diffFiles(a: number, b: number, spec: DiffSpec): Promise<DiffReportOut>;
+  /** The differences in a window of a tab that is in a diff (looked up by each row's key). */
+  diffMarks(doc: number, row: number, rows: number, col: number, cols: number): Promise<DiffMarksOut>;
+  diffNext(doc: number, row: number, backward: boolean): Promise<DiffJump | null>;
+  diffClear(doc: number): Promise<void>;
   checkMarks(doc: number, row: number, rows: number, col: number, cols: number, spec: CheckSpec): Promise<CheckMark[]>;
   /** The next (previous) problem cell after a cell; `skipCols` are passed over (hidden columns). */
   nextProblem(doc: number, row: number, col: number, backward: boolean, skipCols: number[], spec: CheckSpec): Promise<JumpResult>;
@@ -2229,6 +2280,18 @@ class TauriBackend implements Backend {
   }
   runChecks(doc: number, spec: CheckSpec) {
     return call<CheckReport>("run_checks", { doc, spec });
+  }
+  diffFiles(a: number, b: number, spec: DiffSpec) {
+    return call<DiffReportOut>("diff_files", { a, b, spec });
+  }
+  diffMarks(doc: number, row: number, rows: number, col: number, cols: number) {
+    return call<DiffMarksOut>("diff_marks", { doc, row, rows, col, cols });
+  }
+  diffNext(doc: number, row: number, backward: boolean) {
+    return call<DiffJump | null>("diff_next", { doc, row, backward });
+  }
+  diffClear(doc: number) {
+    return call<void>("diff_clear", { doc });
   }
   checkMarks(doc: number, row: number, rows: number, col: number, cols: number, spec: CheckSpec) {
     return call<CheckMark[]>("check_marks", { doc, row, rows, col, cols, spec });

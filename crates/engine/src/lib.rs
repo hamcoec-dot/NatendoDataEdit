@@ -25,6 +25,7 @@ pub mod counts;
 pub mod crypt;
 pub mod detect;
 pub mod dialect;
+pub mod diff;
 pub mod document;
 pub mod editing;
 pub mod encoding;

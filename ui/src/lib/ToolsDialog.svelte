@@ -6,7 +6,7 @@
   // run; the engine does the work.
   import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
-  import type { Combine, DataOp, SplitParts, TableOp } from "./backend";
+  import type { Combine, DataOp, DiffSpec, SplitParts, TableOp } from "./backend";
   import FormShell from "./FormShell.svelte";
   import { toolsRequest, type ToolKind } from "./m10";
 
@@ -15,6 +15,8 @@
     table?: TableOp;
     split?: SplitParts;
     combine?: Combine;
+    /** Compare by key: the other tab and what to compare (the result opens as a new tab; marks go on all three). */
+    diff?: { other: number; spec: DiffSpec };
   }
 
   interface Props {
@@ -28,8 +30,20 @@
     others: { id: number; name: string }[];
     onRun: (r: ToolsRun, header: boolean) => void;
     onClose: () => void;
+    /** Open another file (a file picker) so it need not be open already: it opens as a tab and is returned. */
+    onPickFile?: () => Promise<{ id: number; name: string } | null>;
   }
-  let { kind, titles, cols, col, header, others, onRun, onClose }: Props = $props();
+  let { kind, titles, cols, col, header, others, onRun, onClose, onPickFile }: Props = $props();
+  /** Files picked here (opened as tabs) for the compare. */
+  let extra = $state<{ id: number; name: string }[]>([]);
+  const choices = $derived([...others, ...extra.filter((e) => !others.some((o) => o.id === e.id))]);
+  async function pickFile(): Promise<void> {
+    const f = await onPickFile?.();
+    if (f) {
+      extra = [...extra, f];
+      other = f.id;
+    }
+  }
 
   const TITLES: Record<ToolKind, string> = {
     fill_blanks: "Fill blank cells",
@@ -76,6 +90,19 @@
   }
 
   function run(): void {
+    if (kind === "compare" && !wholeRow) {
+      // By key: the new engine pairs the rows by the key columns and the columns by title.
+      if (!picked.length) {
+        problem = "Tick the key columns (what identifies a row), or compare whole rows.";
+        return;
+      }
+      if (other < 0) {
+        problem = "Choose the other file.";
+        return;
+      }
+      onRun({ diff: { other, spec: { keys: picked, keep_first: myHeader, match_case: matchCase, trim } } }, myHeader);
+      return;
+    }
     const r = toolsRequest(kind, {
       cols: picked,
       col: one,
@@ -116,11 +143,12 @@
 
 <FormShell title={TITLES[kind]} {onClose} onEnter={run}>
   {#if kind === "compare"}
-    {#if others.length}
-      <label class="row">Compare this file with <select bind:value={other}>{#each others as o (o.id)}<option value={o.id}>{o.name}</option>{/each}</select></label>
+    {#if choices.length}
+      <label class="row">Compare this file with <select bind:value={other}>{#each choices as o (o.id)}<option value={o.id}>{o.name}</option>{/each}</select></label>
     {:else}
-      <p class="problem">Open the other file in a tab first.</p>
+      <p class="note">Open the other file in a tab, or choose it here.</p>
     {/if}
+    {#if onPickFile}<div class="row"><button type="button" onclick={() => void pickFile()}>Choose another file…</button><span class="muted">It opens as a tab; the files themselves do not change.</span></div>{/if}
     <label class="row"><input type="checkbox" bind:checked={wholeRow} /> Compare whole rows (no key columns)</label>
   {/if}
   {#if kind === "combine"}
@@ -160,7 +188,8 @@
     <label class="row"><input type="checkbox" bind:checked={matchCase} /> Match capitals (Rome and rome differ)</label>
     <label class="row"><input type="checkbox" bind:checked={trim} /> Ignore spaces at the start and end</label>
   {/if}
-  {#if kind === "compare"}<label class="row"><input type="checkbox" bind:checked={showSame} /> List the rows that are the same too</label>{/if}
+  {#if kind === "compare" && wholeRow}<label class="row"><input type="checkbox" bind:checked={showSame} /> List the rows that are the same too</label>{/if}
+  {#if kind === "compare" && !wholeRow}<p class="note">By key: rows are paired by the key columns and columns by their titles (a re-sorted file gives the same result). The result lists what changed; the three tabs show the differences in colour (F7-style jumps: Alt+F7 next, Alt+Shift+F7 previous).</p>{/if}
   {#if kind === "breaks"}<label class="row">Blank rows at each break <input type="number" min="1" max="100" bind:value={blankRows} /></label>{/if}
   {#if kind === "reshape"}
     <label class="row">Cells on each new row <input type="number" min="1" max="16384" bind:value={perRow} /></label>
@@ -200,7 +229,7 @@
   {/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#snippet buttons()}
-    <button type="button" class="primary" onclick={run} disabled={kind === "compare" && !others.length}>{kind === "split" || kind === "combine" ? "Choose…" : "Run"}</button>
+    <button type="button" class="primary" onclick={run} disabled={kind === "compare" && !choices.length}>{kind === "split" || kind === "combine" ? "Choose…" : "Run"}</button>
     <button type="button" onclick={onClose}>Cancel</button>
   {/snippet}
 </FormShell>

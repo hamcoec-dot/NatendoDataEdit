@@ -121,7 +121,7 @@ fn pair_columns(here: &[String], there: &[String], by_title: bool) -> Vec<Option
 
 /// A 128-bit key hash (two keyed SipHashes): different keys pairing by
 /// accident is not a practical risk.
-fn key_hash(v: &[&str], match_case: bool, trim: bool) -> u128 {
+pub(crate) fn key_hash(v: &[&str], match_case: bool, trim: bool) -> u128 {
     let mut a = std::collections::hash_map::DefaultHasher::new();
     let mut b = std::collections::hash_map::DefaultHasher::new();
     0x5a_u8.hash(&mut b);
@@ -144,15 +144,15 @@ fn key_hash(v: &[&str], match_case: bool, trim: bool) -> u128 {
 /// The newer file indexed by hashes: for each data row, its key, a hash of
 /// its compared cells, and its row id.
 pub struct NewerIndex {
-    revision: u64,
+    pub(crate) revision: u64,
     /// Here column -> newer column (`None`: not in the newer file).
-    map: Vec<Option<u32>>,
-    newer_cols: u32,
-    here_only: Vec<String>,
-    newer_only: Vec<String>,
-    moved: u32,
+    pub(crate) map: Vec<Option<u32>>,
+    pub(crate) newer_cols: u32,
+    pub(crate) here_only: Vec<String>,
+    pub(crate) newer_only: Vec<String>,
+    pub(crate) moved: u32,
     /// (key, row hash, newer row id), in the newer file's order.
-    rows: Vec<(u128, u64, u32)>,
+    pub(crate) rows: Vec<(u128, u64, u32)>,
 }
 
 impl NewerIndex {
@@ -256,15 +256,31 @@ impl NewerIndex {
 
 /// Rows paired by key: which differ, which are new, which are gone.
 pub struct Pairing {
-    revision: u64,
+    pub(crate) revision: u64,
     /// (row id here, shown row here, newer row id) of paired rows whose
     /// compared cells differ.
-    changed: Vec<(u32, u64, u32)>,
+    pub(crate) changed: Vec<(u32, u64, u32)>,
     /// (row id, shown row) here with no newer row.
-    removed: Vec<(u32, u64)>,
+    pub(crate) removed: Vec<(u32, u64)>,
     /// Newer row ids not paired, in the newer file's order.
-    added: Vec<u32>,
-    repeated: u64,
+    pub(crate) added: Vec<u32>,
+    pub(crate) repeated: u64,
+    /// Rows here whose key is empty (all key cells blank).
+    pub(crate) empty_here: u64,
+}
+
+impl Pairing {
+    /// The same pairing keeping at most `n` of each kind (for listing; the full counts are read before).
+    pub(crate) fn capped(&self, n: usize) -> Pairing {
+        Pairing {
+            revision: self.revision,
+            changed: self.changed.iter().take(n).copied().collect(),
+            removed: self.removed.iter().take(n).copied().collect(),
+            added: self.added.iter().take(n).copied().collect(),
+            repeated: self.repeated,
+            empty_here: self.empty_here,
+        }
+    }
 }
 
 /// The newer values of changed and new rows, in this table's columns
@@ -278,12 +294,12 @@ pub struct NewerValues {
 }
 
 impl NewerValues {
-    fn cell(&self, row: usize, c: usize) -> &str {
+    pub(crate) fn cell(&self, row: usize, c: usize) -> &str {
         let k = row * self.width + c;
         &self.text[self.offs[k] as usize..self.offs[k + 1] as usize]
     }
 
-    fn row(&self, row: usize) -> Vec<String> {
+    pub(crate) fn row(&self, row: usize) -> Vec<String> {
         (0..self.width)
             .map(|c| self.cell(row, c).to_string())
             .collect()
@@ -394,33 +410,8 @@ impl Document {
         let reader = Cols::new(self, &all);
         let rows = self.data_rows(spec.keep_first);
         progress.start(rows.end - rows.start);
-        let mine: Vec<Vec<(u32, u64, u128, u64)>> = (0..(rows.end - rows.start).div_ceil(CHUNK))
-            .into_par_iter()
-            .map(|k| -> Result<_, Error> {
-                let s = rows.start + k * CHUNK;
-                let e = (s + CHUNK).min(rows.end);
-                let mut out = Vec::with_capacity((e - s) as usize);
-                let mut buf = Vec::new();
-                for r in s..e {
-                    let id = self.id_at(r).ok_or(Error::OutOfRange)?;
-                    reader.read(self, id, &mut buf);
-                    let parts: Vec<&str> = spec
-                        .keys
-                        .iter()
-                        .map(|&k| reader.get(&buf, k as usize))
-                        .collect();
-                    let key = key_hash(&parts, spec.match_case, spec.trim);
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    for &c in &compared {
-                        h.write(reader.get(&buf, c as usize).as_bytes());
-                        h.write_u8(0xff);
-                    }
-                    out.push((id, r, key, h.finish()));
-                }
-                progress.step(e - s)?;
-                Ok(out)
-            })
-            .collect::<Result<_, _>>()?;
+        let empty_key = key_hash(&vec![""; spec.keys.len()], spec.match_case, spec.trim);
+        let mut empty_here = 0u64;
         let mut repeated = 0u64;
         for w in sorted.windows(2) {
             if w[0].0 == w[1].0 {
@@ -432,36 +423,75 @@ impl Document {
         let mut taken = vec![false; index.rows.len()];
         let mut changed = Vec::new();
         let mut removed = Vec::new();
-        for &(id, r, key, hash) in mine.iter().flatten() {
-            let first = sorted.partition_point(|x| x.0 < key);
-            if sorted.get(first).is_none_or(|x| x.0 != key) {
-                removed.push((id, r));
-                continue;
-            }
-            let repeats = sorted.get(first + 1).is_some_and(|x| x.0 == key);
-            let n = if repeats {
-                let n = used.entry(key).or_insert(0);
-                let at = *n;
-                *n += 1;
-                at as usize
-            } else if taken[sorted[first].1 as usize] {
-                1
-            } else {
-                0
-            };
-            match sorted.get(first + n).filter(|x| x.0 == key) {
-                Some(&(_, j)) => {
-                    taken[j as usize] = true;
-                    let (_, h, nid) = index.rows[j as usize];
-                    if h != hash {
-                        changed.push((id, r, nid));
+        // The rows here are read a batch of chunks at a time and paired as they come (in order, which repeated
+        // keys need), so the whole table's (id, row, key, hash) list is never held at once.
+        const BATCH: u64 = 64;
+        let n_chunks = (rows.end - rows.start).div_ceil(CHUNK);
+        let mut kb = 0u64;
+        while kb < n_chunks {
+            let ke = (kb + BATCH).min(n_chunks);
+            let mine: Vec<Vec<(u32, u64, u128, u64)>> = (kb..ke)
+                .into_par_iter()
+                .map(|k| -> Result<_, Error> {
+                    let s = rows.start + k * CHUNK;
+                    let e = (s + CHUNK).min(rows.end);
+                    let mut out = Vec::with_capacity((e - s) as usize);
+                    let mut buf = Vec::new();
+                    for r in s..e {
+                        let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                        reader.read(self, id, &mut buf);
+                        let parts: Vec<&str> = spec
+                            .keys
+                            .iter()
+                            .map(|&k| reader.get(&buf, k as usize))
+                            .collect();
+                        let key = key_hash(&parts, spec.match_case, spec.trim);
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        for &c in &compared {
+                            h.write(reader.get(&buf, c as usize).as_bytes());
+                            h.write_u8(0xff);
+                        }
+                        out.push((id, r, key, h.finish()));
+                    }
+                    progress.step(e - s)?;
+                    Ok(out)
+                })
+                .collect::<Result<_, _>>()?;
+            for &(id, r, key, hash) in mine.iter().flatten() {
+                if key == empty_key {
+                    empty_here += 1;
+                }
+                let first = sorted.partition_point(|x| x.0 < key);
+                if sorted.get(first).is_none_or(|x| x.0 != key) {
+                    removed.push((id, r));
+                    continue;
+                }
+                let repeats = sorted.get(first + 1).is_some_and(|x| x.0 == key);
+                let n = if repeats {
+                    let n = used.entry(key).or_insert(0);
+                    let at = *n;
+                    *n += 1;
+                    at as usize
+                } else if taken[sorted[first].1 as usize] {
+                    1
+                } else {
+                    0
+                };
+                match sorted.get(first + n).filter(|x| x.0 == key) {
+                    Some(&(_, j)) => {
+                        taken[j as usize] = true;
+                        let (_, h, nid) = index.rows[j as usize];
+                        if h != hash {
+                            changed.push((id, r, nid));
+                        }
+                    }
+                    None => {
+                        repeated += 1;
+                        removed.push((id, r));
                     }
                 }
-                None => {
-                    repeated += 1;
-                    removed.push((id, r));
-                }
             }
+            kb = ke;
         }
         let added = taken
             .iter()
@@ -475,6 +505,7 @@ impl Document {
             removed,
             added,
             repeated,
+            empty_here,
         })
     }
 
