@@ -567,7 +567,7 @@ mod tests {
             ("pivot.rs", "label", 1, "reads the program's own group key text (a month, a day), not a cell"),
             ("privacy.rs", "kind_of_value", 1, "finds private data by how a value looks, whatever its column's type (a birth date typed Id is still private)"),
             ("validate.rs", "bound_date", 1, "a limit the person typed in a check"),
-            ("validate.rs", "passes", 1, "a check the person wrote reads cells by its own rule, not by the column's type"),
+            ("validate.rs", "compile", 2, "a check on a Text or Id column, or an expression check, reads cells by the rule the person wrote"),
         ];
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut found: std::collections::BTreeMap<(String, String), usize> = Default::default();

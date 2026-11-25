@@ -101,7 +101,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { unchangedTabs, type ScaleKind, type ToolKind } from "./lib/m10";
   import { autosaveDue, type RecoveryItem, type Suggestion, type Suggestions, type VersionItem } from "./lib/m9";
   import { BASIC_KEYS, cleanFormat, defaultFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat } from "./lib/m9";
-  import { defaultPage, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS } from "./lib/m8";
+  import { defaultPage, newCheck, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS } from "./lib/m8";
   import type { Check, CheckSpec, ComputeSpec, PageSetup } from "./lib/backend";
   import { exportDefaults } from "./lib/transfer";
   import { cleanShortcuts, matchColumns, safeFont, MAX_VIEWS, sessionView, type RecentItem, type Shortcuts, type View } from "./lib/views";
@@ -5114,6 +5114,26 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   /** Say what the selected (or right-clicked) columns hold. Nothing in the file changes: it only decides how
    *  the cells are read as numbers and dates. One undo step. */
+  /** A ready-made data rule from the column's type: the cells must read as a number (or a date) the way the
+   *  column is typed. Marks only; nothing is rewritten. */
+  function addTypeRule(): void {
+    const t = tab;
+    if (!t) return;
+    const c = t.cell.col;
+    const ty = typeAt(t.info.typed, c);
+    const type = ty === "number" ? "number" : typeof ty === "object" ? "date" : null;
+    if (!type) {
+      say("Treat this column as Number or Date first; then this adds a rule that its cells must read that way.");
+      return;
+    }
+    const check = { ...newCheck(type, c), name: `${columnTitle(t, c)} must be a ${type}` };
+    t.checks = [...t.checks, check];
+    t.checksMarked = true;
+    t.checkVersion++;
+    t.bump();
+    say(`Added the rule “${check.name}”. Cells that do not read that way are marked (Data > Check now lists them); nothing is changed.`);
+  }
+
   async function setTypeOfColumns(ty: ColumnType): Promise<void> {
     const t = tab;
     if (!t) return;
@@ -5816,6 +5836,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.changeFormula", label: "Change column with a formula…", run: () => { computeMode = "change"; computeOpen = true; }, enabled: ready },
     { id: "data.filterFormula", label: "Filter by formula…", run: () => { computeMode = "filter"; computeOpen = true; }, enabled: ready },
     { id: "data.checks", label: "Data checks (&validation)…", run: () => { checksOpen = true; }, enabled: ready },
+    { id: "data.typeRule", label: "Data rule from this column's type (must read as a number or date)", run: addTypeRule, enabled: ready },
     { id: "data.fieldCheck", label: "Check &fields with patterns…", run: () => { fieldCheckOpen = true; }, enabled: ready },
     { id: "data.nextProblem", label: "Jump to &next problem", keys: ["F7"], run: () => void jumpProblem(false), enabled: ready },
     { id: "data.prevProblem", label: "Jump to &previous problem", keys: ["Shift+F7"], run: () => void jumpProblem(true), enabled: ready },
@@ -6217,7 +6238,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
-        "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
+        "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "-",
         "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",

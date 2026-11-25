@@ -202,6 +202,9 @@ struct Compiled {
     at: Vec<usize>,
     /// For expression checks: the type of each column the expression reads.
     types: Vec<Vec<ColumnType>>,
+    /// How each check reads its column: by the column's type when it is Number or Date (a "must match this
+    /// column's type" rule), else the plain rule (a Text or Id column is checked by the rule the person wrote).
+    readers: Vec<Reader>,
 }
 
 fn bound_date(s: &Option<String>, read: ReadOptions, what: &str) -> Result<Option<f64>, Error> {
@@ -224,6 +227,8 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
     let mut at = Vec::new();
     let mut exprs = Vec::new();
     let mut types: Vec<Vec<ColumnType>> = Vec::new();
+    let mut readers: Vec<Reader> = Vec::new();
+    let ctx = d.read_ctx(spec.read);
     for c in &spec.checks {
         let needs_col = !matches!(c.kind, CheckKind::Expression { .. });
         if needs_col {
@@ -233,8 +238,15 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
             check_cols(d, &[col])?;
             at.push(reader_cols.len());
             reader_cols.push(col);
+            let rd = ctx.reader(col);
+            readers.push(if rd.column_type().is_text_like() {
+                Reader::plain(spec.read)
+            } else {
+                rd
+            });
         } else {
             at.push(usize::MAX);
+            readers.push(Reader::plain(spec.read));
         }
         types.push(Vec::new());
         tests.push(match &c.kind {
@@ -304,6 +316,7 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
         reader_cols,
         at,
         types,
+        readers,
     })
 }
 
@@ -318,7 +331,7 @@ impl Compiled {
         spec: &CheckSpec,
     ) -> bool {
         let read = spec.read;
-        let plain = Reader::plain(read);
+        let plain = self.readers[i];
         let t = &self.tests[i];
         if let Test::Expr(e) = t {
             let a = self.at[i];

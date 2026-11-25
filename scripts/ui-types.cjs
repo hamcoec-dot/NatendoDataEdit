@@ -72,6 +72,12 @@ const url = process.argv[3] || "http://localhost:5241";
   ok((await p.getByText(/Treat this column as Text/).count()) >= 1, "the Text command is found in command search");
   await p.keyboard.press("Escape");
 
+  // ---- a data rule from the type ----
+  await p.evaluate(() => window.__nde.grid.select({ row: 1, col: 1 }));
+  await p.evaluate(() => window.__nde.reg.run("data.typeRule"));
+  await p.waitForTimeout(300);
+  ok(await p.evaluate(() => window.__nde.tab.checks.some((c) => c.col === 1 && c.kind.type === "number")), "the ready-made rule adds a number check for the Number column");
+
   // ---- a saved view carries the types ----
   const view = await p.evaluate(() => JSON.stringify(window.__nde.tab.info.column_types));
   ok(/"id"/.test(view) && /"number"/.test(view), `the engine's types are kept (${view})`);
