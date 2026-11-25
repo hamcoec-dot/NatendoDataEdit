@@ -879,9 +879,13 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       note: "A checkpoint remembers exactly how the table looks now, so you can come back to it from the Steps panel. It costs almost nothing. It is lost when the undo history is trimmed past it, when a new change replaces what you undid, when you save the file, and when the tab closes.",
       check: (v) => (!v.trim() ? "Give the checkpoint a name." : v.trim().length > 100 ? "Use 100 characters or fewer." : ""),
       done: (name) => {
+        t.recordView();
+        const looks = t.lookSteps.length;
         void backend()
-          .checkpointAdd(t.id, name)
-          .then(() => {
+          .checkpointList(t.id)
+          .then(async (before) => {
+            const known = new Set(before.map((c) => c.id));
+            for (const c of await backend().checkpointAdd(t.id, name)) if (!known.has(c.id)) t.checkpointLooks.set(c.id, looks);
             t.checkpointTick++;
             showPanel("steps");
             say(`Named this moment “${name.trim()}”. It is at the top of the Steps panel.`);
@@ -5319,7 +5323,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** Undo or redo, or with `jump` go to another place in the history in ONE engine call (a checkpoint) while doing
    *  for every step crossed what a Ctrl+Z press does for it: look changes, saved-view groups, rename follow-ups,
    *  the header switch, the filter, row heights. */
-  async function undoRedo(op: "undo" | "redo", jump?: { target: number; run: (t: Tab) => Promise<DocInfo> }): Promise<void> {
+  async function undoRedo(op: "undo" | "redo", jump?: { target: number; looks?: number; run: (t: Tab) => Promise<DocInfo> }): Promise<void> {
     if (grid?.isEditing()) return;
     const t = tab;
     if (!t) return;
@@ -5334,13 +5338,16 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (jump) {
       // Every look change crossed goes back (or forward) too, the earliest one deciding what the look ends as.
       let ends: NonNullable<typeof look>["before"] | undefined;
+      // A checkpoint named by the person remembers how many look changes there were then: the ones made after it go
+      // too (even one made at the same place in the history). One made by the app has only the place to go by.
+      const keep = jump.looks;
       if (op === "undo") {
-        for (let l = t.lookSteps.at(-1); l && l.pos > jump.target; l = t.lookSteps.at(-1)) {
+        for (let l = t.lookSteps.at(-1); l && (keep !== undefined ? t.lookSteps.length > keep : l.pos > jump.target); l = t.lookSteps.at(-1)) {
           t.lookRedo.push(t.lookSteps.pop()!);
           ends = l.before;
         }
       } else {
-        for (let l = t.lookRedo.at(-1); l && l.pos < jump.target; l = t.lookRedo.at(-1)) {
+        for (let l = t.lookRedo.at(-1); l && (keep !== undefined ? t.lookSteps.length < keep : l.pos < jump.target); l = t.lookRedo.at(-1)) {
           t.lookSteps.push(t.lookRedo.pop()!);
           ends = l.after;
         }
@@ -5447,7 +5454,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
     if (fresh.current || fresh.steps === 0) return;
     const target = t.info.history_pos + fresh.steps;
-    await undoRedo(fresh.steps < 0 ? "undo" : "redo", { target, run: (x) => backend().checkpointRestore(x.id, c.id) });
+    await undoRedo(fresh.steps < 0 ? "undo" : "redo", { target, looks: t.checkpointLooks.get(c.id), run: (x) => backend().checkpointRestore(x.id, c.id) });
     t.checkpointTick++;
     say(`Went to the checkpoint “${c.name}”. Ctrl+Z steps back through what was undone.`);
   }

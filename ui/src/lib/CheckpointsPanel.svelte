@@ -35,7 +35,11 @@
     const n = name.trim();
     if (!n) return;
     try {
+      tab.recordView();
+      const looks = tab.lookSteps.length;
+      const known = new Set(list.map((c) => c.id));
       list = await backend().checkpointAdd(tab.id, n);
+      for (const c of list) if (!known.has(c.id)) tab.checkpointLooks.set(c.id, looks);
       name = "";
       naming = false;
       problem = "";

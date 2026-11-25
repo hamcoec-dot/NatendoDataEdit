@@ -130,7 +130,27 @@ const url = process.argv[3] || "http://localhost:5271";
     );
     await p.waitForTimeout(400);
   };
+  const command = async (q) => {
+    await p.keyboard.press("Alt+q");
+    await p.keyboard.type(q);
+    await p.waitForTimeout(250);
+    await p.keyboard.press("Enter");
+    await p.waitForTimeout(500);
+  };
   const script = async () => {
+    // A data-check rule that names a column, then that column renamed: the rule follows the rename.
+    const checks = "[role=dialog]:has(h2:has-text('Data checks'))";
+    await command("data checks");
+    if (!(await p.$(`${checks} select[aria-label=Check]`))) await p.click(`${checks} button:has-text('Add a check')`);
+    await p.selectOption(`${checks} select[aria-label=Check] >> nth=0`, "expression");
+    await p.fill(`${checks} input[aria-label=Rule]`, "[city] <> [name]");
+    await p.click(`${checks} button:has-text('Keep and close')`);
+    await p.waitForTimeout(300);
+    await p.evaluate(() => window.__nde.grid.select({ row: 1, col: 1 }));
+    await command("rename column");
+    await p.fill("[role=dialog]:has(h2:has-text('Rename column')) input.name", "town");
+    await p.keyboard.press("Enter");
+    await p.waitForTimeout(600);
     await edit(1, 0, "Alpha");
     await p.evaluate(() => {
       const t = window.__nde.tab;
@@ -167,6 +187,7 @@ const url = process.argv[3] || "http://localhost:5271";
           lookRedo: t.lookRedo.length,
           groups: t.groups.length,
           modified: t.info.modified,
+          checks: JSON.stringify(t.checks),
         };
       },
       base,
@@ -182,6 +203,10 @@ const url = process.argv[3] || "http://localhost:5271";
   await item("begin").locator("button.go").click();
   await p.waitForTimeout(800);
   const restored = await state(base1);
+  await p.evaluate(() => window.__nde.grid.focus());
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(600);
+  const restoredThenUndo = await state(base1);
   // Tab 2: Ctrl+Z until the same place.
   await setup();
   const base2 = await p.evaluate(() => window.__nde.tab.info.history_pos);
@@ -194,8 +219,15 @@ const url = process.argv[3] || "http://localhost:5271";
     await p.waitForTimeout(250);
   }
   const pressed = await state(base2);
+  await p.evaluate(() => window.__nde.grid.focus());
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(600);
+  const pressedThenUndo = await state(base2);
   for (const k of Object.keys(restored)) {
     ok(JSON.stringify(restored[k]) === JSON.stringify(pressed[k]), `restore equals Ctrl+Z presses: ${k} (${JSON.stringify(restored[k]).slice(0, 60)} vs ${JSON.stringify(pressed[k]).slice(0, 60)})`);
+  }
+  for (const k of Object.keys(restoredThenUndo)) {
+    ok(JSON.stringify(restoredThenUndo[k]) === JSON.stringify(pressedThenUndo[k]), `one more Ctrl+Z after the restore, same as after the presses: ${k} (${JSON.stringify(restoredThenUndo[k]).slice(0, 50)} vs ${JSON.stringify(pressedThenUndo[k]).slice(0, 50)})`);
   }
   ok(errors.length === 0, `no page errors ${errors.join(" | ").slice(0, 200)}`);
   await b.close();
