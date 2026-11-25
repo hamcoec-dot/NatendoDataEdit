@@ -528,7 +528,7 @@ const scenarios = {
       for (const f of fs.readdirSync(path.join(LOCAL, "logs"))) {
         const p = path.join(LOCAL, "logs", f);
         const was = (logBefore.find((x) => x[0] === f) || [f, 0])[1];
-        if (fs.statSync(p).size > was && /closed/.test(fs.readFileSync(p, "utf8").slice(was))) closed = true;
+        if (fs.statSync(p).size > was && /closed/.test(fs.readFileSync(p).subarray(was).toString("utf8"))) closed = true;
       }
     }
     ok(closed, "the cleanup on exit ran (the 'closed' line is in the log)");
