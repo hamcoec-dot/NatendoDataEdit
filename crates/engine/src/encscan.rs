@@ -54,7 +54,9 @@ enum Class {
     Double,
 }
 
-fn classify(bytes: &[u8]) -> Class {
+/// How one raw row classifies. `delimiter` is the document's own (a tab, a semicolon, a pipe ...): each field is
+/// judged alone, so one real accent beside one garbled field is still a double-encoded row.
+fn classify(bytes: &[u8], delimiter: &str) -> Class {
     if bytes.is_ascii() {
         return Class::Ascii;
     }
@@ -63,7 +65,7 @@ fn classify(bytes: &[u8]) -> Class {
         Ok(text) => {
             if may_be_double_encoded(bytes)
                 && text
-                    .split(',')
+                    .split(delimiter)
                     .any(|c| crate::encoding::fix_mojibake(c).is_some())
             {
                 Class::Double
@@ -71,6 +73,25 @@ fn classify(bytes: &[u8]) -> Class {
                 Class::Utf8
             }
         }
+    }
+}
+
+/// An edited row holds text (valid UTF-8 by construction): judge its fields the same way.
+fn classify_fields(fields: &[String]) -> Class {
+    let mut any_non_ascii = false;
+    for f in fields {
+        if f.is_ascii() {
+            continue;
+        }
+        any_non_ascii = true;
+        if crate::encoding::fix_mojibake(f).is_some() {
+            return Class::Double;
+        }
+    }
+    if any_non_ascii {
+        Class::Utf8
+    } else {
+        Class::Ascii
     }
 }
 
@@ -92,6 +113,8 @@ impl Document {
         }
         let rows = self.data_rows(keep_first);
         let (r0, r1) = (rows.start, rows.end);
+        let format = self.format();
+        let delimiter = format.dialect.delimiter_str();
         progress.start(r1.saturating_sub(r0));
         let chunks = (r1.saturating_sub(r0) as usize).div_ceil(CHUNK);
         type Part = ([u64; 4], Vec<u32>);
@@ -104,10 +127,9 @@ impl Document {
                 let mut ids = Vec::new();
                 for r in s..e {
                     let id = self.id_at(r).ok_or(Error::OutOfRange)?;
-                    // An edited row holds text, which is valid by construction.
                     let class = match self.row_source(id) {
-                        RowSource::Raw { bytes, .. } => classify(bytes),
-                        RowSource::Edited(_) => Class::Ascii,
+                        RowSource::Raw { bytes, .. } => classify(bytes, delimiter),
+                        RowSource::Edited(fields) => classify_fields(&fields),
                     };
                     match class {
                         Class::Ascii => n[0] += 1,
@@ -234,6 +256,54 @@ mod tests {
             "valid multi-byte rows and invalid rows are two encodings"
         );
         assert_eq!(s.rows, 2);
+    }
+
+    /// In tab, semicolon and pipe files a row with one real accent and one garbled field is double-encoded (the fields
+    /// are split by the document's own delimiter, not by commas).
+    #[test]
+    fn double_encoded_rows_are_found_with_any_delimiter() {
+        for (name, sep) in [("tab", '\t'), ("semicolon", ';'), ("pipe", '|')] {
+            let text = format!(
+                "name{sep}city\r\nRen\u{e9}e{sep}Li\u{c3}\u{a8}ge\r\nBob{sep}Rome\r\nZo\u{e9}{sep}Li\u{e8}ge\r\n"
+            );
+            let opts = OpenOptions {
+                encoding: Some(Encoding::Utf8),
+                dialect: Some(crate::dialect::Dialect::new(sep as u8, Some(b'"')).unwrap()),
+                ..Default::default()
+            };
+            let d = Document::from_bytes(text.into_bytes(), opts, None).unwrap();
+            let s = d.scan_encodings(true, &pr()).unwrap();
+            assert_eq!(
+                (s.ascii, s.utf8, s.invalid, s.double_encoded),
+                (1, 1, 0, 1),
+                "{name}: one ASCII row, one real accent row, one double-encoded row"
+            );
+        }
+    }
+
+    /// Edited rows are checked too: a pasted "caf\u{c3}\u{a9}" is double-encoded, a typed accent is plain UTF-8, plain
+    /// ASCII text stays ASCII, and the ASCII count is right.
+    #[test]
+    fn edited_rows_are_classified_by_their_fields() {
+        let opts = OpenOptions {
+            encoding: Some(Encoding::Utf8),
+            ..Default::default()
+        };
+        let mut d = Document::from_bytes(
+            b"name,city\r\nAnn,Oslo\r\nBob,Rome\r\nCat,Lyon\r\n".to_vec(),
+            opts,
+            None,
+        )
+        .unwrap();
+        d.set_cell(1, 0, "caf\u{c3}\u{a9}".into()).unwrap();
+        d.set_cell(2, 0, "Z\u{fc}rich".into()).unwrap();
+        d.set_cell(3, 1, "Nice".into()).unwrap();
+        let s = d.scan_encodings(true, &pr()).unwrap();
+        assert_eq!(
+            (s.looked, s.ascii, s.utf8, s.invalid, s.double_encoded),
+            (3, 1, 1, 0, 1)
+        );
+        assert_eq!(s.rows, 1, "the pasted double-encoded row is flagged");
     }
 
     #[test]
