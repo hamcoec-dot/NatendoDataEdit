@@ -183,6 +183,8 @@ impl MatchSide {
         let mut all = cols.to_vec();
         all.extend_from_slice(bring);
         let reader = Cols::new(doc, &all);
+        let ctx = doc.read_ctx(read);
+        let rds: Vec<crate::coltype::Reader> = cols.iter().map(|&c| ctx.reader(c)).collect();
         let w = cols.len();
         let bw = bring.len();
         progress.start(rows.end - rows.start);
@@ -203,7 +205,7 @@ impl MatchSide {
                     ids.push(id);
                     let before = text.len();
                     for (f, kind) in kinds.iter().enumerate().take(w) {
-                        normalize(reader.get(&buf, f), *kind, read, &mut text);
+                        normalize(reader.get(&buf, f), *kind, rds[f], &mut text);
                         offs.push(text.len() as u64);
                     }
                     let mut n = text.len() - before + 16 * w;
@@ -818,14 +820,14 @@ fn nickname_groups(w: &str) -> u128 {
 }
 
 /// Normalize a value for comparing, appended to `out`.
-fn normalize(v: &str, kind: FieldKind, read: ReadOptions, out: &mut String) {
+fn normalize(v: &str, kind: FieldKind, rd: crate::coltype::Reader, out: &mut String) {
     let v = v.trim();
     if v.is_empty() {
         return;
     }
     match kind {
         FieldKind::Exact => {
-            if let Some(d) = crate::coltype::Reader::plain(read)
+            if let Some(d) = rd
                 .date(v)
                 .filter(|_| v.chars().any(|c| !c.is_ascii_digit()))
             {
@@ -1025,7 +1027,7 @@ mod tests {
         normalize(
             "Dr. Seán O'Brien Jr.",
             FieldKind::Name,
-            ReadOptions::default(),
+            crate::coltype::Reader::plain(ReadOptions::default()),
             &mut s,
         );
         assert_eq!(s, "sean obrien jr");
@@ -1042,7 +1044,12 @@ mod tests {
     fn suffixes_and_nicknames() {
         let n = |v: &str| {
             let mut s = String::new();
-            normalize(v, FieldKind::Name, ReadOptions::default(), &mut s);
+            normalize(
+                v,
+                FieldKind::Name,
+                crate::coltype::Reader::plain(ReadOptions::default()),
+                &mut s,
+            );
             s
         };
         let d = doc("name

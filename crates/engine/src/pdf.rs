@@ -535,7 +535,8 @@ impl Document {
             .map(|&c| names.get(c as usize).map_or("", String::as_str))
             .collect();
         let reader = Cols::new(self, &cols);
-        let read = ReadOptions::default();
+        let ctx = self.read_ctx(ReadOptions::default());
+        let rds: Vec<crate::coltype::Reader> = cols.iter().map(|&c| ctx.reader(c)).collect();
         let l = self.pdf_layout(page, &face, opts.header, &titles, &reader, rows.clone())?;
         let total_pages = (l.groups.len() * l.row_pages.len()) as u64;
         progress.start(total_pages);
@@ -640,8 +641,7 @@ impl Document {
                     let mut x = x0;
                     for k in g.clone() {
                         let v = reader.get(&buf, k);
-                        let right = !v.is_empty()
-                            && crate::coltype::Reader::plain(read).number(v).is_some();
+                        let right = !v.is_empty() && rds[k].number(v).is_some();
                         cell(&mut c, v, k, x, y, right);
                         x += l.widths[k];
                     }
