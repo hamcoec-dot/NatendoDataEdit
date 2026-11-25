@@ -47,7 +47,10 @@ fn generate(path: &std::path::Path, rows: u64) -> std::io::Result<()> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let rows: u64 = args.first().and_then(|a| a.parse().ok()).unwrap_or(1_000_000);
+    let rows: u64 = args
+        .first()
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(1_000_000);
     let repeats: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(7);
     let dir = std::env::temp_dir().join("nde-find-bench");
     std::fs::create_dir_all(&dir).unwrap();
@@ -81,7 +84,9 @@ fn main() {
         let ms = best(&mut || {
             d.replace_ghosts(s, rep, 500_000, 60, 0, 20).unwrap();
         });
-        println!("replace_ghosts, {label}, 60 rows x 20 columns in the middle of {rows} rows	{ms:.3}");
+        println!(
+            "replace_ghosts, {label}, 60 rows x 20 columns in the middle of {rows} rows	{ms:.3}"
+        );
         let ms = best(&mut || {
             d.replace_count(s, rep, &p).unwrap();
         });
@@ -92,14 +97,19 @@ fn main() {
     let mut csv = String::new();
     for _ in 0..60 {
         csv.push_str(&vec![long.as_str(); 20].join(","));
-        csv.push_str("
-");
+        csv.push_str(
+            "
+",
+        );
     }
     let l = Document::from_bytes(csv.into_bytes(), OpenOptions::default(), Some("csv")).unwrap();
     let evil = spec("(a)b", PatternKind::Regex);
     let mut partial = false;
     let ms = best(&mut || {
-        partial = l.replace_ghosts(&evil, "$1-", 0, 60, 0, 20).unwrap().partial;
+        partial = l
+            .replace_ghosts(&evil, "$1-", 0, 60, 0, 20)
+            .unwrap()
+            .partial;
     });
     println!("replace_ghosts, 1,200 cells of 100 KB with a regex (stops at its time cap: partial = {partial})	{ms:.2}");
 }

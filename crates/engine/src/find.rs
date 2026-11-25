@@ -3503,8 +3503,20 @@ x,q
         let p = Progress::new();
         let cases: Vec<(Pattern, &str)> = vec![
             (pat("a", PatternKind::Plain), "XY"),
-            (Pattern { match_case: true, ..pat("a", PatternKind::Plain) }, "Q"),
-            (Pattern { whole_cell: true, ..pat("ab", PatternKind::Plain) }, "zz"),
+            (
+                Pattern {
+                    match_case: true,
+                    ..pat("a", PatternKind::Plain)
+                },
+                "Q",
+            ),
+            (
+                Pattern {
+                    whole_cell: true,
+                    ..pat("ab", PatternKind::Plain)
+                },
+                "zz",
+            ),
             (pat("(a)(b)", PatternKind::Regex), "$2$1"),
             (pat("^$", PatternKind::Regex), "filled"),
             (pat("a?", PatternKind::Wildcard), "-"),
@@ -3529,12 +3541,26 @@ x,q
             }
             match round % 3 {
                 0 => {}
-                1 => s.scope = Scope::Columns { cols: vec![0, 2, 3] },
+                1 => {
+                    s.scope = Scope::Columns {
+                        cols: vec![0, 2, 3],
+                    }
+                }
                 _ => {
                     s.scope = Scope::Areas {
                         areas: vec![
-                            Block { row: 1, rows: 7, col: 0, cols: 2 },
-                            Block { row: 4, rows: 9, col: 2, cols: 3 },
+                            Block {
+                                row: 1,
+                                rows: 7,
+                                col: 0,
+                                cols: 2,
+                            },
+                            Block {
+                                row: 4,
+                                rows: 9,
+                                col: 2,
+                                cols: 3,
+                            },
                         ],
                     }
                 }
@@ -3557,9 +3583,16 @@ x,q
                 .map(|x| (x.row, x.col, visible(&x.after)))
                 .collect();
             got.sort();
-            assert_eq!(got, want, "round {round}: ghosts are the plan's changes in shown cells");
+            assert_eq!(
+                got, want,
+                "round {round}: ghosts are the plan's changes in shown cells"
+            );
             // the count is the whole plan, hidden cells included
-            assert_eq!(d.replace_count(&s, rep, &p).unwrap(), plan.cells, "round {round}: count");
+            assert_eq!(
+                d.replace_count(&s, rep, &p).unwrap(),
+                plan.cells,
+                "round {round}: count"
+            );
             // a smaller window gives exactly the cells inside it
             let (r0, nr, c0, nc) = (1, 4, 1, 3);
             let part = d.replace_ghosts(&s, rep, r0, nr, c0, nc).unwrap();
@@ -3608,15 +3641,24 @@ x,q
         assert!(g.ghosts.len() % 5 == 0 || !g.partial);
         let p = Progress::new();
         p.cancel.store(true, Ordering::Relaxed);
-        assert!(matches!(d.replace_count(&s, "x", &p), Err(Error::Cancelled)));
+        assert!(matches!(
+            d.replace_count(&s, "x", &p),
+            Err(Error::Cancelled)
+        ));
     }
 
     #[test]
     fn ghosts_refuse_a_bad_pattern_or_replacement_as_replace_all_does() {
         let d = doc("a\r\nb\r\n");
-        assert!(d.replace_ghosts(&spec(pat("(", PatternKind::Regex)), "x", 0, 2, 0, 1).is_err());
-        assert!(d.replace_ghosts(&spec(pat("(a)", PatternKind::Regex)), "$9", 0, 2, 0, 1).is_err());
-        assert!(d.replace_count(&spec(pat("(", PatternKind::Regex)), "x", &Progress::new()).is_err());
+        assert!(d
+            .replace_ghosts(&spec(pat("(", PatternKind::Regex)), "x", 0, 2, 0, 1)
+            .is_err());
+        assert!(d
+            .replace_ghosts(&spec(pat("(a)", PatternKind::Regex)), "$9", 0, 2, 0, 1)
+            .is_err());
+        assert!(d
+            .replace_count(&spec(pat("(", PatternKind::Regex)), "x", &Progress::new())
+            .is_err());
     }
 
     // ---- Find in several blocks (Scope::Areas) ----
