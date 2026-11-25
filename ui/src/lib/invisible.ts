@@ -150,7 +150,12 @@ export function scanGremlins(s: string): Gremlin[] {
   const out: Gremlin[] = [];
   let run: { at: number; ch: string }[] = [];
   const flush = () => {
-    if (run.length && run.some((r) => scriptOf(r.ch.codePointAt(0)!) === "latin")) {
+    // Only a run that could become all-Latin: a Latin letter, and a twin for EVERY Cyrillic or Greek letter.
+    const twinned = run.every((r) => {
+      const sc = scriptOf(r.ch.codePointAt(0)!);
+      return (sc !== "cyrillic" && sc !== "greek") || CONFUSABLE.has(r.ch);
+    });
+    if (twinned && run.length && run.some((r) => scriptOf(r.ch.codePointAt(0)!) === "latin")) {
       for (const r of run) {
         const sc = scriptOf(r.ch.codePointAt(0)!);
         if (sc === "cyrillic" || sc === "greek") {
@@ -200,17 +205,23 @@ export function sanitizeText(s: string, o: SanitizeOptions): string | null {
   let out = "";
   let last = 0;
   let changed = false;
+  let skipTo = 0;
   for (const g of found) {
+    if (g.at < skipTo) continue;
     const fix =
       g.kind === "zero_width" ? o.zero_width : g.kind === "odd_space" ? o.odd_spaces : g.kind === "smart_quote" ? o.smart_quotes : g.kind === "tab" || g.kind === "line_break" ? o.tabs_breaks : g.kind === "homoglyph" ? o.homoglyphs : false;
     if (!fix) continue;
     out += s.slice(last, g.at) + g.twin;
     last = g.at + g.ch.length;
+    // A "\r\n" pair is one break: one space, not two (the user's own double spaces stay).
+    if (g.ch === "\r" && s[last] === "\n") {
+      last += 1;
+      skipTo = last;
+    }
     changed = true;
   }
   if (!changed) return null;
   out += s.slice(last);
-  if (o.tabs_breaks && s.includes("\r\n")) out = out.replaceAll("  ", " ");
   return out;
 }
 

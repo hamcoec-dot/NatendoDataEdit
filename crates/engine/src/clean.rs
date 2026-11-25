@@ -3000,11 +3000,18 @@ impl Document {
         max_rows: u64,
         exact: bool,
     ) -> Result<CleanPreview, Error> {
-        let sanitizes = spec
-            .cleaner
-            .steps
-            .iter()
-            .any(|s| matches!(s, Step::Sanitize { .. }));
+        // Look-alike cells are counted only when a Sanitize step is set to fix look-alike letters.
+        let sanitizes = spec.cleaner.steps.iter().any(|s| {
+            matches!(
+                s,
+                Step::Sanitize {
+                    options: crate::xray::SanitizeOptions {
+                        homoglyphs: true,
+                        ..
+                    }
+                }
+            )
+        });
         let c = Compiled::new(&spec.cleaner, spec.read, now)?;
         let area = self.area(&FindSpec {
             pattern: Pattern::default(),
@@ -3126,6 +3133,40 @@ mod tests {
     /// odd characters, dates read in a pattern, Julian cyyddd, numbers in
     /// words.
     /// B1: the Sanitize step, paged preview with exact counts and the homoglyph count (R8), one undo step.
+    #[test]
+    fn homoglyph_count_is_zero_when_look_alikes_are_not_fixed() {
+        let mut text = String::from("name\r\n");
+        for i in 0..10 {
+            text.push_str(&format!("P\u{430}ul\u{2019}s{i}\r\n"));
+        }
+        let mut d = doc(&text);
+        let mut o = crate::xray::SanitizeOptions::usual();
+        o.homoglyphs = false;
+        let spec = |options| CleanSpec {
+            cleaner: cleaner(vec![Step::Sanitize { options }]),
+            scope: Scope::Columns { cols: vec![0] },
+            skip_first: true,
+            read: Default::default(),
+        };
+        // Smart quotes are fixed in all 10 cells, but no look-alike letter is: the count says 0.
+        let p = d
+            .preview_clean_page(&spec(o), 0.0, 1, 0, 5, 1_000_000, true)
+            .unwrap();
+        assert_eq!((p.changed, p.homoglyph_cells), (10, 0));
+        let on = d
+            .preview_clean_page(
+                &spec(crate::xray::SanitizeOptions::usual()),
+                0.0,
+                1,
+                0,
+                5,
+                1_000_000,
+                true,
+            )
+            .unwrap();
+        assert_eq!((on.changed, on.homoglyph_cells), (10, 10));
+    }
+
     #[test]
     fn sanitize_preview_pages_with_exact_counts() {
         let mut text = String::from("name\r\n");

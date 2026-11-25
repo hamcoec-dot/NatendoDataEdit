@@ -117,16 +117,22 @@ pub fn scan(text: &str, out: &mut Vec<Gremlin>) {
     if text.is_ascii() && !text.bytes().any(|b| b < 0x20 || b == 0x7f) {
         return;
     }
-    let mut run_start: Option<usize> = None;
     let mut run: Vec<(usize, char)> = Vec::new();
     let flush = |run: &mut Vec<(usize, char)>, out: &mut Vec<Gremlin>| {
         if run.is_empty() {
             return;
         }
+        // A run is changed only when it could become all-Latin: it holds a Latin letter, and EVERY Cyrillic or
+        // Greek letter in it has a Latin twin. A word with a letter that has none (И, в, н, θ) really is Cyrillic
+        // or Greek, with a stray Latin letter in it: changing the other letters would make the name more broken.
         let latin = run
             .iter()
             .any(|(_, c)| script_of(*c) == Some(Script::Latin));
-        if latin {
+        let all_twinned = run.iter().all(|(_, c)| {
+            !matches!(script_of(*c), Some(Script::Cyrillic | Script::Greek))
+                || t.confusable.contains_key(c)
+        });
+        if latin && all_twinned {
             for (at, c) in run.iter() {
                 if matches!(script_of(*c), Some(Script::Cyrillic | Script::Greek)) {
                     if let Some(&twin) = t.confusable.get(c) {
@@ -145,15 +151,11 @@ pub fn scan(text: &str, out: &mut Vec<Gremlin>) {
     let mut flagged: Vec<Gremlin> = Vec::new();
     for (at, c) in text.char_indices() {
         if c.is_alphabetic() || (is_mark(c) && !run.is_empty()) {
-            run_start.get_or_insert(at);
             run.push((at, c));
             continue;
         }
         // A letter run ends here.
-        let before = out.len();
         flush(&mut run, out);
-        let _ = before;
-        run_start = None;
         let g = if c == '\t' {
             Some((GremlinKind::Tab, Some(' ')))
         } else if c == '\n' || c == '\r' {
@@ -184,7 +186,6 @@ pub fn scan(text: &str, out: &mut Vec<Gremlin>) {
         }
     }
     flush(&mut run, out);
-    let _ = run_start;
     // Everything in text order (the homoglyphs were found run by run).
     out.extend(flagged);
     out.sort_by_key(|g| g.at);
@@ -229,7 +230,12 @@ pub fn sanitize(text: &str, o: &SanitizeOptions) -> Option<String> {
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
     let mut changed = false;
+    // The "\n" of a "\r\n" pair that was folded into one space together with its "\r".
+    let mut skip_to = 0;
     for g in &found {
+        if g.at < skip_to {
+            continue;
+        }
         let fix = match g.kind {
             GremlinKind::ZeroWidth => o.zero_width,
             GremlinKind::OddSpace => o.odd_spaces,
@@ -246,16 +252,17 @@ pub fn sanitize(text: &str, o: &SanitizeOptions) -> Option<String> {
             out.push(t);
         }
         last = g.at + g.ch.len_utf8();
+        // A "\r\n" pair is one break: one space, not two (the user's own double spaces stay).
+        if g.ch == '\r' && text[last..].starts_with('\n') {
+            last += 1;
+            skip_to = last;
+        }
         changed = true;
     }
     if !changed {
         return None;
     }
     out.push_str(&text[last..]);
-    // A "\r\n" pair is one break: two spaces would be wrong.
-    if o.tabs_breaks && text.contains("\r\n") {
-        out = out.replace("  ", " ");
-    }
     Some(out)
 }
 
@@ -438,6 +445,38 @@ impl Document {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_crlf_pair_is_one_space_and_other_double_spaces_stay() {
+        let o = SanitizeOptions {
+            tabs_breaks: true,
+            ..SanitizeOptions::usual()
+        };
+        assert_eq!(super::sanitize("a  b\r\nc", &o).as_deref(), Some("a  b c"));
+        assert_eq!(super::sanitize("a\r\n\r\nb", &o).as_deref(), Some("a  b"));
+        assert_eq!(super::sanitize("a\nb\rc", &o).as_deref(), Some("a b c"));
+        // Nothing flagged: the user's own double spaces are not touched.
+        assert_eq!(super::sanitize("a  b", &o), None);
+    }
+
+    #[test]
+    fn a_word_with_a_letter_that_has_no_twin_is_never_changed() {
+        let o = SanitizeOptions::usual();
+        // Cyrillic with one Latin o typed in: И, в, н have no twin, so the word is Cyrillic and stays.
+        assert_eq!(
+            super::sanitize("\u{418}\u{432}\u{430}\u{43d}o\u{432}", &o),
+            None
+        );
+        // Greek with a Latin a.
+        assert_eq!(super::sanitize("\u{391}\u{3b8}\u{3b7}\u{3bd}a", &o), None);
+        // The quote is fixed, the name is not.
+        assert_eq!(
+            super::sanitize("O\u{2019}\u{418}\u{432}\u{430}\u{43d}\u{43e}\u{432}", &o).as_deref(),
+            Some("O'\u{418}\u{432}\u{430}\u{43d}\u{43e}\u{432}")
+        );
+        // Every letter has a twin: the whole word becomes Latin.
+        assert_eq!(super::sanitize("Sm\u{430}rt", &o).as_deref(), Some("Smart"));
+    }
+
     use super::*;
 
     fn corpus() -> Vec<serde_json::Value> {
@@ -541,20 +580,19 @@ mod tests {
 
     #[test]
     fn every_option_works_alone() {
-        let text = "S\u{43c}\u{430}rt\u{200b} \u{201c}x\u{201d}\u{a0}y";
+        let text = "Sm\u{430}rt\u{200b} \u{201c}x\u{201d}\u{a0}y";
         let only = |f: fn(&mut SanitizeOptions)| {
             let mut o = SanitizeOptions::default();
             f(&mut o);
             sanitize(text, &o)
         };
-        assert!(only(|o| o.zero_width = true).unwrap().contains('м'));
+        assert!(only(|o| o.zero_width = true)
+            .unwrap()
+            .contains("Sm\u{430}rt"));
         assert!(!only(|o| o.zero_width = true).unwrap().contains('\u{200b}'));
         assert!(only(|o| o.smart_quotes = true).unwrap().contains("\"x\""));
         assert!(only(|o| o.odd_spaces = true).unwrap().ends_with(" y"));
-        assert!(
-            only(|o| o.homoglyphs = true).unwrap().contains("Smart")
-                || only(|o| o.homoglyphs = true).unwrap().contains("Sмart")
-        );
+        assert!(only(|o| o.homoglyphs = true).unwrap().contains("Smart"));
         assert_eq!(sanitize(text, &SanitizeOptions::default()), None);
     }
 

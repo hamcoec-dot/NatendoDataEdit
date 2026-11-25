@@ -39,3 +39,19 @@ describe("X-ray gremlins: the screen", () => {
     expect(sanitizeText("a\tb", USUAL_SANITIZE)).toBeNull();
   });
 });
+
+describe("review fixes (B1)", () => {
+  const withBreaks = { ...USUAL_SANITIZE, tabs_breaks: true };
+  it("a CRLF pair is one space and the user's own double spaces stay", () => {
+    expect(sanitizeText("a  b\r\nc", withBreaks)).toBe("a  b c");
+    expect(sanitizeText("a\r\n\r\nb", withBreaks)).toBe("a  b");
+    expect(sanitizeText("a\nb\rc", withBreaks)).toBe("a b c");
+    expect(sanitizeText("a  b", withBreaks)).toBeNull();
+  });
+  it("a word with a letter that has no Latin twin is never changed", () => {
+    expect(sanitizeText("Иванoв", USUAL_SANITIZE)).toBeNull();
+    expect(sanitizeText("Αθηνa", USUAL_SANITIZE)).toBeNull();
+    expect(sanitizeText("O’Иванов", USUAL_SANITIZE)).toBe("O'Иванов");
+    expect(sanitizeText("Smаrt", USUAL_SANITIZE)).toBe("Smart");
+  });
+});

@@ -334,7 +334,7 @@
             <label class="row"><input type="radio" value={k} bind:group={step.how} /> {label}</label>
           {/each}
         {:else if step.tool === "sanitize"}
-          <p class="note">Fixes what looks right but is not. Look-alike letters are changed only inside a word that mixes Latin letters with Cyrillic or Greek ones; a word that is all Cyrillic or all Greek is never touched.</p>
+          <p class="note">Fixes what looks right but is not. Look-alike letters are changed only inside a word that mixes Latin letters with Cyrillic or Greek ones and where every such letter has a Latin twin; a word that is all Cyrillic or all Greek, or has a letter with no Latin twin, is never touched. Control characters are listed by X-ray but not changed.</p>
           <label class="row"><input type="checkbox" bind:checked={step.zero_width} /> Remove zero-width characters, the byte order mark and soft hyphens</label>
           <label class="row"><input type="checkbox" bind:checked={step.odd_spaces} /> Odd spaces (no-break, wide, thin) to a plain space</label>
           <label class="row"><input type="checkbox" bind:checked={step.smart_quotes} /> Smart quotes to straight quotes</label>

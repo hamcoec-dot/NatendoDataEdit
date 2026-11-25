@@ -392,7 +392,7 @@ everything is also in command search.
   "Smith-Иванова", are never flagged: the look-alike check works on one
   unbroken run of letters at a time. Click the status text (or View > X-ray
   report) for the whole file or the selected columns: counts per kind and per
-  column, and "Show only these rows". **Sanitize selection** (Edit menu, or
+  column, and "Show only these rows". **Sanitize selection** (Edit menu, the cell right-click menu, or
   Clean > Sanitize look-alike characters) fixes the ticked kinds, and its
   preview lists every changed cell, a page at a time, with exact counts and
   how many cells have a look-alike letter fixed; one undo step, and it is

@@ -46,6 +46,9 @@
     { "text": "xбy", "flags": [], "sanitized": "xбy" },
     { "text": "a\tb", "flags": [["tab", "\t", " "]], "sanitized": "a\tb" },
     { "text": "line\nbreak", "flags": [["line_break", "\n", " "]], "sanitized": "line\nbreak" },
+    { "text": "Иванoв", "flags": [], "sanitized": "Иванoв" },
+    { "text": "Αθηνa", "flags": [], "sanitized": "Αθηνa" },
+    { "text": "O’Иванов", "flags": [["smart_quote", "’", "'"]], "sanitized": "O'Иванов" },
     { "text": "", "flags": [], "sanitized": "" }
   ]
 }
