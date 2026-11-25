@@ -8078,10 +8078,13 @@ mod tests {
 
     #[test]
     fn commands_that_ask_about_a_document_never_wait_for_a_change_to_finish() {
-        let a = tmp("lock_a.csv", b"a,b
+        let a = tmp(
+            "lock_a.csv",
+            b"a,b
 1,2
 3,4
-");
+",
+        );
         let docs = Docs::default();
         let ia = docs.open_path(&a, false).unwrap().id;
         let fresh = wait(&docs, ia);
@@ -8089,17 +8092,25 @@ mod tests {
         let t0 = std::time::Instant::now();
         let h = hold_write(&docs, ia, 600);
         // info: at once, stale, same figures; the live parts (read-only) are current.
-        docs.set_read_only(ia, true).unwrap_or_else(|_| fresh.clone());
+        docs.set_read_only(ia, true)
+            .unwrap_or_else(|_| fresh.clone());
         let got = docs.info(ia).unwrap();
         assert!(got.stale, "answered from the last reading");
-        assert_eq!((got.rows, got.cols, got.data_revision), (fresh.rows, fresh.cols, fresh.data_revision));
+        assert_eq!(
+            (got.rows, got.cols, got.data_revision),
+            (fresh.rows, fresh.cols, fresh.data_revision)
+        );
         assert!(got.read_only, "live parts are current");
         // path_of and private_changed never wait either.
         assert_eq!(docs.path_of(ia).unwrap().as_deref(), Some(a.as_path()));
         docs.private_changed();
         docs.set_private(ia, true).unwrap();
         docs.set_private(ia, false).unwrap();
-        assert!(t0.elapsed() < std::time::Duration::from_millis(300), "no waiting: {:?}", t0.elapsed());
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(300),
+            "no waiting: {:?}",
+            t0.elapsed()
+        );
         h.join().unwrap();
         // After the change let go: a fresh answer follows.
         let after = docs.info(ia).unwrap();
@@ -8109,9 +8120,12 @@ mod tests {
     #[test]
     fn the_first_answer_during_a_change_waits_on_its_own_thread_and_is_fresh() {
         // A document whose first reading never happened: the stored info is cleared as if new.
-        let a = tmp("lock_b.csv", b"a
+        let a = tmp(
+            "lock_b.csv",
+            b"a
 1
-");
+",
+        );
         let docs = Docs::default();
         let ia = docs.open_path(&a, false).unwrap().id;
         wait(&docs, ia);

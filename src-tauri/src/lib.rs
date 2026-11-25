@@ -9,11 +9,11 @@ mod applog;
 mod assoc;
 mod batch;
 mod docs;
-#[cfg(test)]
-mod lockaudit;
 mod extras;
 mod imports;
 mod links;
+#[cfg(test)]
+mod lockaudit;
 mod recovery;
 mod session;
 mod watch;

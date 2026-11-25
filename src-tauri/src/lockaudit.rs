@@ -22,14 +22,20 @@ const ALLOWED: &[(&str, &str)] = &[
     ("read", "the guard itself; callers are checked, not this"),
     ("write", "the guard itself; callers are checked, not this"),
     ("try_read", "never waits"),
-    ("info_waiting", "only the very first answer, and only reached from `info` on the blocking pool"),
+    (
+        "info_waiting",
+        "only the very first answer, and only reached from `info` on the blocking pool",
+    ),
     ("current_path", "try_read, then the path noted last"),
 ];
 
 /// Names of the sync commands the audit lets through although they reach a lock, with the reason.
 const SYNC_COMMANDS_ALLOWED: &[(&str, &str)] = &[
     ("new_document", "a document nobody else can hold yet"),
-    ("close_document", "forgets the tab: map and small mutexes only"),
+    (
+        "close_document",
+        "forgets the tab: map and small mutexes only",
+    ),
 ];
 
 /// Every `fn name(` in docs.rs with its body text (up to the next method of the same indent).
@@ -167,10 +173,17 @@ fn no_sync_command_waits_for_a_documents_lock() {
             }
         }
         if !culprits.is_empty() {
-            bad.push(format!("{name}: reaches a waiting lock through {}", culprits.join(", ")));
+            bad.push(format!(
+                "{name}: reaches a waiting lock through {}",
+                culprits.join(", ")
+            ));
         }
     }
-    assert!(bad.is_empty(), "sync commands that can freeze the window:\n{}", bad.join("\n"));
+    assert!(
+        bad.is_empty(),
+        "sync commands that can freeze the window:\n{}",
+        bad.join("\n")
+    );
 }
 
 #[test]
@@ -182,7 +195,10 @@ fn the_audit_sees_the_commands_that_used_to_wait() {
     }
     // And the reader would catch one: a made-up body that calls a waiting method.
     let m = methods();
-    assert!(waits(m.get("filter_spec").unwrap()), "filter_spec's method does wait, so a sync command calling it would be flagged");
+    assert!(
+        waits(m.get("filter_spec").unwrap()),
+        "filter_spec's method does wait, so a sync command calling it would be flagged"
+    );
 }
 
 /// The mutexes a job might hold across its run are named here. Each use was read and lets go before
@@ -201,6 +217,9 @@ fn named_mutexes_are_taken_briefly_and_their_uses_are_counted() {
     for (needle, count) in expected {
         let found = DOCS.matches(needle).count();
         // tests in docs.rs also touch some (joins, lookups); only a growth in non-test uses matters
-        assert!(found >= *count, "{needle}: the audit expected at least {count} uses, found {found}");
+        assert!(
+            found >= *count,
+            "{needle}: the audit expected at least {count} uses, found {found}"
+        );
     }
 }
