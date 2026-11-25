@@ -937,11 +937,18 @@ pub struct TableReport {
 /// A key-aware diff kept while its tabs are open: the index that draws it on the first table, the second
 /// and the result, and which tabs those are.
 struct DiffState {
-    index: natendo_engine::diff::DiffIndex,
+    index: Arc<natendo_engine::diff::DiffIndex>,
     a: u32,
     b: u32,
     result: u32,
 }
+
+/// A diff a tab is in: its number, its shared index and which table of it the tab is.
+type DiffOf = (
+    u64,
+    Arc<natendo_engine::diff::DiffIndex>,
+    natendo_engine::diff::Side,
+);
 
 /// What the diff command gives back: the result tab, the counts and the report text.
 #[derive(Debug, Serialize)]
@@ -3135,13 +3142,14 @@ impl Docs {
         let natendo_engine::diff::DiffOutcome {
             table,
             report,
-            mut index,
+            index,
         } = out;
         let doc = table.into_document()?;
         let (rid, _) = self.insert(doc, false)?;
         self.inherit_private(rid, &[a, b], &[]);
         self.set_title_of(rid, format!("Diff: {} vs {}", self.stem(a), self.stem(b)));
-        index.result_rev = Some(self.get(rid)?.read().data_revision());
+        index.set_result_rev(self.get(rid)?.read().data_revision());
+        let index = Arc::new(index);
         let id = self.next_diff.fetch_add(1, Ordering::Relaxed) + 1;
         {
             let mut m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
@@ -3174,7 +3182,6 @@ impl Docs {
         col: u32,
         cols: u32,
     ) -> CmdResult<DiffMarksOut> {
-        use natendo_engine::diff::Side;
         let entry = self.get(id)?;
         let d = match entry.doc.try_read() {
             Ok(d) => d,
@@ -3183,35 +3190,25 @@ impl Docs {
                 return Err(CmdError::new("busy", "the file is being changed"))
             }
         };
-        let m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
-        let Some((did, st)) = m
-            .iter()
-            .filter(|(_, s)| s.a == id || s.b == id || s.result == id)
-            .max_by_key(|(k, _)| **k)
-        else {
+        // The index is taken out and the map let go before anything is looked up: a question never holds
+        // the mutex while it works (and so never waits behind a scan).
+        let Some((did, index, side)) = self.diff_of(id) else {
             return Ok(DiffMarksOut {
                 diff: None,
                 out_of_date: false,
                 marks: Vec::new(),
             });
         };
-        let side = if st.result == id {
-            Side::Result
-        } else if st.a == id {
-            Side::A
-        } else {
-            Side::B
-        };
-        if !st.index.current(side, d.data_revision()) {
+        if !index.current(side, d.data_revision()) {
             return Ok(DiffMarksOut {
-                diff: Some(*did),
+                diff: Some(did),
                 out_of_date: true,
                 marks: Vec::new(),
             });
         }
-        let marks = d.diff_marks(&st.index, side, row, rows, col, cols)?;
+        let marks = d.diff_marks(&index, side, row, rows, col, cols)?;
         Ok(DiffMarksOut {
-            diff: Some(*did),
+            diff: Some(did),
             out_of_date: false,
             marks,
         })
@@ -3219,18 +3216,26 @@ impl Docs {
 
     /// The next (previous) difference after a row of tab `id` (a job: Cancel).
     pub fn diff_next(&self, id: u32, row: u64, backward: bool) -> CmdResult<Option<DiffJump>> {
-        use natendo_engine::diff::Side;
         let entry = self.get(id)?;
         let job = entry.start("Looking for the next difference")?;
         let d = entry.read();
-        let m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
-        let Some((_, st)) = m
-            .iter()
-            .filter(|(_, s)| s.a == id || s.b == id || s.result == id)
-            .max_by_key(|(k, _)| **k)
-        else {
+        // The index is taken out and the map let go before the scan (a long one must not hold the mutex).
+        let Some((_, index, side)) = self.diff_of(id) else {
             return Ok(None);
         };
+        let hit = d.diff_next(&index, side, row, backward, &job.progress)?;
+        Ok(hit.map(|(row, wrapped, col)| DiffJump { row, col, wrapped }))
+    }
+
+    /// The newest diff tab `id` is in: its number, its index (shared; the map is let go at once) and which
+    /// table of it the tab is.
+    fn diff_of(&self, id: u32) -> Option<DiffOf> {
+        use natendo_engine::diff::Side;
+        let m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
+        let (did, st) = m
+            .iter()
+            .filter(|(_, s)| s.a == id || s.b == id || s.result == id)
+            .max_by_key(|(k, _)| **k)?;
         let side = if st.result == id {
             Side::Result
         } else if st.a == id {
@@ -3238,8 +3243,7 @@ impl Docs {
         } else {
             Side::B
         };
-        let hit = d.diff_next(&st.index, side, row, backward, &job.progress)?;
-        Ok(hit.map(|(row, wrapped, col)| DiffJump { row, col, wrapped }))
+        Some((*did, st.index.clone(), side))
     }
 
     /// Forget the diff tab `id` is in (its marks go from all its tabs).
@@ -3257,7 +3261,7 @@ impl Docs {
             .diffs
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .values_mut()
+            .values()
         {
             for (tab, side) in [(st.a, Side::A), (st.b, Side::B), (st.result, Side::Result)] {
                 if tab == id && st.index.current(side, before) {
@@ -3269,16 +3273,23 @@ impl Docs {
 
     /// Sort every row (one undo step).
     pub fn sort(&self, id: u32, spec: SortSpec) -> CmdResult<DocInfo> {
-        // A sort only puts the rows in another order, so a diff drawn on this tab still fits it.
-        let before = self.get(id).map(|e| e.read().data_revision()).ok();
-        let info = self.sort_inner(id, spec)?;
-        if let Some(b) = before {
-            self.diff_follow_sort(id, b, info.data_revision);
+        // A sort only puts the rows in another order, so a diff drawn on this tab still fits it. The
+        // revisions before and after are read inside the apply, under the same write lock, so a change
+        // that lands before or after the sort is never carried forward as if the marks still fit.
+        let seen = std::cell::Cell::new(None);
+        let info = self.sort_inner(id, spec, &seen)?;
+        if let Some((b, a)) = seen.get() {
+            self.diff_follow_sort(id, b, a);
         }
         Ok(info)
     }
 
-    fn sort_inner(&self, id: u32, spec: SortSpec) -> CmdResult<DocInfo> {
+    fn sort_inner(
+        &self,
+        id: u32,
+        spec: SortSpec,
+        seen: &std::cell::Cell<Option<(u64, u64)>>,
+    ) -> CmdResult<DocInfo> {
         self.recorded(
             id,
             Logged::Step(RecipeOp::Sort { spec: spec.clone() }),
@@ -3287,7 +3298,12 @@ impl Docs {
                     id,
                     "Sorting",
                     |d, p| d.plan_sort(&spec, p),
-                    |d, plan| d.apply_sort(plan),
+                    |d, plan| {
+                        let before = d.data_revision();
+                        d.apply_sort(plan)?;
+                        seen.set(Some((before, d.data_revision())));
+                        Ok(())
+                    },
                 )
             },
         )
@@ -8718,7 +8734,7 @@ Cy
             keep_first: true,
             ..Default::default()
         };
-        docs.sort(ia, sort).unwrap();
+        docs.sort(ia, sort.clone()).unwrap();
         let m = docs.diff_marks(ia, 0, 10, 0, 10).unwrap();
         assert!(!m.out_of_date);
         assert_eq!(
@@ -8727,6 +8743,10 @@ Cy
         );
         // An edit makes them out of date.
         docs.set_cells(ia, vec![(1, 1, "Zed".into())]).unwrap();
+        let m = docs.diff_marks(ia, 0, 10, 0, 10).unwrap();
+        assert!(m.out_of_date && m.marks.is_empty());
+        // A sort after the edit does not bring the marks back: the edit is not carried forward as current.
+        docs.sort(ia, sort).unwrap();
         let m = docs.diff_marks(ia, 0, 10, 0, 10).unwrap();
         assert!(m.out_of_date && m.marks.is_empty());
         // Next difference, and clearing.

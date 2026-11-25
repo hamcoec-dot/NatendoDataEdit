@@ -7,6 +7,7 @@
 //! row numbers to keep right.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -119,11 +120,15 @@ pub struct DiffIndex {
     keys_b: Vec<u32>,
     a_side: HashMap<u128, Entry>,
     b_side: HashMap<u128, Entry>,
-    a_rev: u64,
-    b_rev: u64,
-    /// The result table's data revision, set once it exists.
-    pub result_rev: Option<u64>,
+    /// The data revision each table had when the index was made (or last followed a re-ordering); atomic so
+    /// the index can be shared (an `Arc`) and still follow a sort without holding anyone's lock.
+    a_rev: AtomicU64,
+    b_rev: AtomicU64,
+    /// The result table's data revision, set once it exists (`NO_REV` until then).
+    result_rev: AtomicU64,
 }
+
+const NO_REV: u64 = u64::MAX;
 
 /// A marked row and its first marked column.
 type RowHit = (u64, Option<u32>);
@@ -207,19 +212,27 @@ impl DiffIndex {
     /// the shell moves the number along for it; any other change makes the marks out of date).
     pub fn current(&self, side: Side, data_revision: u64) -> bool {
         match side {
-            Side::A => self.a_rev == data_revision,
-            Side::B => self.b_rev == data_revision,
-            Side::Result => self.result_rev.is_none_or(|r| r == data_revision),
+            Side::A => self.a_rev.load(AtomicOrdering::SeqCst) == data_revision,
+            Side::B => self.b_rev.load(AtomicOrdering::SeqCst) == data_revision,
+            Side::Result => {
+                let r = self.result_rev.load(AtomicOrdering::SeqCst);
+                r == NO_REV || r == data_revision
+            }
         }
     }
 
     /// The table's rows were only put in another order: the index follows.
-    pub fn follow_order(&mut self, side: Side, data_revision: u64) {
+    pub fn follow_order(&self, side: Side, data_revision: u64) {
         match side {
-            Side::A => self.a_rev = data_revision,
-            Side::B => self.b_rev = data_revision,
-            Side::Result => self.result_rev = Some(data_revision),
+            Side::A => self.a_rev.store(data_revision, AtomicOrdering::SeqCst),
+            Side::B => self.b_rev.store(data_revision, AtomicOrdering::SeqCst),
+            Side::Result => self.result_rev.store(data_revision, AtomicOrdering::SeqCst),
         }
+    }
+
+    /// The result table exists now, at this data revision.
+    pub fn set_result_rev(&self, data_revision: u64) {
+        self.result_rev.store(data_revision, AtomicOrdering::SeqCst);
     }
 
     /// The key columns of a table of `side`.
@@ -682,9 +695,9 @@ impl Document {
             keys_b,
             a_side,
             b_side,
-            a_rev,
-            b_rev: other.data_revision(),
-            result_rev: None,
+            a_rev: AtomicU64::new(a_rev),
+            b_rev: AtomicU64::new(other.data_revision()),
+            result_rev: AtomicU64::new(NO_REV),
         };
         Ok(DiffOutcome {
             table: Table {
