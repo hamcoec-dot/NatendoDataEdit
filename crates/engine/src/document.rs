@@ -235,10 +235,13 @@ impl Op {
     }
 }
 
+/// What the thread is noting: the document and, once a change is made to it, the mark and row-id watermark just before.
+type Capture = Option<(u64, Option<(u64, u32)>)>;
+
 thread_local! {
     /// While a bulk change runs on this thread: the document it edits and the mark of that document just before its
     /// first undo step was made (see `capture_mark_start`).
-    static CAPTURE: std::cell::RefCell<Option<(u64, Option<(u64, u32)>)>> = const { std::cell::RefCell::new(None) };
+    static CAPTURE: std::cell::RefCell<Capture> = const { std::cell::RefCell::new(None) };
 }
 
 /// Start noting, on this thread, the mark of document `uid` just before the next change made to it, read under the
