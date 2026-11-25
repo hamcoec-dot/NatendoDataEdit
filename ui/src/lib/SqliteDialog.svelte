@@ -12,7 +12,7 @@
     header: boolean;
     filtered: boolean;
     onSaved: (rows: number) => void;
-    onOpened: (info: DocInfo) => void;
+    onOpened: (info: DocInfo, note: string) => void;
     onClose: () => void;
   }
   let { mode, doc, docName, header, filtered, onSaved, onOpened, onClose }: Props = $props();
@@ -47,7 +47,8 @@
         const n = await backend().sqliteSave(doc, table.trim(), header, replace);
         if (n !== null) onSaved(n);
       } else if (picked) {
-        onOpened(await backend().sqliteOpen(picked));
+        const r = await backend().sqliteOpen(picked);
+        onOpened(r.info, r.note);
       }
     } catch (e) {
       problem = errorText(e);

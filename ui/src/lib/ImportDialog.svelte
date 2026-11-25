@@ -5,7 +5,8 @@
   // clipboard, with a preview of the first rows. The result opens as a new,
   // unsaved tab.
   import { untrack } from "svelte";
-  import { backend, errorText, type ImportFormat, type ImportInfo, type ImportOptions, type ImportStart } from "./backend";
+  import { backend, errorText, type ImportFormat, type ImportInfo, type ImportNotes, type ImportOptions, type ImportStart } from "./backend";
+  import { recallPad, rememberPad } from "./headerMemory";
   import FormShell from "./FormShell.svelte";
   import { looksLikeHeader } from "./header";
   import { FORMAT_NAMES } from "./transfer";
@@ -13,7 +14,7 @@
 
   interface Props {
     start: ImportStart;
-    onImport: (o: ImportOptions, header: boolean) => void;
+    onImport: (o: ImportOptions, header: boolean, notes: ImportNotes | null) => void;
     onClose: () => void;
   }
   let { start, onImport, onClose }: Props = $props();
@@ -69,6 +70,34 @@
       });
   });
 
+  // What the "exactly as written" guards did (counts and column names only), and the one question they ask.
+  let notes = $state<ImportNotes | null>(null);
+  let nseq = 0;
+  let padRecalled = false;
+  $effect(() => {
+    if (info.format !== "spreadsheet") {
+      notes = null;
+      return;
+    }
+    const snap = $state.snapshot(o);
+    const mine = ++nseq;
+    backend()
+      .importNotes(start.id, snap)
+      .then(async (n) => {
+        if (mine !== nseq) return;
+        notes = n;
+        if (!padRecalled && n.remember_path && n.padded.length > 0) {
+          padRecalled = true;
+          const r = await recallPad(n.remember_path);
+          if (r !== null && o.pad_zeros == null) o.pad_zeros = r;
+        }
+      })
+      .catch(() => {
+        if (mine === nseq) notes = null;
+      });
+  });
+  const paddedCells = $derived((notes?.padded ?? []).reduce((a, p) => a + p.count, 0));
+
   const width = $derived(Math.min(50, Math.max(0, ...rows.map((r) => r.length))));
   const partLabel = $derived(info.format === "spreadsheet" ? "Sheet" : "Table");
 
@@ -90,7 +119,8 @@
 
   function run(): void {
     if (problem || loading || rows.length === 0) return;
-    onImport($state.snapshot(o), header);
+    if (notes?.remember_path && notes.padded.length > 0) void rememberPad(notes.remember_path, !!o.pad_zeros);
+    onImport($state.snapshot(o), header, $state.snapshot(notes));
   }
 </script>
 
@@ -110,6 +140,12 @@
     {/if}
     {#if info.format === "spreadsheet"}
       <label class="row"><input type="checkbox" bind:checked={o.raw_dates} /> Keep dates as the numbers they are stored as</label>
+      {#if notes && notes.padded.length > 0}
+        <label class="row">
+          <input type="checkbox" checked={!!o.pad_zeros} onchange={(e) => (o.pad_zeros = e.currentTarget.checked)} />
+          Write numbers with leading zeros the way the spreadsheet shows them ({paddedCells} {paddedCells === 1 ? "cell" : "cells"} in {notes.padded.map((p) => p.name).slice(0, 3).join(", ")})
+        </label>
+      {/if}
     {/if}
     {#if info.format === "xml" && info.records.length > 0}
       <label class="row">Each row is a
@@ -162,6 +198,9 @@
   {/if}
   {#if info.format === "spreadsheet"}
     <p class="note">Values are imported as they were last calculated; formulas, formatting and pictures are left out.</p>
+    {#if notes && notes.summary}
+      <p class="note" data-testid="import-notes">{notes.summary}</p>
+    {/if}
   {/if}
   <div class="table-preview" aria-label="Preview of the first rows">
     <table>

@@ -2,6 +2,7 @@
 //! as a tab, and save a tab as a table in a database file (created when
 //! missing). Uses the SQLite library itself (bundled).
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -126,6 +127,17 @@ pub fn tables(path: &Path) -> Result<Vec<DbTable>, Error> {
 /// as a note of their size. Stops when cancelled, when no row comes for a
 /// minute, when a view runs past five minutes, or at the table size limits.
 pub fn read_table(path: &Path, table: &str, progress: &Progress) -> Result<Document, Error> {
+    read_table_report(path, table, progress).map(|r| r.0)
+}
+
+/// [`read_table`], and the numbers of the columns declared NUMERIC/DECIMAL that hold binary (REAL) numbers.
+/// SQLite keeps such a value as a binary number, so a written `1.50` is `1.5` inside the database already;
+/// it is shown with the 15 significant digits SQLite itself gives. Text values come through exactly.
+pub fn read_table_report(
+    path: &Path,
+    table: &str,
+    progress: &Progress,
+) -> Result<(Document, Vec<u32>), Error> {
     let known = tables(path)?;
     let entry = known
         .iter()
@@ -143,12 +155,31 @@ pub fn read_table(path: &Path, table: &str, progress: &Progress) -> Result<Docum
                 > STALL_TIME
             || (view && now > VIEW_TIME)
     };
+    let decimal_cols = std::cell::RefCell::new(Vec::<u32>::new());
     let result = guarded(&c, stop, || -> Result<Document, Error> {
         let mut st = c
             .prepare(&format!("SELECT * FROM {}", quote(table)))
             .map_err(db_err)?;
         let names: Vec<String> = st.column_names().map(|s| s.to_string()).collect();
         let n = names.len();
+        // Declared types by column name (a view's columns have none).
+        let mut decl: HashMap<String, String> = HashMap::new();
+        if let Ok(mut info) = c.prepare(&format!("PRAGMA table_info({})", quote(table))) {
+            if let Ok(rs) =
+                info.query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+            {
+                for (name, ty) in rs.flatten() {
+                    decl.insert(name, ty.to_ascii_uppercase());
+                }
+            }
+        }
+        let decimal: Vec<bool> = names
+            .iter()
+            .map(|n| {
+                decl.get(n)
+                    .is_some_and(|d| d.contains("DECIMAL") || d.contains("NUMERIC"))
+            })
+            .collect();
         let mut sink = Sink::new(None);
         sink.row(&names)?;
         progress.start(total.max(1));
@@ -161,6 +192,15 @@ pub fn read_table(path: &Path, table: &str, progress: &Progress) -> Result<Docum
                 let v = match r.get_ref(i).map_err(db_err)? {
                     ValueRef::Null => String::new(),
                     ValueRef::Integer(x) => x.to_string(),
+                    ValueRef::Real(x) if decimal.get(i).copied().unwrap_or(false) => {
+                        let mut seen = decimal_cols.borrow_mut();
+                        if !seen.contains(&(i as u32)) {
+                            seen.push(i as u32);
+                        }
+                        format!("{:.14e}", x)
+                            .parse::<f64>()
+                            .map_or_else(|_| x.to_string(), |y| y.to_string())
+                    }
                     ValueRef::Real(x) => x.to_string(),
                     ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
                     ValueRef::Blob(b) => format!("(binary, {} bytes)", b.len()),
@@ -178,7 +218,11 @@ pub fn read_table(path: &Path, table: &str, progress: &Progress) -> Result<Docum
     });
     match result {
         Err(_) if progress.cancel.load(Ordering::Relaxed) => Err(Error::Cancelled),
-        r => r,
+        r => r.map(|d| {
+            let mut cols = decimal_cols.into_inner();
+            cols.sort_unstable();
+            (d, cols)
+        }),
     }
 }
 
@@ -289,6 +333,31 @@ impl Document {
 mod tests {
     use super::*;
     use crate::OpenOptions;
+
+    /// A1a: a TEXT value comes through exactly; a REAL in a NUMERIC/DECIMAL column is shown with the 15
+    /// digits SQLite itself gives, and the column is reported (the binary number is all the file holds).
+    #[test]
+    fn text_is_exact_and_decimal_columns_are_reported() {
+        let path = std::env::temp_dir().join(format!("nd-a1a-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE t(id TEXT, price DECIMAL(10,2), n INTEGER, r REAL);
+                 INSERT INTO t VALUES('00123456789012345678', 0.30000000000000004, 12, 0.30000000000000004);
+                 INSERT INTO t VALUES('1.50', 1.50, 3, 1.5);",
+            )
+            .unwrap();
+        }
+        let (d, dec) = read_table_report(&path, "t", &Progress::new()).unwrap();
+        assert_eq!(
+            d.row_values(1).unwrap(),
+            vec!["00123456789012345678", "0.3", "12", "0.30000000000000004"]
+        );
+        assert_eq!(d.row_values(2).unwrap(), vec!["1.50", "1.5", "3", "1.5"]);
+        assert_eq!(dec, vec![1]);
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn save_and_open_tables() {

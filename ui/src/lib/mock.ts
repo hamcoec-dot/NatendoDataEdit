@@ -548,6 +548,23 @@ export class MockBackend implements Backend {
       throw err("invalid", `the text is not valid ${o.format ?? s.format}: ${String(e)}`);
     }
   }
+  async importNotes(id: number, o: ImportOptions): Promise<import("./backend").ImportNotes> {
+    const s = this.session(id);
+    const none = { kept_big: 0, lost_digits: 0, padded: [], padded_applied: 0, padded_left: 0, scanned_rows: 0, all_scanned: true, remember_path: null, summary: "" };
+    if ((o.format ?? s.format) !== "spreadsheet" || o.part !== 0) return none;
+    const applied = o.pad_zeros ? 3 : 0;
+    return {
+      kept_big: 1,
+      lost_digits: 0,
+      padded: [{ name: "“zip”", count: 3 }],
+      padded_applied: applied,
+      padded_left: 0,
+      scanned_rows: 4,
+      all_scanned: true,
+      remember_path: "C:\\Data\\people.xlsx",
+      summary: `1 number of more than 15 digits kept exactly as the file stores them (“score”).${applied ? " 3 numbers written with leading zeros, as the spreadsheet shows them." : ""}`,
+    };
+  }
   async importFinish(id: number, o: ImportOptions): Promise<DocInfo> {
     const s = this.session(id);
     const rows = mockImport(s.text, o.format ?? s.format, o.part);
@@ -3422,7 +3439,7 @@ export class MockBackend implements Backend {
   async sqlitePick(): Promise<[string, import("./sqlite").DbTable[]] | null> {
     return ["C:\\Data\\county.sqlite", [{ name: "people", rows: 12, view: false }, { name: "precincts", rows: 3, view: false }, { name: "active", rows: null, view: true }]];
   }
-  async sqliteOpen(): Promise<DocInfo> {
+  async sqliteOpen(): Promise<import("./backend").SqliteOpened> {
     throw err("invalid", "the browser preview cannot read databases");
   }
   async sqliteSave(doc: number): Promise<number | null> {

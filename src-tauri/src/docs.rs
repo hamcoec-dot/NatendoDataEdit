@@ -4067,16 +4067,49 @@ impl Docs {
     // ---- SQLite (Milestone 15) ----
 
     /// Open a table of a database file in a new tab.
+    #[cfg(test)]
     pub fn open_sqlite(&self, path: &Path, table: &str) -> CmdResult<DocInfo> {
+        self.open_sqlite_report(path, table).map(|r| r.0)
+    }
+
+    /// [`Docs::open_sqlite`], and one sentence about the columns declared NUMERIC/DECIMAL (SQLite keeps
+    /// them as binary numbers, so trailing zeros were lost inside the database); empty when none.
+    pub fn open_sqlite_report(&self, path: &Path, table: &str) -> CmdResult<(DocInfo, String)> {
         let progress = Progress::new();
-        let doc = natendo_engine::sqlite::read_table(path, table, &progress)?;
+        let (doc, decimal) = natendo_engine::sqlite::read_table_report(path, table, &progress)?;
+        let names = doc.row_values(0).unwrap_or_default();
+        let note = if decimal.is_empty() {
+            String::new()
+        } else {
+            let list: Vec<String> = decimal
+                .iter()
+                .take(5)
+                .map(|c| {
+                    match names
+                        .get(*c as usize)
+                        .map(|n| n.trim())
+                        .filter(|n| !n.is_empty())
+                    {
+                        Some(n) => {
+                            format!("\u{201c}{}\u{201d}", n.chars().take(40).collect::<String>())
+                        }
+                        None => format!("column {}", c + 1),
+                    }
+                })
+                .collect();
+            format!(
+                "{} {} stored as binary numbers in the database, so trailing zeros were already lost there.",
+                if decimal.len() == 1 { "Column" } else { "Columns" },
+                list.join(", ")
+            )
+        };
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let info = self.insert_titled(doc, Some(format!("{name}: {table}")))?;
         self.private_if_from(info.id, path);
-        self.info(info.id)
+        Ok((self.info(info.id)?, note))
     }
 
     /// Save tab `id` as a table of a database file.

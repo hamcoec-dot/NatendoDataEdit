@@ -42,6 +42,96 @@ pub struct SheetInfo {
 pub struct SheetOptions {
     /// Keep date cells as the numbers they are stored as.
     pub raw_dates: bool,
+    /// Numbers shown with a zero-padding format (`00000`, `000-00-0000`): `Some(true)` writes them padded (the
+    /// way the spreadsheet displays them), `Some(false)` keeps the number, `None` keeps the number and counts
+    /// them (so the import screen can ask).
+    pub pad_zeros: Option<bool>,
+}
+
+/// What the guards did while a sheet was read (counts and column numbers only, never cell text).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SheetStats {
+    /// Whole numbers of more than 15 digits kept exactly as the file stores them.
+    pub kept_big: u64,
+    /// Numbers of more than 15 digits whose digits the file no longer has (stored in exponent form, or
+    /// fractions rounded to the 15 digits a spreadsheet keeps): shown as before.
+    pub lost_digits: u64,
+    /// Columns with cells in a zero-padding number format, and how many cells.
+    pub padded: Vec<(u32, u64)>,
+    /// Padded cells written padded / left as numbers because they are not a whole number that fits.
+    pub padded_applied: u64,
+    pub padded_left: u64,
+    /// Columns where a guard kept a cell exactly (big whole numbers or padded cells), sorted.
+    pub kept_columns: Vec<u32>,
+}
+
+impl SheetStats {
+    fn note_col(&mut self, col: u32, padded: bool) {
+        if padded {
+            match self.padded.iter_mut().find(|p| p.0 == col) {
+                Some(p) => p.1 += 1,
+                None => self.padded.push((col, 1)),
+            }
+        }
+    }
+
+    fn kept_col(&mut self, col: u32) {
+        if let Err(at) = self.kept_columns.binary_search(&col) {
+            self.kept_columns.insert(at, col);
+        }
+    }
+}
+
+/// A zero-padding number format: zeros with literal `-` and spaces between them (`00000`, `000-00-0000`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Pad {
+    /// `Some(())` for a digit place, a literal character otherwise.
+    parts: Vec<Option<char>>,
+    digits: usize,
+}
+
+impl Pad {
+    /// `n` written into the pattern, or `None` when it has more digits than the pattern has places.
+    fn apply(&self, n: u64) -> Option<String> {
+        let d = n.to_string();
+        if d.len() > self.digits {
+            return None;
+        }
+        let digits = format!("{:0>w$}", d, w = self.digits);
+        let mut it = digits.chars();
+        let mut out = String::new();
+        for p in &self.parts {
+            match p {
+                None => out.push(it.next()?),
+                Some(c) => out.push(*c),
+            }
+        }
+        Some(out)
+    }
+}
+
+/// A format made only of zeros (and `-` or space between them) pads: `00000`, `0000`, `000-00-0000`.
+/// `0.00`, `#,##0` and `0%` do not.
+pub(crate) fn pad_by_code(code: &str) -> Option<Pad> {
+    let first = code.split(';').next().unwrap_or("");
+    let mut parts = Vec::new();
+    let mut digits = 0;
+    let mut it = first.chars();
+    while let Some(c) = it.next() {
+        match c {
+            '0' => {
+                parts.push(None);
+                digits += 1;
+            }
+            '-' | ' ' => parts.push(Some(c)),
+            '\\' => match it.next() {
+                Some(l @ ('-' | ' ')) => parts.push(Some(l)),
+                _ => return None,
+            },
+            _ => return None,
+        }
+    }
+    (digits >= 2).then_some(Pad { parts, digits })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +149,8 @@ pub struct Book<'a> {
     parts: Vec<String>,
     workbook: String,
     date1904: bool,
+    /// What the guards did in the last sheet read.
+    stats: std::cell::RefCell<SheetStats>,
 }
 
 /// True when `data` looks like a spreadsheet package.
@@ -111,6 +203,7 @@ impl<'a> Book<'a> {
                 parts: Vec::new(),
                 workbook: "content.xml".into(),
                 date1904: false,
+                stats: Default::default(),
             };
             b.sheets = b.ods_sheets()?;
             return Ok(b);
@@ -160,11 +253,17 @@ impl<'a> Book<'a> {
             parts,
             workbook,
             date1904,
+            stats: Default::default(),
         })
     }
 
     pub fn sheets(&self) -> &[SheetInfo] {
         &self.sheets
+    }
+
+    /// What the guards did while the last sheet was read.
+    pub fn stats(&self) -> SheetStats {
+        self.stats.borrow().clone()
     }
 
     /// Read sheet `index` (at most `limit` rows when given).
@@ -175,6 +274,7 @@ impl<'a> Book<'a> {
         limit: Option<u64>,
         progress: &Progress,
     ) -> Result<Table, Error> {
+        *self.stats.borrow_mut() = SheetStats::default();
         if index >= self.sheets.len() {
             return Err(Error::Invalid("that sheet is not in the file".into()));
         }
@@ -239,16 +339,20 @@ impl<'a> Book<'a> {
     }
 
     /// Per cell style: how a number shows (date, time, both, or a number).
-    fn styles(&self, rels: &HashMap<String, (String, String)>) -> Result<Vec<Shown>, Error> {
+    fn styles(
+        &self,
+        rels: &HashMap<String, (String, String)>,
+    ) -> Result<(Vec<Shown>, Vec<Pad>), Error> {
         let Some((_, part)) = rels.values().find(|(t, _)| t.ends_with("/styles")) else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         };
         if !self.zip.has(part) {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         let text = self.zip.read_string(part, MAX_SMALL_PART)?;
         let mut r = crate::table::xml_reader_str(&text);
         let mut custom: HashMap<u32, Shown> = HashMap::new();
+        let mut pads: Vec<Pad> = Vec::new();
         let mut xfs = Vec::new();
         let mut in_xfs = false;
         loop {
@@ -259,7 +363,14 @@ impl<'a> Book<'a> {
                             attr(&e, "numFmtId").and_then(|v| v.parse().ok()),
                             attr(&e, "formatCode"),
                         ) {
-                            custom.insert(id, shown_by_code(&code));
+                            let shown = match pad_by_code(&code) {
+                                Some(p) if pads.len() < u16::MAX as usize => {
+                                    pads.push(p);
+                                    Shown::Padded(pads.len() as u16 - 1)
+                                }
+                                _ => shown_by_code(&code),
+                            };
+                            custom.insert(id, shown);
                         }
                     }
                     "cellXfs" => in_xfs = true,
@@ -276,7 +387,7 @@ impl<'a> Book<'a> {
                 _ => {}
             }
         }
-        Ok(xfs)
+        Ok((xfs, pads))
     }
 
     fn read_xlsx(
@@ -288,8 +399,8 @@ impl<'a> Book<'a> {
     ) -> Result<(), Error> {
         let rels = relationships(&self.zip, &self.workbook)?;
         let shared = self.shared_strings(&rels)?;
-        let styles = if opts.raw_dates {
-            Vec::new()
+        let (styles, pads) = if opts.raw_dates {
+            (Vec::new(), Vec::new())
         } else {
             self.styles(&rels)?
         };
@@ -417,7 +528,16 @@ impl<'a> Book<'a> {
                     "e" | "d" => Rc::from(v),
                     _ => {
                         let shown = styles.get(cell.style as usize).copied();
-                        Rc::from(number_text(&v, shown, self.date1904))
+                        let mut stats = self.stats.borrow_mut();
+                        Rc::from(number_text(
+                            &v,
+                            shown,
+                            &pads,
+                            opts.pad_zeros,
+                            self.date1904,
+                            cell.col,
+                            &mut stats,
+                        ))
                     }
                 };
                 if !value.is_empty() {
@@ -846,6 +966,8 @@ enum Shown {
     Date,
     Time,
     DateTime,
+    /// A zero-padding format: the index of its pattern.
+    Padded(u16),
 }
 
 fn builtin_shown(id: u32) -> Shown {
@@ -902,21 +1024,52 @@ fn shown_by_code(code: &str) -> Shown {
 
 /// A number cell's text: a date or time when its format says so, otherwise
 /// the stored number (cut to 15 significant digits, as spreadsheets show).
-fn number_text(v: &str, shown: Option<Shown>, date1904: bool) -> String {
+fn number_text(
+    v: &str,
+    shown: Option<Shown>,
+    pads: &[Pad],
+    pad_zeros: Option<bool>,
+    date1904: bool,
+    col: u32,
+    stats: &mut SheetStats,
+) -> String {
     let t = v.trim();
     let Ok(x) = t.parse::<f64>() else {
         return v.to_string();
     };
     match shown {
         Some(s @ (Shown::Date | Shown::Time | Shown::DateTime)) => {
-            serial_to_text(x, s, date1904).unwrap_or_else(|| short_number(t, x))
+            serial_to_text(x, s, date1904).unwrap_or_else(|| short_number(t, x, col, stats))
         }
-        _ => short_number(t, x),
+        Some(Shown::Padded(i)) => {
+            stats.note_col(col, true);
+            // Only a whole, non-negative number that fits the pattern is padded; anything else stays as it is.
+            let whole = t
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+                .then(|| t.parse::<u64>().ok())
+                .flatten();
+            let padded = whole.and_then(|n| pads.get(i as usize).and_then(|p| p.apply(n)));
+            if padded.is_none() {
+                stats.padded_left += 1;
+            }
+            match (pad_zeros, padded) {
+                (Some(true), Some(p)) => {
+                    stats.padded_applied += 1;
+                    stats.kept_col(col);
+                    p
+                }
+                _ => short_number(t, x, col, stats),
+            }
+        }
+        _ => short_number(t, x, col, stats),
     }
 }
 
-/// Keep the stored text unless it has more than 15 significant digits.
-fn short_number(t: &str, x: f64) -> String {
+/// Keep the stored text unless it has more than 15 significant digits. A whole number written out in full
+/// (an ID, an account number: `1234567890123456789`) is kept exactly as the file stores it; one stored in
+/// exponent form, or a fraction, has no more digits than a spreadsheet keeps (15) and is shown as before.
+fn short_number(t: &str, x: f64, col: u32, stats: &mut SheetStats) -> String {
     let digits = t
         .split(['e', 'E'])
         .next()
@@ -929,6 +1082,15 @@ fn short_number(t: &str, x: f64) -> String {
     if digits <= 15 || !x.is_finite() {
         return t.to_string();
     }
+    if t.trim_start_matches(['-', '+'])
+        .bytes()
+        .all(|b| b.is_ascii_digit())
+    {
+        stats.kept_big += 1;
+        stats.kept_col(col);
+        return t.to_string();
+    }
+    stats.lost_digits += 1;
     let s = format!("{:.14e}", x);
     let (m, e) = s.split_once('e').expect("exponent form");
     let e: i32 = e.parse().unwrap_or(0);
@@ -1076,7 +1238,15 @@ pub(crate) mod tests {
             ]
         );
         let raw = b
-            .read(0, SheetOptions { raw_dates: true }, None, &Progress::new())
+            .read(
+                0,
+                SheetOptions {
+                    raw_dates: true,
+                    ..Default::default()
+                },
+                None,
+                &Progress::new(),
+            )
             .unwrap();
         assert_eq!(rows(&raw)[1][2], "45306.5");
         let t = b
@@ -1090,6 +1260,52 @@ pub(crate) mod tests {
         assert!(b
             .read(5, SheetOptions::default(), None, &Progress::new())
             .is_err());
+    }
+
+    /// A1a: whole numbers of more than 15 digits are kept exactly; exponent forms and fractions are
+    /// counted as digits already lost; zero-padding formats are counted and padded only on request.
+    #[test]
+    fn long_numbers_and_zero_padding_are_guarded() {
+        let sheet = r#"<worksheet><sheetData>
+<row r="1"><c r="A1"><v>1234567890123456789</v></c><c r="B1"><v>1.2345678901234567E+18</v></c><c r="C1"><v>0.30000000000000004</v></c><c r="D1" s="1"><v>2134</v></c><c r="E1" s="2"><v>123456789</v></c><c r="F1" s="1"><v>1.5</v></c><c r="G1" s="3"><v>2.5</v></c></row>
+</sheetData></worksheet>"#;
+        let styles = r#"<styleSheet><numFmts><numFmt numFmtId="164" formatCode="00000"/><numFmt numFmtId="165" formatCode="000-00-0000"/></numFmts><cellXfs><xf numFmtId="0"/><xf numFmtId="164"/><xf numFmtId="165"/><xf numFmtId="2"/></cellXfs></styleSheet>"#;
+        let data = xlsx(sheet, "<sst/>", styles);
+        let b = Book::open(&data).unwrap();
+        let read = |pad| {
+            let t = b
+                .read(
+                    0,
+                    SheetOptions {
+                        raw_dates: false,
+                        pad_zeros: pad,
+                    },
+                    None,
+                    &Progress::new(),
+                )
+                .unwrap();
+            (rows(&t).remove(0), b.stats())
+        };
+        let (row, st) = read(None);
+        assert_eq!(row[0], "1234567890123456789");
+        assert_eq!(row[1], "1.23456789012346E+18");
+        assert_eq!(row[2], "0.3");
+        assert_eq!(&row[3..], ["2134", "123456789", "1.5", "2.5"]);
+        assert_eq!((st.kept_big, st.lost_digits), (1, 2));
+        assert_eq!(st.padded, vec![(3, 1), (4, 1), (5, 1)]);
+        assert_eq!((st.padded_applied, st.padded_left), (0, 1));
+        assert_eq!(st.kept_columns, vec![0]);
+        let (row, st) = read(Some(true));
+        assert_eq!(&row[3..], ["02134", "123-45-6789", "1.5", "2.5"]);
+        assert_eq!((st.padded_applied, st.padded_left), (2, 1));
+        let (row, _) = read(Some(false));
+        assert_eq!(&row[3..], ["2134", "123456789", "1.5", "2.5"]);
+        // Formats that only look similar do not pad.
+        assert!(pad_by_code("0.00").is_none());
+        assert!(pad_by_code("#,##0").is_none());
+        assert!(pad_by_code("0%").is_none());
+        assert!(pad_by_code("0").is_none());
+        assert!(pad_by_code("000-00-0000").is_some());
     }
 
     #[test]
@@ -1319,12 +1535,25 @@ pub(crate) mod tests {
         assert_eq!(shown_by_code("0.00\"days\""), Shown::Number);
         assert_eq!(shown_by_code("#,##0.00;[Red]-#,##0.00"), Shown::Number);
         assert_eq!(
-            short_number("0.30000000000000004", 0.30000000000000004),
+            short_number(
+                "0.30000000000000004",
+                0.30000000000000004,
+                0,
+                &mut SheetStats::default()
+            ),
             "0.3"
         );
-        assert_eq!(short_number("123", 123.0), "123");
         assert_eq!(
-            short_number("1.2345678901234567E+30", 1.2345678901234567e30),
+            short_number("123", 123.0, 0, &mut SheetStats::default()),
+            "123"
+        );
+        assert_eq!(
+            short_number(
+                "1.2345678901234567E+30",
+                1.2345678901234567e30,
+                0,
+                &mut SheetStats::default()
+            ),
             "1.23456789012346E+30"
         );
         assert_eq!(cell_col("A1"), Some(0));

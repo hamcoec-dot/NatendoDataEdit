@@ -864,6 +864,20 @@ everything is also in command search.
   tables, Markdown tables, fixed-width files (with a ruler you can drag), and
   log files (by a line pattern with presets; stack traces join the line
   above). From a file or from the clipboard, with a preview.
+- **Numbers stay exactly as written:** a whole number of more than 15 digits
+  in an Excel or LibreOffice sheet (an account or ID number) is kept in full
+  instead of being rounded to the 15 digits a spreadsheet shows; JSON numbers
+  such as `1.50` or `12345678901234567890123` come in as the text they are
+  written with; and a number a sheet shows with leading zeros (`00123`,
+  `000-00-0000`) is brought in as the number, with one checkbox on the import
+  screen to write it padded as the sheet shows it (the answer is remembered
+  per file, never for a file in private mode, and only as yes or no). A
+  number the file itself stored with fewer digits (exponent form, or a
+  fraction rounded to 15 digits) cannot be restored; the line under the
+  options and in the status bar says how many of each, with column names and
+  counts only, never cell values. A SQLite column declared NUMERIC or DECIMAL
+  holds binary numbers, so a `1.50` was already `1.5` inside the database;
+  text columns come through exactly.
 - **SQLite:** open a table or view from a SQLite database (read-only), or
   save the table into a new or existing database.
 - **JSON Lines** (`.jsonl`, `.ndjson`): open them (one record per line, read

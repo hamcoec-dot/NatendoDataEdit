@@ -62,7 +62,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { remapChecks, renameInChecks } from "./lib/rename";
   import { TOOLS, localNow, type Cleaner, type CleanSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
-  import type { ExportOptions, ImportOptions, ImportStart, Opened, SaveAsOptions } from "./lib/backend";
+  import type { ExportOptions, ImportNotes, ImportOptions, ImportStart, Opened, SaveAsOptions } from "./lib/backend";
   import SidePanel, { type PanelTab } from "./lib/SidePanel.svelte";
   import CommandSearch from "./lib/CommandSearch.svelte";
   import readme from "../../README.md?raw";
@@ -136,6 +136,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   let saveAsReq = $state<{ sample: string[][]; done: (o: SaveAsOptions | null) => void } | null>(null);
   let exportOpen = $state(false);
   let importing = $state<ImportStart | null>(null);
+  /** What the last import kept exactly (counts and column names only), for the command of that name. */
+  let lastImportNote = $state("");
   let joinKind = $state<"join" | "append" | null>(null);
   let valuesOpen = $state(false);
   /** How the value editor groups look-alikes when it opens. */
@@ -1180,7 +1182,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   }
 
   /** Import into a new tab, with progress in the status bar. */
-  async function finishImport(start: ImportStart, o: ImportOptions, header: boolean): Promise<void> {
+  async function finishImport(start: ImportStart, o: ImportOptions, header: boolean, notes: ImportNotes | null = null): Promise<void> {
     importing = null;
     say(`Importing ${start.name}…`);
     const poll = window.setInterval(async () => {
@@ -1189,6 +1191,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }, 300);
     try {
       const d = await backend().importFinish(start.id, o);
+      lastImportNote = notes?.summary ?? "";
       addTab(d, false);
       const nt = tabs[tabs.length - 1];
       if (nt) {
@@ -1196,7 +1199,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         nt.headerTouched = true;
         nt.bump();
       }
-      say(`Imported ${plural(Math.max(0, d.rows - (header ? 1 : 0)), "row")} and ${plural(d.cols, "column")}. It is not saved yet: Save As (F12) writes it as delimited text.`);
+      say(`Imported ${plural(Math.max(0, d.rows - (header ? 1 : 0)), "row")} and ${plural(d.cols, "column")}. It is not saved yet: Save As (F12) writes it as delimited text.${notes?.summary ? ` ${notes.summary}` : ""}`);
     } catch (e) {
       say(errorText(e));
     } finally {
@@ -5624,6 +5627,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "file.saveAs", label: "Save &As…", keys: ["F12"], run: () => void save(true), enabled: ready },
     { id: "file.import", label: "&Import…", run: () => void importFile() },
     { id: "file.importClipboard", label: "Import from clip&board…", run: () => void importClipboard() },
+    { id: "file.importNotes", label: "Show what the last import kept exactly (long numbers, leading zeros)", run: () => say(lastImportNote || "The last import had nothing that needed a note: no long numbers, no leading-zero formats.") },
     { id: "file.export", label: "&Export…", run: () => void privacyGate("Exporting writes another copy of it.").then(async (ok) => { if (ok) { exportTabs = await exportTabList(); exportOpen = true; } }), enabled: ready },
     { id: "file.safeCopy", label: "Save a share-safe cop&y…", run: () => void openPrivacy(), enabled: ready },
     { id: "file.private", label: "Private file mode (this file)", run: () => void togglePrivate(false), enabled: hasTab, checked: () => !!tab?.private.file },
@@ -6005,7 +6009,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   reg.setOverrides(cleanShortcuts(prefs.data.shortcuts, (id) => !!reg.get(id)));
 
   const menus: Menu[] = [
-    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "-", "file.recover", "file.versions", "-", "window.moveToNew", "window.moveToMain", "-", "file.options", "-", "file.close", "file.closeOthers", "file.closeUnchanged", "file.reopenClosed", "file.quit"] },
+    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.importNotes", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "-", "file.recover", "file.versions", "-", "window.moveToNew", "window.moveToMain", "-", "file.options", "-", "file.close", "file.closeOthers", "file.closeUnchanged", "file.reopenClosed", "file.quit"] },
     {
       label: "&Edit",
       items: [
@@ -7741,7 +7745,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
 {#if importing}
   {@const start = importing}
-  <ImportDialog {start} onImport={(o, header) => void finishImport(start, o, header)} onClose={closeImport} />
+  <ImportDialog {start} onImport={(o, header, notes) => void finishImport(start, o, header, notes)} onClose={closeImport} />
 {/if}
 
 {#if joinKind && tab}
@@ -8017,7 +8021,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     header={tab?.header ?? true}
     filtered={!!tab && tab.info.rows < tab.info.total_rows}
     onSaved={(n) => { sqliteMode = null; say(`Saved ${plural(n, "row")} to the database.`); grid?.focus(); }}
-    onOpened={(info) => { sqliteMode = null; addTab(info, true); say("Opened the table in a new tab. Save it as a file with File ▸ Save as, or back to a database with File ▸ Save as a table in a database."); }}
+    onOpened={(info, note) => { sqliteMode = null; addTab(info, true); say(`Opened the table in a new tab.${note ? ` ${note}` : ""} Save it as a file with File ▸ Save as, or back to a database with File ▸ Save as a table in a database.`); }}
     onClose={() => { sqliteMode = null; grid?.focus(); }}
   />
 {/if}

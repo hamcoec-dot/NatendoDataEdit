@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::document::{Document, OpenOptions, Progress};
 use crate::encoding;
 use crate::reshape::Table;
-use crate::sheet::{Book, SheetInfo, SheetOptions};
+use crate::sheet::{Book, SheetInfo, SheetOptions, SheetStats};
 use crate::table::{
     attrs, local, push_ref, push_text, text_of, xml_err, xml_reader_str, Sink, MAX_DEPTH,
 };
@@ -55,6 +55,9 @@ pub struct ImportOptions {
     pub part: u32,
     /// Spreadsheets: keep dates as stored numbers.
     pub raw_dates: bool,
+    /// Spreadsheets: numbers shown with a zero-padding format (`00123`): `Some(true)` writes them padded,
+    /// `Some(false)` or `None` keeps the number (`None` also counts them, so the screen can ask).
+    pub pad_zeros: Option<bool>,
     /// XML: the record element's path (`a/b/item`); empty picks the most
     /// repeated one.
     pub record: String,
@@ -222,19 +225,34 @@ pub fn import(
     limit: Option<u64>,
     progress: &Progress,
 ) -> Result<Table, Error> {
+    import_report(data, ext, opts, limit, progress).map(|r| r.0)
+}
+
+/// [`import`], and what the "exactly as written" guards did (counts and column numbers only): whole
+/// numbers of more than 15 digits kept in full, digits a spreadsheet had already lost, and numbers shown
+/// with a zero-padding format.
+pub fn import_report(
+    data: &[u8],
+    ext: Option<&str>,
+    opts: &ImportOptions,
+    limit: Option<u64>,
+    progress: &Progress,
+) -> Result<(Table, SheetStats), Error> {
     let format = opts.format.unwrap_or_else(|| guess(ext, data));
     let mut sink = Sink::new(limit);
     match format {
         ImportFormat::Spreadsheet => {
             let b = Book::open(data)?;
-            return b.read(
+            let t = b.read(
                 opts.part as usize,
                 SheetOptions {
                     raw_dates: opts.raw_dates,
+                    pad_zeros: opts.pad_zeros,
                 },
                 limit,
                 progress,
-            );
+            )?;
+            return Ok((t, b.stats()));
         }
         ImportFormat::Json => json(&text_input(data, MAX_JSON_INPUT)?, limit, &mut sink)?,
         ImportFormat::Xml => xml(
@@ -297,7 +315,7 @@ pub fn import(
             }
         }
     }
-    Ok(sink.finish())
+    Ok((sink.finish(), SheetStats::default()))
 }
 
 /// Delimited text as a document (layout detected as on open).
@@ -318,7 +336,9 @@ pub const MAX_JSON_WHOLE: usize = 32 << 20;
 /// many times the room of its text.
 pub const MAX_JSON_ROW: usize = 16 << 20;
 
-/// Parse one row after checking the size of its text.
+/// Parse one row after checking the size of its text. The row's own cells keep a number exactly as it is
+/// written (`1.50`, `12345678901234567890123`, `1E5`): a number token becomes the text of the token.
+/// (Values nested inside a cell are read as before.)
 fn json_row(raw: &serde_json::value::RawValue) -> Result<Value, Error> {
     if raw.get().len() > MAX_JSON_ROW {
         return Err(Error::Invalid(format!(
@@ -326,7 +346,72 @@ fn json_row(raw: &serde_json::value::RawValue) -> Result<Value, Error> {
             MAX_JSON_ROW >> 20
         )));
     }
-    serde_json::from_str(raw.get()).map_err(bad_json)
+    exact_row(raw.get())
+}
+
+/// The members of a JSON object in file order, each value as its raw text.
+struct Pairs(Vec<(String, Box<serde_json::value::RawValue>)>);
+
+impl<'de> serde::Deserialize<'de> for Pairs {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Pairs;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut m: A) -> Result<Pairs, A::Error> {
+                let mut v = Vec::new();
+                while let Some(kv) = m.next_entry::<String, Box<serde_json::value::RawValue>>()? {
+                    v.push(kv);
+                }
+                Ok(Pairs(v))
+            }
+        }
+        d.deserialize_map(V)
+    }
+}
+
+impl Pairs {
+    fn iter(&self) -> impl Iterator<Item = &(String, Box<serde_json::value::RawValue>)> {
+        self.0.iter()
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// One cell's value from its text: a number as the text of its token, anything else as a value.
+fn exact_cell(text: &str) -> Result<Value, Error> {
+    let t = text.trim();
+    if t.starts_with(|c: char| c == '-' || c.is_ascii_digit()) {
+        return Ok(Value::String(t.to_string()));
+    }
+    serde_json::from_str(t).map_err(bad_json)
+}
+
+/// A row's text as a value whose own cells keep their numbers exactly.
+fn exact_row(text: &str) -> Result<Value, Error> {
+    let t = text.trim_start();
+    if t.starts_with('{') {
+        let members: Pairs = serde_json::from_str(text).map_err(bad_json)?;
+        let mut out = serde_json::Map::new();
+        for (k, v) in members.0 {
+            out.insert(k, exact_cell(v.get())?);
+        }
+        return Ok(Value::Object(out));
+    }
+    if t.starts_with('[') {
+        let items: Vec<&serde_json::value::RawValue> =
+            serde_json::from_str(text).map_err(bad_json)?;
+        return Ok(Value::Array(
+            items
+                .into_iter()
+                .map(|v| exact_cell(v.get()))
+                .collect::<Result<_, _>>()?,
+        ));
+    }
+    exact_cell(text)
 }
 
 fn json_cell(v: &Value) -> String {
@@ -401,39 +486,54 @@ impl JsonRows {
                 MAX_JSON_INPUT >> 20
             )));
         }
-        let v: Value = serde_json::from_str(text).map_err(bad_json)?;
-        Ok(JsonRows::Whole(match v {
-            Value::Array(a) => a,
-            Value::Object(o) => {
-                // The first array of rows inside, else each property a row.
-                let is_rows = |v: &Value| matches!(v, Value::Array(a) if a.iter().any(|x| x.is_object() || x.is_array()));
-                if o.values().any(is_rows) {
-                    o.into_iter()
-                        .map(|(_, v)| v)
-                        .find(is_rows)
-                        .and_then(|v| match v {
-                            Value::Array(a) => Some(a),
-                            _ => None,
-                        })
-                        .unwrap_or_default()
-                } else if !o.is_empty() && o.values().all(Value::is_object) {
-                    o.into_iter()
-                        .map(|(k, v)| {
-                            let mut m = serde_json::Map::new();
-                            m.insert("key".into(), Value::String(k));
-                            if let Value::Object(inner) = v {
-                                for (a, b) in inner {
-                                    m.entry(a).or_insert(b);
-                                }
-                            }
-                            Value::Object(m)
-                        })
-                        .collect()
-                } else {
-                    vec![Value::Object(o)]
+        // Read from the raw text (not parsed to numbers first) so the rows' cells keep their numbers exactly.
+        let raw: &serde_json::value::RawValue = serde_json::from_str(text).map_err(bad_json)?;
+        let top = raw.get().trim_start();
+        let raw_rows = |s: &str| -> Result<Vec<Value>, Error> {
+            let items: Vec<&serde_json::value::RawValue> =
+                serde_json::from_str(s).map_err(bad_json)?;
+            items.into_iter().map(|v| exact_row(v.get())).collect()
+        };
+        Ok(JsonRows::Whole(if top.starts_with('[') {
+            raw_rows(top)?
+        } else if top.starts_with('{') {
+            let members: Pairs = serde_json::from_str(top).map_err(bad_json)?;
+            // The first array of rows inside, else each property a row.
+            let is_rows = |s: &str| -> bool {
+                s.trim_start().starts_with('[')
+                    && serde_json::from_str::<Vec<&serde_json::value::RawValue>>(s).is_ok_and(|a| {
+                        a.iter()
+                            .any(|x| x.get().trim_start().starts_with(['{', '[']))
+                    })
+            };
+            let found = members
+                .iter()
+                .find(|(_, v)| is_rows(v.get()))
+                .map(|(_, v)| v.get().to_string());
+            if let Some(rows) = found {
+                raw_rows(&rows)?
+            } else if !members.is_empty()
+                && members
+                    .iter()
+                    .all(|(_, v)| v.get().trim_start().starts_with('{'))
+            {
+                let mut out = Vec::new();
+                for (k, v) in members.0 {
+                    let mut m = serde_json::Map::new();
+                    m.insert("key".into(), Value::String(k));
+                    if let Value::Object(inner) = exact_row(v.get())? {
+                        for (a, b) in inner {
+                            m.entry(a).or_insert(b);
+                        }
+                    }
+                    out.push(Value::Object(m));
                 }
+                out
+            } else {
+                vec![exact_row(top)?]
             }
-            other => vec![other],
+        } else {
+            vec![exact_cell(top)?]
         }))
     }
 
@@ -1209,6 +1309,46 @@ mod tests {
 
     fn imp(data: &str, ext: &str, opts: ImportOptions) -> Vec<Vec<String>> {
         rows(import(data.as_bytes(), Some(ext), &opts, None, &Progress::new()).unwrap())
+    }
+
+    /// A1a: numbers keep the text they are written with, in every JSON shape.
+    #[test]
+    fn json_numbers_are_exact() {
+        let o = ImportOptions::default();
+        let want = vec![
+            vec!["id", "price", "e"],
+            vec!["12345678901234567890123", "1.50", "1E5"],
+            vec!["-0.10", "2.0", "text"],
+        ];
+        let body = r#"[{"id":12345678901234567890123,"price":1.50,"e":1E5},{"id":-0.10,"price":2.0,"e":"text"}]"#;
+        assert_eq!(imp(body, "json", o.clone()), want);
+        // Streamed lines and an array inside an object.
+        assert_eq!(
+            imp(
+                "{\"id\":12345678901234567890123,\"price\":1.50,\"e\":1E5}
+{\"id\":-0.10,\"price\":2.0,\"e\":\"text\"}
+",
+                "jsonl",
+                o.clone()
+            ),
+            want
+        );
+        assert_eq!(
+            imp(
+                &format!("{{\"meta\":1,\"data\":{body}}}"),
+                "json",
+                o.clone()
+            ),
+            want
+        );
+        assert_eq!(
+            imp(r#"{"x":{"n":1.10},"y":{"n":2}}"#, "json", o.clone()),
+            vec![vec!["key", "n"], vec!["x", "1.10"], vec!["y", "2"]]
+        );
+        assert_eq!(
+            imp(r#"[[1.0,"a"],[12345678901234567890,true]]"#, "json", o),
+            vec![vec!["1.0", "a"], vec!["12345678901234567890", "true"]]
+        );
     }
 
     #[test]

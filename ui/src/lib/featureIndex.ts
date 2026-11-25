@@ -200,6 +200,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "clean up suggestions": ["clean.suggest"],
   // Import and export
   "open": ["file.import", "file.importClipboard"],
+  "numbers stay exactly as written": ["file.import", "file.importClipboard", "file.openSqlite"],
   "sqlite": ["file.openSqlite", "file.saveSqlite"],
   "export": ["file.export"],
   "json lines": ["file.import", "file.export"],

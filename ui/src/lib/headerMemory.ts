@@ -82,6 +82,43 @@ export async function rememberHeader(path: string, header: boolean, isPrivate = 
   store(s);
 }
 
+// The zero-padding answer of a spreadsheet import ("write 00123 as the spreadsheet shows it?"), kept the
+// same way: the salted fingerprint of the path and yes/no only, never a value, and nothing for a file in
+// private mode (the import screen is not given its path then).
+const PAD_KEY = "nde.padzeros.v1";
+
+function loadPad(): Store {
+  try {
+    const v = JSON.parse(localStorage.getItem(PAD_KEY) ?? "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Store) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The zero-padding answer remembered for this file, or null. */
+export async function recallPad(path: string): Promise<boolean | null> {
+  const e = loadPad()[await pathKey(path)];
+  return Array.isArray(e) ? e[0] === 1 : null;
+}
+
+/** Remember the answer for this file. */
+export async function rememberPad(path: string, pad: boolean): Promise<void> {
+  const k = await pathKey(path);
+  const s = loadPad();
+  s[k] = [pad ? 1 : 0, now()];
+  const keys = Object.keys(s);
+  if (keys.length > HEADER_MEMORY_MAX) {
+    keys.sort((a, b) => (s[a]?.[1] ?? 0) - (s[b]?.[1] ?? 0));
+    for (const old of keys.slice(0, keys.length - HEADER_MEMORY_MAX)) delete s[old];
+  }
+  try {
+    localStorage.setItem(PAD_KEY, JSON.stringify(s));
+  } catch {
+    // Not remembered this time.
+  }
+}
+
 /** How many files' choices are remembered. */
 export function rememberedHeaders(): number {
   return Object.keys(load()).length;
@@ -92,6 +129,7 @@ export function forgetHeaders(): void {
   memSalt = "";
   try {
     localStorage.removeItem(KEY);
+    localStorage.removeItem(PAD_KEY);
     localStorage.removeItem(SALT_KEY);
   } catch {
     // Nothing kept.

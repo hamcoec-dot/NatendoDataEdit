@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use natendo_engine::import::{self, ImportFormat, ImportInfo, ImportOptions};
+use natendo_engine::sheet::SheetStats;
 use natendo_engine::Progress;
 use serde::Serialize;
 
@@ -33,6 +34,133 @@ struct Session {
     path: Option<std::path::PathBuf>,
     data: Vec<u8>,
     progress: Mutex<Option<Arc<Progress>>>,
+}
+
+/// Rows looked at to count what the "exactly as written" guards did (a bigger file says "in the first N rows").
+pub const NOTES_ROWS: u64 = 200_000;
+
+/// A column with cells in a zero-padding number format.
+#[derive(Debug, Serialize, Clone, PartialEq, Default)]
+pub struct PaddedColumn {
+    pub name: String,
+    pub count: u64,
+}
+
+/// What the import guards did, as counts and column names only (never cell values).
+#[derive(Debug, Serialize, Clone, PartialEq, Default)]
+pub struct ImportNotes {
+    pub kept_big: u64,
+    pub lost_digits: u64,
+    pub padded: Vec<PaddedColumn>,
+    pub padded_applied: u64,
+    pub padded_left: u64,
+    /// Rows looked at, and whether that was the whole sheet.
+    pub scanned_rows: u64,
+    pub all_scanned: bool,
+    /// The file to remember the zero-padding answer for; none for the clipboard or a private file.
+    pub remember_path: Option<String>,
+    /// One sentence for the status line and the import screen (empty when no guard did anything).
+    pub summary: String,
+}
+
+/// "A", "B", ... "AA" for a column number counted from 0.
+fn letters(mut c: u32) -> String {
+    let mut s = Vec::new();
+    loop {
+        s.push(b'A' + (c % 26) as u8);
+        if c < 26 {
+            break;
+        }
+        c = c / 26 - 1;
+    }
+    s.reverse();
+    String::from_utf8(s).unwrap_or_default()
+}
+
+/// A column named by its heading (cut short), else by its letter.
+fn col_label(names: &[String], c: u32) -> String {
+    match names
+        .get(c as usize)
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty())
+    {
+        Some(n) if n.chars().count() <= 40 => format!("\u{201c}{n}\u{201d}"),
+        Some(n) => format!(
+            "\u{201c}{}\u{2026}\u{201d}",
+            n.chars().take(40).collect::<String>()
+        ),
+        None => format!("column {}", letters(c)),
+    }
+}
+
+fn count_of(n: u64, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// The notes of a spreadsheet read: counts and column names (the first row) only.
+pub fn notes_of(st: &SheetStats, names: &[String], scanned: u64, all: bool) -> ImportNotes {
+    let mut n = ImportNotes {
+        kept_big: st.kept_big,
+        lost_digits: st.lost_digits,
+        padded: st
+            .padded
+            .iter()
+            .map(|(c, k)| PaddedColumn {
+                name: col_label(names, *c),
+                count: *k,
+            })
+            .collect(),
+        padded_applied: st.padded_applied,
+        padded_left: st.padded_left,
+        scanned_rows: scanned,
+        all_scanned: all,
+        remember_path: None,
+        summary: String::new(),
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if st.kept_big > 0 {
+        let cols: Vec<String> = st
+            .kept_columns
+            .iter()
+            .take(5)
+            .map(|c| col_label(names, *c))
+            .collect();
+        parts.push(format!(
+            "{} of more than 15 digits kept exactly as the file stores them ({})",
+            count_of(st.kept_big, "number", "numbers"),
+            cols.join(", ")
+        ));
+    }
+    if st.lost_digits > 0 {
+        parts.push(format!(
+            "{} had digits the file no longer holds (a spreadsheet keeps 15), shown as stored",
+            count_of(st.lost_digits, "number", "numbers")
+        ));
+    }
+    if st.padded_applied > 0 {
+        parts.push(format!(
+            "{} written with leading zeros, as the spreadsheet shows them",
+            count_of(st.padded_applied, "number", "numbers")
+        ));
+    }
+    if st.padded_left > 0 {
+        parts.push(format!(
+            "{} with a leading-zero format could not be padded and stay as they are",
+            count_of(st.padded_left, "cell", "cells")
+        ));
+    }
+    if !parts.is_empty() {
+        let mut s = parts.join("; ");
+        if !all {
+            s = format!("In the first {scanned} rows: {s}");
+        }
+        let first = s.chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+        let up = s[..first].to_uppercase();
+        s.replace_range(..first, &up);
+        s.push('.');
+        n.summary = s;
+    }
+    n
 }
 
 /// What the import screen starts from.
@@ -137,6 +265,37 @@ impl Imports {
         Ok(import::inspect(&s.data, s.ext.as_deref(), format)?)
     }
 
+    /// What the "exactly as written" guards did (counts and column names only), for the first
+    /// [`NOTES_ROWS`] rows. Nothing about cell values leaves here, and a private file or the clipboard
+    /// is never offered for remembering the zero-padding answer.
+    pub fn notes(&self, id: u32, opts: &ImportOptions, docs: &Docs) -> CmdResult<ImportNotes> {
+        check(opts)?;
+        let s = self.get(id)?;
+        let format = opts
+            .format
+            .unwrap_or_else(|| import::guess(s.ext.as_deref(), &s.data));
+        if format != ImportFormat::Spreadsheet {
+            return Ok(ImportNotes::default());
+        }
+        let (t, st) = import::import_report(
+            &s.data,
+            s.ext.as_deref(),
+            opts,
+            Some(NOTES_ROWS),
+            &Progress::new(),
+        )?;
+        let d = t.into_document()?;
+        let names = d.row_values(0).unwrap_or_default();
+        let rows = d.row_count();
+        let mut n = notes_of(&st, &names, rows, rows < NOTES_ROWS);
+        n.remember_path = s
+            .path
+            .as_ref()
+            .filter(|p| !docs.is_private_path(p))
+            .map(|p| p.display().to_string());
+        Ok(n)
+    }
+
     /// The first rows as they would import (cells cut for display).
     pub fn preview(&self, id: u32, opts: &ImportOptions) -> CmdResult<Vec<Vec<String>>> {
         check(opts)?;
@@ -228,6 +387,82 @@ impl Imports {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A1a: the summary holds counts and column names only (never a cell value), and says plainly what
+    /// could not be kept.
+    #[test]
+    fn notes_hold_counts_and_names_only() {
+        let st = SheetStats {
+            kept_big: 2,
+            lost_digits: 1,
+            padded: vec![(1, 5)],
+            padded_applied: 4,
+            padded_left: 1,
+            kept_columns: vec![0, 1],
+        };
+        let names: Vec<String> = ["Account", "ZIP", "Name"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let n = notes_of(&st, &names, 10, true);
+        assert_eq!(
+            n.padded,
+            vec![PaddedColumn {
+                name: "\u{201c}ZIP\u{201d}".into(),
+                count: 5
+            }]
+        );
+        assert!(
+            n.summary
+                .starts_with("2 numbers of more than 15 digits kept exactly"),
+            "{}",
+            n.summary
+        );
+        assert!(
+            n.summary.contains("\u{201c}Account\u{201d}")
+                && n.summary.contains("\u{201c}ZIP\u{201d}")
+        );
+        assert!(n.summary.contains("4 numbers written with leading zeros"));
+        assert!(n
+            .summary
+            .contains("1 cell with a leading-zero format could not be padded"));
+        assert!(n
+            .summary
+            .contains("1 number had digits the file no longer holds"));
+        assert!(n.summary.ends_with('.'));
+        // A bigger sheet says how much was looked at; a quiet one says nothing.
+        assert!(notes_of(&st, &names, 200_000, false)
+            .summary
+            .starts_with("In the first 200000 rows: "));
+        assert_eq!(
+            notes_of(&SheetStats::default(), &names, 3, true).summary,
+            ""
+        );
+        // An unnamed column is called by its letter.
+        let q = notes_of(
+            &SheetStats {
+                kept_big: 1,
+                kept_columns: vec![27],
+                ..Default::default()
+            },
+            &[],
+            1,
+            true,
+        );
+        assert!(q.summary.contains("column AB"), "{}", q.summary);
+    }
+
+    /// R4: the clipboard has no file to remember an answer for, and a non-spreadsheet has no notes.
+    #[test]
+    fn clipboard_notes_offer_nothing_to_remember() {
+        let imports = Imports::default();
+        let docs = Docs::default();
+        let s = imports.open_text("a,b\n1,2\n".into()).unwrap();
+        let n = imports
+            .notes(s.id, &ImportOptions::default(), &docs)
+            .unwrap();
+        assert_eq!(n, ImportNotes::default());
+    }
 
     #[test]
     fn clipboard_and_file_imports() {

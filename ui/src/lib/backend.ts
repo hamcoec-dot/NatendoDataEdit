@@ -1126,6 +1126,25 @@ export interface ImportOptions {
   /** Log files: the line pattern; empty: guessed. */
   pattern?: string;
   unmatched?: Unmatched;
+  /** Numbers shown with a zero-padding format (00123): true writes them padded, false/absent keeps the number. */
+  pad_zeros?: boolean | null;
+}
+/** What the "exactly as written" import guards did: counts and column names only, never cell values. */
+export interface ImportNotes {
+  kept_big: number;
+  lost_digits: number;
+  padded: { name: string; count: number }[];
+  padded_applied: number;
+  padded_left: number;
+  scanned_rows: number;
+  all_scanned: boolean;
+  /** The file to remember the zero-padding answer for (none: the clipboard or a private file). */
+  remember_path: string | null;
+  summary: string;
+}
+export interface SqliteOpened {
+  info: DocInfo;
+  note: string;
 }
 export interface ImportInfo {
   format: ImportFormat | null;
@@ -1204,6 +1223,7 @@ export interface Backend {
   importText(text: string): Promise<ImportStart>;
   importInspect(id: number, format: ImportFormat | null): Promise<ImportInfo>;
   importPreview(id: number, options: ImportOptions): Promise<string[][]>;
+  importNotes(id: number, options: ImportOptions): Promise<ImportNotes>;
   importFinish(id: number, options: ImportOptions): Promise<DocInfo>;
   importProgress(id: number): Promise<number | null>;
   importCancel(id: number): Promise<void>;
@@ -1492,7 +1512,7 @@ export interface Backend {
   /** Pick a database file: its path and tables (null: cancelled). */
   sqlitePick(): Promise<[string, import("./sqlite").DbTable[]] | null>;
   /** Open a table of the picked database in a new tab. */
-  sqliteOpen(table: string): Promise<DocInfo>;
+  sqliteOpen(table: string): Promise<SqliteOpened>;
   /** Save as a table in a database (Save dialog; null: cancelled). */
   sqliteSave(doc: number, table: string, header: boolean, replace: boolean): Promise<number | null>;
   /** Compare with a newer copy in tab `other` (a job). */
@@ -1615,6 +1635,9 @@ class TauriBackend implements Backend {
   }
   importPreview(id: number, options: ImportOptions) {
     return call<string[][]>("import_preview", { id, options });
+  }
+  importNotes(id: number, options: ImportOptions) {
+    return call<ImportNotes>("import_notes", { id, options });
   }
   importFinish(id: number, options: ImportOptions) {
     return call<DocInfo>("import_finish", { id, options });
@@ -2118,7 +2141,7 @@ class TauriBackend implements Backend {
     return call<[string, import("./sqlite").DbTable[]] | null>("sqlite_pick");
   }
   sqliteOpen(table: string) {
-    return call<DocInfo>("sqlite_open", { table });
+    return call<SqliteOpened>("sqlite_open", { table });
   }
   sqliteSave(doc: number, table: string, header: boolean, replace: boolean) {
     return call<number | null>("sqlite_save", { doc, table, header, replace });

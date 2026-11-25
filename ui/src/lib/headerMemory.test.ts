@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { HEADER_MEMORY_MAX, forgetHeaders, pathKey, recallHeader, rememberedHeaders, rememberHeader } from "./headerMemory";
+import { HEADER_MEMORY_MAX, forgetHeaders, pathKey, recallHeader, recallPad, rememberedHeaders, rememberHeader, rememberPad } from "./headerMemory";
 
 describe("first row is headers, remembered per file", () => {
   const store = new Map<string, string>();
@@ -61,6 +61,18 @@ describe("first row is headers, remembered per file", () => {
     expect(store.get("nde.headers.salt")).toMatch(/^[0-9a-f]{32}$/);
     forgetHeaders();
     expect(await pathKey("C:\\x.csv")).not.toBe(k1);
+  });
+
+  it("keeps the zero-padding answer per file as a fingerprint and yes/no only, and forgets it with the rest", async () => {
+    expect(await recallPad("C:\Data\ids.xlsx")).toBeNull();
+    await rememberPad("C:\Data\ids.xlsx", true);
+    expect(await recallPad("c:/data/IDS.xlsx")).toBe(true);
+    await rememberPad("C:\Data\ids.xlsx", false);
+    expect(await recallPad("C:\Data\ids.xlsx")).toBe(false);
+    const kept = store.get("nde.padzeros.v1") ?? "";
+    expect(kept).not.toMatch(/ids|Data|xlsx/i);
+    forgetHeaders();
+    expect(store.has("nde.padzeros.v1")).toBe(false);
   });
 
   it("survives a damaged store", async () => {

@@ -1118,6 +1118,18 @@ async fn import_preview(
 }
 
 #[tauri::command]
+async fn import_notes(
+    docs: DocsState<'_>,
+    imports: ImportsState<'_>,
+    id: u32,
+    options: ImportOptions,
+) -> CmdResult<imports::ImportNotes> {
+    let docs = docs.inner().clone();
+    let imports = imports.inner().clone();
+    blocking(move || imports.notes(id, &options, &docs)).await
+}
+
+#[tauri::command]
 async fn import_finish(
     docs: DocsState<'_>,
     imports: ImportsState<'_>,
@@ -1693,9 +1705,17 @@ async fn sqlite_pick(
     .await
 }
 
+/// A table opened from a database: the tab, and a sentence about numbers SQLite keeps as binary
+/// (empty when there is nothing to say).
+#[derive(serde::Serialize)]
+struct SqliteOpened {
+    info: DocInfo,
+    note: String,
+}
+
 /// Open a table of the picked database in a new tab.
 #[tauri::command]
-async fn sqlite_open(docs: DocsState<'_>, table: String) -> CmdResult<DocInfo> {
+async fn sqlite_open(docs: DocsState<'_>, table: String) -> CmdResult<SqliteOpened> {
     let docs = docs.inner().clone();
     blocking(move || {
         let path = SQLITE_PICKED
@@ -1703,7 +1723,8 @@ async fn sqlite_open(docs: DocsState<'_>, table: String) -> CmdResult<DocInfo> {
             .unwrap_or_else(|p| p.into_inner())
             .clone()
             .ok_or_else(|| CmdError::new("invalid", "choose the database first"))?;
-        docs.open_sqlite(&path, &table)
+        let (info, note) = docs.open_sqlite_report(&path, &table)?;
+        Ok(SqliteOpened { info, note })
     })
     .await
 }
@@ -3907,6 +3928,7 @@ pub fn run() {
             import_text,
             import_inspect,
             import_preview,
+            import_notes,
             import_finish,
             import_progress,
             import_cancel,

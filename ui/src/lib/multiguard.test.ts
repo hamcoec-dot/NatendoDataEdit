@@ -21,6 +21,7 @@ const NOT_WRITES = [
   "importText",
   "importInspect",
   "importPreview",
+  "importNotes",
   "importFinish",
   "importProgress",
   "importCancel",
