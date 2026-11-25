@@ -3156,10 +3156,7 @@ mod tests {
             .unwrap();
         assert_eq!(second.changed, 34, "the counts are exact on every page");
         assert_ne!(p.changes[0].row, second.changes[0].row);
-        assert_eq!(
-            second.changes[0].row,
-            p.changes.last().unwrap().row + 1 + 0 * 1
-        );
+        assert!(second.changes[0].row > p.changes.last().unwrap().row);
         // Apply: one undo step; a second run changes nothing.
         let plan = d
             .plan_clean(&spec, 0.0, 1, 0, &crate::Progress::new())

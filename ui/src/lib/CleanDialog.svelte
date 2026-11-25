@@ -52,6 +52,10 @@
   let decimalComma = $state(false);
   let previewAll = $state(false);
   let preview = $state<CleanPreview | null>(null);
+  /** Sanitize pages through every changed cell (exact counts): which page, and the options it was asked for. */
+  const PAGE = 50;
+  let page = $state(0);
+  let pageKey = "";
   let problem = $state("");
   let busy = $state(false);
 
@@ -93,9 +97,16 @@
       preview = null;
       return;
     }
+    // Sanitize: a page of the changes with exact counts (every changed cell can be listed, a page at a time).
+    const paged = !previewAll && steps.length === 1 && steps[0]!.tool === "sanitize";
+    const key = JSON.stringify(spec);
+    if (key !== pageKey) {
+      pageKey = key;
+      if (page !== 0) page = 0;
+    }
+    const at = paged ? page : 0;
     const timer = setTimeout(() => {
-      backend()
-        .cleanPreview(doc, spec, localNow())
+      (paged ? backend().cleanPreviewPage(doc, spec, localNow(), at * PAGE, PAGE) : backend().cleanPreview(doc, spec, localNow()))
         .then((p) => {
           preview = p;
           problem = "";
@@ -322,6 +333,13 @@
           {#each Object.entries(SPACES_CHOICES) as [k, label] (k)}
             <label class="row"><input type="radio" value={k} bind:group={step.how} /> {label}</label>
           {/each}
+        {:else if step.tool === "sanitize"}
+          <p class="note">Fixes what looks right but is not. Look-alike letters are changed only inside a word that mixes Latin letters with Cyrillic or Greek ones; a word that is all Cyrillic or all Greek is never touched.</p>
+          <label class="row"><input type="checkbox" bind:checked={step.zero_width} /> Remove zero-width characters, the byte order mark and soft hyphens</label>
+          <label class="row"><input type="checkbox" bind:checked={step.odd_spaces} /> Odd spaces (no-break, wide, thin) to a plain space</label>
+          <label class="row"><input type="checkbox" bind:checked={step.smart_quotes} /> Smart quotes to straight quotes</label>
+          <label class="row"><input type="checkbox" bind:checked={step.homoglyphs} /> Look-alike letters to their Latin twin (inside mixed-script words only)</label>
+          <label class="row"><input type="checkbox" bind:checked={step.tabs_breaks} /> Tabs and line breaks inside a cell to a space</label>
         {:else if step.tool === "number"}
           <label class="row">Start at <input type="number" bind:value={step.start} /> and add <input type="number" bind:value={step.step} /> each row</label>
           <label class="row">At least <input type="number" min="0" max="30" bind:value={step.digits} /> digits (001)</label>
@@ -452,10 +470,18 @@
           <span class="note">
             {#if stepProblemText && !previewAll}{stepProblemText}
             {:else if preview}{preview.changed.toLocaleString()} {preview.changed === 1 ? "cell changes" : "cells change"} in the first {preview.rows.toLocaleString()} rows of {whereWords}{preview.more ? "" : ""}{preview.left ? `; ${preview.left.toLocaleString()} left as they are (not a date or number)` : ""}.
+              {#if step.tool === "sanitize" && !previewAll}<strong class="warn" data-testid="homoglyph-count"> {(preview.homoglyph_cells ?? 0).toLocaleString()} {preview.homoglyph_cells === 1 ? "cell has" : "cells have"} a look-alike letter fixed to its Latin twin.</strong>{/if}
               {#if preview.other_order}<strong class="warn"> {preview.other_order.toLocaleString()} {preview.other_order === 1 ? "date" : "dates"} could only be read {dayFirst ? "month first (like 04/13/2026)" : "day first (like 13/04/2026)"} while the others are read {dayFirst ? "day first" : "month first"}: the column may mix the two. Check the "day first" box if the dates are day first.</strong>{/if}
             {/if}
           </span>
         </div>
+        {#if step.tool === "sanitize" && !previewAll && preview && preview.changed > PAGE}
+          <div class="row" data-testid="pager">
+            <button type="button" class="small" disabled={page === 0} onclick={() => (page = Math.max(0, page - 1))}>Previous {PAGE}</button>
+            <span class="note">Changed cells {(page * PAGE + 1).toLocaleString()} to {Math.min(preview.changed, (page + 1) * PAGE).toLocaleString()} of {preview.changed.toLocaleString()}</span>
+            <button type="button" class="small" disabled={(page + 1) * PAGE >= preview.changed} onclick={() => (page += 1)}>Next {PAGE}</button>
+          </div>
+        {/if}
         <table>
           <thead><tr><th>Row</th><th>Column</th><th>Before</th><th>After</th></tr></thead>
           <tbody>

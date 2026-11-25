@@ -382,6 +382,22 @@ everything is also in command search.
 - **Display formats** per column (numbers, percent, currency, dates, tick
   boxes) that change only how cells look, never the file.
 - Value types shown in colour (Ctrl+F8), colour scales and data bars.
+- **X-ray gremlins** (View > X-ray gremlins, Ctrl+Shift+X): everything "Show
+  invisible characters" shows, plus smart quotes, tabs and line breaks inside
+  a cell, and **look-alike letters** (a Cyrillic or Greek letter hiding in a
+  Latin word, like the Cyrillic "а" in "Smаrt"). Flagged characters glow; the
+  cell bar names them ("Cyrillic а (U+0430) inside a Latin word") and the
+  status bar says how many cells and columns on the screen have one. A word
+  that is all Cyrillic or all Greek, and a hyphenated name like
+  "Smith-Иванова", are never flagged: the look-alike check works on one
+  unbroken run of letters at a time. Click the status text (or View > X-ray
+  report) for the whole file or the selected columns: counts per kind and per
+  column, and "Show only these rows". **Sanitize selection** (Edit menu, or
+  Clean > Sanitize look-alike characters) fixes the ticked kinds, and its
+  preview lists every changed cell, a page at a time, with exact counts and
+  how many cells have a look-alike letter fixed; one undo step, and it is
+  recorded in recipes. The character table follows the idea of Unicode TR39
+  (confusables) and is built in; nothing is logged.
 - **What a column holds** (Format > Treat this column as, or right-click a
   heading, or click the small badge in its title): Text, Number, Date (the
   file's date order, day first or month first) or Id. An Id is a code such as

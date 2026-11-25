@@ -1163,6 +1163,15 @@ export interface SaveFlags {
   options?: SaveAsOptions | null;
 }
 
+/** What an X-ray run found over the shown rows (counts and columns; never a value). */
+export interface XrayReport {
+  looked: number;
+  cells: number;
+  rows: number;
+  kinds: [string, number][];
+  columns: { col: number; cells: number; kinds: [string, number][] }[];
+}
+
 export type ImportFormat = "spreadsheet" | "json" | "xml" | "html" | "markdown" | "delimited" | "fixed_width" | "pattern";
 export type Unmatched = "join" | "row" | "skip";
 export interface ImportOptions {
@@ -1407,6 +1416,12 @@ export interface Backend {
   showInFolder(doc: number): Promise<void>;
   /** The first changes a cleaner would make. */
   cleanPreview(doc: number, spec: CleanSpec, now: number): Promise<CleanPreview>;
+  /** A page of what a cleaner would change, with exact counts over everything it looks at (Sanitize). */
+  cleanPreviewPage(doc: number, spec: CleanSpec, now: number, offset: number, want: number): Promise<CleanPreview>;
+  /** Look for look-alike characters in the shown rows (counts and row numbers only). */
+  xrayReport(doc: number, cols: number[], keepFirst: boolean): Promise<XrayReport>;
+  /** Show only the rows an X-ray finds gremlins in. */
+  xrayShow(doc: number, cols: number[], keepFirst: boolean): Promise<DocInfo>;
   /** Shows the Save dialog; the file's name, or null when cancelled. */
   cleanerSave(cleaner: Cleaner): Promise<string | null>;
   /** Shows the Open dialog; null when cancelled. */
@@ -1932,6 +1947,15 @@ class TauriBackend implements Backend {
   }
   showInFolder(doc: number) {
     return call<void>("show_in_folder", { doc });
+  }
+  cleanPreviewPage(doc: number, spec: CleanSpec, now: number, offset: number, want: number) {
+    return call<CleanPreview>("clean_preview_page", { doc, spec, now, offset, want });
+  }
+  xrayReport(doc: number, cols: number[], keepFirst: boolean) {
+    return call<XrayReport>("xray_report", { doc, cols, keepFirst });
+  }
+  xrayShow(doc: number, cols: number[], keepFirst: boolean) {
+    return call<DocInfo>("xray_show", { doc, cols, keepFirst });
   }
   cleanPreview(doc: number, spec: CleanSpec, now: number) {
     return call<CleanPreview>("clean_preview", { doc, spec, now });

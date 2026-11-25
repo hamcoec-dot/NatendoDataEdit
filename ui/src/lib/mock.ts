@@ -53,6 +53,7 @@ import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
 import { readNumberFor } from "./readers";
+import { scanGremlins } from "./invisible";
 import { disjoint, type Rect } from "./selection";
 import type { CellFormula, FacetCard, Facets, FormulaReport, Insights, InsightSpec, Profile, ProfileSpec } from "./backend";
 import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally, LookAlikeSpec, LookAlikes, HandOver, ModifiedReport } from "./backend";
@@ -1879,6 +1880,48 @@ export class MockBackend implements Backend {
     void now;
     const p = this.planClean(this.get(doc), spec, 20_000);
     return { changes: p.preview, rows: p.rows, changed: p.changes.length, left: 0, more: p.more };
+  }
+
+  async cleanPreviewPage(doc: number, spec: CleanSpec, now: number, offset: number, want: number): Promise<CleanPreview> {
+    void now;
+    const p = this.planClean(this.get(doc), spec, 1_000_000_000);
+    const homoglyph_cells = p.changes.filter(([r, c]) => scanGremlins(this.value(this.get(doc), r, c)).some((g) => g.kind === "homoglyph")).length;
+    return { changes: p.preview.slice(offset, offset + want), rows: p.rows, changed: p.changes.length, left: 0, more: false, homoglyph_cells };
+  }
+
+  /** The browser stand-in's X-ray: every cell of the shown data rows through the same character table. */
+  async xrayReport(doc: number, cols: number[], keepFirst: boolean): Promise<import("./backend").XrayReport> {
+    const d = this.get(doc);
+    const use = cols.length ? cols : Array.from({ length: d.info.cols }, (_, c) => c);
+    const kinds = new Map<string, number>();
+    const perCol = new Map<number, { cells: number; kinds: Map<string, number> }>();
+    let cells = 0;
+    const rows = new Set<number>();
+    for (let r = keepFirst ? 1 : 0; r < this.rowCount(d); r++) {
+      for (const c of use) {
+        const found = scanGremlins(this.value(d, r, c));
+        if (!found.length) continue;
+        cells++;
+        rows.add(r);
+        const mine = perCol.get(c) ?? { cells: 0, kinds: new Map<string, number>() };
+        mine.cells++;
+        for (const k of new Set(found.map((g) => g.kind))) {
+          kinds.set(k, (kinds.get(k) ?? 0) + 1);
+          mine.kinds.set(k, (mine.kinds.get(k) ?? 0) + 1);
+        }
+        perCol.set(c, mine);
+      }
+    }
+    return {
+      looked: (this.rowCount(d) - (keepFirst ? 1 : 0)) * use.length,
+      cells,
+      rows: rows.size,
+      kinds: [...kinds.entries()].sort((a, b) => b[1] - a[1]),
+      columns: [...perCol.entries()].map(([col, m]) => ({ col, cells: m.cells, kinds: [...m.kinds.entries()] as [string, number][] })).sort((a, b) => b.cells - a.cells),
+    };
+  }
+  async xrayShow(doc: number): Promise<DocInfo> {
+    return { ...this.get(doc).info };
   }
 
   private savedCleaner: Cleaner | null = null;
