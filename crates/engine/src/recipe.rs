@@ -223,6 +223,22 @@ pub enum RecipeOp {
     CompareColumn {
         spec: crate::colcompare::CompareCols,
     },
+    /// What the columns hold (Text, Number, Date, Id), by column TITLE so it still fits a file whose columns
+    /// moved: exactly these columns get these types and every other column is Auto. A column named here that
+    /// the file does not have stops the run ("no column titled ...").
+    ColumnTypes {
+        types: Vec<ColumnTypeAt>,
+    },
+}
+
+/// One typed column of a [`RecipeOp::ColumnTypes`] step: its title (and where it was, used only when the
+/// table has no titles) and its type.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ColumnTypeAt {
+    pub title: String,
+    pub col: u32,
+    #[serde(rename = "type")]
+    pub kind: crate::coltype::ColumnType,
 }
 
 impl RecipeOp {
@@ -277,6 +293,13 @@ impl RecipeOp {
             RecipeOp::TidyTitles { .. } => "Tidy column titles".into(),
             RecipeOp::CompareColumn { spec } => {
                 format!("Compare columns {} and {}", spec.a + 1, spec.b + 1)
+            }
+            RecipeOp::ColumnTypes { types } => {
+                if types.is_empty() {
+                    "Treat every column as Auto".into()
+                } else {
+                    format!("Treat {} column(s) as typed", types.len())
+                }
             }
             RecipeOp::MapValues { .. } => "Change values from a list".into(),
             RecipeOp::GroupCalc { .. } => "Group figures".into(),
@@ -523,13 +546,13 @@ impl Recipe {
     /// Column titles the table has that differ from the recipe's, in words;
     /// empty when they match (case and spaces around them ignored).
     pub fn column_problems(&self, doc: &Document) -> Vec<String> {
+        let mut out = self.type_problems(doc);
         if self.columns.is_empty() {
-            return Vec::new();
+            return out;
         }
         let cols: Vec<u32> = (0..doc.col_count()).collect();
         let now = doc.titles(&cols, self.header);
         let norm = |s: &str| s.trim().to_lowercase();
-        let mut out = Vec::new();
         for (i, want) in self.columns.iter().enumerate() {
             match now.get(i) {
                 Some(have) if norm(have) == norm(want) => {}
@@ -548,7 +571,58 @@ impl Recipe {
     }
 }
 
+/// The column whose title is `title` (case and spaces around it ignored); a table with no titles falls back
+/// to the position `col`.
+fn column_by_title(titles: &[String], title: &str, col: u32, width: u32) -> Option<u32> {
+    let norm = |s: &str| s.trim().to_lowercase();
+    if title.trim().is_empty() {
+        return (col < width).then_some(col);
+    }
+    titles
+        .iter()
+        .position(|t| norm(t) == norm(title))
+        .map(|i| i as u32)
+}
+
+impl Recipe {
+    /// A typed column the file has no title for, in words (empty when every one is there).
+    fn type_problems(&self, doc: &Document) -> Vec<String> {
+        let titles = doc.row_values(0).unwrap_or_default();
+        let mut out = Vec::new();
+        for s in &self.steps {
+            if let RecipeOp::ColumnTypes { types } = s {
+                for t in types {
+                    if column_by_title(&titles, &t.title, t.col, doc.col_count()).is_none() {
+                        out.push(format!(
+                            "there is no column titled \"{}\" to treat as {:?}",
+                            t.title, t.kind
+                        ));
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 impl Document {
+    /// The column types a [`RecipeOp::ColumnTypes`] step asks for in this table: each titled column found by its
+    /// title, every other column Auto. A title the table does not have is an error.
+    pub fn types_from_step(
+        &self,
+        types: &[ColumnTypeAt],
+    ) -> Result<crate::coltype::ColumnTypes, Error> {
+        let titles = self.row_values(0).unwrap_or_default();
+        let mut set = crate::coltype::ColumnTypes::default();
+        for t in types {
+            let c = column_by_title(&titles, &t.title, t.col, self.col_count())
+                .ok_or_else(|| Error::Invalid(format!("no column titled \"{}\"", t.title)))?;
+            let p = self.phys_of(c).ok_or(Error::OutOfRange)?;
+            set = set.with(p, t.kind);
+        }
+        Ok(set)
+    }
+
     /// Run one recipe step as one undo step. `now` is the local date and
     /// time (days since 1970-01-01), `seed` for steps with random parts.
     pub fn run_recipe_step(
@@ -659,6 +733,11 @@ impl Document {
             RecipeOp::CompareColumn { spec } => {
                 let p = self.plan_compare_column(spec, progress)?;
                 self.apply_cols(p)
+            }
+            RecipeOp::ColumnTypes { types } => {
+                let set = self.types_from_step(types)?;
+                self.set_column_types(set);
+                Ok(())
             }
             RecipeOp::MapValues { spec } => {
                 let p = self.plan_map_values(spec, progress)?;

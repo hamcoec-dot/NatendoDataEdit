@@ -1167,6 +1167,28 @@ fn recipe_step(op: &DataOp) -> Logged {
     Logged::Step(s)
 }
 
+/// The recipe step for a set of column types: each typed column by its title (the first row; the position
+/// when it has none), every other column left Auto.
+fn types_step(d: &Document, types: &natendo_engine::coltype::ColumnTypes) -> RecipeOp {
+    let titles = d.row_values(0).unwrap_or_default();
+    let mut at = Vec::new();
+    for c in 0..d
+        .col_count()
+        .min(natendo_engine::coltype::MAX_TYPED_COLS as u32)
+    {
+        let Some(p) = d.phys_of(c) else { continue };
+        let t = types.get(p);
+        if t != natendo_engine::coltype::ColumnType::Auto {
+            at.push(natendo_engine::recipe::ColumnTypeAt {
+                title: titles.get(c as usize).cloned().unwrap_or_default(),
+                col: c,
+                kind: t,
+            });
+        }
+    }
+    RecipeOp::ColumnTypes { types: at }
+}
+
 /// The data operation that does a recipe step (not for the steps that have
 /// their own command: sort, filter, columns, Replace All).
 fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
@@ -1218,7 +1240,8 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
         | RecipeOp::ReplaceAll { .. }
         | RecipeOp::BatchReplace { .. }
         | RecipeOp::RenameColumn { .. }
-        | RecipeOp::TidyTitles { .. } => unreachable!("handled by its own command"),
+        | RecipeOp::TidyTitles { .. }
+        | RecipeOp::ColumnTypes { .. } => unreachable!("handled by its own command"),
     }
 }
 
@@ -5066,6 +5089,14 @@ impl Docs {
                 self.set_first_row_cell(id, col, name).map(|_| ())
             }
             RecipeOp::TidyTitles { spec } => self.tidy_titles(id, spec).map(|_| ()),
+            RecipeOp::ColumnTypes { types } => {
+                let set = {
+                    let entry = self.get(id)?;
+                    let d = entry.read();
+                    d.types_from_step(&types)?
+                };
+                self.set_column_types(id, set).map(|_| ())
+            }
             other => self.data_op(id, recipe_data_op(other, now)).map(|_| ()),
         }
     }
@@ -6963,14 +6994,16 @@ impl Docs {
         col: u32,
         ty: natendo_engine::coltype::ColumnType,
     ) -> CmdResult<DocInfo> {
-        self.edit_any(id, false, |d| {
+        // The new set of types, worked out first so a recipe records the state it makes.
+        let types = {
+            let entry = self.get(id)?;
+            let d = entry.read();
             let Some(phys) = (col < d.col_count()).then(|| d.phys_of(col)).flatten() else {
-                return Err(Error::OutOfRange);
+                return Err(Error::OutOfRange.into());
             };
-            let types = d.type_overlay().with(phys, ty);
-            d.set_column_types(types);
-            Ok(())
-        })
+            d.type_overlay().with(phys, ty)
+        };
+        self.set_column_types(id, types)
     }
 
     /// Put all the column types back as they were (Undo, a saved view, a session).
@@ -6979,9 +7012,18 @@ impl Docs {
         id: u32,
         types: natendo_engine::coltype::ColumnTypes,
     ) -> CmdResult<DocInfo> {
-        self.edit_any(id, false, |d| {
-            d.set_column_types(types);
-            Ok(())
+        // A recipe records the whole set by column title (a watched folder or the command line opens a fresh
+        // file with every column Auto, so the recipe has to say what the columns hold).
+        let step = {
+            let entry = self.get(id)?;
+            let d = entry.read();
+            types_step(&d, &types)
+        };
+        self.recorded(id, Logged::Step(step), || {
+            self.edit_any(id, false, |d| {
+                d.set_column_types(types);
+                Ok(())
+            })
         })
     }
 

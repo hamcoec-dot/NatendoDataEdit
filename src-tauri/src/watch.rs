@@ -352,4 +352,91 @@ mod tests {
         assert!(w.start(false, false, recent).is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    /// A1b review: a recorded "zip is an Id, then sort by zip" must replay on a fresh file (a watched folder or
+    /// the command line opens it with every column Auto) as an Id sort, by the column's TITLE; a file without
+    /// that title is refused with the title named.
+    #[test]
+    fn column_types_are_replayed_by_title_on_a_fresh_file() {
+        use natendo_engine::coltype::ColumnType;
+        use natendo_engine::recipe::ColumnTypeAt;
+        use natendo_engine::sort::{SortKey, SortKind, SortSpec};
+        let base = std::env::temp_dir().join(format!("nd-watch-types-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // The typed column is the SECOND one here, and not where it was when the recipe was recorded.
+        std::fs::write(
+            base.join("a.csv"),
+            b"n,zip\r\n1,10\r\n2,0007\r\n3,2\r\n4,7\r\n",
+        )
+        .unwrap();
+        let sort = RecipeOp::Sort {
+            spec: SortSpec {
+                keys: vec![SortKey {
+                    col: 1,
+                    descending: false,
+                    kind: SortKind::Auto,
+                    match_case: false,
+                }],
+                keep_first: true,
+                ..Default::default()
+            },
+        };
+        let typed = |title: &str| RecipeOp::ColumnTypes {
+            types: vec![ColumnTypeAt {
+                title: title.into(),
+                col: 0,
+                kind: ColumnType::Id,
+            }],
+        };
+        let recipe = |steps: Vec<RecipeOp>| Recipe {
+            version: RECIPE_VERSION,
+            name: String::new(),
+            columns: Vec::new(),
+            header: true,
+            steps,
+            left_out: Vec::new(),
+            questions: Vec::new(),
+        };
+        let recent = Arc::new(Recent::default());
+        // Without the type step the zip column sorts as numbers (0007 and 7 tie, input order kept).
+        run_one(
+            &base.join("a.csv"),
+            &base.join("plain.csv"),
+            &recipe(vec![sort.clone()]),
+            false,
+            &recent,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(base.join("plain.csv")).unwrap(),
+            "n,zip\r\n3,2\r\n2,0007\r\n4,7\r\n1,10\r\n"
+        );
+        // With it, an Id sort: 7 before 0007 (more leading zeros after).
+        run_one(
+            &base.join("a.csv"),
+            &base.join("id.csv"),
+            &recipe(vec![typed("zip"), sort.clone()]),
+            false,
+            &recent,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(base.join("id.csv")).unwrap(),
+            "n,zip\r\n3,2\r\n4,7\r\n2,0007\r\n1,10\r\n"
+        );
+        // A title the file does not have is a column problem, named.
+        let err = match run_one(
+            &base.join("a.csv"),
+            &base.join("no.csv"),
+            &recipe(vec![typed("zap"), sort]),
+            false,
+            &recent,
+        ) {
+            Ok(_) => panic!("a file without the title must be refused"),
+            Err(e) => e,
+        };
+        assert!(err.contains("no column titled \"zap\""), "{err}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
