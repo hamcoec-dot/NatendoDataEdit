@@ -17,7 +17,7 @@
   import { barSpan, completion, scaleColour, scalePos, valueType } from "./m10";
   import { colLetters } from "./goto";
   import { invisibleRuns } from "./invisible";
-  import { insightText } from "./insights";
+  import { insightText, pillParts } from "./insights";
   import { formulaHelp } from "./cellformula";
   import { FUNCTIONS } from "./m8";
   /** Odd spaces with View › Show invisible characters on. */
@@ -37,7 +37,7 @@
     /** Commit an edit of one cell (or, with `fill`, of every selected cell). */
     onCommit: (row: number, col: number, value: string, fill: boolean) => Promise<boolean>;
     /** `col`: the column under the pointer (the heading menu's Rename acts on it). */
-    onContext: (x: number, y: number, area: "cell" | "row" | "col" | "corner", col: number) => void;
+    onContext: (x: number, y: number, area: "cell" | "row" | "col" | "corner" | "pill", col: number) => void;
     onMessage: (text: string) => void;
     /** The filter button on column `col`'s header was clicked (x, y: where
      *  to open its menu, in window coordinates). */
@@ -71,6 +71,8 @@
     onRenameCol?: (col: number) => void;
     /** A click on a column's insight strip (its profile opens). */
     onInsight?: (col: number) => void;
+    /** A click on the pattern pill in the strip: its leftover part ("0.6% differ") or its shape part. */
+    onPill?: (col: number, part: "shape" | "rest", x: number, y: number) => void;
     /** A double-click on a cell: true when it was used (no edit starts). */
     onActivate?: () => boolean;
     readOnly: boolean;
@@ -82,7 +84,7 @@
      *  (the title-row question): the active cell scrolls clear of them. */
     bottomInset?: number;
   }
-  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onCellsOver, onCellsDropOutside, onRenameCol, onInsight, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0 }: Props = $props();
+  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onCellsOver, onCellsDropOutside, onRenameCol, onInsight, onPill, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0 }: Props = $props();
   // Where this pane is scrolled to (a split view's second pane keeps its own).
   const view = $derived(pane === "split" ? tab.splitScroll : tab);
 
@@ -1073,6 +1075,16 @@
   const PICK_BTN = 16;
 
   /** Column `c`'s insight strip: a tiny bar chart, then "92% · 1.2k". */
+  /** The pattern pill's text widths, measured once per column width, font and figures (not every frame). */
+  const pillCache = new Map<number, { key: string; w1: number; w2: number }>();
+  /** Where each column's pill was drawn last (canvas pixels): [start, end of the shape part = start of the rest, end]. */
+  const pillRects = new Map<number, [number, number, number]>();
+  /** Which part of column `c`'s pill the canvas point `x` is on, if any. */
+  function pillAt(c: number, x: number): "shape" | "rest" | null {
+    const r = pillRects.get(c);
+    if (!r || x < r[0] || x > r[2]) return null;
+    return x < r[1] ? "shape" : "rest";
+  }
   function drawInsight(ctx: CanvasRenderingContext2D, c: number, x: number, cw: number): void {
     const ins = tab.insights;
     const i = ins?.byCol.get(c);
@@ -1105,7 +1117,33 @@
     ctx.fillRect(x + 6, top + stripH - 3, Math.round((cw - 13) * i.filled), 2);
     ctx.font = `${Math.max(9, Math.round(fontPx * 0.8))}px ${prefs.data.font}`;
     ctx.fillStyle = colors.muted;
-    ctx.fillText(insightText(i, ins.sampled, ins.rows), bx + 4, top + (stripH - 2) / 2);
+    const text = insightText(i, ins.sampled, ins.rows);
+    ctx.fillText(text, bx + 4, top + (stripH - 2) / 2);
+    // The pattern pill, right-aligned, when it fits beside the figures; not for figures of rows that have
+    // changed since (the strip is worked out again a moment after an edit).
+    pillRects.delete(c);
+    const pp = ins.revision === undefined || tab.info.data_revision === undefined || ins.revision === tab.info.data_revision ? pillParts(i, ins.sampled, ins.rows) : null;
+    if (pp) {
+      const key = `${cw}|${fontPx}|${pp.shape}|${pp.rest}|${prefs.data.font}`;
+      let m = pillCache.get(c);
+      if (!m || m.key !== key) {
+        m = { key, w1: ctx.measureText(pp.shape).width, w2: ctx.measureText(pp.rest).width };
+        pillCache.set(c, m);
+      }
+      const leftEnd = bx + 4 + ctx.measureText(text).width;
+      const xr = x + cw - 8;
+      const x2 = xr - m.w2;
+      const x1 = x2 - m.w1;
+      if (x1 >= leftEnd + 8) {
+        const y = top + (stripH - 2) / 2;
+        ctx.fillStyle = colors.text;
+        ctx.fillText(pp.shape, x1, y);
+        ctx.fillStyle = colors.accent;
+        ctx.fillText(pp.rest, x2, y);
+        ctx.fillRect(x2 + ctx.measureText(" · ").width, top + stripH - 5, m.w2 - ctx.measureText(" · ").width, 1);
+        pillRects.set(c, [x1, x2, xr]);
+      }
+    }
     ctx.font = headerFont;
     ctx.restore();
   }
@@ -1929,6 +1967,13 @@
         break;
       }
       case "col":
+        if (h.strip && e.button === 0 && !e.shiftKey && !e.ctrlKey) {
+          const part = pillAt(h.col, x);
+          if (part && onPill) {
+            onPill(h.col, part, e.clientX, e.clientY);
+            break;
+          }
+        }
         if (h.strip && onInsight && e.button === 0 && !e.shiftKey && !e.ctrlKey) {
           onInsight(h.col);
           break;
@@ -2297,6 +2342,11 @@
     const [x, y] = local(e);
     const h = hit(x, y);
     if (h.area === "none") return;
+    // The pattern pill has a menu of its own (the column is not selected by it).
+    if (h.area === "col" && h.strip && pillAt(h.col, x)) {
+      onContext(e.clientX, e.clientY, "pill", h.col);
+      return;
+    }
     // Outside the selection, a right-click picks what it is on first (as
     // in Sheets), so the menu acts on that column, row or cell.
     const r = tab.drawRect;

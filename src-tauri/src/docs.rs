@@ -714,6 +714,12 @@ pub enum DataOp {
         #[serde(default)]
         passing: bool,
     },
+    /// Show only the rows whose value in a column has (or has not) a shape: the
+    /// pattern pill's click. Reads the rows shown now; refused if the document
+    /// changed since the pill was worked out.
+    ShowShape {
+        spec: natendo_engine::profile::ShapeFilter,
+    },
     /// Put the rows that fail the checks first.
     SortProblems {
         spec: CheckSpec,
@@ -1066,8 +1072,10 @@ fn recipe_step(op: &DataOp) -> Logged {
             spec: spec.clone(),
             title: title.clone(),
         },
-        DataOp::ShowDuplicates { .. } | DataOp::ShowProblems { .. } => {
-            return Logged::LeftOut("showing duplicates or problems (a view, not a change)".into())
+        DataOp::ShowDuplicates { .. } | DataOp::ShowProblems { .. } | DataOp::ShowShape { .. } => {
+            return Logged::LeftOut(
+                "showing duplicates, problems or a pattern (a view, not a change)".into(),
+            )
         }
         DataOp::CompareShow { .. } => {
             return Logged::LeftOut(
@@ -4649,7 +4657,7 @@ impl Docs {
             DataOp::FillExample { .. } => "Filling by example",
             DataOp::Compute { .. } => "Computing",
             // Showing rows changes no data, so a locked file allows it.
-            DataOp::ShowProblems { .. } => "Filtering",
+            DataOp::ShowProblems { .. } | DataOp::ShowShape { .. } => "Filtering",
             DataOp::CompareShow { .. } | DataOp::CompareColumn { .. } => "Comparing",
             DataOp::FormulaFilter { .. } => "Filtering",
             DataOp::SortProblems { .. } | DataOp::CheckColumn { .. } => "Checking",
@@ -4805,6 +4813,7 @@ impl Docs {
                     let rep = d.run_checks(spec, p)?;
                     Planned::Rows(d.plan_show_problems(&rep, spec.keep_first, *passing)?)
                 }
+                DataOp::ShowShape { spec } => Planned::Rows(d.plan_shape_filter(spec, p)?),
                 DataOp::SortProblems { spec } => {
                     let rep = d.run_checks(spec, p)?;
                     groups.set(rep.rows);

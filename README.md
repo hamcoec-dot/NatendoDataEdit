@@ -721,6 +721,22 @@ everything is also in command search.
 
 ![The column insight strip under four headings](docs/screenshots/column-insights.png)
 *voter_id is all different, party is 90% filled with 3 values, zip has 32.*
+- **Pattern pill** (in the column insight strip): when one shape makes up at
+  least 90% of a column's filled cells and some cells differ, the strip shows it,
+  like `~99.4% 999-9999 · 0.6% differ` (9 stands for a digit, A for a letter;
+  the `~` means the share is from the sample). Click the "0.6% differ" part and
+  the table is filtered to the rows that break the pattern (blank cells left out;
+  right-click the pill for "and blank ones"); the filter reads every row shown
+  now, not the sample, so it is exact, and with a filter already on it narrows
+  that filter ("within the current filter"). Click the shape, or right-click the
+  pill, for Show rows that match, Show rows that break the pattern, and Copy
+  pattern; the same commands are in Alt+Q. Like any filter, "Filtered ✕" shows
+  every row again. The pill appears only when it fits beside the figures (a
+  column about 260 pixels wide or more) and goes away the moment the data
+  changes, until the strip is worked out again.
+
+![The joined column's strip with the pattern pill: 99.4% 9999-99-99 and 0.6% differ](docs/screenshots/pattern-pill.png)
+*Thirty cells of the joined column say n/a: the pill shows the date shape and the share that differs.*
 - **Quick totals** of the selection (sum, average, count, numbers, smallest,
   largest, different values, characters), with one click to copy a total.
 - Charts (line, bar, pie, counts), subtotals and groups, highlight rules.

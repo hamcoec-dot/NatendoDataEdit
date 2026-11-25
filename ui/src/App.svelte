@@ -239,7 +239,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         .columnInsights(t.id, { cols, keep_first: t.header, sample, read: READ })
         .then((r) => {
           if (mine !== insightSeq) return false;
-          t.insights = { byCol: new Map(r.cols.map((i) => [i.col, i])), sampled: r.sampled, rows: r.rows };
+          t.insights = { byCol: new Map(r.cols.map((i) => [i.col, i])), sampled: r.sampled, rows: r.rows, revision: r.revision };
           return r.sampled < r.rows;
         });
     const timer = setTimeout(() => {
@@ -5929,6 +5929,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.clearFilter", label: "C&lear filter", run: clearFilter, enabled: () => ready() && !!tab?.info.has_filter },
     { id: "data.reapply", label: "&Reapply filter", keys: ["Ctrl+Alt+L"], run: reapplyFilter, enabled: () => ready() && !!tab?.filter },
     { id: "data.removeDuplicates", label: "Remove &duplicates…", run: () => openOp("remove_duplicates"), enabled: ready },
+    { id: "data.patternOdd", label: "Show rows that break the column's pattern", run: () => void showShape(patternCol(), true, false), enabled: () => ready() && !!patternShape(patternCol()) },
+    { id: "data.patternOddBlanks", label: "Show rows that break the pattern, and blank ones", run: () => void showShape(patternCol(), true, true), enabled: () => ready() && !!patternShape(patternCol()) },
+    { id: "data.patternMatch", label: "Show rows that match the column's pattern", run: () => void showShape(patternCol(), false, false), enabled: () => ready() && !!patternShape(patternCol()) },
+    { id: "data.patternCopy", label: "Copy the column's pattern", run: () => void copyPattern(patternCol()), enabled: () => !!patternShape(patternCol()) },
     { id: "data.showDuplicates", label: "S&how duplicates…", run: () => openOp("show_duplicates"), enabled: ready },
     { id: "data.removeBlankRows", label: "Remove &blank rows", run: () => removeBlanks(false), enabled: ready, repeatable: true },
     { id: "data.removeBlankCols", label: "Remove blan&k columns", run: () => removeBlanks(true), enabled: ready, repeatable: true },
@@ -6061,6 +6065,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
+    pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
 
@@ -6476,6 +6481,51 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     t.bump();
   }
 
+  /** The column a pattern command acts on: the one whose pill menu it was picked from, else the active column. */
+  const patternCol = (): number => menuCol ?? tab?.cell.col ?? 0;
+  /** The dominant shape the strip shows for a column (null: none, or the figures are for rows that have changed). */
+  function patternShape(col: number): string | null {
+    const t = tab;
+    const ins = t?.insights;
+    if (!t || !ins || (ins.revision !== undefined && t.info.data_revision !== undefined && ins.revision !== t.info.data_revision)) return null;
+    return ins.byCol.get(col)?.top_shape ?? null;
+  }
+  async function copyPattern(col: number): Promise<void> {
+    const s = patternShape(col);
+    if (!s) return;
+    try {
+      await navigator.clipboard.writeText(s);
+      say(`Copied the pattern ${s}.`);
+    } catch {
+      say("The clipboard could not be used.");
+    }
+  }
+  /** The pattern pill's click: show the rows that break (or match) the column's dominant pattern, among the rows shown now. */
+  async function showShape(col: number, negate: boolean, includeBlanks: boolean): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const shape = patternShape(col);
+    if (!shape) {
+      say("The pattern is being worked out again after a change; try again in a moment.");
+      return;
+    }
+    const before = t.info.rows - (t.header ? 1 : 0);
+    const was = t.info.filtered;
+    const rep = await runOp({ op: "show_shape", spec: { col, keep_first: t.header, shape, negate, include_blanks: includeBlanks, revision: t.insights?.revision } }, "Filtering");
+    if (!rep) return;
+    t.filter = null;
+    const share = before > 0 ? (rep.rows / before) * 100 : 0;
+    const pct = before > 0 ? ` (${share > 0 && share < 0.1 ? "under 0.1" : Math.round(share * 10) / 10}%)` : "";
+    const what = negate ? "that do not match" : "that match";
+    const within = was ? ", within the current filter" : "";
+    if (rep.rows) say(`Showing the ${plural(rep.rows, "row")}${pct} ${what} ${shape}${includeBlanks ? " (and the blank ones)" : ""}${within}. Click “Filtered ✕” to show every row again.`);
+    else {
+      say(`No row ${negate ? "breaks" : "has"} the pattern ${shape}${within}.`);
+      void clearFilter();
+    }
+    void tick().then(() => grid?.focus());
+  }
+
   async function showProblems(spec: CheckSpec, passing = false): Promise<void> {
     checksOpen = false;
     fieldCheckOpen = false;
@@ -6876,8 +6926,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** The column a heading's right-click menu was opened on (Rename acts
    *  on it, not on the selection's focus column). */
   let contextCol: number | null = null;
-  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner" | "tab", col: number): void {
-    contextCol = area === "col" ? col : null;
+  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner" | "tab" | "pill", col: number): void {
+    contextCol = area === "col" || area === "pill" ? col : null;
     openMenu = null;
     // The cut items show only while something is cut.
     const cutItems = new Set(["edit.moveCut", "edit.cancelCut"]);
@@ -7255,6 +7305,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
                   onContext={openContext}
                   onRenameCol={(c) => void askRename(c)}
                   onInsight={(c) => (profileCol = c)}
+                  onPill={(c, part, px, py) => {
+                    // The leftover part filters at once; the shape part opens the pill's menu.
+                    if (part === "rest") void showShape(c, true, false);
+                    else openContext(px, py, "pill", c);
+                  }}
                   onActivate={() => {
                     if (!tab?.countsOf) return false;
                     void countsShow(false);
@@ -7286,6 +7341,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
                   onContext={openContext}
                   onRenameCol={(c) => void askRename(c)}
                   onInsight={(c) => (profileCol = c)}
+                  onPill={(c, part, px, py) => {
+                    // The leftover part filters at once; the shape part opens the pill's menu.
+                    if (part === "rest") void showShape(c, true, false);
+                    else openContext(px, py, "pill", c);
+                  }}
                   onActivate={() => {
                     if (!tab?.countsOf) return false;
                     void countsShow(false);
@@ -7317,6 +7377,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           onContext={openContext}
           onRenameCol={(c) => void askRename(c)}
           onInsight={(c) => (profileCol = c)}
+                  onPill={(c, part, px, py) => {
+                    // The leftover part filters at once; the shape part opens the pill's menu.
+                    if (part === "rest") void showShape(c, true, false);
+                    else openContext(px, py, "pill", c);
+                  }}
           onActivate={() => {
             if (!tab?.countsOf) return false;
             void countsShow(false);

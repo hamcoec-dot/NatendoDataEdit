@@ -184,6 +184,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "column profile": ["data.profile"],
   "filter panel": ["view.panelFilters"],
   "column insights": ["view.insights", "data.profile"],
+  "pattern pill": ["data.patternOdd", "data.patternMatch", "data.patternOddBlanks", "data.patternCopy"],
   "quick totals": ["view.panel"],
   "charts line bar pie counts": ["view.panelChart", "data.subtotals", "view.highlights"],
   "compare two open files": ["tools.compare"],

@@ -5,12 +5,14 @@
 //! asks for a small sample first and a bigger one after.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::document::Document;
 use crate::ops::{check_cols, Cols};
+use crate::profile::{shape_hash, shape_of};
 use crate::value::{parse_number, ReadOptions};
 use crate::Error;
 
@@ -22,6 +24,10 @@ pub const MAX_CELLS: u64 = 4_000_000;
 pub const MAX_COLS: usize = 512;
 /// Bars in the strip's chart.
 pub const BARS: usize = 8;
+/// Different shapes counted per column (past this, new shapes are not counted).
+const MAX_SHAPES: usize = 20_000;
+/// The pill shows when one shape makes up at least this share of the filled cells.
+pub const PILL_SHARE: f64 = 0.9;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InsightSpec {
@@ -47,6 +53,12 @@ pub struct Insight {
     pub numbers: bool,
     /// Bar heights, the tallest 1.
     pub bars: Vec<f32>,
+    /// The pattern pill: the shape (9 for digits, A for letters) that makes up
+    /// at least 90% of the filled sampled cells while some cells have another
+    /// shape; None otherwise. Ties are broken by the smallest shape text.
+    pub top_shape: Option<String>,
+    /// That shape's share of the filled sampled cells (0 when no pill).
+    pub top_share: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -55,6 +67,9 @@ pub struct Insights {
     /// Rows looked at, of `rows` shown data rows.
     pub sampled: u64,
     pub rows: u64,
+    /// The data revision these figures are for (a pill's filter is refused once
+    /// the rows have changed).
+    pub revision: u64,
 }
 
 /// `take` positions out of `a..b`: all of them, or a third each from the
@@ -72,17 +87,89 @@ fn sample_rows(a: u64, b: u64, take: u64) -> Vec<u64> {
     out
 }
 
+/// A hasher for keys that already are hashes (the shape hash): the key itself.
+#[derive(Default)]
+struct KeyIsHash(u64);
+
+impl Hasher for KeyIsHash {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 << 8) | u64::from(b);
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
+    }
+}
+
+/// Shapes counted over the filled sampled values: (hash of the shape, count, index of the first value with
+/// it), at most MAX_SHAPES of them; the last one hit is checked first (neighbouring values mostly share a
+/// shape), the rest through an index by hash.
+#[derive(Default)]
+struct ShapeCounts {
+    entries: Vec<(u64, u32, usize)>,
+    index: HashMap<u64, usize, BuildHasherDefault<KeyIsHash>>,
+    last: usize,
+}
+
+impl ShapeCounts {
+    fn add(&mut self, h: u64, at: usize) {
+        if let Some(e) = self.entries.get_mut(self.last) {
+            if e.0 == h {
+                e.1 += 1;
+                return;
+            }
+        }
+        if let Some(&k) = self.index.get(&h) {
+            self.entries[k].1 += 1;
+            self.last = k;
+        } else if self.entries.len() < MAX_SHAPES {
+            self.last = self.entries.len();
+            self.index.insert(h, self.last);
+            self.entries.push((h, 1, at));
+        }
+    }
+}
+
+/// The dominant shape among the filled sampled values and its share, when it is the pill's. Ties go to the
+/// smallest shape text (built from a real value of each tied shape), so the answer does not depend on how
+/// the work was split.
+fn pill(vals: &[String], shapes: &ShapeCounts, filled: usize) -> (Option<String>, f64) {
+    if filled < 2 {
+        return (None, 0.0);
+    }
+    let Some(most) = shapes.entries.iter().map(|e| e.1).max() else {
+        return (None, 0.0);
+    };
+    let share = f64::from(most) / filled as f64;
+    if share < PILL_SHARE || most as usize == filled {
+        return (None, 0.0);
+    }
+    let top = shapes
+        .entries
+        .iter()
+        .filter(|e| e.1 == most)
+        .map(|e| shape_of(&vals[e.2]))
+        .min();
+    (top, share)
+}
+
 fn one(col: u32, vals: &[String], read: ReadOptions) -> Insight {
     let n = vals.len();
     let mut counts: HashMap<&str, u32> = HashMap::new();
     let mut nums: Vec<f64> = Vec::new();
     let mut filled = 0usize;
-    for v in vals {
+    let mut shapes = ShapeCounts::default();
+    for (i, v) in vals.iter().enumerate() {
         if v.trim().is_empty() {
             continue;
         }
         filled += 1;
         *counts.entry(v.as_str()).or_insert(0) += 1;
+        shapes.add(shape_hash(v), i);
         if let Some(x) = parse_number(v, read) {
             if x.is_finite() {
                 nums.push(x);
@@ -118,6 +205,7 @@ fn one(col: u32, vals: &[String], read: ReadOptions) -> Insight {
             *b /= most;
         }
     }
+    let (top_shape, top_share) = pill(vals, &shapes, filled);
     Insight {
         col,
         filled: if n == 0 {
@@ -129,6 +217,8 @@ fn one(col: u32, vals: &[String], read: ReadOptions) -> Insight {
         unique: filled > 1 && distinct == filled as u64,
         numbers,
         bars,
+        top_shape,
+        top_share,
     }
 }
 
@@ -179,6 +269,7 @@ impl Document {
             cols,
             sampled: picks.len() as u64,
             rows: rows.end - rows.start,
+            revision: self.data_revision(),
         })
     }
 }
@@ -187,6 +278,89 @@ impl Document {
 mod tests {
     use super::*;
     use crate::OpenOptions;
+
+    fn pills(values: &[&str]) -> (Option<String>, f64) {
+        let mut csv = String::from("v\r\n");
+        for v in values {
+            csv.push_str(v);
+            csv.push_str("\r\n");
+        }
+        let d =
+            Document::from_bytes(csv.into_bytes(), OpenOptions::default(), Some("csv")).unwrap();
+        let r = d
+            .column_insights(&InsightSpec {
+                cols: vec![0],
+                keep_first: true,
+                sample: 1000,
+                ..Default::default()
+            })
+            .unwrap();
+        (r.cols[0].top_shape.clone(), r.cols[0].top_share)
+    }
+
+    #[test]
+    fn the_pill_names_a_dominant_shape_in_phones_zips_and_names() {
+        // Phones in three layouts, ZIP vs ZIP+4, names with accents.
+        let mut phones: Vec<String> = (0..99).map(|i| format!("555-{:04}", i)).collect();
+        phones.push("(555) 123-4567".into());
+        let refs: Vec<&str> = phones.iter().map(String::as_str).collect();
+        let (shape, share) = pills(&refs);
+        assert_eq!(shape.as_deref(), Some("999-9999"));
+        assert!((share - 0.99).abs() < 1e-9);
+        let mut zips: Vec<String> = (0..95).map(|i| format!("{:05}", 37000 + i)).collect();
+        zips.extend((0..5).map(|i| format!("{:05}-{:04}", 37400 + i, i)));
+        let refs: Vec<&str> = zips.iter().map(String::as_str).collect();
+        let (shape, share) = pills(&refs);
+        assert_eq!(shape.as_deref(), Some("99999"));
+        assert!((share - 0.95).abs() < 1e-9);
+        // Accented names are letters, so "José" and "Jose" share a shape.
+        let names = vec!["José"; 9]
+            .into_iter()
+            .chain(["Jose"])
+            .chain(["O'Neil"])
+            .collect::<Vec<_>>();
+        let (shape, _) = pills(&names);
+        assert_eq!(shape.as_deref(), Some("AAAA"));
+    }
+
+    #[test]
+    fn no_pill_when_the_shape_is_not_dominant_or_is_the_only_one() {
+        // 80% / 20%: not dominant. Every value the same shape: nothing differs. Blanks do not count.
+        let mut v: Vec<String> = (0..80).map(|i| format!("{:03}", i)).collect();
+        v.extend((0..20).map(|i| format!("x{i}")));
+        let refs: Vec<&str> = v.iter().map(String::as_str).collect();
+        assert_eq!(pills(&refs).0, None);
+        let same: Vec<String> = (0..50).map(|i| format!("{:03}", i)).collect();
+        let refs: Vec<&str> = same.iter().map(String::as_str).collect();
+        assert_eq!(pills(&refs).0, None);
+        let mut blanks: Vec<String> = (0..50).map(|_| String::new()).collect();
+        blanks.extend((0..9).map(|i| format!("{:03}", i)));
+        blanks.push("zz".into());
+        let refs: Vec<&str> = blanks.iter().map(String::as_str).collect();
+        assert_eq!(pills(&refs).0.as_deref(), Some("999"));
+    }
+
+    #[test]
+    fn the_pill_is_the_same_with_one_thread_and_many() {
+        let mut vals: Vec<String> = (0..4000)
+            .map(|i| format!("{:03}-{:04}", i % 1000, i))
+            .collect();
+        vals.extend((0..100).map(|i| format!("bad{i}")));
+        let refs: Vec<&str> = vals.iter().map(String::as_str).collect();
+        let run = || pills(&refs);
+        let one = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(run);
+        let many = rayon::ThreadPoolBuilder::new()
+            .num_threads(8)
+            .build()
+            .unwrap()
+            .install(run);
+        assert_eq!(one, many);
+        assert_eq!(one.0.as_deref(), Some("999-9999"));
+    }
 
     #[test]
     fn samples_the_start_middle_and_end() {

@@ -29,6 +29,34 @@ export function insightText(i: Insight, sampled: number, rows: number): string {
   return `${filled}% · ${distinct}`;
 }
 
+/** A value's shape as the engine's `shape_of` makes it: digits 9, letters A, other
+ *  characters as they are, at most 40 characters and then an ellipsis. */
+export function shapeOf(s: string): string {
+  let out = "";
+  let n = 0;
+  for (const c of s) {
+    if (n >= 40) return out + "…";
+    out += /\p{N}/u.test(c) ? "9" : /\p{Alphabetic}/u.test(c) ? "A" : c;
+    n++;
+  }
+  return out;
+}
+
+/** `shapeOf(s) === target`, the engine's exact rule. */
+export function shapeMatches(s: string, target: string): boolean {
+  return shapeOf(s) === target;
+}
+
+/** The pill's two parts, as drawn: the shape with its share ("~99.4% 999-9999", the ~ while the figure is
+ *  from a sample) and the leftover ("0.6% differ"); null when the column has no pill. */
+export function pillParts(i: Insight, sampled: number, rows: number): { shape: string; rest: string; share: number } | null {
+  if (!i.top_shape || !i.top_share) return null;
+  const tilde = sampled < rows ? "~" : "";
+  const share = Math.min(99.9, Math.round(i.top_share * 1000) / 10);
+  const odd = Math.max(0.1, Math.round((1 - i.top_share) * 1000) / 10);
+  return { shape: `${tilde}${share}% ${i.top_shape}`, rest: ` · ${odd}% differ`, share: i.top_share };
+}
+
 /** A tooltip-length description, for the status line. */
 export function insightSays(title: string, i: Insight, sampled: number, rows: number): string {
   const pct = Math.round(i.filled * 100);
@@ -39,7 +67,7 @@ export function insightSays(title: string, i: Insight, sampled: number, rows: nu
 }
 
 /** The browser preview's stand-in for the engine. */
-export function stubInsights(cols: number[], values: (c: number) => string[]): Insights {
+export function stubInsights(cols: number[], values: (c: number) => string[], revision = 0): Insights {
   let sampled = 0;
   const out: Insight[] = cols.map((col) => {
     const vals = values(col);
@@ -63,8 +91,17 @@ export function stubInsights(cols: number[], values: (c: number) => string[]): I
       for (const x of nums) bars[hi > lo ? Math.min(BARS - 1, Math.floor(((x - lo) / (hi - lo)) * BARS)) : 0]!++;
     } else bars = [...counts.values()].sort((a, b) => b - a).slice(0, BARS);
     const most = Math.max(0, ...bars);
+    // The pattern pill: the shape making up at least 90% of the filled cells while another exists
+    // (ties to the smallest shape text, as the engine does).
+    const shapes = new Map<string, number>();
+    for (const v of vals) if (v.trim()) shapes.set(shapeOf(v), (shapes.get(shapeOf(v)) ?? 0) + 1);
+    const shapeMost = Math.max(0, ...shapes.values());
+    const topShape = [...shapes].filter(([, n]) => n === shapeMost).map(([s]) => s).sort()[0];
+    const dominant = filled >= 2 && shapeMost / filled >= 0.9 && shapeMost < filled;
     return {
       col,
+      top_shape: dominant ? topShape : null,
+      top_share: dominant ? shapeMost / filled : 0,
       filled: vals.length ? filled / vals.length : 0,
       distinct: counts.size,
       unique: filled > 1 && counts.size === filled,
@@ -72,5 +109,5 @@ export function stubInsights(cols: number[], values: (c: number) => string[]): I
       bars: most ? bars.map((b) => b / most) : bars,
     };
   });
-  return { cols: out, sampled, rows: sampled };
+  return { cols: out, sampled, rows: sampled, revision };
 }

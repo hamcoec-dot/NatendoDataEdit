@@ -233,7 +233,7 @@ export class Tab {
    *  next change or change of shown rows. */
   picked = new Set<string>();
   /** The column insight strip's figures by column (View › Column insights). */
-  insights = $state<{ byCol: Map<number, import("./backend").Insight>; sampled: number; rows: number } | null>(null);
+  insights = $state<{ byCol: Map<number, import("./backend").Insight>; sampled: number; rows: number; revision?: number } | null>(null);
   /** The steps panel shows the table as it was after an earlier step
    *  (it cannot be edited until it goes back to the latest). */
   peeking = $state(false);

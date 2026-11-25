@@ -1,0 +1,77 @@
+{
+  "about": "values and the shapes the engine (profile.rs shape_of) gives them; the browser stand-in (insights.ts shapeOf) must agree",
+  "cases": [
+    {
+      "value": "555-1234",
+      "shape": "999-9999"
+    },
+    {
+      "value": "(555) 123-4567",
+      "shape": "(999) 999-9999"
+    },
+    {
+      "value": "José",
+      "shape": "AAAA"
+    },
+    {
+      "value": "O'Neil",
+      "shape": "A'AAAA"
+    },
+    {
+      "value": "12345-6789",
+      "shape": "99999-9999"
+    },
+    {
+      "value": "٣٤٥",
+      "shape": "999"
+    },
+    {
+      "value": "x²y",
+      "shape": "A9A"
+    },
+    {
+      "value": "ÀÉÎ ñ",
+      "shape": "AAA A"
+    },
+    {
+      "value": "",
+      "shape": ""
+    },
+    {
+      "value": "   ",
+      "shape": "   "
+    },
+    {
+      "value": "a…b",
+      "shape": "A…A"
+    },
+    {
+      "value": "ⅣⅤ",
+      "shape": "99"
+    },
+    {
+      "value": "1234567890123456789012345678901234567890",
+      "shape": "9999999999999999999999999999999999999999"
+    },
+    {
+      "value": "12345678901234567890123456789012345678901",
+      "shape": "9999999999999999999999999999999999999999…"
+    },
+    {
+      "value": "abcdefghijklmnopqrstuvwxyz-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "shape": "AAAAAAAAAAAAAAAAAAAAAAAAAA-9999999999-AA…"
+    },
+    {
+      "value": "ID#4471/B",
+      "shape": "AA#9999/A"
+    },
+    {
+      "value": "7 Maple St.",
+      "shape": "9 AAAAA AA."
+    },
+    {
+      "value": "é",
+      "shape": "Á"
+    }
+  ]
+}

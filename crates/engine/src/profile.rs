@@ -10,8 +10,10 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::document::{Document, Progress};
+use crate::document::{Document, Progress, View};
+use crate::filter::FilterSpec;
 use crate::ops::{check_cols, Cols, CHUNK};
+use crate::reshape::RowPlan;
 use crate::value::{parse_date, parse_number, ReadOptions};
 use crate::Error;
 
@@ -39,15 +41,140 @@ pub fn shape_of(s: &str) -> String {
             out.push('…');
             break;
         }
-        out.push(if c.is_ascii_digit() || c.is_numeric() {
-            '9'
-        } else if c.is_alphabetic() {
-            'A'
-        } else {
-            c
-        });
+        out.push(shape_char(c));
     }
     out
+}
+
+/// One character of a shape: a digit 9, a letter A, anything else as it is.
+fn shape_char(c: char) -> char {
+    if c.is_ascii_digit() || c.is_numeric() {
+        '9'
+    } else if c.is_alphabetic() {
+        'A'
+    } else {
+        c
+    }
+}
+
+/// A 64-bit hash of `shape_of(s)` worked out while reading `s`, with no
+/// allocation (the pill counts a shape per sampled cell).
+pub fn shape_hash(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |c: char| {
+        h ^= u64::from(c as u32);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    };
+    if s.is_ascii() {
+        // Plain ASCII (most cells): bytes, no decoding; the same characters as below.
+        for (n, &b) in s.as_bytes().iter().enumerate() {
+            if n >= MAX_SHAPE_CHARS {
+                feed('…');
+                break;
+            }
+            feed(if b.is_ascii_digit() {
+                '9'
+            } else if b.is_ascii_alphabetic() {
+                'A'
+            } else {
+                char::from(b)
+            });
+        }
+        return h;
+    }
+    for (n, c) in s.chars().enumerate() {
+        if n >= MAX_SHAPE_CHARS {
+            feed('…');
+            break;
+        }
+        feed(shape_char(c));
+    }
+    h
+}
+
+/// Exactly `shape_of(s) == target`, compared as `s` is read, with no
+/// allocation: a value of more than [`MAX_SHAPE_CHARS`] characters matches
+/// only a shape that ends in "…" after its first 40 characters.
+pub fn shape_matches(s: &str, target: &str) -> bool {
+    let mut t = target.chars();
+    for (n, c) in s.chars().enumerate() {
+        if n >= MAX_SHAPE_CHARS {
+            return t.next() == Some('…') && t.next().is_none();
+        }
+        if t.next() != Some(shape_char(c)) {
+            return false;
+        }
+    }
+    t.next().is_none()
+}
+
+/// "Show the rows whose shape is (or is not) this one" (the pattern pill).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShapeFilter {
+    pub col: u32,
+    pub keep_first: bool,
+    /// The shape, as the pill shows it (9 for digits, A for letters).
+    pub shape: String,
+    /// Rows that do NOT have this shape (blank cells left out unless `include_blanks`).
+    pub negate: bool,
+    /// Blank cells count as rows to show (in either direction).
+    pub include_blanks: bool,
+    /// The data revision the pill was worked out for (what the rows hold or their
+    /// order): a filter on a document whose data has changed since is refused
+    /// ([`Error::Changed`]).
+    pub revision: Option<u64>,
+}
+
+impl Document {
+    /// A filter to the rows whose value in `spec.col` has (or, with `negate`,
+    /// has not) the shape `spec.shape`. It reads every row SHOWN NOW, not a
+    /// sample, so with a filter already on it narrows that filter (the other
+    /// rows stay as they are). Not an undo step, like any filter.
+    pub fn plan_shape_filter(
+        &self,
+        spec: &ShapeFilter,
+        progress: &Progress,
+    ) -> Result<RowPlan, Error> {
+        self.ready_for_bulk()?;
+        check_cols(self, &[spec.col])?;
+        if spec.revision.is_some_and(|r| r != self.data_revision()) {
+            return Err(Error::Changed);
+        }
+        let reader = Cols::new(self, &[spec.col]);
+        let rows = self.data_rows(spec.keep_first);
+        let ids = self.par_rows(rows, progress, |_, id, buf| {
+            reader.read(self, id, buf);
+            let v = reader.get(buf, 0);
+            let blank = v.trim().is_empty();
+            let show = if blank {
+                spec.include_blanks
+            } else {
+                shape_matches(v, &spec.shape) != spec.negate
+            };
+            Ok(show.then_some(id))
+        })?;
+        let base = self.next_row_id();
+        let mut bits = vec![0u64; (base as usize).div_ceil(64)];
+        for &id in &ids {
+            bits[(id >> 6) as usize] |= 1 << (id & 63);
+        }
+        if spec.keep_first && self.row_count() > 0 {
+            let id = self.id_at(0).expect("a first row");
+            bits[(id >> 6) as usize] |= 1 << (id & 63);
+        }
+        let mut plan = RowPlan::new(self);
+        plan.rows = ids.len() as u64;
+        plan.view = Some(View::new(
+            FilterSpec {
+                keep_first: spec.keep_first,
+                ..Default::default()
+            },
+            bits,
+            base,
+        ));
+        Ok(plan)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -440,6 +567,288 @@ mod tests {
             Some("csv"),
         )
         .unwrap()
+    }
+
+    fn lcg(seed: u64) -> impl FnMut() -> u64 {
+        let mut x = seed;
+        move || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            x >> 33
+        }
+    }
+
+    /// A random value: ASCII and other digits, letters with accents, punctuation, the ellipsis,
+    /// spaces, and sometimes more than 40 characters.
+    fn random_value(r: &mut impl FnMut() -> u64) -> String {
+        const ALPHA: [char; 16] = [
+            '0', '7', 'a', 'Z', 'é', 'ß', '٣', '²', '-', '.', ' ', '(', '@', '…', 'ñ', '5',
+        ];
+        let len = match r() % 4 {
+            0 => (r() % 6) as usize,
+            1 => 38 + (r() % 5) as usize,
+            2 => 40 + (r() % 30) as usize,
+            _ => (r() % 15) as usize,
+        };
+        (0..len).map(|_| ALPHA[(r() % 16) as usize]).collect()
+    }
+
+    /// The hash of `shape_of(s)` the slow way (the same feed as `shape_hash`).
+    fn slow_hash(s: &str) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for c in shape_of(s).chars() {
+            h ^= u64::from(c as u32);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    }
+
+    /// The values and shapes in crates/engine/src/testdata/shapes.json: the browser stand-in's
+    /// `shapeOf` (ui/src/lib/insights.ts) is tested against the same file.
+    const SHAPE_VALUES: [&str; 18] = [
+        "555-1234",
+        "(555) 123-4567",
+        "José",
+        "O'Neil",
+        "12345-6789",
+        "٣٤٥",
+        "x²y",
+        "ÀÉÎ ñ",
+        "",
+        "   ",
+        "a…b",
+        "ⅣⅤ",
+        "1234567890123456789012345678901234567890",
+        "12345678901234567890123456789012345678901",
+        "abcdefghijklmnopqrstuvwxyz-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "ID#4471/B",
+        "7 Maple St.",
+        "e\u{301}",
+    ];
+
+    #[test]
+    fn the_shapes_in_the_shared_fixture_are_what_shape_of_gives() {
+        let fx: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/shapes.json")).unwrap();
+        let rows = fx["cases"].as_array().unwrap();
+        assert_eq!(rows.len(), SHAPE_VALUES.len());
+        for (row, v) in rows.iter().zip(SHAPE_VALUES) {
+            assert_eq!(row["value"].as_str().unwrap(), v);
+            assert_eq!(row["shape"].as_str().unwrap(), shape_of(v), "{v:?}");
+        }
+    }
+
+    /// Writes the fixture file (run when SHAPE_VALUES changes):
+    /// `cargo test -p natendo-engine --lib print_shape_fixture -- --ignored`.
+    #[test]
+    #[ignore]
+    fn print_shape_fixture() {
+        let cases: Vec<serde_json::Value> = SHAPE_VALUES
+            .iter()
+            .map(|v| serde_json::json!({ "value": v, "shape": shape_of(v) }))
+            .collect();
+        let fx = serde_json::json!({
+            "about": "values and the shapes the engine (profile.rs shape_of) gives them; the browser stand-in (insights.ts shapeOf) must agree",
+            "cases": cases
+        });
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/testdata/shapes.json");
+        std::fs::write(path, serde_json::to_string_pretty(&fx).unwrap() + "\n").unwrap();
+    }
+
+    #[test]
+    fn shape_matches_is_exactly_shape_of_equals_target() {
+        let mut r = lcg(3);
+        let pool: Vec<String> = (0..300).map(|_| random_value(&mut r)).collect();
+        let shapes: Vec<String> = pool.iter().map(|v| shape_of(v)).collect();
+        let mut matched = 0u32;
+        for _ in 0..100_000 {
+            let v = &pool[(r() % 300) as usize];
+            // A target that is some value's own shape (often the value's), or a random string.
+            let target = if r() % 3 == 0 {
+                random_value(&mut r)
+            } else {
+                shapes[(r() % 300) as usize].clone()
+            };
+            let want = shape_of(v) == target;
+            assert_eq!(
+                shape_matches(v, &target),
+                want,
+                "value {v:?} target {target:?}"
+            );
+            matched += u32::from(want);
+        }
+        assert!(matched > 100, "the property test saw {matched} matches");
+        // The cap: 40 characters match exactly; the 41st makes the shape end in an ellipsis.
+        let forty = "1".repeat(40);
+        assert!(shape_matches(&forty, &"9".repeat(40)));
+        assert!(!shape_matches(&forty, &format!("{}…", "9".repeat(40))));
+        let long = "1".repeat(55);
+        assert!(shape_matches(&long, &format!("{}…", "9".repeat(40))));
+        assert!(!shape_matches(&long, &"9".repeat(40)));
+    }
+
+    #[test]
+    fn the_streaming_hash_is_the_hash_of_shape_of() {
+        let mut r = lcg(9);
+        for _ in 0..100_000 {
+            let v = random_value(&mut r);
+            assert_eq!(shape_hash(&v), slow_hash(&v), "{v:?}");
+        }
+        // Plain ASCII, short and over the 40-character cap (the byte fast path).
+        for n in [0usize, 1, 9, 39, 40, 41, 80] {
+            let v: String = (0..n)
+                .map(|i| ['4', 'k', '-', ' ', '#', 'Z', '.'][(i * 7 + n) % 7])
+                .collect();
+            assert_eq!(shape_hash(&v), slow_hash(&v), "{v:?}");
+        }
+    }
+
+    /// A column of made-up values and a brute-force list of the rows (document positions 1..) that match.
+    fn column(r: &mut impl FnMut() -> u64, n: usize) -> (String, Vec<String>) {
+        let vals: Vec<String> = (0..n)
+            .map(|_| match r() % 7 {
+                0 => String::new(),
+                1 => format!("{:03}-{:04}", r() % 1000, r() % 10000),
+                2 => format!("{:05}", r() % 100_000),
+                3 => format!("{:05}-{:04}", r() % 100_000, r() % 10_000),
+                4 => format!("Ana{}", r() % 9),
+                _ => format!("{:03}-{:04}", r() % 1000, r() % 10000),
+            })
+            .collect();
+        let mut csv = String::from("v\r\n");
+        for v in &vals {
+            csv.push_str(v);
+            csv.push_str("\r\n");
+        }
+        (csv, vals)
+    }
+
+    fn shown_values(d: &Document) -> Vec<String> {
+        (1..d.row_count()).map(|r| d.cell(r, 0).unwrap()).collect()
+    }
+
+    #[test]
+    fn the_shape_filter_equals_a_brute_force_scan() {
+        let mut r = lcg(21);
+        let p = Progress::new();
+        for case in 0..60 {
+            let n = 20 + (r() % 200) as usize;
+            let (csv, _) = column(&mut r, n);
+            let target = "999-9999".to_string();
+            // Sometimes rows are hidden by hand first (the filter then narrows what is shown).
+            let hide = (case % 3 == 1).then(|| (1 + r() % 10, 1 + r() % 8));
+            let make = || {
+                let mut d = doc(&csv);
+                if let Some((at, n)) = hide {
+                    d.hide_rows(at, n).unwrap();
+                }
+                d
+            };
+            let before = shown_values(&make());
+            for (negate, include_blanks) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let mut d = make();
+                let spec = ShapeFilter {
+                    col: 0,
+                    keep_first: true,
+                    shape: target.clone(),
+                    negate,
+                    include_blanks,
+                    revision: Some(d.data_revision()),
+                };
+                let plan = d.plan_shape_filter(&spec, &p).unwrap();
+                let want: Vec<String> = before
+                    .iter()
+                    .filter(|v| {
+                        if v.trim().is_empty() {
+                            include_blanks
+                        } else {
+                            (shape_of(v) == target) != negate
+                        }
+                    })
+                    .cloned()
+                    .collect();
+                assert_eq!(
+                    plan.rows as usize,
+                    want.len(),
+                    "case {case} negate {negate} blanks {include_blanks}"
+                );
+                d.apply_rows(plan).unwrap();
+                assert_eq!(
+                    shown_values(&d),
+                    want,
+                    "case {case} negate {negate} blanks {include_blanks}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_shape_filter_narrows_the_filter_that_is_already_on() {
+        // 10 phone-shaped rows, 5 odd ones; a filter keeps rows 1..=8 only.
+        let mut csv = String::from("v\r\n");
+        for i in 0..15 {
+            if i % 3 == 2 {
+                csv.push_str(&format!("odd{i}\r\n"));
+            } else {
+                csv.push_str(&format!("555-{:04}\r\n", i));
+            }
+        }
+        let mut d = doc(&csv);
+        let p = Progress::new();
+        d.hide_rows(9, 7).unwrap();
+        let shown = shown_values(&d);
+        assert_eq!(shown.len(), 8);
+        let spec = ShapeFilter {
+            col: 0,
+            keep_first: true,
+            shape: "999-9999".into(),
+            negate: true,
+            include_blanks: false,
+            revision: None,
+        };
+        let plan = d.plan_shape_filter(&spec, &p).unwrap();
+        d.apply_rows(plan).unwrap();
+        // Only the odd values among the rows that were shown (rows 3, 6 of the 8), not the later ones.
+        assert_eq!(
+            shown_values(&d),
+            vec!["odd2".to_string(), "odd5".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_shape_filter_for_a_changed_document_is_refused_and_cancel_changes_nothing() {
+        let (csv, _) = column(&mut lcg(5), 50);
+        let mut d = doc(&csv);
+        let p = Progress::new();
+        let spec = ShapeFilter {
+            col: 0,
+            keep_first: true,
+            shape: "999-9999".into(),
+            revision: Some(d.data_revision()),
+            ..Default::default()
+        };
+        d.set_cell(2, 0, "edited".into()).unwrap();
+        assert!(matches!(
+            d.plan_shape_filter(&spec, &p),
+            Err(Error::Changed)
+        ));
+        let spec = ShapeFilter {
+            revision: Some(d.data_revision()),
+            ..spec
+        };
+        let cancelled = Progress::new();
+        cancelled
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(
+            d.plan_shape_filter(&spec, &cancelled),
+            Err(Error::Cancelled)
+        ));
+        assert!(!d.is_filtered());
     }
 
     #[test]

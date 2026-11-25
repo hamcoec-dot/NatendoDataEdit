@@ -736,6 +736,7 @@ export type DataOp =
   | { op: "fill_example"; spec: ExampleSpec }
   | { op: "compute"; spec: ComputeSpec }
   | { op: "show_problems"; spec: CheckSpec; passing?: boolean }
+  | { op: "show_shape"; spec: ShapeFilter }
   | { op: "sort_problems"; spec: CheckSpec }
   | { op: "check_column"; spec: CheckSpec; title?: string }
   | { op: "fill_blanks"; spec: FillBlanks }
@@ -963,11 +964,27 @@ export interface Insight {
   numbers: boolean;
   /** Heights, the tallest 1. */
   bars: number[];
+  /** The pattern pill: the shape (9 digits, A letters) that makes up at least 90% of the filled sampled cells while some differ. */
+  top_shape?: string | null;
+  /** That shape's share of the filled sampled cells. */
+  top_share?: number;
 }
 export interface Insights {
   cols: Insight[];
   sampled: number;
   rows: number;
+  /** The data revision these figures are for. */
+  revision?: number;
+}
+/** "Show the rows whose value in a column has (or has not) a shape": the pattern pill's click. */
+export interface ShapeFilter {
+  col: number;
+  keep_first: boolean;
+  shape: string;
+  negate: boolean;
+  include_blanks: boolean;
+  /** The data revision the pill was worked out for: refused once the rows have changed. */
+  revision?: number;
 }
 export interface ProfileSpec {
   col: number;

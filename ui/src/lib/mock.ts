@@ -54,7 +54,7 @@ import { guessStarts, LOG_PRESETS, splitFixed, toJsPattern } from "./m8";
 import { mockEval } from "./mockexpr";
 import { rewriteA1 } from "./cellformula";
 import { stubProfile } from "./profile";
-import { stubInsights } from "./insights";
+import { shapeMatches, stubInsights } from "./insights";
 import { stubFacets } from "./facets";
 import { previewOf, simulateJoin } from "./joins";
 
@@ -2105,6 +2105,23 @@ export class MockBackend implements Backend {
         const info = await this.setCells(doc, cells);
         return this.report(info, { cells: cells.length, cols: op.spec.target === null ? 1 : 0, errors });
       }
+      case "show_shape": {
+        // The rows shown now whose value has (or has not) the shape; blanks only when asked.
+        const s = op.spec;
+        if (s.revision !== undefined && s.revision !== (d.info.data_revision ?? 0)) throw err("changed", "the table changed since the pattern was worked out; try again");
+        const keep = new Set<number>();
+        let shown = 0;
+        for (let r = s.keep_first ? 1 : 0; r < rows; r++) {
+          const v = this.value(d, r, s.col);
+          const show = !v.trim() ? s.include_blanks : shapeMatches(v, s.shape) !== s.negate;
+          if (show) {
+            keep.add(this.rowId(d, r));
+            shown++;
+          }
+        }
+        if (s.keep_first && rows > 0) keep.add(this.rowId(d, 0));
+        return this.report(this.setView(d, keep, { columns: [], keep_first: s.keep_first }), { rows: shown });
+      }
       case "show_problems":
       case "sort_problems":
       case "check_column":
@@ -3602,7 +3619,7 @@ export class MockBackend implements Backend {
       const out: string[] = [];
       for (let r = first; r < end; r++) out.push(this.value(d, r, c));
       return out;
-    });
+    }, d.info.data_revision ?? 0);
   }
 
   async columnProfile(doc: number, spec: ProfileSpec): Promise<Profile> {
