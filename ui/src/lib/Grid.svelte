@@ -17,7 +17,7 @@
   import { barSpan, completion, scaleColour, scalePos, valueType, valueTypeFor } from "./m10";
   import { readNumberFor, typeBadge, typeName, typeOf as columnTypeOf } from "./readers";
   import { colLetters } from "./goto";
-  import { invisibleRuns } from "./invisible";
+  import { invisibleRuns, xrayRuns } from "./invisible";
   import { insightText, pillParts } from "./insights";
   import { describeCheck } from "./lint";
   import { GhostLoader, visibleGhost } from "./ghosts";
@@ -25,6 +25,9 @@
   import { FUNCTIONS } from "./m8";
   /** Odd spaces with View › Show invisible characters on. */
   const ODD_COLOR = "#f76b15";
+  const GLOW_COLOR = "#ff2d95";
+  /** The last X-ray counts said to the app (so it is told only when they change). */
+  let lastXray = { cells: 0, cols: 0 };
   /** Mark value for a data-check problem (drawn red). */
   const PROBLEM = 255;
   const PROBLEM_COLOR = "#e5484d";
@@ -84,6 +87,8 @@
     onInsight?: (col: number) => void;
     /** A click on the pattern pill in the strip: its leftover part ("0.6% differ") or its shape part. */
     onPill?: (col: number, part: "shape" | "rest", x: number, y: number) => void;
+    /** X-ray: how many cells and columns with gremlins this screen shows (said after each draw that changes it). */
+    onXray?: (cells: number, cols: number) => void;
     /** A double-click on a cell: true when it was used (no edit starts). */
     onActivate?: () => boolean;
     readOnly: boolean;
@@ -95,7 +100,7 @@
      *  (the title-row question): the active cell scrolls clear of them. */
     bottomInset?: number;
   }
-  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onCellsOver, onCellsDropOutside, onRenameCol, onInsight, onPill, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0 }: Props = $props();
+  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onCellsOver, onCellsDropOutside, onRenameCol, onInsight, onPill, onXray, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0 }: Props = $props();
   // Where this pane is scrolled to (a split view's second pane keeps its own).
   const view = $derived(pane === "split" ? tab.splitScroll : tab);
 
@@ -1373,6 +1378,10 @@
     // Long text that spills into the empty cells to its right, drawn after
     // every column (so the next cells' backgrounds don't cover it).
     const spills: { text: string; x: number; y: number; to: number; h: number; colour: string }[] = [];
+    // X-ray: cells and columns with a gremlin on this screen.
+    const xray = prefs.data.xray;
+    let xrayCells = 0;
+    const xrayCols = new Set<number>();
     let x = cs.pos;
     for (let c = cs.start; c < cs.end; c++) {
       const cw = tab.columns.width(c);
@@ -1476,7 +1485,7 @@
           drawTick(ctx, x, y, cw, tick);
         } else if (t !== "") {
           const header = tab.header && r === 0;
-          const invisible = prefs.data.showInvisible && !header;
+          const invisible = (prefs.data.showInvisible || xray) && !header;
           const shown = invisible ? t : fmt && !header ? formatCell(t, fmt) : t;
           const link = !fmt && !header && /[.@:]/.test(t) ? linkOf(t) : null;
           const kind = tab.valueTypes && !header && !link ? typeOf(t, c) : "text";
@@ -1495,7 +1504,11 @@
             // Show invisible characters: faint marks for spaces, tabs and
             // line breaks; odd spaces in the warning colour. Clipped to the
             // cell (no spilling), so every mark belongs to this cell.
-            const runs = invisibleRuns(shown);
+            const runs = xray ? xrayRuns(shown) : invisibleRuns(shown);
+            if (xray && runs.some((r) => r.glow)) {
+              xrayCells++;
+              xrayCols.add(c);
+            }
             let text = runs.map((r) => r.text).join("");
             if (cut) text += "…";
             let tx = at(measure(text));
@@ -1508,6 +1521,16 @@
                 ctx.globalAlpha = 0.25;
                 ctx.fillRect(tx, y + 3, w, rh - 6);
                 ctx.globalAlpha = 1;
+              }
+              if (run.glow) {
+                // A gremlin: a bright outline round it.
+                ctx.save();
+                ctx.strokeStyle = GLOW_COLOR;
+                ctx.shadowColor = GLOW_COLOR;
+                ctx.shadowBlur = 6;
+                ctx.lineWidth = 1.5;
+                ctx.strokeRect(tx + 0.5, y + 3.5, Math.max(4, w - 1), rh - 7);
+                ctx.restore();
               }
               ctx.fillStyle = run.kind === "odd" ? ODD_COLOR : run.kind === "mark" ? colors.muted : plain;
               ctx.fillText(run.text, tx, ty);
@@ -1623,6 +1646,12 @@
           ctx.closePath();
           ctx.fill();
         }
+      }
+    }
+    if (xray || lastXray.cells !== 0) {
+      if (lastXray.cells !== xrayCells || lastXray.cols !== xrayCols.size) {
+        lastXray = { cells: xrayCells, cols: xrayCols.size };
+        onXray?.(xrayCells, xrayCols.size);
       }
     }
     for (const sp of spills) {

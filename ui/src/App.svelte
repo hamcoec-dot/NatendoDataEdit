@@ -9,7 +9,7 @@ import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type 
   import { Tab, exportHandTab, importHandTab, type HandTab, type RowMap } from "./lib/tab.svelte";
 import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowheights";
   import { SECOND_WINDOW } from "./lib/windowRole";
-  import { invisibleNote } from "./lib/invisible";
+  import { invisibleNote, xrayNote } from "./lib/invisible";
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu, SELECTION_FREE } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
@@ -46,6 +46,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { copyTouches, findingsText, LARGE_COPY } from "./lib/privacy";
   import EditTools, { type ToolKind as EditKind } from "./lib/EditTools.svelte";
   import CleanDialog from "./lib/CleanDialog.svelte";
+  import XrayDialog from "./lib/XrayDialog.svelte";
   import SplitNameDialog from "./lib/SplitNameDialog.svelte";
   import InsertDialog from "./lib/InsertDialog.svelte";
   import RenameColumn from "./lib/RenameColumn.svelte";
@@ -256,6 +257,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** What the expression screen is for while open. */
   let computeMode = $state<"compute" | "change" | "filter">("compute");
   let checksOpen = $state(false);
+  /** X-ray: what this screen shows (cells and columns with a gremlin), and the report dialog. */
+  let xrayNow = $state<{ cells: number; cols: number } | null>(null);
+  let xrayOpen = $state(false);
   let fieldCheckOpen = $state(false);
   let matchOpen = $state(false);
   let streetOpen = $state(false);
@@ -6093,6 +6097,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "view.problemsFill", label: "Show problems as a red &fill", run: () => { prefs.data.problemStyle = "fill"; prefs.save(); }, checked: () => prefs.data.problemStyle === "fill" },
     { id: "view.problemsUnderline", label: "Show problems as a wavy &underline", run: () => { prefs.data.problemStyle = "underline"; prefs.save(); }, checked: () => prefs.data.problemStyle === "underline" },
     { id: "view.problemsBoth", label: "Show problems as fill and underline", run: () => { prefs.data.problemStyle = "both"; prefs.save(); }, checked: () => prefs.data.problemStyle === "both" },
+    { id: "view.xray", label: "&X-ray gremlins (look-alike letters, odd spaces, smart quotes)", keys: ["Ctrl+Shift+X"], run: () => { prefs.data.xray = !prefs.data.xray; prefs.save(); if (!prefs.data.xray) xrayNow = null; }, checked: () => prefs.data.xray },
+    { id: "view.xrayReport", label: "X-ray report for the selected columns or the file…", run: () => { xrayOpen = true; }, enabled: ready },
+    { id: "edit.sanitize", label: "Sanitize selection (look-alike letters, odd spaces, smart quotes)…", run: () => { cleanTool = "sanitize"; }, enabled: ready },
     { id: "view.invisible", label: "Show &invisible characters", keys: ["Ctrl+Shift+H"], run: () => { prefs.data.showInvisible = !prefs.data.showInvisible; prefs.save(); }, checked: () => prefs.data.showInvisible },
     { id: "view.fontBigger", label: "Larger te&xt", run: () => { prefs.data.fontSize = Math.min(28, prefs.data.fontSize + 1); prefs.save(); } },
     { id: "view.fontSmaller", label: "Smaller tex&t", run: () => { prefs.data.fontSize = Math.max(9, prefs.data.fontSize - 1); prefs.save(); } },
@@ -6284,7 +6291,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     {
       label: "&Edit",
       items: [
-        "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-",
+        "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "edit.sanitize", "-",
         "edit.copyNames", "edit.copyNamesText", "edit.copyWithNames", "edit.pasteNames", "-",
         "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "edit.gotoSpecial", "-", "edit.note", "edit.changes", "edit.checkpoint", "-",
         "edit.deleteRows", "edit.deleteCols", "edit.moveRowsUp", "edit.moveRowsDown", "edit.moveColsLeft", "edit.moveColsRight",
@@ -6297,7 +6304,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
@@ -6347,7 +6354,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "edit.checkpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "edit.checkpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "edit.sanitize", "edit.checkpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
@@ -7600,7 +7607,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         >{cellBarExpanded ? "▴" : "▾"}</button
       >
     </div>
-    {#if prefs.data.showInvisible && invisibleNote(cellBarText)}
+    {#if prefs.data.xray && xrayNote(cellBarText)}
+      <div class="invnote" role="status">X-ray: {xrayNote(cellBarText)}</div>
+    {:else if prefs.data.showInvisible && invisibleNote(cellBarText)}
       <div class="invnote" role="status">Can't be seen in this cell: {invisibleNote(cellBarText)}</div>
     {/if}
     {#if cellFind && cellBarExpanded}
@@ -7736,6 +7745,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
                   onContext={openContext}
                   onRenameCol={(c) => void askRename(c)}
                   onInsight={(c) => (profileCol = c)}
+                  onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
                   onPill={(c, part, px, py) => {
                     // The leftover part filters at once; the shape part opens the pill's menu.
                     if (part === "rest") void showShape(c, true, false);
@@ -7772,6 +7782,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
                   onContext={openContext}
                   onRenameCol={(c) => void askRename(c)}
                   onInsight={(c) => (profileCol = c)}
+                  onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
                   onPill={(c, part, px, py) => {
                     // The leftover part filters at once; the shape part opens the pill's menu.
                     if (part === "rest") void showShape(c, true, false);
@@ -7808,6 +7819,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           onContext={openContext}
           onRenameCol={(c) => void askRename(c)}
           onInsight={(c) => (profileCol = c)}
+                  onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
                   onPill={(c, part, px, py) => {
                     // The leftover part filters at once; the shape part opens the pill's menu.
                     if (part === "rest") void showShape(c, true, false);
@@ -7924,6 +7936,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       {#if !tab.lastRun || tab.lastRun.revision !== tab.info.data_revision}<button type="button" class="small" title="Run the rules over the whole table" onclick={() => { const t = tab; if (t) void checkNow(t); }}>Check now</button>{/if}
     {/if}
     {#if status}
+      {#if prefs.data.xray}<button type="button" class="small" data-testid="xray-status" title="X-ray: what looks right but is not, on this screen. Click for a report of the selected columns or the whole file." onclick={() => (xrayOpen = true)}>X-ray: {xrayNow ? `${plural(xrayNow.cells, "cell")}, ${plural(xrayNow.cols, "column")}` : "nothing on this screen"}</button>{/if}
       {#if tab}<QuickTotals {tab} />{/if}
       {#if status.sel}<span>{status.sel}</span>{/if}
       {#if status.heightsHidden}<span title="The rows you gave a height keep it and get it back when the filter or the hidden rows are cleared.">Custom row heights hidden while filtered</span>{/if}
@@ -8085,6 +8098,18 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     onOpen={openOther}
     onRun={(op, header) => { joinKind = null; void runDialog({ data: op }, header); grid?.focus(); }}
     onClose={() => { joinKind = null; grid?.focus(); }}
+  />
+{/if}
+
+{#if xrayOpen && tab}
+  <XrayDialog
+    doc={tab.id}
+    titles={Array.from({ length: Math.min(tab.info.cols, 2000) }, (_, c) => columnTitle(tab!, c))}
+    cols={tab.areas.length && cellCountAreas(tab.areas) > 1 ? selectedCols(tab) : []}
+    header={tab.header}
+    onShow={(info) => { xrayOpen = false; tab?.update(info, true); say("Showing only the rows with look-alike or invisible characters. Data > Show all rows brings the rest back."); grid?.focus(); }}
+    onSanitize={() => { xrayOpen = false; cleanTool = "sanitize"; }}
+    onClose={() => { xrayOpen = false; grid?.focus(); }}
   />
 {/if}
 

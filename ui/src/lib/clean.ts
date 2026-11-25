@@ -2,6 +2,7 @@
 // engine's `clean` module), the tool list the screen shows, and helpers.
 
 import type { Pattern, ReadOptions, Scope } from "./backend";
+import { sanitizeText, USUAL_SANITIZE, type SanitizeOptions } from "./invisible";
 
 export type At =
   | { kind: "start" }
@@ -41,6 +42,7 @@ export type Step =
   | { tool: "remove"; what: Remove }
   | { tool: "reverse" }
   | { tool: "spaces"; how: SpacesHow }
+  | ({ tool: "sanitize" } & SanitizeOptions)
   | { tool: "number"; start: number; step: number; digits: number; at_end: boolean; separator: string; replace: boolean }
   | { tool: "digits"; keep: boolean }
   | { tool: "now"; format: string; at_end: boolean; separator: string; replace: boolean }
@@ -110,6 +112,8 @@ export interface CleanChange {
   after: string;
 }
 export interface CleanPreview {
+  /** Sanitize only: changed cells that hold a look-alike letter fixed to its Latin twin. */
+  homoglyph_cells?: number;
   changes: CleanChange[];
   rows: number;
   changed: number;
@@ -155,6 +159,7 @@ export const TOOLS: Tool[] = [
   { id: "reverse", group: "Text", label: "Reverse text", make: () => ({ tool: "reverse" }) },
   { id: "case", group: "Text", label: "Change case", make: () => ({ tool: "case", to: "title" }) },
   { id: "spaces", group: "Spaces", label: "Add or remove spaces", make: () => ({ tool: "spaces", how: "collapse" }) },
+  { id: "sanitize", group: "Spaces", label: "Sanitize look-alike characters", make: () => ({ tool: "sanitize", ...USUAL_SANITIZE }) },
   { id: "number", group: "Numbers", label: "Number the cells", make: () => ({ tool: "number", start: 1, step: 1, digits: 0, at_end: false, separator: "", replace: true }) },
   { id: "digits", group: "Numbers", label: "Remove or keep digits", make: () => ({ tool: "digits", keep: false }) },
   { id: "now", group: "Dates", label: "Add date and time", make: () => ({ tool: "now", format: "yyyy-mm-dd hh:mm", at_end: true, separator: " ", replace: false }) },
@@ -267,6 +272,8 @@ export function describe(s: Step): string {
       return "Reverse the text";
     case "spaces":
       return SPACE_WORDS[s.how];
+    case "sanitize":
+      return "Sanitize: zero-width characters, odd spaces, smart quotes and look-alike letters";
     case "number":
       return `Number from ${s.start} by ${s.step}${s.replace ? "" : s.at_end ? " at the end" : " at the start"}`;
     case "digits":
@@ -434,6 +441,8 @@ export function runStep(s: Step, t: string, index: number): string {
     }
     case "reverse":
       return [...t].reverse().join("");
+    case "sanitize":
+      return sanitizeText(t, s) ?? t;
     case "spaces":
       if (s.how === "trim") return t.trim();
       if (s.how === "trim_start") return t.trimStart();

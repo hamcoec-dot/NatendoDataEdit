@@ -1,0 +1,54 @@
+{
+  "_about": "The characters X-ray gremlins looks for, shared by the engine (xray.rs) and the screen (invisible.ts): both read this file and both pass the corpus below. Look-alike pairs follow the idea of Unicode TR39 (confusables) and were written out by hand for the letters people actually meet; a character with no twin here is never flagged.",
+  "confusables": [
+    ["а", "a"], ["с", "c"], ["е", "e"], ["о", "o"], ["р", "p"], ["х", "x"], ["у", "y"], ["і", "i"], ["ј", "j"], ["ѕ", "s"],
+    ["ԁ", "d"], ["ԛ", "q"], ["ԝ", "w"], ["һ", "h"], ["ӏ", "l"], ["ѵ", "v"],
+    ["А", "A"], ["В", "B"], ["С", "C"], ["Е", "E"], ["Н", "H"], ["І", "I"], ["Ј", "J"], ["К", "K"], ["М", "M"], ["О", "O"],
+    ["Р", "P"], ["Ѕ", "S"], ["Т", "T"], ["Х", "X"], ["У", "Y"], ["Ԛ", "Q"], ["Ԝ", "W"],
+    ["Α", "A"], ["Β", "B"], ["Ε", "E"], ["Ζ", "Z"], ["Η", "H"], ["Ι", "I"], ["Κ", "K"], ["Μ", "M"], ["Ν", "N"], ["Ο", "O"],
+    ["Ρ", "P"], ["Τ", "T"], ["Υ", "Y"], ["Χ", "X"],
+    ["ο", "o"], ["ν", "v"], ["ι", "i"], ["ρ", "p"], ["υ", "u"], ["ϳ", "j"], ["ϲ", "c"]
+  ],
+  "quotes": [
+    ["‘", "'"], ["’", "'"], ["‚", "'"], ["‛", "'"], ["′", "'"],
+    ["“", "\""], ["”", "\""], ["„", "\""], ["‟", "\""], ["″", "\""]
+  ],
+  "invisible": [
+    [" ", "non-breaking space", "space"],
+    [" ", "figure space", "space"],
+    [" ", "narrow non-breaking space", "space"],
+    [" ", "medium mathematical space", "space"],
+    ["　", "wide space", "space"],
+    [" ", "unusual space", "space"], [" ", "unusual space", "space"], [" ", "unusual space", "space"],
+    [" ", "unusual space", "space"], [" ", "unusual space", "space"], [" ", "unusual space", "space"],
+    [" ", "unusual space", "space"], [" ", "unusual space", "space"], [" ", "unusual space", "space"],
+    [" ", "unusual space", "space"],
+    ["​", "zero-width space", "zero"],
+    ["‌", "zero-width non-joiner", "zero"],
+    ["‍", "zero-width joiner", "zero"],
+    ["⁠", "word joiner", "zero"],
+    ["﻿", "byte order mark", "zero"],
+    ["­", "soft hyphen", "zero"]
+  ],
+  "corpus": [
+    { "text": "Plain Name", "flags": [], "sanitized": "Plain Name" },
+    { "text": "Smаrt", "flags": [["homoglyph", "а", "a"]], "sanitized": "Smart" },
+    { "text": "Pаul O’Brien", "flags": [["homoglyph", "а", "a"], ["smart_quote", "’", "'"]], "sanitized": "Paul O'Brien" },
+    { "text": "“Quoted”", "flags": [["smart_quote", "“", "\""], ["smart_quote", "”", "\""]], "sanitized": "\"Quoted\"" },
+    { "text": "AB​12", "flags": [["zero_width", "​", ""]], "sanitized": "AB12" },
+    { "text": "Main St", "flags": [["odd_space", " ", " "]], "sanitized": "Main St" },
+    { "text": "Москва", "flags": [], "sanitized": "Москва" },
+    { "text": "Αθήνα", "flags": [], "sanitized": "Αθήνα" },
+    { "text": "Smith-Иванова", "flags": [], "sanitized": "Smith-Иванова" },
+    { "text": "Smith-Аnna", "flags": [["homoglyph", "А", "A"]], "sanitized": "Smith-Anna" },
+    { "text": "Ρаul", "flags": [["homoglyph", "Ρ", "P"], ["homoglyph", "а", "a"]], "sanitized": "Paul" },
+    { "text": "A1б", "flags": [], "sanitized": "A1б" },
+    { "text": "xбy", "flags": [], "sanitized": "xбy" },
+    { "text": "a\tb", "flags": [["tab", "\t", " "]], "sanitized": "a\tb" },
+    { "text": "line\nbreak", "flags": [["line_break", "\n", " "]], "sanitized": "line\nbreak" },
+    { "text": "Иванoв", "flags": [], "sanitized": "Иванoв" },
+    { "text": "Αθηνa", "flags": [], "sanitized": "Αθηνa" },
+    { "text": "O’Иванов", "flags": [["smart_quote", "’", "'"]], "sanitized": "O'Иванов" },
+    { "text": "", "flags": [], "sanitized": "" }
+  ]
+}

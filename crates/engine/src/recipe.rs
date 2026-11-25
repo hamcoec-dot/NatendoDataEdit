@@ -870,6 +870,48 @@ mod tests {
         assert!(!d.undo());
     }
 
+    /// B1: a Sanitize step (`#[serde(flatten)]` inside an internally tagged enum) is saved in a recipe, read back
+    /// and run on another file.
+    #[test]
+    fn a_sanitize_step_round_trips_in_a_recipe_and_runs() {
+        let r = Recipe {
+            version: RECIPE_VERSION,
+            name: "clean names".into(),
+            columns: vec!["name".into()],
+            header: true,
+            steps: vec![RecipeOp::Clean {
+                spec: serde_json::from_value(serde_json::json!({
+                    "scope": { "kind": "columns", "cols": [0] },
+                    "skip_first": true,
+                    "cleaner": Cleaner {
+                        version: 1,
+                        name: String::new(),
+                        steps: vec![Step::Sanitize { options: crate::xray::SanitizeOptions::usual() }],
+                    },
+                }))
+                .unwrap(),
+            }],
+            left_out: vec![],
+            questions: vec![],
+        };
+        let json = r.to_json().unwrap();
+        let text = String::from_utf8(json.clone()).unwrap();
+        assert!(
+            text.contains("\"tool\": \"sanitize\"") || text.contains("\"tool\":\"sanitize\""),
+            "{text}"
+        );
+        let back = Recipe::from_json(&json).unwrap();
+        assert_eq!(back, r);
+        let mut d = doc("name\r\nP\u{430}ul\r\nO\u{2019}Neil\r\nplain\r\n");
+        assert!(r.column_problems(&d).is_empty());
+        d.run_recipe(&back, 0.0, 1, &Progress::new()).unwrap();
+        assert_eq!(d.cell(1, 0).unwrap(), "Paul");
+        assert_eq!(d.cell(2, 0).unwrap(), "O'Neil");
+        assert_eq!(d.cell(3, 0).unwrap(), "plain");
+        assert!(d.undo());
+        assert_eq!(d.cell(1, 0).unwrap(), "P\u{430}ul");
+    }
+
     #[test]
     fn other_columns_and_bad_files_are_caught() {
         let r = recipe();

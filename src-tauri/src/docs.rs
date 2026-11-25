@@ -1486,6 +1486,8 @@ pub struct OpReport {
 /// Changes listed, and rows looked at, by a cleaner preview.
 const CLEAN_PREVIEW_CHANGES: usize = 50;
 const CLEAN_PREVIEW_ROWS: u64 = 20_000;
+/// Rows the paged preview of a cleaner looks at (every count is exact within them).
+const CLEAN_PAGE_ROWS: u64 = 5_000_000;
 
 /// The other table of a join or append, copied out of its document.
 enum Source {
@@ -6135,6 +6137,29 @@ impl Docs {
         Ok(r)
     }
 
+    /// X-ray the shown rows of `cols` (none: every column) for gremlins: a job with progress and Cancel.
+    /// Only counts and row numbers come back, never a value.
+    pub fn xray_report(
+        &self,
+        id: u32,
+        cols: &[u32],
+        keep_first: bool,
+    ) -> CmdResult<natendo_engine::xray::XrayReport> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for look-alike characters")?;
+        let d = entry.read();
+        Ok(d.xray_report(cols, keep_first, &job.progress)?)
+    }
+
+    /// Show only the rows an X-ray finds gremlins in (a view: nothing in the data changes).
+    pub fn xray_show(&self, id: u32, cols: &[u32], keep_first: bool) -> CmdResult<DocInfo> {
+        let report = self.xray_report(id, cols, keep_first)?;
+        self.edit_as(id, false, |d| {
+            let plan = d.plan_show_xray(&report, keep_first)?;
+            d.apply_rows(plan)
+        })
+    }
+
     /// Problem marks for an area of the screen. Unique checks are marked
     /// from the last run while the document has not changed since.
     #[allow(clippy::too_many_arguments)]
@@ -7030,6 +7055,30 @@ impl Docs {
             run_seed(),
             CLEAN_PREVIEW_CHANGES,
             CLEAN_PREVIEW_ROWS,
+        )?)
+    }
+
+    /// A page of what a cleaner would change, with exact counts over the whole selection (a read job: the
+    /// Clean-up dialog pages through every changed cell before Apply).
+    pub fn clean_preview_page(
+        &self,
+        id: u32,
+        spec: &CleanSpec,
+        now: f64,
+        offset: u64,
+        want: usize,
+    ) -> CmdResult<CleanPreview> {
+        check_clean(spec, now)?;
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.preview_clean_page(
+            spec,
+            now,
+            run_seed(),
+            offset,
+            want.min(500),
+            CLEAN_PAGE_ROWS,
+            true,
         )?)
     }
 
