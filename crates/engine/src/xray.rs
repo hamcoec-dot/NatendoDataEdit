@@ -56,15 +56,27 @@ fn tables() -> &'static Tables {
             Some((a, b))
         };
         let list = |k: &str| -> Vec<serde_json::Value> {
-            v.get(k).and_then(|x| x.as_array()).cloned().unwrap_or_default()
+            v.get(k)
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default()
         };
         let mut odd = HashMap::new();
         for e in list("invisible") {
             if let (Some(c), Some(class)) = (
-                e.get(0).and_then(|x| x.as_str()).and_then(|s| s.chars().next()),
+                e.get(0)
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| s.chars().next()),
                 e.get(2).and_then(|x| x.as_str()),
             ) {
-                odd.insert(c, if class == "zero" { GremlinKind::ZeroWidth } else { GremlinKind::OddSpace });
+                odd.insert(
+                    c,
+                    if class == "zero" {
+                        GremlinKind::ZeroWidth
+                    } else {
+                        GremlinKind::OddSpace
+                    },
+                );
             }
         }
         Tables {
@@ -111,7 +123,9 @@ pub fn scan(text: &str, out: &mut Vec<Gremlin>) {
         if run.is_empty() {
             return;
         }
-        let latin = run.iter().any(|(_, c)| script_of(*c) == Some(Script::Latin));
+        let latin = run
+            .iter()
+            .any(|(_, c)| script_of(*c) == Some(Script::Latin));
         if latin {
             for (at, c) in run.iter() {
                 if matches!(script_of(*c), Some(Script::Cyrillic | Script::Greek)) {
@@ -145,7 +159,14 @@ pub fn scan(text: &str, out: &mut Vec<Gremlin>) {
         } else if c == '\n' || c == '\r' {
             Some((GremlinKind::LineBreak, Some(' ')))
         } else if let Some(&k) = t.odd.get(&c) {
-            Some((k, if k == GremlinKind::OddSpace { Some(' ') } else { None }))
+            Some((
+                k,
+                if k == GremlinKind::OddSpace {
+                    Some(' ')
+                } else {
+                    None
+                },
+            ))
         } else if let Some(&q) = t.quote.get(&c) {
             Some((GremlinKind::SmartQuote, Some(q)))
         } else if (c < ' ' && c != '\t' && c != '\n' && c != '\r') || c == '\u{7f}' {
@@ -154,7 +175,12 @@ pub fn scan(text: &str, out: &mut Vec<Gremlin>) {
             None
         };
         if let Some((kind, twin)) = g {
-            flagged.push(Gremlin { kind, at, ch: c, twin });
+            flagged.push(Gremlin {
+                kind,
+                at,
+                ch: c,
+                twin,
+            });
         }
     }
     flush(&mut run, out);
@@ -233,6 +259,183 @@ pub fn sanitize(text: &str, o: &SanitizeOptions) -> Option<String> {
     Some(out)
 }
 
+/// How many cells hold each kind of gremlin in one column.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ColumnXray {
+    pub col: u32,
+    /// Cells with at least one gremlin.
+    pub cells: u64,
+    pub kinds: Vec<(GremlinKind, u64)>,
+}
+
+/// What an X-ray run found over the shown rows.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct XrayReport {
+    /// Cells looked at, cells with a gremlin, rows with one.
+    pub looked: u64,
+    pub cells: u64,
+    pub rows: u64,
+    /// Counts per kind (cells), most first.
+    pub kinds: Vec<(GremlinKind, u64)>,
+    /// Columns with gremlins, most cells first (at most [`MAX_REPORT_COLS`]).
+    pub columns: Vec<ColumnXray>,
+    /// Row ids that hold one (one bit each), for "show these rows".
+    #[serde(skip)]
+    pub failing: Vec<u64>,
+}
+
+/// Columns listed in a report.
+pub const MAX_REPORT_COLS: usize = 200;
+
+const KINDS: [GremlinKind; 7] = [
+    GremlinKind::ZeroWidth,
+    GremlinKind::OddSpace,
+    GremlinKind::Control,
+    GremlinKind::SmartQuote,
+    GremlinKind::Tab,
+    GremlinKind::LineBreak,
+    GremlinKind::Homoglyph,
+];
+
+fn kind_index(k: GremlinKind) -> usize {
+    KINDS.iter().position(|x| *x == k).unwrap_or(0)
+}
+
+use crate::document::{Document, Progress};
+use crate::ops::{check_cols, Cols, CHUNK};
+use crate::Error;
+use rayon::prelude::*;
+
+impl Document {
+    /// Look for gremlins in the shown data rows of `cols` (empty: every column): one parallel pass with
+    /// progress and Cancel. Nothing is changed and no value leaves the engine: only counts and row ids.
+    pub fn xray_report(
+        &self,
+        cols: &[u32],
+        keep_first: bool,
+        progress: &Progress,
+    ) -> Result<XrayReport, Error> {
+        self.ready_for_bulk()?;
+        let list: Vec<u32> = if cols.is_empty() {
+            (0..self.col_count().min(crate::import::MAX_IMPORT_COLS as u32)).collect()
+        } else {
+            check_cols(self, cols)?;
+            cols.to_vec()
+        };
+        let reader = Cols::new(self, &list);
+        let rows = self.data_rows(keep_first);
+        let (r0, r1) = (rows.start, rows.end);
+        progress.start(r1.saturating_sub(r0));
+        let n = list.len();
+        let chunks = (r1.saturating_sub(r0) as usize).div_ceil(CHUNK);
+        // Per chunk: [column][kind] cell counts, cells with any, row ids that hold one.
+        type Part = (Vec<[u64; 7]>, Vec<u64>, Vec<u32>);
+        let parts: Vec<Part> = (0..chunks)
+            .into_par_iter()
+            .map(|c| -> Result<Part, Error> {
+                let s = r0 + (c * CHUNK) as u64;
+                let e = (s + CHUNK as u64).min(r1);
+                let mut counts = vec![[0u64; 7]; n];
+                let mut any = vec![0u64; n];
+                let mut ids = Vec::new();
+                let mut buf = Vec::new();
+                let mut found = Vec::new();
+                for r in s..e {
+                    let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                    reader.read(self, id, &mut buf);
+                    let mut hit = false;
+                    for k in 0..n {
+                        scan(reader.get(&buf, k), &mut found);
+                        if found.is_empty() {
+                            continue;
+                        }
+                        hit = true;
+                        any[k] += 1;
+                        let mut seen = [false; 7];
+                        for g in &found {
+                            seen[kind_index(g.kind)] = true;
+                        }
+                        for (i, on) in seen.iter().enumerate() {
+                            counts[k][i] += u64::from(*on);
+                        }
+                    }
+                    if hit {
+                        ids.push(id);
+                    }
+                }
+                progress.step(e - s)?;
+                Ok((counts, any, ids))
+            })
+            .collect::<Result<_, _>>()?;
+        let base = self.next_row_id();
+        let mut report = XrayReport {
+            looked: (r1.saturating_sub(r0)) * n as u64,
+            failing: vec![0u64; (base as usize).div_ceil(64)],
+            ..Default::default()
+        };
+        let mut per_col = vec![[0u64; 7]; n];
+        let mut any = vec![0u64; n];
+        for (counts, a, ids) in parts {
+            for k in 0..n {
+                for i in 0..7 {
+                    per_col[k][i] += counts[k][i];
+                }
+                any[k] += a[k];
+            }
+            for id in ids {
+                report.failing[(id >> 6) as usize] |= 1 << (id & 63);
+                report.rows += 1;
+            }
+        }
+        let mut totals = [0u64; 7];
+        for k in 0..n {
+            report.cells += any[k];
+            for i in 0..7 {
+                totals[i] += per_col[k][i];
+            }
+            if any[k] > 0 {
+                report.columns.push(ColumnXray {
+                    col: list[k],
+                    cells: any[k],
+                    kinds: KINDS
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| per_col[k][*i] > 0)
+                        .map(|(i, kd)| (*kd, per_col[k][i]))
+                        .collect(),
+                });
+            }
+        }
+        report
+            .columns
+            .sort_by(|a, b| b.cells.cmp(&a.cells).then(a.col.cmp(&b.col)));
+        report.columns.truncate(MAX_REPORT_COLS);
+        report.kinds = KINDS
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| totals[*i] > 0)
+            .map(|(i, kd)| (*kd, totals[i]))
+            .collect();
+        report.kinds.sort_by(|a, b| b.1.cmp(&a.1));
+        Ok(report)
+    }
+
+    /// A plan that shows only the rows an X-ray run found gremlins in (the title row stays with
+    /// `keep_first`): the same row-set route as "show rows with problems".
+    pub fn plan_show_xray(
+        &self,
+        report: &XrayReport,
+        keep_first: bool,
+    ) -> Result<crate::reshape::RowPlan, Error> {
+        let rep = crate::validate::CheckReport {
+            rows: report.rows,
+            failing: report.failing.clone(),
+            ..Default::default()
+        };
+        self.plan_show_problems(&rep, keep_first, false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,11 +479,24 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|f| (f[0].as_str().unwrap().to_string(), f[1].as_str().unwrap().to_string()))
+                .map(|f| {
+                    (
+                        f[0].as_str().unwrap().to_string(),
+                        f[1].as_str().unwrap().to_string(),
+                    )
+                })
                 .collect();
             assert_eq!(got, want, "{text:?}");
-            let twin: Vec<String> = found.iter().map(|g| g.twin.map(String::from).unwrap_or_default()).collect();
-            let want_twin: Vec<String> = c["flags"].as_array().unwrap().iter().map(|f| f[2].as_str().unwrap().to_string()).collect();
+            let twin: Vec<String> = found
+                .iter()
+                .map(|g| g.twin.map(String::from).unwrap_or_default())
+                .collect();
+            let want_twin: Vec<String> = c["flags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f[2].as_str().unwrap().to_string())
+                .collect();
             assert_eq!(twin, want_twin, "{text:?}");
             let sanitized = sanitize(text, &all).unwrap_or_else(|| text.to_string());
             assert_eq!(sanitized, c["sanitized"].as_str().unwrap(), "{text:?}");
@@ -290,8 +506,35 @@ mod tests {
     }
 
     #[test]
+    fn a_report_counts_cells_rows_and_kinds() {
+        use crate::{Document, OpenOptions, Progress};
+        let csv = "name,note\r\nSm\u{430}rt,ok\r\nplain,\u{201c}hi\u{201d}\r\nnone,none\r\n";
+        let mut d =
+            Document::from_bytes(csv.as_bytes().to_vec(), OpenOptions::default(), Some("csv"))
+                .unwrap();
+        let r = d.xray_report(&[], true, &Progress::new()).unwrap();
+        assert_eq!((r.cells, r.rows), (2, 2));
+        assert_eq!(r.columns.len(), 2);
+        assert!(r
+            .kinds
+            .iter()
+            .any(|(k, n)| *k == GremlinKind::Homoglyph && *n == 1));
+        assert!(r
+            .kinds
+            .iter()
+            .any(|(k, n)| *k == GremlinKind::SmartQuote && *n == 1));
+        // Show only those rows (and the title row).
+        let plan = d.plan_show_xray(&r, true).unwrap();
+        d.apply_rows(plan).unwrap();
+        assert_eq!(d.row_count(), 3);
+    }
+
+    #[test]
     fn tabs_and_breaks_only_when_asked() {
-        let o = SanitizeOptions { tabs_breaks: true, ..Default::default() };
+        let o = SanitizeOptions {
+            tabs_breaks: true,
+            ..Default::default()
+        };
         assert_eq!(sanitize("a\tb\r\nc\nd", &o).as_deref(), Some("a b c d"));
         assert_eq!(sanitize("a\tb", &SanitizeOptions::usual()), None);
     }
@@ -308,7 +551,10 @@ mod tests {
         assert!(!only(|o| o.zero_width = true).unwrap().contains('\u{200b}'));
         assert!(only(|o| o.smart_quotes = true).unwrap().contains("\"x\""));
         assert!(only(|o| o.odd_spaces = true).unwrap().ends_with(" y"));
-        assert!(only(|o| o.homoglyphs = true).unwrap().contains("Smart") || only(|o| o.homoglyphs = true).unwrap().contains("Sмart"));
+        assert!(
+            only(|o| o.homoglyphs = true).unwrap().contains("Smart")
+                || only(|o| o.homoglyphs = true).unwrap().contains("Sмart")
+        );
         assert_eq!(sanitize(text, &SanitizeOptions::default()), None);
     }
 

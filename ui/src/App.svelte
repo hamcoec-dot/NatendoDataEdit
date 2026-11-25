@@ -9,7 +9,7 @@ import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type 
   import { Tab, exportHandTab, importHandTab, type HandTab, type RowMap } from "./lib/tab.svelte";
 import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowheights";
   import { SECOND_WINDOW } from "./lib/windowRole";
-  import { invisibleNote } from "./lib/invisible";
+  import { invisibleNote, xrayNote } from "./lib/invisible";
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu, SELECTION_FREE } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
@@ -7527,7 +7527,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         >{cellBarExpanded ? "▴" : "▾"}</button
       >
     </div>
-    {#if prefs.data.showInvisible && invisibleNote(cellBarText)}
+    {#if prefs.data.xray && xrayNote(cellBarText)}
+      <div class="invnote" role="status">X-ray: {xrayNote(cellBarText)}</div>
+    {:else if prefs.data.showInvisible && invisibleNote(cellBarText)}
       <div class="invnote" role="status">Can't be seen in this cell: {invisibleNote(cellBarText)}</div>
     {/if}
     {#if cellFind && cellBarExpanded}
