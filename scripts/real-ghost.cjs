@@ -5,6 +5,9 @@
 //
 // Usage: NODE_PATH=<folder with playwright> node scripts/real-ghost.cjs <exe> <evidence folder> [ipc,typing,frames]
 // The app's own data is backed up and put back; files are made-up and live in <evidence>/work.
+const { chromium } = require("playwright");
+const { spawn, spawnSync } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
