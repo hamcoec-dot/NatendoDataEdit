@@ -209,7 +209,8 @@ const proof = async () => {
   await m.locator("canvas").first().click({ position: { x: 230, y: 12 } });
   await cmd(m, "Treat this column as Number");
   await sleep(8000);
-  const kept2 = await m.evaluate(() => Object.entries(localStorage).filter(([k]) => k.startsWith("nde.coltypes")).length);
+  say(`INFO private state ${JSON.stringify(await invoke(m, "private_state", { doc: 1 }).catch((e) => String(e)))} typed ${JSON.stringify((await invoke(m, "doc_info", { doc: 1 })).typed)}`);
+  const kept2 = await m.evaluate(() => Object.entries(localStorage).filter(([k]) => k.startsWith("nde.coltypes")).reduce((n, [, v]) => n + Object.keys(JSON.parse(v || "{}")).length, 0));
   ok(kept2 === 0, `a file in private mode keeps no remembered types (entries: ${kept2})`);
 };
 
