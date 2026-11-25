@@ -5,7 +5,7 @@ import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type 
   import { namesFromText } from "./lib/columnNames";
   import { onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
-  import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
+  import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout, type Checkpoint } from "./lib/backend";
   import { Tab, exportHandTab, importHandTab, type HandTab, type RowMap } from "./lib/tab.svelte";
 import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowheights";
   import { SECOND_WINDOW } from "./lib/windowRole";
@@ -5316,7 +5316,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (note) say(note);
   }
 
-  async function undoRedo(op: "undo" | "redo"): Promise<void> {
+  /** Undo or redo, or with `jump` go to another place in the history in ONE engine call (a checkpoint) while doing
+   *  for every step crossed what a Ctrl+Z press does for it: look changes, saved-view groups, rename follow-ups,
+   *  the header switch, the filter, row heights. */
+  async function undoRedo(op: "undo" | "redo", jump?: { target: number; run: (t: Tab) => Promise<DocInfo> }): Promise<void> {
     if (grid?.isEditing()) return;
     const t = tab;
     if (!t) return;
@@ -5328,27 +5331,49 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     t.recordView();
     const pos = t.info.history_pos;
     const look = op === "undo" ? t.lookSteps.at(-1) : t.lookRedo.at(-1);
-    if (look && look.pos === pos) {
+    if (jump) {
+      // Every look change crossed goes back (or forward) too, the earliest one deciding what the look ends as.
+      let ends: NonNullable<typeof look>["before"] | undefined;
+      if (op === "undo") {
+        for (let l = t.lookSteps.at(-1); l && l.pos > jump.target; l = t.lookSteps.at(-1)) {
+          t.lookRedo.push(t.lookSteps.pop()!);
+          ends = l.before;
+        }
+      } else {
+        for (let l = t.lookRedo.at(-1); l && l.pos < jump.target; l = t.lookRedo.at(-1)) {
+          t.lookSteps.push(t.lookRedo.pop()!);
+          ends = l.after;
+        }
+      }
+      if (ends) t.restoreView({ look: ends, sort: null }, false);
+    } else if (look && look.pos === pos) {
       if (op === "undo") t.lookRedo.push(t.lookSteps.pop()!);
       else t.lookSteps.push(t.lookRedo.pop()!);
       t.restoreView({ look: op === "undo" ? look.before : look.after, sort: null }, false);
       say(`${op === "undo" ? "Undid" : "Redid"} a change to how the table looks (widths, formats, hiding and so on).`);
       return;
     }
-    if (op === "redo" && t.redoCut === pos) return;
+    if (!jump && op === "redo" && t.redoCut === pos) return;
     // A saved view's sort, filter and look go back (or forward) together.
-    const group = op === "undo" ? t.groups.find((g) => g.end === pos) : t.groups.find((g) => g.start === pos);
-    const target = group ? (op === "undo" ? group.start : group.end) : op === "undo" ? pos - 1 : pos + 1;
+    const group = jump ? undefined : op === "undo" ? t.groups.find((g) => g.end === pos) : t.groups.find((g) => g.start === pos);
+    const target = jump ? jump.target : group ? (op === "undo" ? group.start : group.end) : op === "undo" ? pos - 1 : pos + 1;
     undoBusy.add(t);
     if (op === "redo") t.redoing++;
     const posBefore = t.info.history_pos;
     try {
-      for (;;) {
-        const at = t.info.history_pos;
-        await change({ op });
-        // Data-check rules a rename rewrote follow each step.
+      if (jump) {
+        // One call for the whole way; the rename follow-ups cover every step crossed at once (they compare
+        // positions, not presses).
+        if (!(await apply(jump.run, true, t))) return;
         followRefEdits(t, op);
-        if (t.info.history_pos === at || t.info.history_pos === target) break;
+      } else {
+        for (;;) {
+          const at = t.info.history_pos;
+          await change({ op });
+          // Data-check rules a rename rewrote follow each step.
+          followRefEdits(t, op);
+          if (t.info.history_pos === at || t.info.history_pos === target) break;
+        }
       }
       // The widths, formats and so on as they were before the step undone,
       // or after the step redone; the filter rules as the engine has them.
@@ -5409,6 +5434,23 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
   const undoBusy = new Set<Tab>();
+
+  /** Go to a checkpoint: the engine moves in one call, the screen does for each step crossed what Ctrl+Z does. */
+  async function restoreCheckpoint(c: Checkpoint): Promise<void> {
+    const t = tab;
+    if (!t || t.busy) return;
+    // The steps away are asked again now: the list on screen may be older than the last change.
+    const fresh = (await backend().checkpointList(t.id).catch(() => [])).find((x) => x.id === c.id);
+    if (!fresh || !fresh.reachable) {
+      say("That checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or the file was saved.");
+      return;
+    }
+    if (fresh.current || fresh.steps === 0) return;
+    const target = t.info.history_pos + fresh.steps;
+    await undoRedo(fresh.steps < 0 ? "undo" : "redo", { target, run: (x) => backend().checkpointRestore(x.id, c.id) });
+    t.checkpointTick++;
+    say(`Went to the checkpoint “${c.name}”. Ctrl+Z steps back through what was undone.`);
+  }
 
   /** Undo/redo of a rename: the data-check rules it rewrote go back, or
    *  are rewritten again. Rules changed by hand since are left as they are. */
@@ -6297,8 +6339,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
-    tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    tab: ["file.save", "file.saveAs", "-", "edit.checkpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "edit.checkpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
@@ -7829,6 +7871,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
             ], "cancel")) === "go",
           onSave: () => void openRecipes(),
           now: localNow,
+          restoreCheckpoint,
         }}
         onFilterValue={(col, value, cut) => void setRule(col, cut ? { type: "conditions", first: { type: "text", op: "begins_with", text: value.replace(/…$/, ""), match_case: true } } : value === "" ? { type: "values", values: [], blanks: true } : { type: "values", values: [value], blanks: false })}
         onClose={() => showPanel(null)}

@@ -1061,6 +1061,8 @@ pub struct CheckpointInfo {
     pub auto: bool,
     /// The undo history still reaches it (the engine's answer).
     pub reachable: bool,
+    /// How many undos (negative) or redos (positive) get there; 0 when it is the state now or not reachable.
+    pub steps: i64,
     /// The table is in exactly this state now.
     pub current: bool,
 }
@@ -2941,10 +2943,16 @@ impl Docs {
 
     pub fn delete_rows(&self, id: u32, at: u64, count: u64) -> CmdResult<DocInfo> {
         let entry = self.get(id)?;
-        // Several rows at once (or any while a filter hides others) get an automatic checkpoint.
-        let mark = (count > 1 || entry.read().has_filter()).then(|| entry.read().step_mark());
-        let info = self.edit(id, |d| d.delete_rows(at, count))?;
-        if let Some(m) = mark {
+        // Several rows at once (or any while a filter hides others) get an automatic checkpoint, its mark taken
+        // inside the change (see `recorded_auto`).
+        let auto = count > 1 || entry.read().has_filter();
+        if auto {
+            natendo_engine::document::capture_mark_start(entry.read().uid());
+        }
+        let info = self.edit(id, |d| d.delete_rows(at, count));
+        let mark = natendo_engine::document::capture_mark_take();
+        let info = info?;
+        if let (true, Some(m)) = (auto, mark) {
             self.auto_checkpoint(&entry, m, "deleting rows");
         }
         Ok(info)
@@ -4778,12 +4786,18 @@ impl Docs {
         f: impl FnOnce() -> CmdResult<T>,
     ) -> CmdResult<T> {
         let entry = self.get(id)?;
-        let mark_before = auto.as_ref().map(|_| entry.read().step_mark());
+        // The mark just before the change is noted by the document itself, under the write lock of the change (a
+        // read here, before it, could be overtaken by another window's change).
+        if auto.is_some() {
+            natendo_engine::document::capture_mark_start(entry.read().uid());
+        }
         let (first, before) = {
             let d = entry.read();
             (d.row_values(0).ok(), d.history_pos())
         };
-        let out = f()?;
+        let out = f();
+        let mark_before = natendo_engine::document::capture_mark_take();
+        let out = out?;
         if let (Some(label), Some(mark)) = (auto, mark_before) {
             self.auto_checkpoint(&entry, mark, &label);
         }
@@ -4945,6 +4959,7 @@ impl Docs {
                 name: c.name.clone(),
                 auto: c.auto,
                 reachable: d.step_reach(c.mark).is_some(),
+                steps: d.step_reach(c.mark).unwrap_or(0),
                 current: c.mark == now,
             })
             .collect())

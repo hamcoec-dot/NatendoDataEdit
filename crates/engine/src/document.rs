@@ -230,6 +230,23 @@ impl Op {
     }
 }
 
+thread_local! {
+    /// While a bulk change runs on this thread: the document it edits and the mark of that document just before its
+    /// first undo step was made (see `capture_mark_start`).
+    static CAPTURE: std::cell::RefCell<Option<(u64, Option<u64>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Start noting, on this thread, the mark of document `uid` just before the next change made to it, read under the
+/// same write lock as the change itself (so another window's change cannot slip in between).
+pub fn capture_mark_start(uid: u64) {
+    CAPTURE.with(|c| *c.borrow_mut() = Some((uid, None)));
+}
+
+/// Stop noting, and the mark noted: `None` when no change was made to the document meanwhile.
+pub fn capture_mark_take() -> Option<u64> {
+    CAPTURE.with(|c| c.borrow_mut().take().and_then(|(_, m)| m))
+}
+
 /// The next unique step id, across every document of the process (a document opened again never repeats one).
 fn next_step_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -442,6 +459,8 @@ pub struct Document {
     /// these ids (see `step_mark`).
     undo_ids: std::collections::VecDeque<u64>,
     redo_ids: Vec<u64>,
+    /// Unique for the life of the process: names this document (see `capture_mark_start`).
+    uid: u64,
     /// The mark of the state before the oldest undo step: new when the document is made, and new again whenever
     /// that state can no longer be reached (history trimmed, saved over).
     base_mark: u64,
@@ -599,6 +618,7 @@ impl Document {
             redo: Vec::new(),
             undo_ids: Default::default(),
             redo_ids: Vec::new(),
+            uid: next_step_id(),
             base_mark: next_step_id(),
             clean_depth: Some(0),
             history_pos: 0,
@@ -1138,6 +1158,11 @@ impl Document {
         self.redo.clear();
         self.redo_ids.clear();
         self.redo_bytes = 0;
+    }
+
+    /// This document's id for `capture_mark_start`.
+    pub fn uid(&self) -> u64 {
+        self.uid
     }
 
     /// A mark of the state the table is in now: the id of the last change done (or of the start of the history).
@@ -1956,6 +1981,13 @@ impl Document {
     }
 
     fn push(&mut self, op: Op) {
+        CAPTURE.with(|c| {
+            if let Some((uid, mark)) = c.borrow_mut().as_mut() {
+                if *uid == self.uid && mark.is_none() {
+                    *mark = Some(self.step_mark());
+                }
+            }
+        });
         self.history_pos += 1;
         let inv = self.apply(op);
         self.undo_bytes += inv.cost();
@@ -2741,6 +2773,37 @@ mod tests {
         assert_eq!(d.step_reach(first), None);
         let last = d.step_mark();
         assert_eq!(d.step_reach(last), Some(0));
+    }
+
+    /// B4: the mark just before a change is noted by the document under the change's own lock: the first change made
+    /// to THIS document on this thread, nothing when none is made, nothing for another document's changes.
+    #[test]
+    fn the_mark_before_a_change_is_noted_inside_the_change() {
+        let mut d = doc(b"a
+1
+");
+        let mut other = doc(b"a
+1
+");
+        let before = d.step_mark();
+        capture_mark_start(d.uid());
+        other.set_cell(1, 0, "o".into()).unwrap();
+        assert_eq!(
+            capture_mark_take(),
+            None,
+            "another document's change is not ours"
+        );
+        capture_mark_start(d.uid());
+        d.set_cell(1, 0, "x".into()).unwrap();
+        d.set_cell(1, 0, "y".into()).unwrap();
+        assert_eq!(
+            capture_mark_take(),
+            Some(before),
+            "the first change's mark, not the last"
+        );
+        capture_mark_start(d.uid());
+        assert_eq!(capture_mark_take(), None, "no change, no mark");
+        assert_eq!(d.step_reach(before), Some(-2));
     }
 
     #[test]

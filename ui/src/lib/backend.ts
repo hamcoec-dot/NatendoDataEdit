@@ -116,6 +116,8 @@ export interface Checkpoint {
   auto: boolean;
   /** The undo history still reaches it. */
   reachable: boolean;
+  /** Undos (negative) or redos (positive) to get there; 0 when it is the state now or cannot be reached. */
+  steps: number;
   /** The table is in exactly this state now. */
   current: boolean;
 }

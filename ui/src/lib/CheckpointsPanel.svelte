@@ -2,15 +2,15 @@
   // Checkpoints: named moments in the undo history, listed at the top of the Steps panel. A checkpoint is a name
   // and a mark (a few bytes): nothing of the table is copied. Click one to go back (or forward) to that exact
   // state in one jump; the moment you left is kept as "Before restoring ..." so the way back is one click.
-  import { backend, errorText, type Checkpoint, type DocInfo } from "./backend";
+  import { backend, errorText, type Checkpoint } from "./backend";
   import type { Tab } from "./tab.svelte";
 
   interface Props {
     tab: Tab;
-    /** Take the table state after a restore. */
-    onInfo: (info: DocInfo) => void;
+    /** Go to a checkpoint (the screen does what Ctrl+Z does for every step crossed). */
+    onRestore: (c: Checkpoint) => Promise<void>;
   }
-  let { tab, onInfo }: Props = $props();
+  let { tab, onRestore }: Props = $props();
 
   let list = $state<Checkpoint[]>([]);
   let problem = $state("");
@@ -45,7 +45,7 @@
   }
   async function restore(c: Checkpoint): Promise<void> {
     try {
-      onInfo(await backend().checkpointRestore(tab.id, c.id));
+      await onRestore(c);
       problem = "";
     } catch (e) {
       problem = errorText(e);

@@ -30,6 +30,7 @@
       confirmLoss: (what: string) => Promise<boolean>;
       onSave: () => void;
       now: () => number;
+      restoreCheckpoint: (c: import("./backend").Checkpoint) => Promise<void>;
     };
     onClose: () => void;
   }

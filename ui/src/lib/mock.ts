@@ -3740,7 +3740,7 @@ export class MockBackend implements Backend {
   }
   private cpList(d: MockDoc): import("./backend").Checkpoint[] {
     const now = this.markNow(d);
-    return (d.checkpoints ?? []).map((c) => ({ id: c.id, name: c.name, auto: c.auto, reachable: this.reach(d, c.mark) !== null, current: c.mark === now }));
+    return (d.checkpoints ?? []).map((c) => ({ id: c.id, name: c.name, auto: c.auto, reachable: this.reach(d, c.mark) !== null, steps: this.reach(d, c.mark) ?? 0, current: c.mark === now }));
   }
   async checkpointList(doc: number): Promise<import("./backend").Checkpoint[]> {
     return this.cpList(this.get(doc));

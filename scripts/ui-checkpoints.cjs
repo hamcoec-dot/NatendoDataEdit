@@ -112,6 +112,91 @@ const url = process.argv[3] || "http://localhost:5271";
   await p.keyboard.press("Escape");
   await p.waitForTimeout(300);
   ok((await p.getByRole("dialog").count()) === 0, "Esc closes the name box");
+  // ---- a restore leaves the screen's bookkeeping as the same number of Ctrl+Z presses would ----
+  // Two tabs go through the same script (edits, a width change, a sort, a filter, more edits). In one the start is
+  // restored from its checkpoint; in the other Ctrl+Z is pressed until the same place. Everything the screen keeps
+  // must match: cells, widths, header, filter, undo and redo availability, the look steps and the saved groups.
+  const setup = async () => {
+    await p.evaluate(() => window.__nde.reg.run("file.new"));
+    await p.waitForTimeout(500);
+    await p.evaluate(
+      async (text) => {
+        const t = window.__nde.tab;
+        t.update(await window.__nde.backend.dataOp(t.id, { op: "paste", spec: { row: 0, col: 0, op: "none", skip_blanks: false, transpose: false }, text }).then((r) => r.info), true);
+        t.header = true;
+        t.bump();
+      },
+      Array.from({ length: 12 }, (_, i) => (i === 0 ? ["name", "city"] : [`P${String.fromCharCode(90 - i)}`, `C${i % 3}`]).join(TAB)).join(EOL),
+    );
+    await p.waitForTimeout(400);
+  };
+  const script = async () => {
+    await edit(1, 0, "Alpha");
+    await p.evaluate(() => {
+      const t = window.__nde.tab;
+      t.columns.setWidth(1, 300);
+      t.recordView();
+    });
+    await edit(2, 0, "Beta");
+    await p.evaluate(() => window.__nde.grid.select({ row: 3, col: 0 }));
+    await p.evaluate(() => window.__nde.reg.run("data.sortAsc"));
+    await p.waitForTimeout(300);
+    await p.evaluate(() => window.__nde.grid.select({ row: 2, col: 1 }));
+    await p.evaluate(() => window.__nde.reg.run("data.filterBySel"));
+    await p.waitForTimeout(300);
+    await edit(1, 1, "Gamma");
+    await p.evaluate(() => window.__nde.tab.recordView());
+  };
+  const state = (base) =>
+    p.evaluate(
+      async (base) => {
+        const t = window.__nde.tab;
+        const cells = [];
+        for (let r = 0; r < Math.min(t.info.rows, 14); r++) cells.push((await window.__nde.backend.cellText(t.id, r, 0)).text, (await window.__nde.backend.cellText(t.id, r, 1)).text);
+        return {
+          cells,
+          rows: t.info.rows,
+          width1: Math.round(t.columns.width(1)),
+          header: t.header,
+          filtered: t.info.has_filter,
+          filter: JSON.stringify(t.filter),
+          can_undo: t.info.can_undo,
+          can_redo: t.info.can_redo,
+          pos: t.info.history_pos - base,
+          looks: t.lookSteps.length,
+          lookRedo: t.lookRedo.length,
+          groups: t.groups.length,
+          modified: t.info.modified,
+        };
+      },
+      base,
+    );
+  // Tab 1: restore.
+  await setup();
+  await p.keyboard.press("Control+Alt+k");
+  await p.getByRole("dialog").getByRole("textbox").fill("begin");
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(400);
+  const base1 = await p.evaluate(() => window.__nde.tab.info.history_pos);
+  await script();
+  await item("begin").locator("button.go").click();
+  await p.waitForTimeout(800);
+  const restored = await state(base1);
+  // Tab 2: Ctrl+Z until the same place.
+  await setup();
+  const base2 = await p.evaluate(() => window.__nde.tab.info.history_pos);
+  await script();
+  for (let i = 0; i < 40; i++) {
+    const at = await p.evaluate(() => [window.__nde.tab.info.history_pos, window.__nde.tab.lookSteps.filter((l) => l.pos > 0).length]);
+    if (at[0] <= base2 && at[1] === 0) break;
+    await p.evaluate(() => window.__nde.grid.focus());
+    await p.keyboard.press("Control+z");
+    await p.waitForTimeout(250);
+  }
+  const pressed = await state(base2);
+  for (const k of Object.keys(restored)) {
+    ok(JSON.stringify(restored[k]) === JSON.stringify(pressed[k]), `restore equals Ctrl+Z presses: ${k} (${JSON.stringify(restored[k]).slice(0, 60)} vs ${JSON.stringify(pressed[k]).slice(0, 60)})`);
+  }
   ok(errors.length === 0, `no page errors ${errors.join(" | ").slice(0, 200)}`);
   await b.close();
   process.exit(failed ? 1 : 0);
