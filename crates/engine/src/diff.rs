@@ -128,11 +128,55 @@ pub struct DiffIndex {
 /// A marked row and its first marked column.
 type RowHit = (u64, Option<u32>);
 
-/// A row of the first table read for the result (values, key and its number in the sheet).
-pub struct RowA {
-    number: u64,
-    vals: Vec<String>,
-    keys: Vec<String>,
+/// Rows of the first table read for the result, packed end to end (a million of them cost a few hundred
+/// bytes each, not a string per cell): each row's number in the sheet and its values.
+pub struct Rows {
+    width: usize,
+    text: String,
+    /// `width` ends per row, after a first 0.
+    offs: Vec<u64>,
+    numbers: Vec<u64>,
+}
+
+impl Rows {
+    fn len(&self) -> usize {
+        self.numbers.len()
+    }
+
+    fn row(&self, i: usize) -> RowRef<'_> {
+        RowRef { rows: self, i }
+    }
+
+    fn cell(&self, row: usize, c: usize) -> &str {
+        let k = row * self.width + c;
+        &self.text[self.offs[k] as usize..self.offs[k + 1] as usize]
+    }
+}
+
+/// One row of [`Rows`].
+#[derive(Clone, Copy)]
+struct RowRef<'a> {
+    rows: &'a Rows,
+    i: usize,
+}
+
+impl<'a> RowRef<'a> {
+    fn number(&self) -> u64 {
+        self.rows.numbers[self.i]
+    }
+
+    fn val(&self, c: usize) -> &'a str {
+        self.rows.cell(self.i, c)
+    }
+
+    fn vals(&self) -> impl Iterator<Item = String> + 'a {
+        let (rows, i) = (self.rows, self.i);
+        (0..rows.width).map(move |c| rows.cell(i, c).to_string())
+    }
+
+    fn key_parts(&self, keys: &[u32]) -> Vec<&'a str> {
+        keys.iter().map(|&k| self.val(k as usize)).collect()
+    }
 }
 
 /// What step 2 (the first table) leaves for step 3 (the second).
@@ -141,8 +185,8 @@ pub struct DiffFirst {
     titles_a: Vec<String>,
     cols_a: u32,
     total_a: u64,
-    removed: Vec<RowA>,
-    changed: Vec<RowA>,
+    removed: Rows,
+    changed: Rows,
     empty_a: u64,
     dup_a: Vec<String>,
     rev: u64,
@@ -186,10 +230,6 @@ impl DiffIndex {
             Side::Result => self.keys_a.iter().map(|k| k + RESULT_LEAD).collect(),
         }
     }
-}
-
-fn key_parts(ra: &RowA) -> Vec<&str> {
-    ra.keys.iter().map(String::as_str).collect()
 }
 
 fn is_blank(parts: &[&str], trim: bool) -> bool {
@@ -325,33 +365,45 @@ impl Document {
         let reader = Cols::new(self, &all_a);
         let listed = pairing.capped(MAX_LISTED_ROWS);
         let width = cols_a as usize;
-        let read = |id: u32, r: u64| -> RowA {
-            let mut buf = Vec::new();
-            reader.read(self, id, &mut buf);
-            let vals: Vec<String> = (0..width)
-                .map(|c| reader.get(&buf, c).to_string())
+        let read = |rows_in: &[(u32, u64)]| -> Rows {
+            let parts: Vec<(String, Vec<u64>, Vec<u64>)> = rows_in
+                .par_chunks(CHUNK)
+                .map(|part| {
+                    let mut text = String::new();
+                    let mut offs = Vec::with_capacity(part.len() * width);
+                    let mut numbers = Vec::with_capacity(part.len());
+                    let mut buf = Vec::new();
+                    for &(id, r) in part {
+                        reader.read(self, id, &mut buf);
+                        for c in 0..width {
+                            text.push_str(reader.get(&buf, c));
+                            offs.push(text.len() as u64);
+                        }
+                        numbers.push(self.row_number(r).unwrap_or(r) + 1);
+                    }
+                    (text, offs, numbers)
+                })
                 .collect();
-            let keys: Vec<String> = spec
-                .keys
-                .iter()
-                .map(|&k| vals[k as usize].clone())
-                .collect();
-            RowA {
-                number: self.row_number(r).unwrap_or(r) + 1,
-                vals,
-                keys,
+            let mut text = String::new();
+            let mut offs = vec![0u64];
+            let mut numbers = Vec::new();
+            for (t, o, n) in parts {
+                let base = text.len() as u64;
+                text.push_str(&t);
+                offs.extend(o.iter().map(|x| x + base));
+                numbers.extend(n);
+            }
+            Rows {
+                width,
+                text,
+                offs,
+                numbers,
             }
         };
-        let removed: Vec<RowA> = listed
-            .removed
-            .par_iter()
-            .map(|&(id, r)| read(id, r))
-            .collect();
-        let changed: Vec<RowA> = listed
-            .changed
-            .par_iter()
-            .map(|&(id, r, _)| read(id, r))
-            .collect();
+        let removed = read(&listed.removed);
+        let changed_ids: Vec<(u32, u64)> =
+            listed.changed.iter().map(|&(id, r, _)| (id, r)).collect();
+        let changed = read(&changed_ids);
         Ok(DiffFirst {
             pairing,
             titles_a,
@@ -457,15 +509,20 @@ impl Document {
             Ok(())
         };
         // Removed rows: in the first table only.
-        for ra in &removed {
+        for ri in 0..removed.len() {
+            let ra = removed.row(ri);
             line.clear();
-            line.extend(["removed".to_string(), ra.number.to_string(), String::new()]);
-            line.extend(ra.vals.iter().cloned());
+            line.extend([
+                "removed".to_string(),
+                ra.number().to_string(),
+                String::new(),
+            ]);
+            line.extend(ra.vals());
             line.extend(blank_b.iter().cloned());
             line.push(String::new());
             push_line(&mut out, &line);
             rows_out += 1;
-            let parts = key_parts(ra);
+            let parts = ra.key_parts(&spec.keys);
             if !is_blank(&parts, spec.trim) {
                 a_side
                     .entry(key_hash(&parts, spec.match_case, spec.trim))
@@ -486,101 +543,112 @@ impl Document {
             cols: Box<[u32]>,
             bcols: Box<[u32]>,
         }
-        let built: Vec<Built> = changed
-            .par_iter()
-            .enumerate()
-            .map(|(vr, ra)| {
-                let nid = listed.changed[vr].2;
-                let newer = values.row(vr);
-                let mut changed_cols: Vec<u32> = Vec::new();
-                let mut what: Vec<String> = Vec::new();
-                for c in 0..width_a {
-                    if index.map[c].is_some() && ra.vals[c] != newer[c] {
-                        changed_cols.push(c as u32);
-                        what.push(format!("{}: {} → {}", titles_a[c], ra.vals[c], newer[c]));
+        // In batches, so the lines of a million changed rows are not all held twice.
+        for batch in (0..changed.len()).step_by(1 << 16) {
+            let built: Vec<Built> = (batch..(batch + (1 << 16)).min(changed.len()))
+                .into_par_iter()
+                .map(|vr| {
+                    let ra = changed.row(vr);
+                    let nid = listed.changed[vr].2;
+                    let newer = values.row(vr);
+                    let mut changed_cols: Vec<u32> = Vec::new();
+                    let mut what: Vec<String> = Vec::new();
+                    for c in 0..width_a {
+                        if index.map[c].is_some() && ra.val(c) != newer[c] {
+                            changed_cols.push(c as u32);
+                            what.push(format!("{}: {} → {}", titles_a[c], ra.val(c), newer[c]));
+                        }
+                    }
+                    let ka = ra.key_parts(&spec.keys);
+                    let mut line: Vec<String> = Vec::with_capacity(header.len());
+                    let mut bytes = Vec::new();
+                    if is_blank(&ka, spec.trim) {
+                        // Rows with an empty key are never paired with each other: one removed, one added.
+                        line.extend([
+                            "removed".to_string(),
+                            ra.number().to_string(),
+                            String::new(),
+                        ]);
+                        line.extend(ra.vals());
+                        line.extend(blank_b.iter().cloned());
+                        line.push(String::new());
+                        push_line(&mut bytes, &line);
+                        return Built {
+                            kind: 1,
+                            line: bytes,
+                            key: 0,
+                            cols: Box::new([]),
+                            bcols: Box::new([]),
+                        };
+                    }
+                    if changed_cols.is_empty() {
+                        // Only the fingerprints differed (e.g. spaces at the ends with trim off): the same.
+                        return Built {
+                            kind: 2,
+                            line: bytes,
+                            key: 0,
+                            cols: Box::new([]),
+                            bcols: Box::new([]),
+                        };
+                    }
+                    let mut bbuf = Vec::new();
+                    reader_b.read(other, nid, &mut bbuf);
+                    line.extend([
+                        "changed".to_string(),
+                        ra.number().to_string(),
+                        String::new(),
+                    ]);
+                    line.extend(newer.iter().cloned());
+                    line.extend((0..only_b_cols.len()).map(|i| reader_b.get(&bbuf, i).to_string()));
+                    line.push(what.join("; "));
+                    push_line(&mut bytes, &line);
+                    let bcols: Box<[u32]> = changed_cols
+                        .iter()
+                        .filter_map(|&c| index.map[c as usize])
+                        .collect();
+                    Built {
+                        kind: 0,
+                        line: bytes,
+                        key: key_hash(&ka, spec.match_case, spec.trim),
+                        cols: changed_cols.into_boxed_slice(),
+                        bcols,
+                    }
+                })
+                .collect();
+            for x in built {
+                match x.kind {
+                    1 => {
+                        out.extend_from_slice(&x.line);
+                        rows_out += 1;
+                        report.changed -= 1;
+                        report.removed += 1;
+                    }
+                    2 => {
+                        report.changed -= 1;
+                        report.same += 1;
+                    }
+                    _ => {
+                        cells += x.cols.len() as u64;
+                        out.extend_from_slice(&x.line);
+                        rows_out += 1;
+                        a_side.insert(
+                            x.key,
+                            Entry {
+                                kind: Kind::Changed,
+                                cols: x.cols,
+                            },
+                        );
+                        b_side.insert(
+                            x.key,
+                            Entry {
+                                kind: Kind::Changed,
+                                cols: x.bcols,
+                            },
+                        );
                     }
                 }
-                let ka = key_parts(ra);
-                let mut line: Vec<String> = Vec::with_capacity(header.len());
-                let mut bytes = Vec::new();
-                if is_blank(&ka, spec.trim) {
-                    // Rows with an empty key are never paired with each other: one removed, one added.
-                    line.extend(["removed".to_string(), ra.number.to_string(), String::new()]);
-                    line.extend(ra.vals.iter().cloned());
-                    line.extend(blank_b.iter().cloned());
-                    line.push(String::new());
-                    push_line(&mut bytes, &line);
-                    return Built {
-                        kind: 1,
-                        line: bytes,
-                        key: 0,
-                        cols: Box::new([]),
-                        bcols: Box::new([]),
-                    };
-                }
-                if changed_cols.is_empty() {
-                    // Only the fingerprints differed (e.g. spaces at the ends with trim off): the same.
-                    return Built {
-                        kind: 2,
-                        line: bytes,
-                        key: 0,
-                        cols: Box::new([]),
-                        bcols: Box::new([]),
-                    };
-                }
-                let mut bbuf = Vec::new();
-                reader_b.read(other, nid, &mut bbuf);
-                line.extend(["changed".to_string(), ra.number.to_string(), String::new()]);
-                line.extend(newer.iter().cloned());
-                line.extend((0..only_b_cols.len()).map(|i| reader_b.get(&bbuf, i).to_string()));
-                line.push(what.join("; "));
-                push_line(&mut bytes, &line);
-                let bcols: Box<[u32]> = changed_cols
-                    .iter()
-                    .filter_map(|&c| index.map[c as usize])
-                    .collect();
-                Built {
-                    kind: 0,
-                    line: bytes,
-                    key: key_hash(&ka, spec.match_case, spec.trim),
-                    cols: changed_cols.into_boxed_slice(),
-                    bcols,
-                }
-            })
-            .collect();
-        for x in built {
-            match x.kind {
-                1 => {
-                    out.extend_from_slice(&x.line);
-                    rows_out += 1;
-                    report.changed -= 1;
-                    report.removed += 1;
-                }
-                2 => {
-                    report.changed -= 1;
-                    report.same += 1;
-                }
-                _ => {
-                    cells += x.cols.len() as u64;
-                    out.extend_from_slice(&x.line);
-                    rows_out += 1;
-                    a_side.insert(
-                        x.key,
-                        Entry {
-                            kind: Kind::Changed,
-                            cols: x.cols,
-                        },
-                    );
-                    b_side.insert(
-                        x.key,
-                        Entry {
-                            kind: Kind::Changed,
-                            cols: x.bcols,
-                        },
-                    );
-                }
+                check(&out)?;
             }
-            check(&out)?;
         }
         progress.step(changed.len() as u64)?;
         // Added rows: in the second table only.

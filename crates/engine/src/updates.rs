@@ -410,33 +410,6 @@ impl Document {
         let reader = Cols::new(self, &all);
         let rows = self.data_rows(spec.keep_first);
         progress.start(rows.end - rows.start);
-        let mine: Vec<Vec<(u32, u64, u128, u64)>> = (0..(rows.end - rows.start).div_ceil(CHUNK))
-            .into_par_iter()
-            .map(|k| -> Result<_, Error> {
-                let s = rows.start + k * CHUNK;
-                let e = (s + CHUNK).min(rows.end);
-                let mut out = Vec::with_capacity((e - s) as usize);
-                let mut buf = Vec::new();
-                for r in s..e {
-                    let id = self.id_at(r).ok_or(Error::OutOfRange)?;
-                    reader.read(self, id, &mut buf);
-                    let parts: Vec<&str> = spec
-                        .keys
-                        .iter()
-                        .map(|&k| reader.get(&buf, k as usize))
-                        .collect();
-                    let key = key_hash(&parts, spec.match_case, spec.trim);
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    for &c in &compared {
-                        h.write(reader.get(&buf, c as usize).as_bytes());
-                        h.write_u8(0xff);
-                    }
-                    out.push((id, r, key, h.finish()));
-                }
-                progress.step(e - s)?;
-                Ok(out)
-            })
-            .collect::<Result<_, _>>()?;
         let empty_key = key_hash(&vec![""; spec.keys.len()], spec.match_case, spec.trim);
         let mut empty_here = 0u64;
         let mut repeated = 0u64;
@@ -450,39 +423,75 @@ impl Document {
         let mut taken = vec![false; index.rows.len()];
         let mut changed = Vec::new();
         let mut removed = Vec::new();
-        for &(id, r, key, hash) in mine.iter().flatten() {
-            if key == empty_key {
-                empty_here += 1;
-            }
-            let first = sorted.partition_point(|x| x.0 < key);
-            if sorted.get(first).is_none_or(|x| x.0 != key) {
-                removed.push((id, r));
-                continue;
-            }
-            let repeats = sorted.get(first + 1).is_some_and(|x| x.0 == key);
-            let n = if repeats {
-                let n = used.entry(key).or_insert(0);
-                let at = *n;
-                *n += 1;
-                at as usize
-            } else if taken[sorted[first].1 as usize] {
-                1
-            } else {
-                0
-            };
-            match sorted.get(first + n).filter(|x| x.0 == key) {
-                Some(&(_, j)) => {
-                    taken[j as usize] = true;
-                    let (_, h, nid) = index.rows[j as usize];
-                    if h != hash {
-                        changed.push((id, r, nid));
+        // The rows here are read a batch of chunks at a time and paired as they come (in order, which repeated
+        // keys need), so the whole table's (id, row, key, hash) list is never held at once.
+        const BATCH: u64 = 64;
+        let n_chunks = (rows.end - rows.start).div_ceil(CHUNK);
+        let mut kb = 0u64;
+        while kb < n_chunks {
+            let ke = (kb + BATCH).min(n_chunks);
+            let mine: Vec<Vec<(u32, u64, u128, u64)>> = (kb..ke)
+                .into_par_iter()
+                .map(|k| -> Result<_, Error> {
+                    let s = rows.start + k * CHUNK;
+                    let e = (s + CHUNK).min(rows.end);
+                    let mut out = Vec::with_capacity((e - s) as usize);
+                    let mut buf = Vec::new();
+                    for r in s..e {
+                        let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                        reader.read(self, id, &mut buf);
+                        let parts: Vec<&str> = spec
+                            .keys
+                            .iter()
+                            .map(|&k| reader.get(&buf, k as usize))
+                            .collect();
+                        let key = key_hash(&parts, spec.match_case, spec.trim);
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        for &c in &compared {
+                            h.write(reader.get(&buf, c as usize).as_bytes());
+                            h.write_u8(0xff);
+                        }
+                        out.push((id, r, key, h.finish()));
+                    }
+                    progress.step(e - s)?;
+                    Ok(out)
+                })
+                .collect::<Result<_, _>>()?;
+            for &(id, r, key, hash) in mine.iter().flatten() {
+                if key == empty_key {
+                    empty_here += 1;
+                }
+                let first = sorted.partition_point(|x| x.0 < key);
+                if sorted.get(first).is_none_or(|x| x.0 != key) {
+                    removed.push((id, r));
+                    continue;
+                }
+                let repeats = sorted.get(first + 1).is_some_and(|x| x.0 == key);
+                let n = if repeats {
+                    let n = used.entry(key).or_insert(0);
+                    let at = *n;
+                    *n += 1;
+                    at as usize
+                } else if taken[sorted[first].1 as usize] {
+                    1
+                } else {
+                    0
+                };
+                match sorted.get(first + n).filter(|x| x.0 == key) {
+                    Some(&(_, j)) => {
+                        taken[j as usize] = true;
+                        let (_, h, nid) = index.rows[j as usize];
+                        if h != hash {
+                            changed.push((id, r, nid));
+                        }
+                    }
+                    None => {
+                        repeated += 1;
+                        removed.push((id, r));
                     }
                 }
-                None => {
-                    repeated += 1;
-                    removed.push((id, r));
-                }
             }
+            kb = ke;
         }
         let added = taken
             .iter()

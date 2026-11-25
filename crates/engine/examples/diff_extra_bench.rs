@@ -41,12 +41,22 @@ fn main() {
         best
     };
     let p = Progress::new();
+    // `once`: only the diff itself, one time (for measuring peak memory from outside).
+    let once = args.get(2).map(String::as_str) == Some("once");
     let spec = DiffSpec {
         keys: vec![0],
         keep_first: true,
         match_case: false,
         trim: true,
     };
+    if once {
+        let o = a.diff_files(&b, &spec, &p).unwrap();
+        println!(
+            "diff_files once: {} changed, {} listed",
+            o.report.changed, o.report.listed
+        );
+        return;
+    }
     let mut outcome = None;
     let ms = best(&mut || {
         outcome = Some(a.diff_files(&b, &spec, &p).unwrap());
