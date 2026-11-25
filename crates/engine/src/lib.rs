@@ -44,6 +44,8 @@ pub mod join;
 pub mod logs;
 pub mod lookalike;
 pub mod mail;
+pub mod checkfile;
+pub mod lintsuggest;
 pub mod notes;
 pub mod ops;
 pub mod pdf;

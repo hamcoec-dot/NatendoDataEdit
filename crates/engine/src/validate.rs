@@ -818,6 +818,17 @@ impl Document {
         Ok(parts.into_iter().flatten().collect())
     }
 
+    /// Whether the rules fit this table (their columns exist, their patterns and
+    /// expressions compile): the same checks a run makes first, without running.
+    pub fn rules_fit(&self, spec: &CheckSpec) -> Result<(), Error> {
+        compile(self, spec).map(|_| ())
+    }
+
+    /// The titles the rules are stored under (see `checkfile`): "Column N" for a column with no title.
+    pub fn rule_titles(&self, keep_first: bool) -> Vec<String> {
+        self.expr_names(keep_first)
+    }
+
     /// The next problem cell after (`from_row`, `from_col`) in the order the table is shown
     /// (row by row, left to right), or before it with `backward`, wrapping round the table
     /// (`wrapped`). A row rule lands on the row's first column that is not in `skip_cols`.
