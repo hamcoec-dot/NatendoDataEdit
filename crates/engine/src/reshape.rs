@@ -458,6 +458,7 @@ impl Document {
         let mut groups: Vec<Vec<u32>> = groups.into_values().collect();
         groups.sort_unstable_by_key(|g| g[0]);
         let all: Vec<u32> = (0..self.col_count()).collect();
+        let rdc = self.read_ctx(spec.read).reader(spec.date_col.unwrap_or(0));
         let whole = Cols::new(self, &all);
         let date = spec.date_col.map(|c| Cols::new(self, &[c]));
         let id_of = |i: u32| self.id_at(rows.start + i as u64).expect("in range");
@@ -503,18 +504,14 @@ impl Document {
                         let dates: Vec<Option<f64>> = values
                             .iter()
                             .map(|v| {
-                                crate::coltype::Reader::plain(read)
-                                    .date(v)
+                                rdc.date(v)
                                     .filter(|d| d.floor() != 0.0 || v.contains(['-', '/', '.']))
                             })
                             .collect();
                         let weights: Vec<Option<f64>> = if dates.iter().any(Option::is_some) {
                             dates
                         } else {
-                            values
-                                .iter()
-                                .map(|v| crate::coltype::Reader::plain(read).number(v))
-                                .collect()
+                            values.iter().map(|v| rdc.number(v)).collect()
                         };
                         let mut best: Option<(usize, f64)> = None;
                         for (k, w) in weights.iter().enumerate() {
@@ -892,6 +889,7 @@ impl Document {
         cols.push(spec.col);
         cols.push(spec.value);
         let reader = Cols::new(self, &cols);
+        let vrd = self.read_ctx(spec.read).reader(spec.value);
         let nk = spec.rows.len();
         enum Acc {
             Count(u64),
@@ -943,7 +941,7 @@ impl Document {
                     i
                 }
             };
-            let num = || crate::coltype::Reader::plain(spec.read).number(v);
+            let num = || vrd.number(v);
             match cells.get_mut(&(ri, ci)) {
                 None => {
                     let acc = match spec.aggregate {

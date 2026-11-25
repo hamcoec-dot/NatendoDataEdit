@@ -1152,6 +1152,7 @@ impl Document {
             return Ok(None);
         }
         let reader = Cols::new(self, &[col]);
+        let rd = self.read_ctx(read).reader(col);
         let rows = self.data_rows(keep_first);
         let n = rows.end - rows.start;
         progress.start(n);
@@ -1165,8 +1166,7 @@ impl Document {
                 for r in s..e {
                     let id = self.id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
-                    if let Some(v) = crate::coltype::Reader::plain(read).number(reader.get(&buf, 0))
-                    {
+                    if let Some(v) = rd.number(reader.get(&buf, 0)) {
                         let better = match best {
                             None => true,
                             Some((b, _)) => (largest && v > b) || (!largest && v < b),
@@ -1293,6 +1293,7 @@ impl Document {
             return Ok(None);
         }
         let reader = Cols::new(self, &[col]);
+        let rd = self.read_ctx(read).reader(col);
         let rows = self.data_rows(keep_first);
         let n = rows.end - rows.start;
         progress.start(n);
@@ -1306,8 +1307,7 @@ impl Document {
                 for r in s..e {
                     let id = self.id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
-                    if let Some(v) = crate::coltype::Reader::plain(read).number(reader.get(&buf, 0))
-                    {
+                    if let Some(v) = rd.number(reader.get(&buf, 0)) {
                         best = Some(best.map_or((v, v), |(a, b)| (a.min(v), b.max(v))));
                     }
                 }
