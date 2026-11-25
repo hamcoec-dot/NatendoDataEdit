@@ -647,7 +647,7 @@ impl View {
             }
             crate::docs::check_filter(f)?;
         }
-        highlight::check(&self.highlights, Default::default())?;
+        highlight::check(&self.highlights, &natendo_engine::coltype::ReadCtx::plain(Default::default()))?;
         natendo_engine::validate::check_spec(&natendo_engine::validate::CheckSpec {
             checks: self.checks.clone(),
             ..Default::default()

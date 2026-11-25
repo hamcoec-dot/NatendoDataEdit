@@ -2524,6 +2524,29 @@ async fn set_cells(
     blocking(move || docs.set_cells(doc, cells)).await
 }
 
+/// Say what a column holds (Text, Number, Date, Id, or Auto to guess again).
+#[tauri::command]
+async fn set_column_type(
+    docs: DocsState<'_>,
+    doc: u32,
+    col: u32,
+    kind: natendo_engine::coltype::ColumnType,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.set_column_type(doc, col, kind)).await
+}
+
+/// Put all the column types back (Undo, a saved view, a session).
+#[tauri::command]
+async fn set_column_types(
+    docs: DocsState<'_>,
+    doc: u32,
+    types: natendo_engine::coltype::ColumnTypes,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.set_column_types(doc, types)).await
+}
+
 #[tauri::command]
 async fn hidden_between(docs: DocsState<'_>, doc: u32, row: u64, rows: u64) -> CmdResult<u64> {
     let docs = docs.inner().clone();
@@ -3914,6 +3937,8 @@ pub fn run() {
             viewport,
             cell_text,
             set_cells,
+            set_column_type,
+            set_column_types,
             fill_cells,
             hidden_between,
             move_cells,

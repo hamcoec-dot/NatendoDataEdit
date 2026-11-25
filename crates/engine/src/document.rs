@@ -1057,6 +1057,11 @@ impl Document {
     }
 
     /// Physical column of logical column `col` (`None` past the map's end).
+    pub fn phys_of(&self, col: u32) -> Option<u32> {
+        self.phys(col)
+    }
+
+    /// Physical column of logical column `col` (`None` past the map's end).
     pub(crate) fn phys(&self, col: u32) -> Option<u32> {
         match &self.cols {
             Some(m) => m.get(col as usize).copied(),

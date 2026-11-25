@@ -1378,6 +1378,10 @@ pub struct DocInfo {
     /// Changes done minus changes undone: tells an undo of a column move
     /// from an undo of something else, so the view can follow.
     pub history_pos: u64,
+    /// What the person says the columns hold (by physical column, for views and Undo).
+    pub column_types: natendo_engine::coltype::ColumnTypes,
+    /// The typed columns as shown (logical column, type); Auto columns are left out.
+    pub typed: Vec<(u32, natendo_engine::coltype::ColumnType)>,
     pub encoding: &'static str,
     pub bom: bool,
     pub delimiter: String,
@@ -6951,6 +6955,36 @@ impl Docs {
         Ok(info)
     }
 
+    /// Say what column `col` (as shown) holds. Not an edit of the data: allowed on a read-only file, one
+    /// undo step on the look side (see the tab's look steps), and nothing in the saved bytes changes.
+    pub fn set_column_type(
+        &self,
+        id: u32,
+        col: u32,
+        ty: natendo_engine::coltype::ColumnType,
+    ) -> CmdResult<DocInfo> {
+        self.edit_any(id, false, |d| {
+            let Some(phys) = (col < d.col_count()).then(|| d.phys_of(col)).flatten() else {
+                return Err(Error::OutOfRange);
+            };
+            let types = d.type_overlay().with(phys, ty);
+            d.set_column_types(types);
+            Ok(())
+        })
+    }
+
+    /// Put all the column types back as they were (Undo, a saved view, a session).
+    pub fn set_column_types(
+        &self,
+        id: u32,
+        types: natendo_engine::coltype::ColumnTypes,
+    ) -> CmdResult<DocInfo> {
+        self.edit_any(id, false, |d| {
+            d.set_column_types(types);
+            Ok(())
+        })
+    }
+
     /// Whether `path` is the file of a locked document (any tab). Takes no
     /// document lock of the caller's, so call it before taking one.
     pub fn is_locked_file(&self, path: &Path) -> bool {
@@ -7296,6 +7330,18 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         can_undo: d.can_undo(),
         can_redo: d.can_redo(),
         history_pos: d.history_pos(),
+        column_types: d.type_overlay().clone(),
+        typed: {
+            let ctx = d.read_ctx(Default::default());
+            (0..d
+                .col_count()
+                .min(natendo_engine::coltype::MAX_TYPED_COLS as u32))
+                .filter_map(|c| {
+                    let t = ctx.type_of(c);
+                    (t != natendo_engine::coltype::ColumnType::Auto).then_some((c, t))
+                })
+                .collect()
+        },
         encoding: f.encoding.name(),
         bom: f.bom,
         delimiter: f.dialect.delimiter_str().to_string(),
