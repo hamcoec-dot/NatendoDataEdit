@@ -11,11 +11,12 @@ use std::sync::Arc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::coltype::{ColumnType, Reader};
 use crate::document::{Document, Progress};
 use crate::fill::{civil_from_days, days_from_civil, days_in_month as month_days, format_number};
 use crate::join::LookupTable;
 use crate::ops::{check_cols, ColPlan, Cols};
-use crate::value::{parse_date, parse_number, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Longest expression, in characters.
@@ -69,6 +70,8 @@ pub enum Value<'a> {
     /// Days since 1970-01-01; a fraction is the time of day.
     Date(f64),
     Err(Fault),
+    /// Text from a column typed Text or Id: it is text whatever it looks like, never a number or a date.
+    Id(Cow<'a, str>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +211,8 @@ pub struct Ctx<'b> {
     /// A cell formula's A1 references and ranges (`None` elsewhere: they
     /// are then #REF!).
     pub refs: Option<&'b dyn RefSource>,
+    /// The type of each of the expression's columns (`Node::Col` order); empty: all Auto.
+    pub types: &'b [ColumnType],
 }
 
 /// A range's numbers, worked out without reading it as text values: the
@@ -795,6 +800,12 @@ impl Expr {
         &self.cols
     }
 
+    /// The type of each of the expression's columns in `d` (the order of [`Expr::columns`]).
+    pub fn types(&self, d: &crate::Document, read: ReadOptions) -> Vec<ColumnType> {
+        let ctx = d.read_ctx(read);
+        self.cols.iter().map(|&c| ctx.type_of(c)).collect()
+    }
+
     pub fn eval<'a>(&'a self, ctx: &Ctx<'a>) -> Value<'a> {
         eval(&self.root, ctx)
     }
@@ -822,12 +833,13 @@ fn numeric(v: &Value, read: ReadOptions) -> Result<(f64, bool), Fault> {
         Value::Bool(b) => Ok((f64::from(u8::from(*b)), false)),
         Value::Date(d) => Ok((*d, true)),
         Value::Err(e) => Err(*e),
+        Value::Id(_) => Err(Fault::Value),
         Value::Text(t) => {
             if t.trim().is_empty() {
                 Ok((0.0, false))
-            } else if let Some(n) = parse_number(t, read) {
+            } else if let Some(n) = Reader::plain(read).number(t) {
                 Ok((n, false))
-            } else if let Some(d) = parse_date(t, read) {
+            } else if let Some(d) = Reader::plain(read).date(t) {
                 Ok((d, true))
             } else {
                 Err(Fault::Value)
@@ -843,7 +855,7 @@ fn num(v: &Value, read: ReadOptions) -> Result<f64, Fault> {
 fn date(v: &Value, read: ReadOptions) -> Result<f64, Fault> {
     match v {
         Value::Date(d) => Ok(*d),
-        Value::Text(t) => match parse_date(t, read) {
+        Value::Text(t) => match Reader::plain(read).date(t) {
             Some(d) => Ok(d),
             None => num(v, read),
         },
@@ -1116,7 +1128,7 @@ pub fn to_text<'a>(v: &Value<'a>) -> Cow<'a, str> {
     match v {
         Value::Blank => Cow::Borrowed(""),
         Value::Num(n) => Cow::Owned(format_number(*n, false)),
-        Value::Text(t) => t.clone(),
+        Value::Text(t) | Value::Id(t) => t.clone(),
         Value::Bool(true) => Cow::Borrowed("TRUE"),
         Value::Bool(false) => Cow::Borrowed("FALSE"),
         Value::Date(d) => Cow::Owned(date_text(*d)),
@@ -1130,7 +1142,7 @@ fn to_bool(v: &Value) -> Result<bool, Fault> {
         Value::Blank => Ok(false),
         Value::Num(n) | Value::Date(n) => Ok(*n != 0.0),
         Value::Err(e) => Err(*e),
-        Value::Text(t) => {
+        Value::Text(t) | Value::Id(t) => {
             let t = t.trim();
             if t.eq_ignore_ascii_case("true") {
                 Ok(true)
@@ -1189,7 +1201,7 @@ fn compare(a: &Value, b: &Value, read: ReadOptions) -> Result<std::cmp::Ordering
     let as_num = |v: &Value| -> Option<f64> {
         match v {
             Value::Num(n) | Value::Date(n) => Some(*n),
-            Value::Text(t) => parse_number(t, read),
+            Value::Text(t) => Reader::plain(read).number(t),
             _ => None,
         }
     };
@@ -1278,7 +1290,18 @@ fn eval<'a>(n: &'a Node, ctx: &Ctx<'a>) -> Value<'a> {
             .flatten()
             .and_then(|s| ctx.cells.get(s))
         {
-            Some(c) if !c.is_empty() => Value::Text(Cow::Borrowed(c.as_ref())),
+            Some(c) if !c.is_empty() => match ctx.types.get(*k).copied().unwrap_or_default() {
+                ColumnType::Auto => Value::Text(Cow::Borrowed(c.as_ref())),
+                ColumnType::Text | ColumnType::Id => Value::Id(Cow::Borrowed(c.as_ref())),
+                ty => {
+                    let rd = Reader::with_type(read, ty);
+                    match ty {
+                        ColumnType::Number => rd.number(c).map(Value::Num),
+                        _ => rd.date(c).map(Value::Date),
+                    }
+                    .unwrap_or_else(|| Value::Text(Cow::Borrowed(c.as_ref())))
+                }
+            },
             _ => Value::Blank,
         },
         Node::Neg(x) => {
@@ -1438,16 +1461,19 @@ fn call<'a>(f: Func, args: &'a [Node], re: Option<&'a Regex>, ctx: &Ctx<'a>) -> 
         Func::IsBlank => Value::Bool(is_blank(&arg(0))),
         Func::IsNumber => Value::Bool(match arg(0) {
             Value::Num(_) => true,
-            Value::Text(t) => parse_number(&t, read).is_some(),
+            Value::Text(t) => Reader::plain(read).number(&t).is_some(),
             _ => false,
         }),
         Func::IsText => Value::Bool(match arg(0) {
-            Value::Text(t) => !t.is_empty() && parse_number(&t, read).is_none(),
+            Value::Text(t) => !t.is_empty() && Reader::plain(read).number(&t).is_none(),
+            Value::Id(t) => !t.is_empty(),
             _ => false,
         }),
         Func::IsDate => Value::Bool(match arg(0) {
             Value::Date(_) => true,
-            Value::Text(t) => parse_number(&t, read).is_none() && parse_date(&t, read).is_some(),
+            Value::Text(t) => {
+                Reader::plain(read).number(&t).is_none() && Reader::plain(read).date(&t).is_some()
+            }
             _ => false,
         }),
         Func::IsError => Value::Bool(matches!(arg(0), Value::Err(_))),
@@ -1629,9 +1655,9 @@ fn call<'a>(f: Func, args: &'a [Node], re: Option<&'a Regex>, ctx: &Ctx<'a>) -> 
             Value::Text(Cow::Owned(s.repeat(k)))
         }
         Func::ValueF => match arg(0) {
-            Value::Text(t) => match parse_number(&t, read) {
+            Value::Text(t) | Value::Id(t) => match Reader::plain(read).number(&t) {
                 Some(n) => Value::Num(n),
-                None => match parse_date(&t, read) {
+                None => match Reader::plain(read).date(&t) {
                     Some(d) => Value::Num(d),
                     None => Value::Err(Fault::Value),
                 },
@@ -1962,7 +1988,7 @@ fn call<'a>(f: Func, args: &'a [Node], re: Option<&'a Regex>, ctx: &Ctx<'a>) -> 
         Func::DateValue => match arg(0) {
             Value::Date(d) => Value::Date(d.floor()),
             Value::Err(e) => Value::Err(e),
-            v => match parse_date(&to_text(&v), read) {
+            v => match Reader::plain(read).date(&to_text(&v)) {
                 Some(d) => Value::Date(d.floor()),
                 None => Value::Err(Fault::Value),
             },
@@ -2394,6 +2420,7 @@ impl Document {
     ) -> Result<(crate::reshape::RowPlan, u64), Error> {
         let e = self.compute_expr(spec)?;
         check_cols(self, e.columns())?;
+        let tys = e.types(self, spec.read);
         let reader = Cols::new(self, e.columns());
         let near = e.uses_near();
         let first = u64::from(spec.keep_first && self.row_count() > 0);
@@ -2414,6 +2441,7 @@ impl Document {
                     prev,
                     next,
                     refs: None,
+                    types: &tys,
                 };
                 let v = e.eval(&ctx);
                 if matches!(v, Value::Err(_)) {
@@ -2449,6 +2477,7 @@ impl Document {
     pub fn preview_compute(&self, spec: &ComputeSpec, count: u64) -> Result<ComputePreview, Error> {
         let e = self.compute_expr(spec)?;
         check_cols(self, e.columns())?;
+        let tys = e.types(self, spec.read);
         let reader = Cols::new(self, e.columns());
         let first = u64::from(spec.keep_first && self.row_count() > 0);
         let end = self.row_count().min(first + count.min(MAX_PREVIEW));
@@ -2496,6 +2525,7 @@ impl Document {
                 prev: has_p.then_some(pv.as_slice()),
                 next: has_n.then_some(nv.as_slice()),
                 refs: None,
+                types: &tys,
             };
             let v = e.eval(&ctx);
             let failed = matches!(v, Value::Err(_));
@@ -2527,6 +2557,7 @@ impl Document {
         self.ready_for_bulk()?;
         let e = self.compute_expr(spec)?;
         check_cols(self, e.columns())?;
+        let tys = e.types(self, spec.read);
         if let Some(t) = spec.target {
             check_cols(self, &[t])?;
         }
@@ -2567,6 +2598,7 @@ impl Document {
                 prev,
                 next,
                 refs: None,
+                types: &tys,
             };
             let v = e.eval(&ctx);
             if matches!(v, Value::Err(_)) {
@@ -2656,6 +2688,7 @@ mod tests {
             prev: None,
             next: None,
             refs: None,
+            types: &[],
         };
         e.text(&ctx)
     }
@@ -2831,6 +2864,7 @@ mod tests {
                         prev: None,
                         next: None,
                         refs: None,
+                        types: &[],
                     };
                     e.text(&ctx)
                 })
@@ -2931,6 +2965,7 @@ mod tests {
                     prev: None,
                     next: None,
                     refs: None,
+                    types: &[],
                 };
                 let _ = e.text(&ctx);
             }

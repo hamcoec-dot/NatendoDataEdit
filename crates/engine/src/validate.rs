@@ -9,13 +9,14 @@ use std::collections::HashSet;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::coltype::{ColumnType, Reader};
 use crate::document::{Document, Progress, View};
 use crate::expr::{Ctx, Expr};
 use crate::filter::FilterSpec;
 use crate::find::{Matcher, Pattern};
 use crate::ops::{check_cols, Cols};
 use crate::reshape::RowPlan;
-use crate::value::{parse_date, parse_number, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Most checks at once.
@@ -199,12 +200,15 @@ struct Compiled {
     /// For each check: where its column sits in `reader_cols`, and for
     /// expressions, where their columns start.
     at: Vec<usize>,
+    /// For expression checks: the type of each column the expression reads.
+    types: Vec<Vec<ColumnType>>,
 }
 
 fn bound_date(s: &Option<String>, read: ReadOptions, what: &str) -> Result<Option<f64>, Error> {
     match s.as_deref().map(str::trim) {
         None | Some("") => Ok(None),
-        Some(t) => parse_date(t, read)
+        Some(t) => Reader::plain(read)
+            .date(t)
             .map(|d| Some(d.floor()))
             .ok_or_else(|| Error::Invalid(format!("the {what} date is not a date: {t}"))),
     }
@@ -219,6 +223,7 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
     let mut reader_cols = Vec::new();
     let mut at = Vec::new();
     let mut exprs = Vec::new();
+    let mut types: Vec<Vec<ColumnType>> = Vec::new();
     for c in &spec.checks {
         let needs_col = !matches!(c.kind, CheckKind::Expression { .. });
         if needs_col {
@@ -231,6 +236,7 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
         } else {
             at.push(usize::MAX);
         }
+        types.push(Vec::new());
         tests.push(match &c.kind {
             CheckKind::Required => Test::Required,
             CheckKind::Number { min, max, whole } => {
@@ -282,6 +288,9 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
                 let e = Expr::parse(expr, &names)?;
                 check_cols(d, e.columns())?;
                 exprs.push((tests.len(), e.columns().to_vec()));
+                if let Some(slot) = types.last_mut() {
+                    *slot = e.types(d, spec.read);
+                }
                 Test::Expr(e)
             }
         });
@@ -294,6 +303,7 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
         tests,
         reader_cols,
         at,
+        types,
     })
 }
 
@@ -308,6 +318,7 @@ impl Compiled {
         spec: &CheckSpec,
     ) -> bool {
         let read = spec.read;
+        let plain = Reader::plain(read);
         let t = &self.tests[i];
         if let Test::Expr(e) = t {
             let a = self.at[i];
@@ -320,6 +331,7 @@ impl Compiled {
                 prev: None,
                 next: None,
                 refs: None,
+                types: &self.types[i],
             };
             return e.holds(&ctx);
         }
@@ -330,12 +342,13 @@ impl Compiled {
         match t {
             Test::Required | Test::Unique | Test::Expr(_) => true,
             Test::DateIso => is_iso_date(v),
-            Test::Number { min, max, whole } => match parse_number(v, read) {
+            // A check the person wrote reads cells by its own rule (not by the column's type).
+            Test::Number { min, max, whole } => match plain.number(v) {
                 Some(n) => n >= *min && n <= *max && (!whole || n.fract() == 0.0),
                 None => false,
             },
-            Test::Date { min, max } => match parse_date(v, read) {
-                Some(d) if parse_number(v, read).is_none() => {
+            Test::Date { min, max } => match plain.date(v) {
+                Some(d) if plain.number(v).is_none() => {
                     let d = d.floor();
                     d >= *min && d <= *max
                 }

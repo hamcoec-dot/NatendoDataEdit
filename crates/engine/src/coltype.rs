@@ -97,6 +97,11 @@ pub struct Reader {
 }
 
 impl Reader {
+    /// A reader of a column of type `ty`.
+    pub fn with_type(opts: ReadOptions, ty: ColumnType) -> Reader {
+        Reader { opts, ty }
+    }
+
     /// A reader of an untyped column (Auto).
     pub fn plain(opts: ReadOptions) -> Reader {
         Reader {

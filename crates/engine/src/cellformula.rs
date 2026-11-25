@@ -669,6 +669,7 @@ impl Document {
         let sheet = self.formula_sheet(lo, hi, &want_cols, spec.read, progress)?;
         // Each cell, in parallel.
         let reader = Cols::new(self, e.columns());
+        let tys = e.types(self, spec.read);
         let near = e.uses_near();
         let shown = self.row_count();
         let first = u64::from(spec.keep_first && shown > 0);
@@ -713,6 +714,7 @@ impl Document {
                         prev: has_p.then_some(pv.as_slice()),
                         next: has_n.then_some(nv.as_slice()),
                         refs: Some(&at),
+                        types: &tys,
                     };
                     let v = if off {
                         Value::Err(crate::expr::Fault::Ref)
