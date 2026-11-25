@@ -9,6 +9,7 @@ import { backend, type DocInfo, type FilterSpec } from "./backend";
 import { CellCache } from "./cache";
 import { Columns, type ColSnap } from "./columns";
 import { RowHeights, type RowHeightSnap } from "./rowheights";
+import type { ColumnTypes } from "./readers";
 import { single, type Selection, rectOf, type Rect, type Cell, activeOf, MAX_AREAS, sameRect, rectInside } from "./selection";
 
 /** Characters per cell fetched for display (the backend caps this too). */
@@ -36,6 +37,8 @@ export interface ViewLook {
   /** Custom row heights (shared by reference while unchanged). */
   rows: RowHeightSnap;
   checks: Check[];
+  /** What the columns hold (the engine keeps them; Undo puts them back). */
+  types: ColumnTypes;
 }
 /** The look, plus the last sort (it changes with an engine undo step, so
  *  only engine steps put it back; the filter rules are read from the engine,
@@ -65,6 +68,10 @@ function sameRows(a: RowHeightSnap, b: RowHeightSnap): boolean {
 export type RowMap = { kind: "insert"; at: number; count: number } | { kind: "delete"; at: number; count: number } | { kind: "move"; at: number; count: number; to: number } | { kind: "reset" };
 
 /** Two looks hold the same values (parts shared or equal). */
+function sameTypes(a: ColumnTypes | undefined, b: ColumnTypes | undefined): boolean {
+  return a === b || JSON.stringify(a?.types ?? []) === JSON.stringify(b?.types ?? []);
+}
+
 function sameLook(a: ViewLook, b: ViewLook): boolean {
   return (
     a.banded === b.banded &&
@@ -74,7 +81,8 @@ function sameLook(a: ViewLook, b: ViewLook): boolean {
     (a.cols === b.cols || JSON.stringify(a.cols) === JSON.stringify(b.cols)) &&
     (a.highlights === b.highlights || JSON.stringify(a.highlights) === JSON.stringify(b.highlights)) &&
     (a.scales === b.scales || JSON.stringify(a.scales) === JSON.stringify(b.scales)) &&
-    (a.checks === b.checks || JSON.stringify(a.checks) === JSON.stringify(b.checks))
+    (a.checks === b.checks || JSON.stringify(a.checks) === JSON.stringify(b.checks)) &&
+    sameTypes(a.types, b.types)
   );
 }
 
@@ -88,6 +96,15 @@ export class Tab {
   /** Where a "heights were cleared" note goes the moment a change clears them, so
    *  every path that takes a new document state says it (the app sets this). */
   static rowNoteSink: ((note: string) => void) | null = null;
+  /** Where Undo, Redo and an applied view put the column types back in the engine (the app sets this). */
+  static typesSink: ((tab: Tab, types: ColumnTypes) => void) | null = null;
+  /** Types an Undo or Redo asked for, until the engine's answer arrives (so the look is not seen to change twice). */
+  private typesAsked: ColumnTypes | null = null;
+
+  /** What the columns hold, as far as the tab knows. */
+  currentTypes(): ColumnTypes {
+    return this.typesAsked ?? this.info.column_types ?? { types: [] };
+  }
   info = $state<DocInfo>() as DocInfo;
   private _sel = $state<Selection>(single({ row: 0, col: 0 }));
   /** The selected block (the last one picked when several are selected).
@@ -449,9 +466,12 @@ export class Tab {
     const refs = this.lastRefs;
     const cols = this.columns.key();
     const same = (a: unknown, b: unknown): boolean => a === b;
+    const asked = this.currentTypes();
+    const types = last && sameTypes(last.look.types, asked) ? last.look.types : asked;
     if (
       last &&
       refs &&
+      last.look.types === types &&
       refs.cols === cols &&
       same(refs.highlights, this.highlights) &&
       same(refs.scales, this.scales) &&
@@ -480,6 +500,7 @@ export class Tab {
       rowLines: this.rowLines,
       rows: this.rowHeights.snapshot(),
       checks: copy<Check[]>(!refs || !same(refs.checks, this.checks), last?.look.checks, this.checks),
+      types,
     };
     if (colsChanged) bytes += cols.length * 2;
     // The heights are shared by reference unless they changed: count them once.
@@ -606,6 +627,11 @@ export class Tab {
     this.rowLines = l.rowLines;
     // (A look from before heights existed has none.)
     this.rowHeights.restore(l.rows ?? { rows: [], px: [], sum: [0] });
+    // (A look from before column types existed has none: leave the types alone.)
+    if (l.types && !sameTypes(l.types, this.currentTypes())) {
+      this.typesAsked = l.types;
+      Tab.typesSink?.(this, l.types);
+    }
     if (engine) {
       this.sort = s.sort ? structuredClone(s.sort) : null;
     } else {
@@ -645,6 +671,8 @@ export class Tab {
       return;
     }
     if (info.seq !== undefined) this.infoSeq = info.seq;
+    // The engine has the types an Undo asked for (or others): from here on the info is the truth.
+    if (this.typesAsked && sameTypes(this.typesAsked, info.column_types)) this.typesAsked = null;
     // A look change made just before this engine change is a step of its own
     // (while a saved view is applied, its look joins its first engine step).
     if (!this.grouping) this.recordView();

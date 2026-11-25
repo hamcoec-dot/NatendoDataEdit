@@ -432,6 +432,8 @@ export class MockBackend implements Backend {
       can_undo: false,
       can_redo: false,
       history_pos: 0,
+      column_types: { types: [] },
+      typed: [],
       encoding: "UTF-8",
       bom: false,
       delimiter: ",",
@@ -873,6 +875,32 @@ export class MockBackend implements Backend {
     const d = this.get(doc);
     if (row >= this.rowCount(d)) throw err("out_of_range", "row or column out of range");
     return { text: this.value(d, row, col), truncated: false };
+  }
+
+  /** The column types, by physical column; `typed` is the same by shown column. */
+  private applyTypes(d: MockDoc, types: import("./readers").ColumnTypes): DocInfo {
+    const list = types.types.slice();
+    while (list.length && list[list.length - 1] === "auto") list.pop();
+    d.info.column_types = { types: list };
+    d.info.typed = [];
+    for (let c = 0; c < d.info.cols; c++) {
+      const t = list[this.physCol(d, c)];
+      if (t !== undefined && t !== "auto") d.info.typed.push([c, t]);
+    }
+    d.info.data_revision = (d.info.data_revision ?? 0) + 1;
+    return { ...d.info };
+  }
+  async setColumnType(doc: number, col: number, kind: import("./readers").ColumnType): Promise<DocInfo> {
+    const d = this.get(doc);
+    if (col >= d.info.cols) throw err("out_of_range", "no such column");
+    const list = d.info.column_types.types.slice();
+    const p = this.physCol(d, col);
+    while (list.length <= p) list.push("auto");
+    list[p] = kind;
+    return this.applyTypes(d, { types: list });
+  }
+  async setColumnTypes(doc: number, types: import("./readers").ColumnTypes): Promise<DocInfo> {
+    return this.applyTypes(this.get(doc), types);
   }
 
   async setCells(doc: number, cells: [number, number, string][]): Promise<DocInfo> {

@@ -13,8 +13,9 @@
   import { backend, errorText, type Dir } from "./backend";
   import { PALETTE } from "./views";
   import { localDays } from "./m8";
-  import { formatCell, linkOf, MAX_ROW_LINES, pickMatches, readNumber, tickOf, toggled, wrapLines } from "./m9";
-  import { barSpan, completion, scaleColour, scalePos, valueType } from "./m10";
+  import { formatCell, linkOf, MAX_ROW_LINES, pickMatches, tickOf, toggled, wrapLines } from "./m9";
+  import { barSpan, completion, scaleColour, scalePos, valueType, valueTypeFor } from "./m10";
+  import { readNumberFor, typeOf as columnTypeOf } from "./readers";
   import { colLetters } from "./goto";
   import { invisibleRuns } from "./invisible";
   import { insightText, pillParts } from "./insights";
@@ -1306,7 +1307,11 @@
       }
       return w;
     };
-    const typeOf = (s: string) => {
+    const typed = tab.info.typed;
+    const typeOf = (s: string, c: number) => {
+      // A column the person typed is not guessed.
+      const ty = typed && typed.length ? columnTypeOf(typed, c) : "auto";
+      if (ty !== "auto") return valueTypeFor(s, ty);
       let k = typeCache.get(s);
       if (k === undefined) {
         k = valueType(s);
@@ -1424,7 +1429,7 @@
         const t = tab.cache.get(r, c);
         let filled = false;
         if (scale && range && t !== undefined && !(tab.header && r === 0)) {
-          const v = readNumber(t);
+          const v = readNumberFor(tab.info.typed, c, t);
           if (v !== null) {
             if (scale.kind === "bar") {
               const b = barSpan(v, range[0], range[1]);
@@ -1450,7 +1455,7 @@
           const invisible = prefs.data.showInvisible && !header;
           const shown = invisible ? t : fmt && !header ? formatCell(t, fmt) : t;
           const link = !fmt && !header && /[.@:]/.test(t) ? linkOf(t) : null;
-          const kind = tab.valueTypes && !header && !link ? typeOf(t) : "text";
+          const kind = tab.valueTypes && !header && !link ? typeOf(t, c) : "text";
           // Text on a colour-scale fill is always dark, so it reads on every shade.
           ctx.fillStyle = filled ? "#111" : link ? colors.accent : kind === "number" || kind === "date" ? typeColour[kind] : colors.text;
           const cut = tab.cache.isTruncated(r, c);
@@ -1458,7 +1463,7 @@
           // dates on the right (as in Excel) and the rest on the left.
           // A formatted value (number, percent, currency or date) counts as
           // what it was formatted as.
-          const auto = !header && !link && prefs.data.alignNumbers && (fmt ? shown !== t && fmt.kind !== "checkbox" : typeOf(t) !== "text");
+          const auto = !header && !link && prefs.data.alignNumbers && (fmt ? shown !== t && fmt.kind !== "checkbox" : typeOf(t, c) !== "text");
           const side = align ?? (auto || (fmt && shown !== t && fmt.kind !== "date" && !header) ? "right" : "left");
           const at = (w: number): number =>
             side === "right" ? Math.max(x + pad, x + cw - pad - w) : side === "center" ? Math.max(x + pad, x + (cw - w) / 2) : x + pad;

@@ -2,6 +2,7 @@
 // backend with a generated document stands in, so the UI can be worked on
 // without the desktop shell.
 import { InfoGuard } from "./infoguard";
+import type { ColumnType, ColumnTypes } from "./readers";
 import type { Cleaner, CleanPreview, CleanSpec, ExampleSpec, SplitName } from "./clean";
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, SubtotalSpec, Summary, View } from "./views";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
@@ -44,6 +45,10 @@ export interface DocInfo {
   can_undo: boolean;
   can_redo: boolean;
   history_pos: number;
+  /** What the columns hold, by physical column (for Undo, saved views and the session). */
+  column_types: ColumnTypes;
+  /** The typed columns as shown: [column, type]; Auto columns are left out. */
+  typed: [number, ColumnType][];
   encoding: string;
   bom: boolean;
   delimiter: string;
@@ -1270,6 +1275,10 @@ export interface Backend {
   importPreview(id: number, options: ImportOptions): Promise<string[][]>;
   importNotes(id: number, options: ImportOptions): Promise<ImportNotes>;
   importFinish(id: number, options: ImportOptions): Promise<DocInfo>;
+  /** Say what column `col` holds (Auto: guess again). Not an edit: nothing in the file changes. */
+  setColumnType(doc: number, col: number, kind: ColumnType): Promise<DocInfo>;
+  /** Put all the column types back (Undo, a saved view, a session). */
+  setColumnTypes(doc: number, types: ColumnTypes): Promise<DocInfo>;
   importProgress(id: number): Promise<number | null>;
   importCancel(id: number): Promise<void>;
   importClose(id: number): Promise<void>;
@@ -1692,6 +1701,12 @@ class TauriBackend implements Backend {
   }
   importFinish(id: number, options: ImportOptions) {
     return call<DocInfo>("import_finish", { id, options });
+  }
+  setColumnType(doc: number, col: number, kind: ColumnType) {
+    return call<DocInfo>("set_column_type", { doc, col, kind });
+  }
+  setColumnTypes(doc: number, types: ColumnTypes) {
+    return call<DocInfo>("set_column_types", { doc, types });
   }
   importProgress(id: number) {
     return call<number | null>("import_progress", { id });

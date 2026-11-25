@@ -21,11 +21,14 @@
     fontFamily: string;
     /** Start with Save as PDF as the main button. */
     pdfFirst: boolean;
+    /** By printed column: typed Text or Id (never set as numbers). */
+    textCols?: boolean[];
     onPrint: (s: PageSetup, selection: boolean) => void;
     onPdf: (s: PageSetup, selection: boolean) => void;
     onClose: () => void;
   }
-  let { setup, titles, sample, allRows, selRows, cols, fontFamily, pdfFirst, onPrint, onPdf, onClose }: Props = $props();
+
+  let { setup, titles, sample, allRows, selRows, cols, fontFamily, pdfFirst, textCols = [], onPrint, onPdf, onClose }: Props = $props();
 
   let s = $state<PageSetup>(untrack(() => structuredClone($state.snapshot(setup))));
   let selection = $state(false);
@@ -44,7 +47,7 @@
   // The preview page is drawn at full size and scaled to fit the box.
   const boxW = 300;
   const scale = $derived(boxW / (pageW * 3.7795));
-  const html = $derived(printHtml(titles, sample, $state.snapshot(s) as PageSetup, fontFamily, true));
+  const html = $derived(printHtml(titles, sample, $state.snapshot(s) as PageSetup, fontFamily, true, textCols));
   const fontOk = $derived(Number.isFinite(s.font_size) && s.font_size >= 4 && s.font_size <= 72);
 </script>
 

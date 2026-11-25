@@ -23,6 +23,8 @@ const NOT_WRITES = [
   "importPreview",
   "importNotes",
   "importFinish",
+  "setColumnType",
+  "setColumnTypes",
   "importProgress",
   "importCancel",
   "importClose",

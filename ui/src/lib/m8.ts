@@ -295,7 +295,8 @@ const isNumber = (v: string): boolean => /^\s*[-+(]?[$€£¥]?\s*\d[\d,]*(\.\d+
 
 /** A whole printable page (for a print frame): the table with its titles
  *  repeated on each page, sized by the page setup. */
-export function printHtml(titles: string[] | null, rows: string[][], p: PageSetup, fontFamily: string, preview = false): string {
+/** `textCols`: by printed column, true for a column typed Text or Id (its values are never set as numbers). */
+export function printHtml(titles: string[] | null, rows: string[][], p: PageSetup, fontFamily: string, preview = false, textCols: readonly boolean[] = []): string {
   const paper = PAPERS.find((x) => x.value === p.paper) ?? PAPERS[0]!;
   const [w, h] = p.landscape ? [paper.size[1], paper.size[0]] : paper.size;
   const margin = Math.max(0, Math.min(p.margin_mm, Math.min(w, h) / 4));
@@ -304,7 +305,7 @@ export function printHtml(titles: string[] | null, rows: string[][], p: PageSetu
     ? `<thead><tr>${titles.map((t) => `<th>${escapeHtml(t)}</th>`).join("")}</tr></thead>`
     : "";
   const body = rows
-    .map((r) => `<tr>${r.map((v) => `<td${isNumber(v) ? ' class="n"' : ""}>${escapeHtml(v)}</td>`).join("")}</tr>`)
+    .map((r) => `<tr>${r.map((v, k) => `<td${!textCols[k] && isNumber(v) ? ' class="n"' : ""}>${escapeHtml(v)}</td>`).join("")}</tr>`)
     .join("\n");
   const pageNo = p.page_numbers ? `@bottom-center { content: "Page " counter(page) " of " counter(pages); font: ${size}pt ${fontFamily}; }` : "";
   const title = p.title.trim() ? `@top-left { content: "${cssString(p.title)}"; font: ${size + 3}pt ${fontFamily}; }` : "";

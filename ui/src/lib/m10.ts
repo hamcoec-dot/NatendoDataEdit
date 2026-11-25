@@ -5,6 +5,7 @@
 
 import type { Combine, DataOp, SplitParts, TableOp } from "./backend";
 import { readDate, readNumber } from "./m9";
+import type { ColumnType } from "./readers";
 
 // ---- Tools dialogs ------------------------------------------------------------
 
@@ -116,6 +117,16 @@ export function toolsRequest(kind: ToolKind, c: ToolChoices): ToolsRequest | str
 // ---- value types (Show value types, like Calc's value highlighting) ------------
 
 export type ValueType = "blank" | "number" | "date" | "text";
+
+/** What a cell holds in a column the person typed (Text and Id are always text; a Number or Date column
+ *  shows what does not fit as text). Auto columns use [`valueType`]. */
+export function valueTypeFor(text: string, ty: ColumnType): ValueType {
+  if (ty === "auto") return valueType(text);
+  if (!text.trim()) return "blank";
+  if (ty === "number") return readNumber(text) !== null ? "number" : "text";
+  if (typeof ty === "object") return readDate(text, ty.date === "dmy") !== null ? "date" : "text";
+  return "text";
+}
 
 /** What a cell holds, as the grid colours it. */
 export function valueType(text: string): ValueType {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { forgetHeaders, recallHeader, rememberedHeaders, rememberHeader } from "./lib/headerMemory";
+import { textCols } from "./lib/readers";
   import { sessionToOffer } from "./lib/sessionOffer";
   import { namesFromText } from "./lib/columnNames";
   import { onMount, tick } from "svelte";
@@ -6939,6 +6940,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     printReq = { pdf, titles, sample, cols, allRows: Math.max(0, t.info.rows - first), selRows, selFirst };
   }
 
+  /** Which printed columns are typed Text or Id (never set as numbers). */
+  function printTextCols(t: Tab, cols: number[]): boolean[] {
+    const text = textCols(t.info.typed);
+    return cols.map((c) => text.has(c));
+  }
+
   async function doPrint(setup: PageSetup, selection: boolean): Promise<void> {
     const req = printReq;
     const t = tab;
@@ -6959,7 +6966,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       say(errorText(e));
       return;
     }
-    const html = printHtml(req.titles, rows, setup, getComputedStyle(document.body).fontFamily || "sans-serif");
+    const html = printHtml(req.titles, rows, setup, getComputedStyle(document.body).fontFamily || "sans-serif", false, printTextCols(t, req.cols));
     const frame = document.createElement("iframe");
     frame.setAttribute("aria-hidden", "true");
     frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
@@ -8219,6 +8226,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     allRows={printReq.allRows}
     selRows={printReq.selRows}
     cols={printReq.cols.length}
+    textCols={printTextCols(tab, printReq.cols)}
     fontFamily={getComputedStyle(document.body).fontFamily || "sans-serif"}
     pdfFirst={printReq.pdf}
     onPrint={(s, sel) => void doPrint(s, sel)}
