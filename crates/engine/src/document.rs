@@ -103,6 +103,15 @@ impl Edit {
     }
 }
 
+/// A row widened by edits whose cells past its own file width (`file_width`
+/// fields) are all empty again goes back to that width, so it can return to
+/// its file bytes.
+fn cut_back(values: &mut Vec<String>, file_width: usize) {
+    if values.len() > file_width && values[file_width..].iter().all(String::is_empty) {
+        values.truncate(file_width);
+    }
+}
+
 /// Overlay of edited rows, tracking the widest row cheaply.
 #[derive(Default)]
 struct Overlay {
@@ -1324,6 +1333,12 @@ impl Document {
         (&self.source.bytes()[a..b], self.index.mode_of(id as u64))
     }
 
+    /// How many fields original row `id` has in the file.
+    fn file_fields(&self, id: u32) -> u64 {
+        let (bytes, mode) = self.raw_row(id);
+        scan::scan_row(bytes, 0, self.format.dialect, mode, |_, _| true).fields as u64
+    }
+
     /// Every value of a patched row.
     fn patched(&self, id: u32, width: u32, cells: &[(u32, Box<str>)]) -> Vec<String> {
         let (bytes, mode) = self.raw_row(id);
@@ -1741,9 +1756,17 @@ impl Document {
             for (col, value) in changes {
                 let c = col as usize;
                 if values.len() <= c {
+                    // Emptying a cell the row does not have changes nothing:
+                    // a short row keeps its width.
+                    if value.is_empty() {
+                        continue;
+                    }
                     values.resize(c + 1, String::new());
                 }
                 values[c] = value;
+            }
+            if let Some(o) = &original {
+                cut_back(&mut values, o.len());
             }
             // An original row edited back to its file values returns to its
             // raw bytes, so it is saved byte-for-byte again.
@@ -2137,40 +2160,65 @@ impl Document {
                 }
                 cells = out;
             }
-            let Some(last) = cells.last().map(|c| c.0) else {
+            if cells.is_empty() {
                 continue;
-            };
+            }
             let state = match self.overlay.get(id) {
                 Some(Edit::Full(v)) => {
                     let mut v = v.clone();
-                    if v.len() <= last as usize {
-                        v.resize(last as usize + 1, String::new());
-                    }
                     for (c, s) in cells {
-                        v[c as usize] = s;
+                        let c = c as usize;
+                        if v.len() <= c {
+                            if s.is_empty() {
+                                continue;
+                            }
+                            v.resize(c + 1, String::new());
+                        }
+                        v[c] = s;
+                    }
+                    if v.last().is_some_and(String::is_empty) && (id as u64) < self.index.rows() {
+                        let width = self.file_fields(id) as usize;
+                        cut_back(&mut v, width);
                     }
                     Edit::Full(v)
                 }
                 Some(Edit::Patch { width, cells: old }) => {
                     let mut merged: BTreeMap<u32, Box<str>> = old.iter().cloned().collect();
+                    let mut width = *width;
                     for (c, s) in cells {
+                        if c >= width && s.is_empty() {
+                            continue;
+                        }
+                        width = width.max(c + 1);
                         merged.insert(c, s.into_boxed_str());
                     }
+                    // A row widened earlier ends in an emptied cell: it may
+                    // be back to the file's own width.
+                    if merged.get(&(width - 1)).is_some_and(|s| s.is_empty()) {
+                        let file = self.file_fields(id).min(u64::from(width)) as u32;
+                        if merged.range(file..).all(|(_, s)| s.is_empty()) {
+                            merged.split_off(&file);
+                            width = file;
+                        }
+                    }
                     Edit::Patch {
-                        width: (*width).max(last + 1),
+                        width,
                         cells: merged.into_iter().collect(),
                     }
                 }
                 None => {
-                    let (bytes, mode) = self.raw_row(id);
-                    let fields = scan::scan_row(bytes, 0, self.format.dialect, mode, |_, _| true)
-                        .fields as u64;
+                    let fields = self.file_fields(id);
                     if fields > MAX_ROW_FIELDS {
                         return Err(Error::RowTooWide {
                             row: id as u64,
                             fields,
                         });
                     }
+                    // Empty values past the row's end are left out.
+                    cells.retain(|(c, s)| u64::from(*c) < fields || !s.is_empty());
+                    let Some(last) = cells.last().map(|c| c.0) else {
+                        continue;
+                    };
                     Edit::Patch {
                         width: (fields as u32).max(last + 1),
                         cells: cells
@@ -2993,5 +3041,176 @@ mod tests {
         };
         let d = Document::from_bytes(b"caf\xE9,\x80\n".to_vec(), opts, None).unwrap();
         assert_eq!(d.row_values(0).unwrap(), ["café", "€"]);
+    }
+}
+
+#[cfg(test)]
+mod row_width_tests {
+    use super::*;
+    use crate::SaveOptions;
+
+    const BODY: &str = "a,b,c\n1\n1,2,3,4\n5,6,7\n";
+
+    fn open() -> (Document, std::path::PathBuf) {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!("nde-width-{}-{n}.csv", std::process::id()));
+        std::fs::write(&p, BODY).unwrap();
+        (
+            Document::open_indexed(&p, OpenOptions::default(), None).unwrap(),
+            p,
+        )
+    }
+
+    fn widths(d: &Document) -> Vec<usize> {
+        (0..d.row_count())
+            .map(|r| d.row_values(r).unwrap().len())
+            .collect()
+    }
+
+    fn saved(d: &mut Document, p: &std::path::Path) -> String {
+        d.save(SaveOptions::default()).unwrap();
+        std::fs::read_to_string(p).unwrap()
+    }
+
+    /// Both edit paths: one cell at a time and a bulk change (patches).
+    fn set(d: &mut Document, bulk: bool, row: u64, col: u32, v: &str) {
+        if bulk {
+            let id = d.id_at(row).unwrap();
+            let states = d
+                .patch_states(vec![(id, vec![(col, v.to_string())])])
+                .unwrap();
+            if !states.is_empty() {
+                d.push(Op::Restore(states));
+            }
+        } else {
+            d.set_cell(row, col, v.to_string()).unwrap();
+        }
+    }
+
+    #[test]
+    fn editing_inside_a_row_never_pads_or_cuts_it() {
+        for bulk in [false, true] {
+            let (mut d, p) = open();
+            set(&mut d, bulk, 1, 0, "x");
+            set(&mut d, bulk, 2, 3, "");
+            assert_eq!(widths(&d), [3, 1, 4, 3], "bulk {bulk}");
+            assert_eq!(
+                saved(&mut d, &p),
+                "a,b,c\nx\n1,2,3,\n5,6,7\n",
+                "bulk {bulk}"
+            );
+        }
+    }
+
+    #[test]
+    fn emptying_a_cell_the_row_does_not_have_changes_nothing() {
+        for bulk in [false, true] {
+            let (mut d, p) = open();
+            set(&mut d, bulk, 1, 2, "");
+            set(&mut d, bulk, 3, 3, "");
+            assert_eq!(widths(&d), [3, 1, 4, 3], "bulk {bulk}");
+            assert_eq!(saved(&mut d, &p), BODY, "bulk {bulk}");
+        }
+        // Delete over a block that covers padded cells.
+        let (mut d, p) = open();
+        d.set_cells(vec![
+            (1, 0, String::new()),
+            (1, 1, String::new()),
+            (1, 2, String::new()),
+        ])
+        .unwrap();
+        assert_eq!(widths(&d), [3, 1, 4, 3]);
+        assert_eq!(saved(&mut d, &p), "a,b,c\n\n1,2,3,4\n5,6,7\n");
+    }
+
+    #[test]
+    fn typed_text_stays_and_clearing_it_returns_the_row_to_its_file_width() {
+        for first_bulk in [false, true] {
+            for then_bulk in [false, true] {
+                let (mut d, p) = open();
+                set(&mut d, first_bulk, 1, 2, "z");
+                assert_eq!(widths(&d), [3, 3, 4, 3]);
+                assert_eq!(d.cell(1, 2).as_deref(), Some("z"));
+                set(&mut d, then_bulk, 1, 2, "");
+                let how = format!("bulk {first_bulk} then {then_bulk}");
+                assert_eq!(widths(&d), [3, 1, 4, 3], "{how}");
+                // Undo brings the text back, redo takes it away again, each in one step.
+                assert!(d.undo());
+                assert_eq!(widths(&d), [3, 3, 4, 3], "{how}");
+                assert_eq!(d.cell(1, 2).as_deref(), Some("z"), "{how}");
+                assert!(d.redo());
+                assert_eq!(widths(&d), [3, 1, 4, 3], "{how}");
+                assert_eq!(saved(&mut d, &p), BODY, "{how}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_row_is_cut_back_only_when_every_cell_past_its_width_is_empty() {
+        for bulk in [false, true] {
+            let (mut d, p) = open();
+            set(&mut d, bulk, 1, 1, "y");
+            set(&mut d, bulk, 1, 2, "z");
+            set(&mut d, bulk, 1, 2, "");
+            assert_eq!(widths(&d), [3, 3, 4, 3], "bulk {bulk}");
+            assert_eq!(
+                saved(&mut d, &p),
+                "a,b,c\n1,y,\n1,2,3,4\n5,6,7\n",
+                "bulk {bulk}"
+            );
+        }
+    }
+
+    fn paste(d: &mut Document, row: u64, col: u32, grid: &[&[&str]]) {
+        let spec = crate::ops::PasteSpec {
+            row,
+            col,
+            ..Default::default()
+        };
+        let grid = grid
+            .iter()
+            .map(|r| r.iter().map(|v| v.to_string()).collect())
+            .collect();
+        let plan = d.plan_paste(&spec, grid, &Progress::new()).unwrap();
+        d.apply_cells(plan).unwrap();
+    }
+
+    #[test]
+    fn paste_over_padded_cells_pads_only_for_text() {
+        let (mut d, p) = open();
+        paste(&mut d, 1, 1, &[&["", ""]]);
+        assert_eq!(widths(&d), [3, 1, 4, 3]);
+        assert_eq!(saved(&mut d, &p), BODY);
+        let (mut d, p) = open();
+        paste(&mut d, 1, 1, &[&["y", ""]]);
+        assert_eq!(widths(&d), [3, 2, 4, 3]);
+        // Pasting empties back over it returns the row to its file bytes.
+        paste(&mut d, 1, 1, &[&["", ""]]);
+        assert_eq!(widths(&d), [3, 1, 4, 3]);
+        assert!(d.undo());
+        assert_eq!(widths(&d), [3, 2, 4, 3]);
+        assert!(d.redo());
+        assert_eq!(saved(&mut d, &p), BODY);
+    }
+
+    #[test]
+    fn replace_all_that_empties_an_added_cell_returns_the_row_to_its_width() {
+        let (mut d, p) = open();
+        d.set_cell(1, 2, "gone".into()).unwrap();
+        let spec = crate::find::FindSpec {
+            pattern: crate::find::Pattern {
+                text: "gone".into(),
+                ..Default::default()
+            },
+            scope: crate::find::Scope::All,
+            ..Default::default()
+        };
+        d.replace_all(&spec, "").unwrap();
+        assert_eq!(widths(&d), [3, 1, 4, 3]);
+        assert!(d.undo());
+        assert_eq!(d.cell(1, 2).as_deref(), Some("gone"));
+        assert!(d.redo());
+        assert_eq!(saved(&mut d, &p), BODY);
     }
 }
