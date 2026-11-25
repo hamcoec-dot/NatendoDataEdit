@@ -180,7 +180,11 @@ impl<'a> ReadCtx<'a> {
 /// zeros comes after (`123` < `0123` < `00123`); the rest compares as text. A total order (ties are equal
 /// texts only), so sorting is stable and deterministic.
 pub fn id_order(a: &str, b: &str) -> Ordering {
-    let (x, y) = (a.as_bytes(), b.as_bytes());
+    id_order_bytes(a.as_bytes(), b.as_bytes())
+}
+
+/// [`id_order`] on the bytes of two texts.
+pub fn id_order_bytes(x: &[u8], y: &[u8]) -> Ordering {
     let (mut i, mut j) = (0, 0);
     // First difference found while the numbers had the same value: more leading zeros sorts after.
     let mut zeros: Ordering = Ordering::Equal;
@@ -220,7 +224,7 @@ pub fn id_order(a: &str, b: &str) -> Ordering {
     (x.len() - i)
         .cmp(&(y.len() - j))
         .then(zeros)
-        .then_with(|| a.cmp(b))
+        .then_with(|| x.cmp(y))
 }
 
 #[cfg(test)]

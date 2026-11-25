@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::coltype::{ColumnType, ReadCtx};
 use crate::document::{Document, Progress};
 use crate::value::{self, ReadOptions};
 use crate::Error;
@@ -125,10 +126,14 @@ enum Mode {
     Length,
     LastWord,
     List,
+    /// An identifier column: digit runs by value, more leading zeros after, exact text.
+    Id,
 }
 
 struct Key {
     phys: Option<u32>,
+    /// The type of the column (what a number or a date read of it gives).
+    ty: ColumnType,
     mode: Mode,
     desc: bool,
     case: bool,
@@ -193,14 +198,19 @@ fn cut_key(k: &str, natural: bool) -> (&[u8], bool) {
 
 impl Key {
     /// Class, number and full text key of one cell.
-    fn read(&self, s: &str, read: ReadOptions, text: &mut String) -> (u8, f64) {
+    fn read(&self, s: &str, ctx: &ReadCtx, text: &mut String) -> (u8, f64) {
         text.clear();
         if s.is_empty() {
             return (BLANK, 0.0);
         }
+        if self.mode == Mode::Id {
+            // Exact text: no folding, no trimming.
+            text.push_str(s);
+            return (TEXT, 0.0);
+        }
         let n = match self.mode {
-            Mode::Number => value::parse_number(s, read),
-            Mode::Date => value::parse_date(s, read),
+            Mode::Number => ctx.number_as(self.ty, s),
+            Mode::Date => ctx.date_as(self.ty, s),
             Mode::Length => Some(s.chars().count() as f64),
             Mode::List => {
                 folded(s.trim(), text);
@@ -208,7 +218,7 @@ impl Key {
                     .as_ref()
                     .and_then(|l| l.get(text.as_str()).copied())
             }
-            Mode::Text | Mode::Natural | Mode::LastWord => None,
+            Mode::Text | Mode::Natural | Mode::LastWord | Mode::Id => None,
         };
         if let Some(v) = n {
             text.clear();
@@ -225,7 +235,10 @@ impl Key {
 
     /// Text is compared with digit runs by value.
     fn natural(&self) -> bool {
-        matches!(self.mode, Mode::Natural | Mode::LastWord | Mode::List)
+        matches!(
+            self.mode,
+            Mode::Natural | Mode::LastWord | Mode::List | Mode::Id
+        )
     }
 
     /// Keeps a number per row.
@@ -237,7 +250,9 @@ impl Key {
     }
 
     fn text_cmp(&self, a: &[u8], b: &[u8]) -> Ordering {
-        if self.natural() {
+        if self.mode == Mode::Id {
+            crate::coltype::id_order_bytes(a, b)
+        } else if self.natural() {
             value::natural_cmp(a, b)
         } else {
             a.cmp(b)
@@ -312,7 +327,7 @@ impl Keys<'_> {
             let mut buf = Vec::new();
             self.doc.read_cells(id, &[p], &mut buf);
             let mut k = String::new();
-            key.read(&buf[0], self.read, &mut k);
+            key.read(&buf[0], &self.doc.read_ctx(self.read), &mut k);
             k
         };
         key.text_cmp(text(a).as_bytes(), text(b).as_bytes())
@@ -346,10 +361,24 @@ impl Keys<'_> {
 
 impl Document {
     /// Pick an ordering for column `phys` from a sample of rows.
-    fn auto_mode(&self, phys: Option<u32>, rows: std::ops::Range<u64>, read: ReadOptions) -> Mode {
+    fn auto_mode(
+        &self,
+        phys: Option<u32>,
+        col: u32,
+        rows: std::ops::Range<u64>,
+        ctx: &ReadCtx,
+    ) -> Mode {
         let Some(p) = phys else {
             return Mode::Natural;
         };
+        // A column the person typed is not guessed again.
+        match ctx.type_of(col) {
+            ColumnType::Id => return Mode::Id,
+            ColumnType::Text => return Mode::Natural,
+            ColumnType::Number => return Mode::Number,
+            ColumnType::Date(_) => return Mode::Date,
+            ColumnType::Auto => {}
+        }
         let n = rows.end - rows.start;
         let step = (n / SAMPLE).max(1);
         let (mut seen, mut nums, mut dates) = (0u32, 0u32, 0u32);
@@ -361,9 +390,9 @@ impl Document {
                 let s = buf[0].trim();
                 if !s.is_empty() {
                     seen += 1;
-                    if value::parse_number(s, read).is_some() {
+                    if ctx.number(col, s).is_some() {
                         nums += 1;
-                    } else if value::parse_date(s, read).is_some() {
+                    } else if ctx.date(col, s).is_some() {
                         dates += 1;
                     }
                 }
@@ -415,6 +444,7 @@ impl Document {
         let total = self.total_rows();
         let first = u64::from(spec.keep_first && total > 0);
         let n = (total - first) as usize;
+        let ctx = self.read_ctx(spec.read);
         let keys: Vec<Key> = spec
             .keys
             .iter()
@@ -424,8 +454,9 @@ impl Document {
                     .flatten();
                 Ok(Key {
                     phys,
+                    ty: ctx.type_of(k.col),
                     mode: match k.kind {
-                        SortKind::Auto => self.auto_mode(phys, first..total, spec.read),
+                        SortKind::Auto => self.auto_mode(phys, k.col, first..total, &ctx),
                         SortKind::Text => Mode::Text,
                         SortKind::Natural => Mode::Natural,
                         SortKind::Number => Mode::Number,
@@ -465,7 +496,7 @@ impl Document {
                     self.read_cells(id, &wanted, &mut buf);
                     for (k, key) in keys.iter().enumerate() {
                         let cell = slots[k].map_or("", |s| &buf[s]);
-                        let (class, num) = key.read(cell, spec.read, &mut text);
+                        let (class, num) = key.read(cell, &ctx, &mut text);
                         let col = &mut cols[k];
                         col.class.push(class);
                         if key.numeric() {
@@ -750,10 +781,11 @@ mod tests {
                 SortKind::Text => Mode::Text,
                 SortKind::Natural => Mode::Natural,
                 SortKind::Number => Mode::Number,
-                _ => d.auto_mode(Some(0), 0..d.total_rows(), ReadOptions::default()),
+                _ => d.auto_mode(Some(0), 0, 0..d.total_rows(), &d.read_ctx(ReadOptions::default())),
             };
-            let key = Key { phys: Some(0), mode, desc, case: false, list: None };
-            let class = |s: &str| { let mut t = String::new(); let (c, n) = key.read(s, ReadOptions::default(), &mut t); (c, n, t) };
+            let key = Key { phys: Some(0), ty: ColumnType::Auto, mode, desc, case: false, list: None };
+            let plain = ReadCtx::plain(ReadOptions::default());
+            let class = |s: &str| { let mut t = String::new(); let (c, n) = key.read(s, &plain, &mut t); (c, n, t) };
             want.sort_by(|a, b| {
                 let (ca, na, ta) = class(a);
                 let (cb, nb, tb) = class(b);
