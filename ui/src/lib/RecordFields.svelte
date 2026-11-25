@@ -53,8 +53,26 @@
     return () => ro.disconnect();
   });
 
+  /** A value with a line break edits in a textarea: a one-line box would drop the break. */
+  const multi = (c: number) => (values[c] ?? "").includes("\n") || (original[c] ?? "").includes("\n");
+
   function key(e: KeyboardEvent, c: number): void {
-    const el = e.currentTarget as HTMLInputElement;
+    const el = e.currentTarget as HTMLInputElement | HTMLTextAreaElement;
+    if (el instanceof HTMLTextAreaElement) {
+      // Enter adds a line; Ctrl+Enter saves; Escape puts the value back.
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (values[c] !== original[c]) onCommit?.(c);
+      } else if (e.key === "Enter" || e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.stopPropagation();
+      } else if (e.key === "Escape" && values[c] !== original[c]) {
+        e.preventDefault();
+        e.stopPropagation();
+        values[c] = original[c] ?? "";
+        onRevert?.(c);
+      }
+      return;
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       if (values[c] !== original[c]) onCommit?.(c);
@@ -85,21 +103,39 @@
       {:else}
         <span class="name" title={name(c)}>{name(c)}</span>
       {/if}
-      <input
-        class="value"
-        class:changed={values[c] !== original[c]}
-        type="text"
-        aria-label={name(c)}
-        disabled={why !== ""}
-        title={why}
-        bind:value={values[c]}
-        onfocus={() => onEditing?.(c)}
-        onblur={() => {
-          onEditing?.(null);
-          if (values[c] !== original[c]) onCommit?.(c);
-        }}
-        onkeydown={(e) => key(e, c)}
-      />
+      {#if multi(c)}
+        <textarea
+          class="value multi"
+          class:changed={values[c] !== original[c]}
+          rows="1"
+          aria-label={name(c)}
+          disabled={why !== ""}
+          title={why || "A value with line breaks: Enter adds a line, Ctrl+Enter saves"}
+          bind:value={values[c]}
+          onfocus={() => onEditing?.(c)}
+          onblur={() => {
+            onEditing?.(null);
+            if (values[c] !== original[c]) onCommit?.(c);
+          }}
+          onkeydown={(e) => key(e, c)}
+        ></textarea>
+      {:else}
+        <input
+          class="value"
+          class:changed={values[c] !== original[c]}
+          type="text"
+          aria-label={name(c)}
+          disabled={why !== ""}
+          title={why}
+          bind:value={values[c]}
+          onfocus={() => onEditing?.(c)}
+          onblur={() => {
+            onEditing?.(null);
+            if (values[c] !== original[c]) onCommit?.(c);
+          }}
+          onkeydown={(e) => key(e, c)}
+        />
+      {/if}
       {#if onExpand && ((values[c] ?? "").length > LONG || (values[c] ?? "").includes("\n"))}
         <button type="button" class="more" title="Open this long value in a bigger editor" aria-label={`Open ${name(c)} in a bigger editor`} onclick={() => onExpand(c)}>⤢</button>
       {/if}
@@ -159,6 +195,18 @@
     border-radius: 5px;
     padding: 2px 6px;
     min-width: 0;
+  }
+  textarea.value {
+    resize: none;
+    height: 26px;
+    overflow: auto;
+    box-sizing: border-box;
+    line-height: 1.3;
+  }
+  textarea.value:focus {
+    height: 90px;
+    position: relative;
+    z-index: 2;
   }
   .value.changed {
     border-color: var(--accent);

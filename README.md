@@ -1121,7 +1121,10 @@ selection, a column or the whole table:
   editing in place: Enter or leaving a field saves it as one undo step, Esc
   puts it back. Protected columns and locked files show the field disabled
   with the reason; a long value opens in a bigger editor. The panel reads one
-  row at a time, so it costs nothing on a big file.
+  row at a time, so it costs nothing on a big file. A value with a line break
+  edits in a multi-line box (Enter adds a line, Ctrl+Enter saves). Page Up, Page
+  Down and the buttons always flip rows; on some PCs the graphics driver turns
+  the screen round on Ctrl+Alt+arrows, so use those instead.
 
 ![The Record panel beside a table of made-up names](docs/screenshots/record-panel.png)
 - **Recipe questions:** in the steps panel, press ? on a step to have the

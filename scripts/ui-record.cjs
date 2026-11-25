@@ -32,6 +32,7 @@ const url = process.argv[3] || "http://localhost:5261";
     await p.waitForTimeout(400);
   };
   const TAB = String.fromCharCode(9);
+  const NL = String.fromCharCode(10);
   const EOL = String.fromCharCode(13, 10);
   const lines = [["Name", "City", "Notes", "Age"]];
   for (let i = 0; i < 20; i++) lines.push([`Person${i}`, `City${i % 5}`, i === 3 ? "x".repeat(200) : `note ${i}`, String(20 + i)]);
@@ -95,6 +96,36 @@ const url = process.argv[3] || "http://localhost:5261";
   await field("Age").focus();
   await p.waitForTimeout(500);
   ok((await cell(8, 0)) === "Zed", "leaving a changed field saves it");
+
+  // Typing in a field and flipping rows by keyboard: the typed value is saved into the row it was typed in.
+  await sel(8, 0);
+  await p.waitForTimeout(400);
+  const nextNote = await cell(9, 2);
+  await field("Notes").fill("typed-note");
+  await p.keyboard.press("Control+Alt+ArrowDown");
+  await p.waitForTimeout(700);
+  ok((await cell(8, 2)) === "typed-note", "a field typed in before a keyboard flip is saved into its own row");
+  ok((await cell(9, 2)) === nextNote, "and the next row is not touched");
+  ok((await field("Name").inputValue()) === "Person8", "the panel then shows the next row");
+
+  // A value with a line break edits in a textarea and keeps the break.
+  await p.evaluate(async () => {
+    const t = window.__nde.tab;
+    t.update(await window.__nde.backend.setCells(t.id, [[6, 2, "12 Main St" + String.fromCharCode(10) + "Apt 4"]]), true);
+  });
+  await sel(6, 0);
+  await p.waitForTimeout(500);
+  const ta = panel().locator("textarea.value");
+  ok((await ta.count()) === 1, "a value with a line break gets a multi-line box");
+  await ta.fill("12 Main St" + NL + "Apt 4B");
+  await ta.press("Control+Enter");
+  await p.waitForTimeout(500);
+  ok((await cell(6, 2)) === "12 Main St" + NL + "Apt 4B", "the line break survives an edit");
+  // Leaving a multi-line field unchanged does not rewrite it.
+  await field("Name").focus();
+  await field("Name").press("Tab");
+  await p.waitForTimeout(300);
+  ok((await cell(6, 2)) === "12 Main St" + NL + "Apt 4B", "leaving it alone keeps it");
 
   await sel(4, 0);
   await p.waitForTimeout(400);

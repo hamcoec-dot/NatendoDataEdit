@@ -49,9 +49,13 @@
     }
     const mine = ++seq;
     const frame = requestAnimationFrame(() => {
-      backend()
-        .copyCells(d, r, 1, 0, count)
+      // What was typed belongs to the row it was typed in: save it there before this row replaces it (a flip by
+      // keyboard leaves the field without a blur).
+      const settle = loadedRow >= 0 && loadedRow !== r ? flushDirty() : Promise.resolve();
+      void settle
+        .then(() => (mine === seq ? backend().copyCells(d, r, 1, 0, count) : null))
         .then((text) => {
+          if (text === null) return;
           if (mine !== seq) return;
           const line = parseTsv(text)[0] ?? [];
           const fresh = Array.from({ length: count }, (_, i) => line[i] ?? "");
@@ -88,19 +92,29 @@
   const pos = $derived(tab.header && row === 0 ? "Title row" : `Row ${(row - tab.firstRow + 1).toLocaleString()} of ${Math.max(0, tab.info.rows - tab.firstRow).toLocaleString()} shown`);
 
   // ---- editing ----
-  async function commit(c: number): Promise<void> {
-    const text = values[c] ?? "";
-    if (text === original[c] || reason(c) !== "") return;
-    const at = row;
+  /** Save changed fields into `at` (the row they were read from, never the row the grid is on now). One undo step. */
+  async function saveCells(at: number, cols: number[]): Promise<void> {
+    const cells: [number, number, string][] = cols.map((c) => [at, c, values[c] ?? ""]);
+    const sent = cells.map(([, c, t]) => [c, t] as const);
     try {
-      const d = await backend().setCells(doc, [[at, c, text]]);
-      original[c] = text;
+      const d = await backend().setCells(doc, cells);
+      // Only the row still on screen is updated: another row has already replaced it.
+      if (loadedRow === at) for (const [c, t] of sent) if (values[c] === t) original[c] = t;
       problem = "";
       onInfo(d);
     } catch (e) {
       problem = errorText(e);
-      values[c] = original[c] ?? "";
+      if (loadedRow === at) for (const [c] of sent) values[c] = original[c] ?? "";
     }
+  }
+  const dirtyCols = (): number[] => values.flatMap((v, c) => (v !== original[c] && reason(c) === "" ? [c] : []));
+  async function flushDirty(): Promise<void> {
+    const cols = dirtyCols();
+    if (cols.length && loadedRow >= 0) await saveCells(loadedRow, cols);
+  }
+  async function commit(c: number): Promise<void> {
+    if ((values[c] ?? "") === original[c] || reason(c) !== "" || loadedRow < 0) return;
+    await saveCells(loadedRow, [c]);
   }
 
   // ---- long values ----
@@ -108,7 +122,7 @@
   async function expand(c: number): Promise<void> {
     try {
       const full = await backend().cellText(doc, row, c);
-      big = { col: c, text: full.text, row };
+      big = { col: c, text: full.text, row: loadedRow >= 0 ? loadedRow : row };
     } catch (e) {
       problem = errorText(e);
     }
