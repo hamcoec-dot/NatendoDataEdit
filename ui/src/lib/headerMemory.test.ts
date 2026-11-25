@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { HEADER_MEMORY_MAX, forgetHeaders, pathKey, recallHeader, recallPad, rememberedHeaders, rememberHeader, rememberPad } from "./headerMemory";
+import { HEADER_MEMORY_MAX, forgetHeaders, pathKey, recallHeader, recallColumnTypes, recallPad, rememberColumnTypes, rememberedHeaders, rememberHeader, rememberPad } from "./headerMemory";
 
 describe("first row is headers, remembered per file", () => {
   const store = new Map<string, string>();
@@ -73,6 +73,24 @@ describe("first row is headers, remembered per file", () => {
     expect(kept).not.toMatch(/ids|Data|xlsx/i);
     forgetHeaders();
     expect(store.has("nde.padzeros.v1")).toBe(false);
+  });
+
+  it("remembers a file's column types as a fingerprint and the types only, and never for a private file", async () => {
+    expect(await recallColumnTypes("C:/Data/voters.csv")).toBeNull();
+    await rememberColumnTypes("C:/Data/voters.csv", { cols: 4, types: ["id", "auto", "number"] });
+    expect(await recallColumnTypes("c:/data/VOTERS.csv")).toEqual({ cols: 4, types: ["id", "auto", "number"] });
+    const kept = store.get("nde.coltypes.v1") ?? "";
+    expect(kept).not.toMatch(/voters|Data|csv/i);
+    // All Auto: nothing to keep. A private file: the earlier entry is dropped and nothing is written.
+    await rememberColumnTypes("C:/Data/voters.csv", { cols: 4, types: ["auto", "auto"] });
+    expect(await recallColumnTypes("C:/Data/voters.csv")).toBeNull();
+    await rememberColumnTypes("C:/Data/voters.csv", { cols: 4, types: ["id"] });
+    await rememberColumnTypes("C:/Data/voters.csv", { cols: 4, types: ["id"] }, true);
+    expect(await recallColumnTypes("C:/Data/voters.csv")).toBeNull();
+    // forgetting everything clears them too
+    await rememberColumnTypes("C:/Data/a.csv", { cols: 2, types: ["text"] });
+    forgetHeaders();
+    expect(store.has("nde.coltypes.v1")).toBe(false);
   });
 
   it("survives a damaged store", async () => {
