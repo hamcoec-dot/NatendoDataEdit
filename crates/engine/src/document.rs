@@ -2656,7 +2656,7 @@ mod tests {
             let mut marks: Vec<(u64, Vec<Vec<String>>)> = vec![(d.step_mark(), all(&d))];
             for step in 0..60 {
                 match rnd(9) {
-                    0 | 1 | 2 => {
+                    0..=2 => {
                         let r = rnd(d.row_count().max(1));
                         let big = "y".repeat(rnd(800) as usize);
                         let _ = d.set_cell(r, rnd(3) as u32, format!("v{step}{big}"));
