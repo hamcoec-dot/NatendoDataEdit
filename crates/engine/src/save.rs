@@ -1384,6 +1384,27 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// B4: a save that rewrites the file starts the undo history again, so every mark made before it is gone.
+    #[test]
+    fn a_save_ends_every_mark() {
+        let dir = tmpdir("marks");
+        let p = dir.join("m.csv");
+        fs::write(&p, b"a,b\n1,2\n").unwrap();
+        let mut d = Document::open_indexed(&p, OpenOptions::default(), None).unwrap();
+        let start = d.step_mark();
+        d.set_cell(1, 0, "x".into()).unwrap();
+        let edited = d.step_mark();
+        assert!(d.step_reach(start).is_some() && d.step_reach(edited).is_some());
+        d.save(SaveOptions::default()).unwrap();
+        assert_eq!(d.step_reach(start), None);
+        assert_eq!(d.step_reach(edited), None);
+        assert!(!d.go_to_mark(edited));
+        // The new history has marks of its own.
+        let now = d.step_mark();
+        assert_eq!(d.step_reach(now), Some(0));
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn edited_rows_rewritten_others_raw() {
         let src = b"a , b\r\n\"q\",x\n1,2";

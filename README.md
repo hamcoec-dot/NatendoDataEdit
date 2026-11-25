@@ -1147,6 +1147,39 @@ selection, a column or the whole table:
   Windows-1252 byte, those bytes are valid UTF-8, and the result has fewer odd characters;
   real text such as `café` is never touched. The five bytes Windows-1252 leaves undefined read as
   Latin-1 controls.
+- **Record panel** (View > Record panel, Alt+R): the row of the active cell as a
+  list of fields, beside the table. It follows the selection (Page Up and Page
+  Down in the panel, or Ctrl+Alt+Up and Ctrl+Alt+Down anywhere, flip to the
+  previous or next row), has a search box over titles and values, a star to
+  pin a field to the top (kept with the view, by title), hidden columns shown
+  dimmed on request, a click on a title to jump the grid to that cell, and
+  editing in place: Enter or leaving a field saves it as one undo step, Esc
+  puts it back. Protected columns and locked files show the field disabled
+  with the reason; a long value opens in a bigger editor. The panel reads one
+  row at a time, so it costs nothing on a big file. A value with a line break
+  edits in a multi-line box (Enter adds a line, Ctrl+Enter saves). Page Up, Page
+  Down and the buttons always flip rows; on some PCs the graphics driver turns
+  the screen round on Ctrl+Alt+arrows, so use those instead.
+
+![The Record panel beside a table of made-up names](docs/screenshots/record-panel.png)
+- **Checkpoints** (Edit > Name this moment, Ctrl+Alt+K; the list is at the top of
+  the Steps panel): name how the table looks now and come back to it later in
+  one jump, forward or back. A checkpoint is a name and a mark in the undo
+  history, a few bytes: nothing of the table is copied, so it costs nothing on a
+  10,000,000-row file. The app also names a moment before risky changes (Replace
+  all, batch replace, remove duplicates, blank rows or columns, Split into rows,
+  Merge rows, a clean-up, Delete hidden rows, deleting several rows, a paste of
+  1,000 cells or more, a join, an append, matching people, taking changes from a
+  newer file) as "Before ...": 20 at most per tab, the oldest goes first, yours
+  stay. Going to a checkpoint keeps the moment you left as "Before restoring ...",
+  so the way back is one click. **Limits:** a checkpoint is greyed ("no longer
+  reachable") when the undo history is trimmed past it (10,000 steps or 512 MB),
+  when a new change replaces what you had undone, and when you save the file,
+  because saving starts the undo history again. Checkpoints are not saved to disk
+  and go when the tab closes.
+
+![Checkpoints at the top of the Steps panel](docs/screenshots/checkpoints.png)
+
 - **Recipe questions:** in the steps panel, press ? on a step to have the
   recipe ask for one of its values each time it runs ("Which county?",
   "Election date?"), with the last answer filled in. One recipe then serves

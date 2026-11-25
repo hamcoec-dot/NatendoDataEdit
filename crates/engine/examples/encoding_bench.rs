@@ -80,15 +80,25 @@ fn main() {
     let _ = t;
     println!("scan: best {mb_s:.0} MB/s over the whole file");
     let latin = Encoding::from_label("windows-1252").unwrap();
-    best("Apply in place (UTF-8 to Windows-1252 and back)", repeats, || {
-        d.set_encoding(latin).unwrap();
-        d.set_encoding(Encoding::Utf8).unwrap();
-        d.undo();
-        d.undo();
-        0
-    });
-    let head: Vec<u8> = std::fs::read(&path).unwrap().into_iter().take(512 * 1024).collect();
-    best("scrub preview (8 rows of the first 512 KB)", repeats, || {
-        d.preview_decoded(&head, latin, 8).unwrap().len() as u64
-    });
+    best(
+        "Apply in place (UTF-8 to Windows-1252 and back)",
+        repeats,
+        || {
+            d.set_encoding(latin).unwrap();
+            d.set_encoding(Encoding::Utf8).unwrap();
+            d.undo();
+            d.undo();
+            0
+        },
+    );
+    let head: Vec<u8> = std::fs::read(&path)
+        .unwrap()
+        .into_iter()
+        .take(512 * 1024)
+        .collect();
+    best(
+        "scrub preview (8 rows of the first 512 KB)",
+        repeats,
+        || d.preview_decoded(&head, latin, 8).unwrap().len() as u64,
+    );
 }

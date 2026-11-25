@@ -92,6 +92,10 @@ function generated(row: number, col: number): string {
   }
 }
 
+/** Unique, rising marks for undo steps (the engine's step ids) and for checkpoints. */
+let markSeq = 0;
+const markOf = new WeakMap<object, number>();
+
 interface MockDoc {
   info: DocInfo;
   /** What the data revision was worked out from (see refresh). */
@@ -108,6 +112,10 @@ interface MockDoc {
   edits: Map<string, string>;
   undo: { apply: () => () => void; inverse: () => void }[];
   redo: (() => () => void)[];
+  /** Checkpoints: named moments, by mark (see `markOf`). */
+  checkpoints?: { id: number; name: string; mark: number; auto: boolean }[];
+  /** The mark of the state before the oldest undo step (new again after a save). */
+  baseMark?: number;
   clean: number;
   /** Filter: ids of shown rows (new rows always show), and its rules. */
   shown: Set<number> | null;
@@ -810,6 +818,7 @@ export class MockBackend implements Backend {
     d.info.can_undo = d.undo.length > 0;
     d.info.can_redo = d.redo.length > 0;
     d.info.history_pos = d.undo.length;
+    d.info.step_mark = this.markNow(d);
     // Like the engine: steps that only change which rows show (a filter)
     // leave the document saved.
     const n = d.undo.length;
@@ -850,6 +859,7 @@ export class MockBackend implements Backend {
     if (d.info.peeking) throw err("peeking", "looking at an earlier recipe step: go back to the latest step to change or save");
     const inverse = apply();
     d.undo.push({ apply, inverse });
+    markOf.set(apply, ++markSeq);
     if (d.clean > d.undo.length - 1) d.clean = -1;
     d.redo = [];
     return this.refresh(d);
@@ -1144,6 +1154,7 @@ export class MockBackend implements Backend {
     // Like the engine: saving clears the undo history.
     d.undo = [];
     d.redo = [];
+    d.baseMark = ++markSeq;
     d.clean = 0;
     return this.refresh(d);
   }
@@ -3823,6 +3834,65 @@ export class MockBackend implements Backend {
     this.get(doc);
     const s = this.stepsOf(doc);
     return { steps: s.rows.map((r, i) => ({ ...r, done: i < s.at })), at: s.at, hand_changes: false, questions: s.questions };
+  }
+  private markNow(d: MockDoc): number {
+    d.baseMark ??= ++markSeq;
+    const top = d.undo[d.undo.length - 1];
+    return top ? (markOf.get(top.apply) ?? 0) : d.baseMark;
+  }
+  /** Undos (negative) or redos (positive) to reach a mark, or null when the history does not. */
+  private reach(d: MockDoc, mark: number): number | null {
+    const at = d.undo.map((s) => markOf.get(s.apply)).lastIndexOf(mark);
+    if (at >= 0) return -(d.undo.length - 1 - at);
+    if (mark === (d.baseMark ??= ++markSeq)) return -d.undo.length;
+    const r = [...d.redo].reverse().findIndex((a) => markOf.get(a) === mark);
+    return r >= 0 ? r + 1 : null;
+  }
+  private cpList(d: MockDoc): import("./backend").Checkpoint[] {
+    const now = this.markNow(d);
+    return (d.checkpoints ?? []).map((c) => ({ id: c.id, name: c.name, auto: c.auto, reachable: this.reach(d, c.mark) !== null, steps: this.reach(d, c.mark) ?? 0, current: c.mark === now }));
+  }
+  async checkpointList(doc: number): Promise<import("./backend").Checkpoint[]> {
+    return this.cpList(this.get(doc));
+  }
+  async checkpointAdd(doc: number, name: string): Promise<import("./backend").Checkpoint[]> {
+    const d = this.get(doc);
+    const n = name.trim().slice(0, 100);
+    if (!n) throw err("invalid", "give the checkpoint a name");
+    const mark = this.markNow(d);
+    const list = (d.checkpoints ??= []);
+    const auto = list.find((c) => c.mark === mark && c.auto);
+    if (auto) Object.assign(auto, { auto: false, name: n });
+    else list.push({ id: ++markSeq, name: n, mark, auto: false });
+    return this.cpList(d);
+  }
+  async checkpointRemove(doc: number, checkpoint: number): Promise<import("./backend").Checkpoint[]> {
+    const d = this.get(doc);
+    d.checkpoints = (d.checkpoints ?? []).filter((c) => c.id !== checkpoint);
+    return this.cpList(d);
+  }
+  async checkpointRestore(doc: number, checkpoint: number): Promise<DocInfo> {
+    const d = this.get(doc);
+    const c = (d.checkpoints ?? []).find((x) => x.id === checkpoint);
+    if (!c) throw err("invalid", "there is no such checkpoint");
+    const leaving = this.markNow(d);
+    const n = this.reach(d, c.mark);
+    if (n === null) throw err("invalid", "that checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or the file was saved");
+    for (let i = 0; i < Math.abs(n); i++) {
+      if (n < 0) {
+        const step = d.undo.pop();
+        if (step) {
+          step.inverse();
+          d.redo.push(step.apply);
+        }
+      } else {
+        const apply = d.redo.pop();
+        if (apply) d.undo.push({ apply, inverse: apply() });
+      }
+    }
+    d.info.peeking = false;
+    if (leaving !== c.mark && !(d.checkpoints ?? []).some((x) => x.mark === leaving)) d.checkpoints!.push({ id: ++markSeq, name: `Before restoring \u201c${c.name}\u201d`, mark: leaving, auto: true });
+    return this.refresh(d);
   }
   async stepsGoto(doc: number, k: number | null): Promise<DocInfo> {
     const s = this.stepsOf(doc);

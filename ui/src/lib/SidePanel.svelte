@@ -6,11 +6,12 @@
   import { untrack } from "svelte";
   import { backend, type DocInfo, type Opened, type ReadOptions, type Rule } from "./backend";
   import FilterPanel from "./FilterPanel.svelte";
+  import RecordPanel from "./RecordPanel.svelte";
   import StepsPanel from "./StepsPanel.svelte";
   import type { Tab } from "./tab.svelte";
   import { TYPE_NAMES, fmt, type ColType, type ChartData, type ChartKind, type Listing, type Summary } from "./views";
 
-  export type PanelTab = "summary" | "chart" | "files" | "activity" | "filters" | "steps";
+  export type PanelTab = "summary" | "chart" | "files" | "activity" | "filters" | "steps" | "record";
 
   interface Props {
     tab: Tab | undefined;
@@ -30,10 +31,13 @@
       confirmLoss: (what: string) => Promise<boolean>;
       onSave: () => void;
       now: () => number;
+      restoreCheckpoint: (c: import("./backend").Checkpoint) => Promise<void>;
     };
+    /** The Record panel's hooks: move the active cell, and take in a changed document. */
+    record: { onGo: (row: number, col: number) => void };
     onClose: () => void;
   }
-  let { tab, which = $bindable(), titles, activity, read, onOpened, onFilterValue, onSetRule, steps, onClose }: Props = $props();
+  let { tab, which = $bindable(), titles, activity, read, onOpened, onFilterValue, onSetRule, steps, record, onClose }: Props = $props();
 
   // ---- summary ----
   let summary = $state<Summary | null>(null);
@@ -208,7 +212,7 @@
 
 <aside class="panel" aria-label="Side panel">
   <div class="tabs" role="tablist">
-    {#each [["summary", "Summary"], ["filters", "Filters"], ["steps", "Steps"], ["chart", "Chart"], ["files", "Files"], ["activity", "Activity"]] as [id, name] (id)}
+    {#each [["summary", "Summary"], ["filters", "Filters"], ["steps", "Steps"], ["record", "Record"], ["chart", "Chart"], ["files", "Files"], ["activity", "Activity"]] as [id, name] (id)}
       <button type="button" role="tab" aria-selected={which === id} class:on={which === id} onclick={() => (which = id as PanelTab)}>{name}</button>
     {/each}
     <span class="spacer"></span>
@@ -219,6 +223,8 @@
       <p class="note">Open a file to see its summary and charts.</p>
     {:else if which === "steps"}
       <StepsPanel {tab} {...steps} />
+    {:else if which === "record"}
+      <RecordPanel {tab} {titles} {...record} />
     {:else if which === "filters"}
       <FilterPanel {tab} {titles} {read} {onSetRule} />
     {:else if which === "summary"}

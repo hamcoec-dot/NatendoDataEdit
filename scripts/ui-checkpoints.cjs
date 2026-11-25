@@ -1,0 +1,235 @@
+// UI test of Checkpoints in the browser stand-in: naming a moment by key and by button, the list at the top of the
+// Steps panel, going back and forward in one jump, the "Before restoring" moment kept, greyed after a newer change
+// replaced what was undone and after a save, forgetting one, and keyboard use.
+// Run: (cd ui && npx vite --port 5271) then NODE_PATH=<folder with playwright> node scripts/ui-checkpoints.cjs [screenshot dir] [url]
+const { chromium } = require("playwright");
+const path = require("path");
+const out = process.argv[2];
+const url = process.argv[3] || "http://localhost:5271";
+(async () => {
+  const b = await chromium.launch({ channel: "msedge" });
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 820 } });
+  const p = await ctx.newPage();
+  const errors = [];
+  p.on("pageerror", (e) => errors.push(String(e)));
+  await p.goto(url);
+  await p.waitForFunction(() => window.__nde, null, { timeout: 10000 });
+  let failed = 0;
+  const ok = (cond, msg) => {
+    if (!cond) failed++;
+    console.log(`${cond ? "PASS" : "FAIL"} ${msg}`);
+  };
+  await p.evaluate(() => window.__nde.reg.run("file.new"));
+  await p.waitForTimeout(500);
+  const TAB = String.fromCharCode(9);
+  const EOL = String.fromCharCode(13, 10);
+  const rows = [["name", "city"]];
+  for (let i = 0; i < 10; i++) rows.push([`Person${i}`, `City${i}`]);
+  await p.evaluate(
+    async (text) => {
+      const t = window.__nde.tab;
+      t.update(await window.__nde.backend.dataOp(t.id, { op: "paste", spec: { row: 0, col: 0, op: "none", skip_blanks: false, transpose: false }, text }).then((r) => r.info), true);
+      t.header = true;
+      t.bump();
+    },
+    rows.map((r) => r.join(TAB)).join(EOL),
+  );
+  await p.waitForTimeout(400);
+  const cell = (r, c) => p.evaluate(async ([r, c]) => (await window.__nde.backend.cellText(window.__nde.tab.id, r, c)).text, [r, c]);
+  const edit = (r, c, text) => p.evaluate(async ([r, c, text]) => window.__nde.tab.update(await window.__nde.backend.setCells(window.__nde.tab.id, [[r, c, text]]), true), [r, c, text]);
+  const items = () => p.getByTestId("checkpoint");
+  const item = (n) => items().filter({ has: p.locator(".n", { hasText: new RegExp(`^${n}$`) }) });
+  const names = async () => (await items().locator(".n").allTextContents()).map((t) => t.trim());
+
+  // Name a moment by key.
+  await p.evaluate(() => window.__nde.grid.select({ row: 1, col: 0 }));
+  await p.keyboard.press("Control+Alt+k");
+  const box = p.getByRole("dialog").getByRole("textbox");
+  await box.waitFor({ timeout: 5000 });
+  await box.fill("clean start");
+  await p.keyboard.press("Enter");
+  await p.getByTestId("checkpoints").waitFor({ timeout: 5000 });
+  await p.waitForTimeout(400);
+  ok(JSON.stringify(await names()) === '["clean start"]', "Ctrl+Alt+K names this moment and the Steps panel lists it");
+  if (out) await p.screenshot({ path: path.join(out, "checkpoints.png") });
+
+  // Change things, name a second moment by the button.
+  await edit(1, 0, "Alpha");
+  await edit(2, 0, "Beta");
+  await p.getByRole("button", { name: "Name this moment" }).click();
+  await p.getByLabel("Checkpoint name").fill("two edits");
+  await p.getByLabel("Checkpoint name").press("Enter");
+  await p.waitForTimeout(400);
+  ok(JSON.stringify(await names()) === '["two edits","clean start"]', "the button names a moment too (newest first)");
+  ok((await items().first().innerText()).includes("now"), "the moment the table is in is marked now");
+
+  // Go back: one jump.
+  await edit(3, 0, "Gamma");
+  await item("clean start").locator("button.go").click();
+  await p.waitForTimeout(500);
+  ok((await cell(1, 0)) === "Person0" && (await cell(2, 0)) === "Person1" && (await cell(3, 0)) === "Person2", "going back to the first checkpoint undoes every edit since in one jump");
+  const after = await names();
+  ok(after.some((n) => n.startsWith("Before restoring")), `the moment left is kept (${after.join(" | ")})`);
+
+  // Forward again to "two edits" (still reachable by redo).
+  await item("two edits").locator("button.go").click();
+  await p.waitForTimeout(500);
+  ok((await cell(1, 0)) === "Alpha" && (await cell(2, 0)) === "Beta" && (await cell(3, 0)) === "Person2", "and forward to the second one");
+  // The one it left (Gamma state) is reachable again through its automatic checkpoint.
+  await items().filter({ hasText: "Before restoring" }).first().locator("button.go").click();
+  await p.waitForTimeout(500);
+  ok((await cell(3, 0)) === "Gamma", "the way back is one click: the Before restoring checkpoint");
+
+  // A newer change after undoing replaces the branch: checkpoints on it are greyed and say why.
+  await item("clean start").locator("button.go").click();
+  await p.waitForTimeout(400);
+  await edit(4, 0, "Delta");
+  await p.waitForTimeout(500);
+  const gone = await p.locator("li.gone").count();
+  ok(gone >= 1, `a new change greys the checkpoints on the replaced branch (${gone} greyed)`);
+  ok((await p.locator("li.gone .tag").first().innerText()).includes("no longer reachable"), "and it says so");
+  ok(await p.locator("li.gone button.go").first().isDisabled(), "a greyed checkpoint cannot be clicked");
+
+  // A save starts the history again: every checkpoint is greyed.
+  await p.evaluate(async () => {
+    const t = window.__nde.tab;
+    t.update(await window.__nde.backend.save(t.id, { saveAs: "x.csv" }).catch(() => window.__nde.backend.save(t.id, {})), true);
+  });
+  await p.waitForTimeout(500);
+  const all = await items().count();
+  ok(all > 0 && (await p.locator("li.gone").count()) === all, "after a save every checkpoint is greyed");
+
+  // Forget one (the table does not change).
+  const before = await items().count();
+  const cellBefore = await cell(4, 0);
+  await items().first().locator("button.x").click();
+  await p.waitForTimeout(300);
+  ok((await items().count()) === before - 1 && (await cell(4, 0)) === cellBefore, "forgetting a checkpoint leaves the table alone");
+
+  // Keyboard only: name with the key, Esc cancels the name box.
+  await p.keyboard.press("Control+Alt+k");
+  await box.waitFor({ timeout: 5000 });
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(300);
+  ok((await p.getByRole("dialog").count()) === 0, "Esc closes the name box");
+  // ---- a restore leaves the screen's bookkeeping as the same number of Ctrl+Z presses would ----
+  // Two tabs go through the same script (edits, a width change, a sort, a filter, more edits). In one the start is
+  // restored from its checkpoint; in the other Ctrl+Z is pressed until the same place. Everything the screen keeps
+  // must match: cells, widths, header, filter, undo and redo availability, the look steps and the saved groups.
+  const setup = async () => {
+    await p.evaluate(() => window.__nde.reg.run("file.new"));
+    await p.waitForTimeout(500);
+    await p.evaluate(
+      async (text) => {
+        const t = window.__nde.tab;
+        t.update(await window.__nde.backend.dataOp(t.id, { op: "paste", spec: { row: 0, col: 0, op: "none", skip_blanks: false, transpose: false }, text }).then((r) => r.info), true);
+        t.header = true;
+        t.bump();
+      },
+      Array.from({ length: 12 }, (_, i) => (i === 0 ? ["name", "city"] : [`P${String.fromCharCode(90 - i)}`, `C${i % 3}`]).join(TAB)).join(EOL),
+    );
+    await p.waitForTimeout(400);
+  };
+  const command = async (q) => {
+    await p.keyboard.press("Alt+q");
+    await p.keyboard.type(q);
+    await p.waitForTimeout(250);
+    await p.keyboard.press("Enter");
+    await p.waitForTimeout(500);
+  };
+  const script = async () => {
+    // A data-check rule that names a column, then that column renamed: the rule follows the rename.
+    const checks = "[role=dialog]:has(h2:has-text('Data checks'))";
+    await command("data checks");
+    if (!(await p.$(`${checks} select[aria-label=Check]`))) await p.click(`${checks} button:has-text('Add a check')`);
+    await p.selectOption(`${checks} select[aria-label=Check] >> nth=0`, "expression");
+    await p.fill(`${checks} input[aria-label=Rule]`, "[city] <> [name]");
+    await p.click(`${checks} button:has-text('Keep and close')`);
+    await p.waitForTimeout(300);
+    await p.evaluate(() => window.__nde.grid.select({ row: 1, col: 1 }));
+    await command("rename column");
+    await p.fill("[role=dialog]:has(h2:has-text('Rename column')) input.name", "town");
+    await p.keyboard.press("Enter");
+    await p.waitForTimeout(600);
+    await edit(1, 0, "Alpha");
+    await p.evaluate(() => {
+      const t = window.__nde.tab;
+      t.columns.setWidth(1, 300);
+      t.recordView();
+    });
+    await edit(2, 0, "Beta");
+    await p.evaluate(() => window.__nde.grid.select({ row: 3, col: 0 }));
+    await p.evaluate(() => window.__nde.reg.run("data.sortAsc"));
+    await p.waitForTimeout(300);
+    await p.evaluate(() => window.__nde.grid.select({ row: 2, col: 1 }));
+    await p.evaluate(() => window.__nde.reg.run("data.filterBySel"));
+    await p.waitForTimeout(300);
+    await edit(1, 1, "Gamma");
+    await p.evaluate(() => window.__nde.tab.recordView());
+  };
+  const state = (base) =>
+    p.evaluate(
+      async (base) => {
+        const t = window.__nde.tab;
+        const cells = [];
+        for (let r = 0; r < Math.min(t.info.rows, 14); r++) cells.push((await window.__nde.backend.cellText(t.id, r, 0)).text, (await window.__nde.backend.cellText(t.id, r, 1)).text);
+        return {
+          cells,
+          rows: t.info.rows,
+          width1: Math.round(t.columns.width(1)),
+          header: t.header,
+          filtered: t.info.has_filter,
+          filter: JSON.stringify(t.filter),
+          can_undo: t.info.can_undo,
+          can_redo: t.info.can_redo,
+          pos: t.info.history_pos - base,
+          looks: t.lookSteps.length,
+          lookRedo: t.lookRedo.length,
+          groups: t.groups.length,
+          modified: t.info.modified,
+          checks: JSON.stringify(t.checks),
+        };
+      },
+      base,
+    );
+  // Tab 1: restore.
+  await setup();
+  await p.keyboard.press("Control+Alt+k");
+  await p.getByRole("dialog").getByRole("textbox").fill("begin");
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(400);
+  const base1 = await p.evaluate(() => window.__nde.tab.info.history_pos);
+  await script();
+  await item("begin").locator("button.go").click();
+  await p.waitForTimeout(800);
+  const restored = await state(base1);
+  await p.evaluate(() => window.__nde.grid.focus());
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(600);
+  const restoredThenUndo = await state(base1);
+  // Tab 2: Ctrl+Z until the same place.
+  await setup();
+  const base2 = await p.evaluate(() => window.__nde.tab.info.history_pos);
+  await script();
+  for (let i = 0; i < 40; i++) {
+    const at = await p.evaluate(() => [window.__nde.tab.info.history_pos, window.__nde.tab.lookSteps.filter((l) => l.pos > 0).length]);
+    if (at[0] <= base2 && at[1] === 0) break;
+    await p.evaluate(() => window.__nde.grid.focus());
+    await p.keyboard.press("Control+z");
+    await p.waitForTimeout(250);
+  }
+  const pressed = await state(base2);
+  await p.evaluate(() => window.__nde.grid.focus());
+  await p.keyboard.press("Control+z");
+  await p.waitForTimeout(600);
+  const pressedThenUndo = await state(base2);
+  for (const k of Object.keys(restored)) {
+    ok(JSON.stringify(restored[k]) === JSON.stringify(pressed[k]), `restore equals Ctrl+Z presses: ${k} (${JSON.stringify(restored[k]).slice(0, 60)} vs ${JSON.stringify(pressed[k]).slice(0, 60)})`);
+  }
+  for (const k of Object.keys(restoredThenUndo)) {
+    ok(JSON.stringify(restoredThenUndo[k]) === JSON.stringify(pressedThenUndo[k]), `one more Ctrl+Z after the restore, same as after the presses: ${k} (${JSON.stringify(restoredThenUndo[k]).slice(0, 50)} vs ${JSON.stringify(pressedThenUndo[k]).slice(0, 50)})`);
+  }
+  ok(errors.length === 0, `no page errors ${errors.join(" | ").slice(0, 200)}`);
+  await b.close();
+  process.exit(failed ? 1 : 0);
+})();

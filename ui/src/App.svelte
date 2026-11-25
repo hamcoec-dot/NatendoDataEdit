@@ -5,7 +5,7 @@ import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type 
   import { namesFromText } from "./lib/columnNames";
   import { onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
-  import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout, type EncodingChoice } from "./lib/backend";
+  import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout, type Checkpoint, type EncodingChoice } from "./lib/backend";
   import { Tab, exportHandTab, importHandTab, type HandTab, type RowMap } from "./lib/tab.svelte";
 import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowheights";
   import { SECOND_WINDOW } from "./lib/windowRole";
@@ -875,6 +875,41 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     prefs.save();
   }
 
+  /** Record panel: the next or previous row, the same column. */
+  function recordFlip(d: number): void {
+    const t = tab;
+    if (!t) return;
+    const to = Math.max(t.firstRow, Math.min(t.info.rows - 1, t.cell.row + d));
+    grid?.select({ row: to, col: t.cell.col });
+  }
+
+  /** Name this moment: a checkpoint in the undo history (a few bytes; the Steps panel lists it). */
+  function nameMoment(): void {
+    const t = tab;
+    if (!t) return;
+    prompt = {
+      title: "Name this moment",
+      label: "Name",
+      value: "",
+      note: "A checkpoint remembers exactly how the table looks now, so you can come back to it from the Steps panel. It costs almost nothing. It is lost when the undo history is trimmed past it, when a new change replaces what you undid, when you save the file, and when the tab closes.",
+      check: (v) => (!v.trim() ? "Give the checkpoint a name." : v.trim().length > 100 ? "Use 100 characters or fewer." : ""),
+      done: (name) => {
+        t.recordView();
+        const looks = t.lookSteps.length;
+        void backend()
+          .checkpointList(t.id)
+          .then(async (before) => {
+            const known = new Set(before.map((c) => c.id));
+            for (const c of await backend().checkpointAdd(t.id, name)) if (!known.has(c.id)) t.checkpointLooks.set(c.id, looks);
+            t.checkpointTick++;
+            showPanel("steps");
+            say(`Named this moment “${name.trim()}”. It is at the top of the Steps panel.`);
+          })
+          .catch((e: unknown) => say(errorText(e)));
+      },
+    };
+  }
+
   function shownTitles(t: Tab): string[] {
     return Array.from({ length: Math.min(t.info.cols, 2000) }, (_, c) => columnTitle(t, c));
   }
@@ -934,6 +969,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       row_lines: t.rowLines,
       row_heights: t.rowHeights.empty ? undefined : t.rowHeights.toView(),
       facets: t.facetCards.map((c) => ({ col: c.col, kind: c.kind })),
+      record_pins: t.recordPins.length ? [...t.recordPins] : undefined,
       freeze_rows: t.frozenRows,
       freeze_cols: t.frozenCols,
       sort: t.sort ? $state.snapshot(t.sort) : null,
@@ -1100,6 +1136,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       const c = to(f.col);
       return c === null || c === undefined || c < 0 ? [] : [{ col: c, kind: f.kind === "numbers" || f.kind === "dates" ? f.kind : "values", range: null }];
     });
+    t.recordPins = (v.record_pins ?? []).filter((p): p is string => typeof p === "string").slice(0, 200);
     t.rowLines = Math.min(MAX_ROW_LINES, Math.max(1, Math.round(v.row_lines ?? 1) || 1));
     {
       // Rows past this file's end (a view from another file) are dropped, not an error.
@@ -5325,7 +5362,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (note) say(note);
   }
 
-  async function undoRedo(op: "undo" | "redo"): Promise<void> {
+  /** Undo or redo, or with `jump` go to another place in the history in ONE engine call (a checkpoint) while doing
+   *  for every step crossed what a Ctrl+Z press does for it: look changes, saved-view groups, rename follow-ups,
+   *  the header switch, the filter, row heights. */
+  async function undoRedo(op: "undo" | "redo", jump?: { target: number; looks?: number; run: (t: Tab) => Promise<DocInfo> }): Promise<void> {
     if (grid?.isEditing()) return;
     const t = tab;
     if (!t) return;
@@ -5337,27 +5377,52 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     t.recordView();
     const pos = t.info.history_pos;
     const look = op === "undo" ? t.lookSteps.at(-1) : t.lookRedo.at(-1);
-    if (look && look.pos === pos) {
+    if (jump) {
+      // Every look change crossed goes back (or forward) too, the earliest one deciding what the look ends as.
+      let ends: NonNullable<typeof look>["before"] | undefined;
+      // A checkpoint named by the person remembers how many look changes there were then: the ones made after it go
+      // too (even one made at the same place in the history). One made by the app has only the place to go by.
+      const keep = jump.looks;
+      if (op === "undo") {
+        for (let l = t.lookSteps.at(-1); l && (keep !== undefined ? t.lookSteps.length > keep : l.pos > jump.target); l = t.lookSteps.at(-1)) {
+          t.lookRedo.push(t.lookSteps.pop()!);
+          ends = l.before;
+        }
+      } else {
+        for (let l = t.lookRedo.at(-1); l && (keep !== undefined ? t.lookSteps.length < keep : l.pos < jump.target); l = t.lookRedo.at(-1)) {
+          t.lookSteps.push(t.lookRedo.pop()!);
+          ends = l.after;
+        }
+      }
+      if (ends) t.restoreView({ look: ends, sort: null }, false);
+    } else if (look && look.pos === pos) {
       if (op === "undo") t.lookRedo.push(t.lookSteps.pop()!);
       else t.lookSteps.push(t.lookRedo.pop()!);
       t.restoreView({ look: op === "undo" ? look.before : look.after, sort: null }, false);
       say(`${op === "undo" ? "Undid" : "Redid"} a change to how the table looks (widths, formats, hiding and so on).`);
       return;
     }
-    if (op === "redo" && t.redoCut === pos) return;
+    if (!jump && op === "redo" && t.redoCut === pos) return;
     // A saved view's sort, filter and look go back (or forward) together.
-    const group = op === "undo" ? t.groups.find((g) => g.end === pos) : t.groups.find((g) => g.start === pos);
-    const target = group ? (op === "undo" ? group.start : group.end) : op === "undo" ? pos - 1 : pos + 1;
+    const group = jump ? undefined : op === "undo" ? t.groups.find((g) => g.end === pos) : t.groups.find((g) => g.start === pos);
+    const target = jump ? jump.target : group ? (op === "undo" ? group.start : group.end) : op === "undo" ? pos - 1 : pos + 1;
     undoBusy.add(t);
     if (op === "redo") t.redoing++;
     const posBefore = t.info.history_pos;
     try {
-      for (;;) {
-        const at = t.info.history_pos;
-        await change({ op });
-        // Data-check rules a rename rewrote follow each step.
+      if (jump) {
+        // One call for the whole way; the rename follow-ups cover every step crossed at once (they compare
+        // positions, not presses).
+        if (!(await apply(jump.run, true, t))) return;
         followRefEdits(t, op);
-        if (t.info.history_pos === at || t.info.history_pos === target) break;
+      } else {
+        for (;;) {
+          const at = t.info.history_pos;
+          await change({ op });
+          // Data-check rules a rename rewrote follow each step.
+          followRefEdits(t, op);
+          if (t.info.history_pos === at || t.info.history_pos === target) break;
+        }
       }
       // The widths, formats and so on as they were before the step undone,
       // or after the step redone; the filter rules as the engine has them.
@@ -5418,6 +5483,23 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
   const undoBusy = new Set<Tab>();
+
+  /** Go to a checkpoint: the engine moves in one call, the screen does for each step crossed what Ctrl+Z does. */
+  async function restoreCheckpoint(c: Checkpoint): Promise<void> {
+    const t = tab;
+    if (!t || t.busy) return;
+    // The steps away are asked again now: the list on screen may be older than the last change.
+    const fresh = (await backend().checkpointList(t.id).catch(() => [])).find((x) => x.id === c.id);
+    if (!fresh || !fresh.reachable) {
+      say("That checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or the file was saved.");
+      return;
+    }
+    if (fresh.current || fresh.steps === 0) return;
+    const target = t.info.history_pos + fresh.steps;
+    await undoRedo(fresh.steps < 0 ? "undo" : "redo", { target, looks: t.checkpointLooks.get(c.id), run: (x) => backend().checkpointRestore(x.id, c.id) });
+    t.checkpointTick++;
+    say(`Went to the checkpoint “${c.name}”. Ctrl+Z steps back through what was undone.`);
+  }
 
   /** Undo/redo of a rename: the data-check rules it rewrote go back, or
    *  are rewritten again. Rules changed by hand since are left as they are. */
@@ -5856,6 +5938,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "file.mail", label: "&Mailing labels and letters…", run: () => void openMail(), enabled: ready },
     { id: "edit.note", label: "&Note and flag on this row…", keys: ["Shift+F2"], run: () => { const t = tab; if (t) notesRow = t.cell.row; }, enabled: ready },
     { id: "edit.changes", label: "List of &my changes…", run: () => void openChanges(), enabled: ready },
+    { id: "edit.checkpoint", label: "&Name this moment (checkpoint)…", keys: ["Ctrl+Alt+K"], run: () => nameMoment(), enabled: hasTab },
     { id: "tools.recipe", label: "&Recipe (save or run steps)…", run: () => void openRecipes(), enabled: ready },
     { id: "tools.searchFolder", label: "Search a &folder of files…", keys: ["Ctrl+Shift+F"], run: () => { folderSearchOpen = true; } },
     { id: "view.showEdits", label: "Show my &edits", run: () => setShowEdits(!tab?.showEdits), enabled: hasTab, checked: () => !!tab?.showEdits },
@@ -6219,6 +6302,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "view.panel", label: "Side &panel", keys: ["Ctrl+F1"], run: () => showPanel(prefs.data.panel ? null : panelTab), checked: () => !!prefs.data.panel },
     { id: "view.panelSummary", label: "Column summary", run: () => showPanel("summary"), checked: () => prefs.data.panel === "summary" },
     { id: "view.panelFilters", label: "Filter panel", keys: ["Alt+Shift+L"], run: () => showPanel("filters"), checked: () => prefs.data.panel === "filters" },
+    { id: "view.panelRecord", label: "&Record panel (this row as a list of fields)", keys: ["Alt+R"], run: () => showPanel(prefs.data.panel === "record" ? null : "record"), checked: () => prefs.data.panel === "record" },
+    { id: "view.recordNext", label: "Record: next row", keys: ["Ctrl+Alt+ArrowDown"], run: () => recordFlip(1), enabled: hasTab },
+    { id: "view.recordPrev", label: "Record: previous row", keys: ["Ctrl+Alt+ArrowUp"], run: () => recordFlip(-1), enabled: hasTab },
     { id: "view.panelSteps", label: "Recipe steps", keys: ["Alt+Shift+R"], run: () => showPanel("steps"), checked: () => prefs.data.panel === "steps" },
     { id: "view.panelChart", label: "Chart", run: () => showPanel("chart"), checked: () => prefs.data.panel === "chart" },
     { id: "view.panelFiles", label: "Files in this folder", run: () => showPanel("files"), checked: () => prefs.data.panel === "files" },
@@ -6249,7 +6335,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       items: [
         "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "edit.sanitize", "-",
         "edit.copyNames", "edit.copyNamesText", "edit.copyWithNames", "edit.pasteNames", "-",
-        "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "edit.gotoSpecial", "-", "edit.note", "edit.changes", "-",
+        "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "edit.gotoSpecial", "-", "edit.note", "edit.changes", "edit.checkpoint", "-",
         "edit.deleteRows", "edit.deleteCols", "edit.moveRowsUp", "edit.moveRowsDown", "edit.moveColsLeft", "edit.moveColsRight",
       ],
     },
@@ -6257,7 +6343,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       label: "&View",
       items: [
         "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze", "-", "view.splitRows", "view.splitCols", "-", "view.zoomIn", "view.zoomOut", "view.zoomReset", "-",
-        "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
+        "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelRecord", "view.recordPrev", "view.recordNext", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
         "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
@@ -6309,9 +6395,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
-    tab: ["file.save", "file.saveAs", "-", "tools.encoding", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "edit.sanitize", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
-    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
+    tab: ["file.save", "file.saveAs", "-", "tools.encoding", "edit.checkpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "edit.checkpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
@@ -6419,7 +6505,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
   }
 
-  const SAFE_IN_FIELDS = /^(file\.|view\.zoom|window\.|help\.|find\.)/;
+  const SAFE_IN_FIELDS = /^(file\.|view\.zoom|view\.record|window\.|help\.|find\.)/;
 
   function menuKey(e: KeyboardEvent): boolean {
     const list = openMenu !== null ? menus[openMenu]?.items : context?.items;
@@ -7833,6 +7919,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         read={READ}
         onOpened={opened}
         onSetRule={(col, rule) => setRule(col, rule)}
+        record={{ onGo: (row, col) => grid?.select({ row, col }) }}
         steps={{
           onInfo: (info) => {
             const t = tab;
@@ -7846,6 +7933,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
             ], "cancel")) === "go",
           onSave: () => void openRecipes(),
           now: localNow,
+          restoreCheckpoint,
         }}
         onFilterValue={(col, value, cut) => void setRule(col, cut ? { type: "conditions", first: { type: "text", op: "begins_with", text: value.replace(/…$/, ""), match_case: true } } : value === "" ? { type: "values", values: [], blanks: true } : { type: "values", values: [value], blanks: false })}
         onClose={() => showPanel(null)}

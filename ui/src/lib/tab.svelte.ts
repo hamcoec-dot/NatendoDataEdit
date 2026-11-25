@@ -263,6 +263,13 @@ export class Tab {
   /** The steps panel shows the table as it was after an earlier step
    *  (it cannot be edited until it goes back to the latest). */
   peeking = $state(false);
+  /** Titles of the fields pinned to the top of the Record panel (kept with views). */
+  recordPins = $state<string[]>([]);
+  /** Bumped when a checkpoint is named, so the Checkpoints list reads again. */
+  checkpointTick = $state(0);
+  /** How many look changes (widths, formats, data-check rules ...) the tab had when each checkpoint was named, by
+   *  checkpoint id: going to a checkpoint puts the look back to what it was then, not only the data. */
+  checkpointLooks = new Map<number, number>();
   /** The filter panel's cards (kept with views). */
   facetCards = $state<{ col: number; kind: "values" | "numbers" | "dates"; range: [number, number] | null }[]>([]);
   /** A counts tab: the tab and columns it counts (a line can show its
