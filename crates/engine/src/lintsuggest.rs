@@ -178,7 +178,11 @@ impl Document {
                 }
             }
         }
-        if numbers as f64 / f >= MIN_SHARE && !out.iter().any(|s| matches!(s.check.kind, CheckKind::DateIso)) {
+        if numbers as f64 / f >= MIN_SHARE
+            && !out
+                .iter()
+                .any(|s| matches!(s.check.kind, CheckKind::DateIso))
+        {
             let all_whole = whole as f64 / f >= MIN_SHARE;
             out.push(Suggestion {
                 check: Check {
@@ -250,13 +254,20 @@ mod tests {
         let d = doc(csv);
         let p = Progress::new();
         let zip = d.suggest_rules(0, true, &p).unwrap();
-        assert_eq!(kinds(&zip), vec!["required", "pattern", "length", "number", "unique"]);
+        assert_eq!(
+            kinds(&zip),
+            vec!["required", "pattern", "length", "number", "unique"]
+        );
         let id = d.suggest_rules(1, true, &p).unwrap();
         assert_eq!(kinds(&id), vec!["required", "unique"]);
         let when = d.suggest_rules(2, true, &p).unwrap();
         assert_eq!(kinds(&when)[..2], ["required", "dateiso"]);
         let name = d.suggest_rules(3, true, &p).unwrap();
-        assert_eq!(kinds(&name), vec!["required"], "free text gets only the blank test");
+        assert_eq!(
+            kinds(&name),
+            vec!["required"],
+            "free text gets only the blank test"
+        );
         let qty = d.suggest_rules(4, true, &p).unwrap();
         assert!(kinds(&qty).contains(&"number"));
         assert!(!kinds(&qty).contains(&"unique"));
@@ -266,14 +277,24 @@ mod tests {
     fn a_suggestion_never_fails_more_than_one_per_cent_of_the_sample() {
         let mut x = 7u64;
         let mut r = move || {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             x >> 33
         };
         for case in 0..20 {
             let mut csv = String::from("a,b\r\n");
             for i in 0..400 {
-                let a = if r() % (3 + case) == 0 { format!("x{}", r() % 99) } else { format!("{:04}", r() % 10_000) };
-                let b = if r() % 7 == 0 { String::new() } else { format!("{}", i) };
+                let a = if r() % (3 + case) == 0 {
+                    format!("x{}", r() % 99)
+                } else {
+                    format!("{:04}", r() % 10_000)
+                };
+                let b = if r() % 7 == 0 {
+                    String::new()
+                } else {
+                    format!("{}", i)
+                };
                 csv.push_str(&format!("{a},{b}\r\n"));
             }
             let d = doc(csv);
@@ -286,7 +307,10 @@ mod tests {
                         ..Default::default()
                     };
                     let rep = d.run_checks(&spec, &p).unwrap();
-                    let filled = (0..d.row_count()).skip(1).filter(|&row| d.cell(row, col).is_some_and(|v| !v.trim().is_empty())).count();
+                    let filled = (0..d.row_count())
+                        .skip(1)
+                        .filter(|&row| d.cell(row, col).is_some_and(|v| !v.trim().is_empty()))
+                        .count();
                     // Unique counts both of a repeated pair, so it is allowed to differ by the repeats only.
                     if !matches!(s.check.kind, CheckKind::Unique { .. }) {
                         assert!(
@@ -304,9 +328,15 @@ mod tests {
     #[test]
     fn suggesting_can_be_cancelled_and_handles_tiny_and_empty_tables() {
         let d = doc("a\r\n".into());
-        assert!(d.suggest_rules(0, true, &Progress::new()).unwrap().is_empty());
+        assert!(d
+            .suggest_rules(0, true, &Progress::new())
+            .unwrap()
+            .is_empty());
         let d = doc("a\r\n1\r\n2\r\n".into());
-        assert!(d.suggest_rules(0, true, &Progress::new()).unwrap().is_empty());
+        assert!(d
+            .suggest_rules(0, true, &Progress::new())
+            .unwrap()
+            .is_empty());
         assert!(d.suggest_rules(5, true, &Progress::new()).is_err());
         let mut csv = String::from("a\r\n");
         for i in 0..50_000 {
@@ -315,6 +345,9 @@ mod tests {
         let d = doc(csv);
         let p = Progress::new();
         p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(matches!(d.suggest_rules(0, true, &p), Err(Error::Cancelled)));
+        assert!(matches!(
+            d.suggest_rules(0, true, &p),
+            Err(Error::Cancelled)
+        ));
     }
 }

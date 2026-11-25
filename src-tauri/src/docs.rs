@@ -5490,7 +5490,9 @@ impl Docs {
         file.save(&side).map_err(|e| {
             CmdError::new(
                 "invalid",
-                format!("the rules could not be saved beside the file (is the folder read-only?): {e}"),
+                format!(
+                    "the rules could not be saved beside the file (is the folder read-only?): {e}"
+                ),
             )
         })?;
         Ok(side

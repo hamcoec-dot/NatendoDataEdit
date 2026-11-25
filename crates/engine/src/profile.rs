@@ -693,7 +693,11 @@ mod tests {
         for (row, v) in rows.iter().zip(SHAPE_VALUES) {
             let shape = shape_of(v);
             assert_eq!(row["shape"].as_str().unwrap(), shape);
-            assert_eq!(row["regex"].as_str().unwrap(), shape_regex(&shape), "{shape:?}");
+            assert_eq!(
+                row["regex"].as_str().unwrap(),
+                shape_regex(&shape),
+                "{shape:?}"
+            );
         }
     }
 
@@ -714,8 +718,13 @@ mod tests {
         });
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/testdata/shape_rules.json");
-        std::fs::write(path, serde_json::to_string_pretty(&fx).unwrap() + "
-").unwrap();
+        std::fs::write(
+            path,
+            serde_json::to_string_pretty(&fx).unwrap()
+                + "
+",
+        )
+        .unwrap();
     }
 
     #[test]

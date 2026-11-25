@@ -50,7 +50,10 @@ const RULES: &str = r#"{"keep_first":true,"checks":[
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let rows: u64 = args.first().and_then(|a| a.parse().ok()).unwrap_or(1_000_000);
+    let rows: u64 = args
+        .first()
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(1_000_000);
     let repeats: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(7);
     let dir = std::env::temp_dir().join("nde-find-bench");
     std::fs::create_dir_all(&dir).unwrap();
@@ -81,16 +84,24 @@ fn main() {
     });
     println!("next_problem, hit 50,000 rows away	{ms:.2}");
     let ms = best(&mut || {
-        let r = d.next_problem(50_002, 0, false, &spec, &[], &[], &p).unwrap();
+        let r = d
+            .next_problem(50_002, 0, false, &spec, &[], &[], &p)
+            .unwrap();
         assert!(r.wrapped && r.hit.is_some());
     });
     println!("next_problem, miss to the end and wrap round 1M rows	{ms:.2}");
     let ms = best(&mut || {
-        let r = d.next_problem(50_000, 0, true, &spec, &[], &[], &p).unwrap();
+        let r = d
+            .next_problem(50_000, 0, true, &spec, &[], &[], &p)
+            .unwrap();
         assert!(r.hit.is_some());
     });
     println!("next_problem backward, wraps	{ms:.2}");
-    for (name, col) in [("suggest_rules, 1 number column (col 0)", 0u32), ("suggest_rules, 1 name column (col 1)", 1), ("suggest_rules, 1 date column (col 5)", 5)] {
+    for (name, col) in [
+        ("suggest_rules, 1 number column (col 0)", 0u32),
+        ("suggest_rules, 1 name column (col 1)", 1),
+        ("suggest_rules, 1 date column (col 5)", 5),
+    ] {
         let ms = best(&mut || {
             d.suggest_rules(col, true, &p).unwrap();
         });

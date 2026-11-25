@@ -57,7 +57,10 @@ const RULES: &str = r#"{"keep_first":true,"checks":[
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let rows: u64 = args.first().and_then(|a| a.parse().ok()).unwrap_or(1_000_000);
+    let rows: u64 = args
+        .first()
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(1_000_000);
     let repeats: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(7);
     let dir = std::env::temp_dir().join("nde-find-bench");
     std::fs::create_dir_all(&dir).unwrap();
@@ -83,12 +86,16 @@ fn main() {
         rep = Some(d.run_checks(&spec, &p).unwrap());
     });
     let rep = rep.unwrap();
-    println!("run_checks, 6 rules, {rows} rows ({} problems)	{ms:.2}", rep.problems);
+    println!(
+        "run_checks, 6 rules, {rows} rows ({} problems)	{ms:.2}",
+        rep.problems
+    );
     // The screens a person scrolls through: 60 rows x 20 columns at 200 places down the table.
     let ms = best(&mut || {
         for k in 0..200u64 {
             let at = 1 + k * (rows.saturating_sub(100) / 200);
-            d.check_marks(at, 60, 0, COLS as u32, &spec, &rep.repeats).unwrap();
+            d.check_marks(at, 60, 0, COLS as u32, &spec, &rep.repeats)
+                .unwrap();
         }
     });
     println!("check_marks, 200 screens of 60 x 20	{ms:.2}");

@@ -219,7 +219,12 @@ mod tests {
                 )
             },
             Check::new(Some(0), CheckKind::Required),
-            Check::new(None, CheckKind::Expression { expr: "LEN([name]) > 1".into() }),
+            Check::new(
+                None,
+                CheckKind::Expression {
+                    expr: "LEN([name]) > 1".into(),
+                },
+            ),
         ]
     }
 
@@ -252,7 +257,12 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("Ann") && !text.contains("12345"));
         // No file is no rules; saving no rules removes the file.
-        ChecksFile { rules: vec![], ..back }.save(&path).unwrap();
+        ChecksFile {
+            rules: vec![],
+            ..back
+        }
+        .save(&path)
+        .unwrap();
         assert!(ChecksFile::load(&path).unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -272,7 +282,11 @@ mod tests {
             br#"{"version":9,"rules":[]}"#,
             br#"{"version":1,"rules":[{"kind":{"type":"nope"}}]}"#,
         ] {
-            assert!(ChecksFile::from_bytes(bad).is_err(), "{}", String::from_utf8_lossy(bad));
+            assert!(
+                ChecksFile::from_bytes(bad).is_err(),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
         }
         // too many rules
         let many = (0..=MAX_CHECKS)
@@ -281,8 +295,13 @@ mod tests {
             .join(",");
         assert!(ChecksFile::from_bytes(&file_with(&format!("[{many}]"))).is_err());
         // a huge list
-        let list = (0..100_001).map(|i| format!("\"v{i}\"")).collect::<Vec<_>>().join(",");
-        let huge = file_with(&format!(r#"[{{"col":0,"kind":{{"type":"list","values":[{list}]}}}}]"#));
+        let list = (0..100_001)
+            .map(|i| format!("\"v{i}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let huge = file_with(&format!(
+            r#"[{{"col":0,"kind":{{"type":"list","values":[{list}]}}}}]"#
+        ));
         assert!(ChecksFile::from_bytes(&huge).is_err());
         // a file over 4 MiB
         let big = vec![b' '; (MAX_FILE_BYTES + 1) as usize];

@@ -133,6 +133,9 @@ pub struct CheckReport {
     pub repeats: Vec<(u32, Vec<u64>)>,
 }
 
+/// A part's nearest problem: row, column, rule number, row rule.
+type PartHit = (u64, u32, u32, bool);
+
 /// Where a jump to the next problem landed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Jump {
@@ -929,7 +932,7 @@ impl Document {
                 done_rows += take;
                 size = (size * 2).min(1 << 20);
                 let parts = (e0 - s0).div_ceil(PART);
-                let found: Vec<(Option<(u64, u32, u32, bool)>, u64)> = (0..parts)
+                let found: Vec<(Option<PartHit>, u64)> = (0..parts)
                     .into_par_iter()
                     .map(|i| {
                         let (ps, pe) = (s0 + i * PART, (s0 + (i + 1) * PART).min(e0));
@@ -948,7 +951,8 @@ impl Document {
                             });
                         }
                         for m in &ms {
-                            let before = best.is_none_or(|b| if backward { m.row >= b } else { m.row <= b });
+                            let before =
+                                best.is_none_or(|b| if backward { m.row >= b } else { m.row <= b });
                             if before && m.col.is_some_and(|k| skip_cols.contains(&k)) {
                                 hid += 1;
                             }
