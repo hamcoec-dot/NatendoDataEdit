@@ -685,6 +685,40 @@ mod tests {
     }
 
     #[test]
+    fn the_rules_in_the_shared_fixture_are_what_shape_regex_gives() {
+        let fx: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/shape_rules.json")).unwrap();
+        let rows = fx["cases"].as_array().unwrap();
+        assert_eq!(rows.len(), SHAPE_VALUES.len());
+        for (row, v) in rows.iter().zip(SHAPE_VALUES) {
+            let shape = shape_of(v);
+            assert_eq!(row["shape"].as_str().unwrap(), shape);
+            assert_eq!(row["regex"].as_str().unwrap(), shape_regex(&shape), "{shape:?}");
+        }
+    }
+
+    /// Writes the fixture file: `cargo test -p natendo-engine --lib print_shape_rules -- --ignored`.
+    #[test]
+    #[ignore]
+    fn print_shape_rules() {
+        let cases: Vec<serde_json::Value> = SHAPE_VALUES
+            .iter()
+            .map(|v| {
+                let shape = shape_of(v);
+                serde_json::json!({ "shape": shape, "regex": shape_regex(&shape) })
+            })
+            .collect();
+        let fx = serde_json::json!({
+            "about": "shapes and the pattern the engine (profile.rs shape_regex) makes of each; the browser stand-in (lint.ts shapeRegex) must give the same text",
+            "cases": cases
+        });
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/testdata/shape_rules.json");
+        std::fs::write(path, serde_json::to_string_pretty(&fx).unwrap() + "
+").unwrap();
+    }
+
+    #[test]
     fn shape_regex_matches_exactly_what_shape_matches_does() {
         let mut r = lcg(17);
         let pool: Vec<String> = (0..300).map(|_| random_value(&mut r)).collect();

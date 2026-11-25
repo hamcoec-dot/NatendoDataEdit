@@ -1,0 +1,77 @@
+{
+  "about": "shapes and the pattern the engine (profile.rs shape_regex) makes of each; the browser stand-in (lint.ts shapeRegex) must give the same text",
+  "cases": [
+    {
+      "shape": "999-9999",
+      "regex": "\\p{N}\\p{N}\\p{N}\\-\\p{N}\\p{N}\\p{N}\\p{N}"
+    },
+    {
+      "shape": "(999) 999-9999",
+      "regex": "\\(\\p{N}\\p{N}\\p{N}\\) \\p{N}\\p{N}\\p{N}\\-\\p{N}\\p{N}\\p{N}\\p{N}"
+    },
+    {
+      "shape": "AAAA",
+      "regex": "\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}"
+    },
+    {
+      "shape": "A'AAAA",
+      "regex": "\\p{Alphabetic}'\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}"
+    },
+    {
+      "shape": "99999-9999",
+      "regex": "\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\-\\p{N}\\p{N}\\p{N}\\p{N}"
+    },
+    {
+      "shape": "999",
+      "regex": "\\p{N}\\p{N}\\p{N}"
+    },
+    {
+      "shape": "A9A",
+      "regex": "\\p{Alphabetic}\\p{N}\\p{Alphabetic}"
+    },
+    {
+      "shape": "AAA A",
+      "regex": "\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic} \\p{Alphabetic}"
+    },
+    {
+      "shape": "",
+      "regex": ""
+    },
+    {
+      "shape": "   ",
+      "regex": "   "
+    },
+    {
+      "shape": "A…A",
+      "regex": "\\p{Alphabetic}…\\p{Alphabetic}"
+    },
+    {
+      "shape": "99",
+      "regex": "\\p{N}\\p{N}"
+    },
+    {
+      "shape": "9999999999999999999999999999999999999999",
+      "regex": "\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}"
+    },
+    {
+      "shape": "9999999999999999999999999999999999999999…",
+      "regex": "\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}(?s:.+)"
+    },
+    {
+      "shape": "AAAAAAAAAAAAAAAAAAAAAAAAAA-9999999999-AA…",
+      "regex": "\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\-\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\p{N}\\-\\p{Alphabetic}\\p{Alphabetic}(?s:.+)"
+    },
+    {
+      "shape": "AA#9999/A",
+      "regex": "\\p{Alphabetic}\\p{Alphabetic}\\#\\p{N}\\p{N}\\p{N}\\p{N}/\\p{Alphabetic}"
+    },
+    {
+      "shape": "9 AAAAA AA.",
+      "regex": "\\p{N} \\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic}\\p{Alphabetic} \\p{Alphabetic}\\p{Alphabetic}\\."
+    },
+    {
+      "shape": "Á",
+      "regex": "\\p{Alphabetic}́"
+    }
+  ]
+}
