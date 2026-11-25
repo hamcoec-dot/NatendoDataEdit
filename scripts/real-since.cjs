@@ -180,7 +180,7 @@ const proof = async () => {
   ok(begin.since_note.includes("nothing has changed"), `the checkpoint that is the table now is greyed (${begin.since_note.slice(0, 40)})`);
   // A few edits: cheap.
   for (let i = 0; i < 5; i++) await invoke(m, "set_cells", { doc: 1, cells: [[1 + i * 1000, 1, `edited${i}`]] });
-  const small = await ms(() => invoke(m, "checkpoint_since", { doc: 1, checkpoint: begin.id, offset: 0, want: 50 }));
+  const small = await ms(() => invoke(m, "checkpoint_since", { doc: 1, checkpoint: begin.id, header: true, offset: 0, want: 50 }));
   info(`since a checkpoint, 5 edited cells on ${ROWS} rows: ${small.ms.toFixed(1)} ms over the app boundary`);
   ok(small.r.totals.cells_changed === 5 && small.r.totals.rows_changed === 5 && small.r.cells.length === 5, `5 cells, 5 rows (${JSON.stringify(small.r.totals).slice(0, 80)})`);
   ok(small.r.cells[0].old.startsWith("  name") && small.r.cells[0].new.startsWith("edited"), "was and now");
@@ -189,16 +189,25 @@ const proof = async () => {
   info(`(the Clean-up itself: ${rep.ms.toFixed(0)} ms; it also named "Before Clean-up")`);
   const names = (await invoke(m, "checkpoint_list", { doc: 1 })).map((c) => c.name);
   ok(names.includes("Before Clean-up"), `the automatic checkpoint is there (${names.join(", ")})`);
-  const big = await ms(() => invoke(m, "checkpoint_since", { doc: 1, checkpoint: begin.id, offset: 0, want: 50 }));
+  const big = await ms(() => invoke(m, "checkpoint_since", { doc: 1, checkpoint: begin.id, header: true, offset: 0, want: 50 }));
   info(`since a checkpoint after a Clean-up of a column over ${ROWS} rows: ${big.ms.toFixed(0)} ms (job with progress and Stop; over the app boundary)`);
   ok(big.r.totals.cells_changed >= 999990 && big.r.cells.length === 50, `about a million cells changed (${big.r.totals.cells_changed}), first page of 50`);
-  const page = await ms(() => invoke(m, "checkpoint_since", { doc: 1, checkpoint: begin.id, offset: 500000, want: 50 }));
+  const page = await ms(() => invoke(m, "checkpoint_since", { doc: 1, checkpoint: begin.id, header: true, offset: 500000, want: 50 }));
   info(`a later page from the kept comparison: ${page.ms.toFixed(0)} ms`);
   ok(page.r.cells.length === 50 && page.ms < 400, "the page comes without comparing again");
+  // Rows taken out are listed with their values, after the changed cells.
+  await invoke(m, "change", { doc: 1, change: { op: "delete_rows", at: 10, count: 1000 } });
+  const del = await ms(() => invoke(m, "checkpoint_since", { doc: 1, checkpoint: begin.id, header: true, offset: 0, want: 10 }));
+  const t = del.r.totals;
+  info(`since the checkpoint after taking out 1,000 rows: ${del.ms.toFixed(0)} ms; ${t.cells_changed} cells, ${t.rows_removed} rows taken out, ${t.entries} lines`);
+  const tail = await ms(() => invoke(m, "checkpoint_since", { doc: 1, checkpoint: begin.id, header: true, offset: t.cells_changed, want: 50 }));
+  info(`the first page of rows taken out: ${tail.ms.toFixed(0)} ms`);
+  ok(t.rows_removed === 1000 && t.entries === t.cells_changed + 1000, "the rows taken out are counted and are lines of the list");
+  ok(tail.r.cells.length === 50 && tail.r.cells.every((c) => c.kind === "row_removed" && c.new === "(taken out)" && c.old.includes(" | ")), `listed with their values (${tail.r.cells[0] && tail.r.cells[0].old.slice(0, 50)})`);
   // The refusal: go back before the checkpoint's own step; the later checkpoint is ahead.
   const cleanCp = (await invoke(m, "checkpoint_list", { doc: 1 })).find((c) => c.name === "Before Clean-up");
   await invoke(m, "checkpoint_restore", { doc: 1, checkpoint: begin.id });
-  const e = await invoke(m, "checkpoint_since", { doc: 1, checkpoint: cleanCp.id, offset: 0, want: 10 }).then(() => null, (x) => x);
+  const e = await invoke(m, "checkpoint_since", { doc: 1, checkpoint: cleanCp.id, header: true, offset: 0, want: 10 }).then(() => null, (x) => x);
   ok(e === null || /ahead|no longer|nothing/i.test(String(e.message || e)) || true, "(restoring leaves later checkpoints ahead of the table)");
   const list = await invoke(m, "checkpoint_list", { doc: 1 });
   const later = list.find((c) => c.name === "Before Clean-up");

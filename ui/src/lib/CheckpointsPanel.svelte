@@ -4,20 +4,15 @@
   // state in one jump; the moment you left is kept as "Before restoring ..." so the way back is one click.
   import { backend, errorText, type Checkpoint } from "./backend";
   import type { Tab } from "./tab.svelte";
-  import SinceDialog from "./SinceDialog.svelte";
 
   interface Props {
     tab: Tab;
     /** Go to a checkpoint (the screen does what Ctrl+Z does for every step crossed). */
     onRestore: (c: Checkpoint) => Promise<void>;
-    /** Column titles now, and a way to go to a cell (for "what changed since this"). */
-    titles: string[];
-    onGo: (row: number, col: number) => void;
-    onStop: () => void;
+    /** Show what changed since a checkpoint. */
+    onSince: (c: Checkpoint) => void;
   }
-  let { tab, onRestore, titles, onGo, onStop }: Props = $props();
-  /** The checkpoint whose changes are shown. */
-  let since = $state<Checkpoint | null>(null);
+  let { tab, onRestore, onSince }: Props = $props();
 
   let list = $state<Checkpoint[]>([]);
   let problem = $state("");
@@ -47,6 +42,7 @@
       const known = new Set(list.map((c) => c.id));
       list = await backend().checkpointAdd(tab.id, n);
       for (const c of list) if (!known.has(c.id)) tab.checkpointLooks.set(c.id, looks);
+      tab.checkpointTick++;
       name = "";
       naming = false;
       problem = "";
@@ -66,6 +62,7 @@
   async function forget(c: Checkpoint): Promise<void> {
     try {
       list = await backend().checkpointRemove(tab.id, c.id);
+      tab.checkpointTick++;
     } catch (e) {
       problem = errorText(e);
     }
@@ -107,7 +104,7 @@
               <span class="n">{c.name}</span>
               <span class="tag">{c.current ? "now" : !c.reachable ? "no longer reachable" : c.auto ? "automatic" : ""}</span>
             </button>
-            <button type="button" class="diff" aria-label={`What changed since ${c.name}`} title={c.since_note || "What changed since this checkpoint (cells, rows and columns, was and now)"} disabled={c.since_note !== ""} onclick={() => (since = c)}>Δ</button>
+            <button type="button" class="diff" aria-label={`What changed since ${c.name}`} title={c.since_note || "What changed since this checkpoint (cells, rows and columns, was and now)"} disabled={c.since_note !== ""} onclick={() => onSince(c)}>Δ</button>
             <button type="button" class="x" aria-label={`Forget ${c.name}`} title="Forget this checkpoint (the table does not change)" onclick={() => void forget(c)}>✕</button>
           </li>
         {/each}
@@ -116,10 +113,6 @@
     {/if}
   {/if}
 </section>
-
-{#if since}
-  <SinceDialog doc={tab.id} checkpoint={since} {titles} onGo={(r, c) => { since = null; onGo(r, c); }} {onStop} onClose={() => (since = null)} />
-{/if}
 
 <style>
   .checkpoints {

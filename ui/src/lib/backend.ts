@@ -135,15 +135,26 @@ export interface SinceTotals {
   cols_removed: number;
   cols_moved: boolean;
   reordered: boolean;
+  /** The columns added, by their position now. */
+  added_cols: number[];
+  /** The columns taken out: where they were, and their title then (empty without a title row). */
+  removed_cols: { at: number; title: string }[];
+  /** The columns in another place among those in both, by their position now. */
+  moved_cols: number[];
+  /** Lines of the whole list (what the pages go through). */
+  entries: number;
 }
-/** One cell that differs now from a checkpoint. */
+/** One line of what changed since a checkpoint. */
 export interface SinceCell {
+  kind: "cell" | "row_removed" | "row_added" | "col_removed";
   /** The row's id: it follows the row through sorts and deletes. */
   id: number;
   /** Its position now in the whole table (null: not found). */
   row: number | null;
-  /** Its column now (logical). */
-  col: number;
+  /** Its column now (logical), for a changed cell. */
+  col: number | null;
+  /** For a cell of a column taken out: an index into `removed_cols`. */
+  removed_col: number | null;
   old: string;
   new: string;
 }
@@ -1695,9 +1706,9 @@ export interface Backend {
   /** Go to the state a checkpoint names (one jump, by undo or redo). */
   checkpointRestore(doc: number, checkpoint: number): Promise<DocInfo>;
   /** What changed since a checkpoint: the counts and a page of the changed cells (a job with progress and Cancel). */
-  checkpointSince(doc: number, checkpoint: number, offset: number, want: number): Promise<SinceView>;
+  checkpointSince(doc: number, checkpoint: number, header: boolean, offset: number, want: number): Promise<SinceView>;
   /** The same as a CSV report the user names (null: cancelled): the number of cells written. */
-  checkpointSinceReport(doc: number, checkpoint: number): Promise<number | null>;
+  checkpointSinceReport(doc: number, checkpoint: number, header: boolean): Promise<number | null>;
   /** Change step `k`; the steps after it run again. */
   stepsChange(doc: number, k: number, change: import("./recipe").StepChange, now: number, force: boolean): Promise<DocInfo>;
   /** Make a text in step `k` a question asked each time the recipe runs. */
@@ -2395,11 +2406,11 @@ class TauriBackend implements Backend {
   checkpointRestore(doc: number, checkpoint: number) {
     return call<DocInfo>("checkpoint_restore", { doc, checkpoint });
   }
-  checkpointSince(doc: number, checkpoint: number, offset: number, want: number) {
-    return call<SinceView>("checkpoint_since", { doc, checkpoint, offset, want });
+  checkpointSince(doc: number, checkpoint: number, header: boolean, offset: number, want: number) {
+    return call<SinceView>("checkpoint_since", { doc, checkpoint, header, offset, want });
   }
-  checkpointSinceReport(doc: number, checkpoint: number) {
-    return call<number | null>("checkpoint_since_report", { doc, checkpoint });
+  checkpointSinceReport(doc: number, checkpoint: number, header: boolean) {
+    return call<number | null>("checkpoint_since_report", { doc, checkpoint, header });
   }
   stepsChange(doc: number, k: number, change: import("./recipe").StepChange, now: number, force: boolean) {
     return call<DocInfo>("steps_change", { doc, k, change, now, force });

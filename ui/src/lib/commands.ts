@@ -8,6 +8,8 @@ export interface Command {
   keys?: string[];
   run: () => unknown;
   enabled?: () => boolean;
+  /** Why it is greyed, shown on the greyed menu entry. */
+  why?: () => string;
   checked?: () => boolean;
   /** F4 ("Repeat") runs the last command marked repeatable again. */
   repeatable?: boolean;

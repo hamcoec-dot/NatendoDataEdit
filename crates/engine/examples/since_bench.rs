@@ -86,7 +86,7 @@ fn main() {
             let live0 = LIVE.load(Ordering::Relaxed);
             PEAK.store(live0, Ordering::Relaxed);
             let t = Instant::now();
-            let r = d.since_plan(mark, wm, &p).unwrap();
+            let r = d.since_plan(mark, wm, true, &p).unwrap();
             best = best.min(t.elapsed().as_secs_f64() * 1000.0);
             peak_extra = peak_extra.max(PEAK.load(Ordering::Relaxed) - live0);
             plan = Some(r);
@@ -97,13 +97,7 @@ fn main() {
         let first_page = t.elapsed().as_secs_f64() * 1000.0;
         let t = Instant::now();
         let far = d
-            .since_page(
-                &plan,
-                mark,
-                wm,
-                plan.totals.cells_changed.saturating_sub(50),
-                50,
-            )
+            .since_page(&plan, mark, wm, plan.totals.entries.saturating_sub(50), 50)
             .unwrap();
         let last_page = t.elapsed().as_secs_f64() * 1000.0;
         let tt = &plan.totals;

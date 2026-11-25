@@ -267,7 +267,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "recipe steps panel": ["view.panelSteps", "tools.recipe"],
   "change encoding": ["tools.encoding"],
   "record panel": ["view.panelRecord", "view.recordNext", "view.recordPrev"],
-  checkpoints: ["edit.checkpoint", "view.panelSteps"],
+  checkpoints: ["edit.checkpoint", "edit.sinceCheckpoint", "view.panelSteps"],
   "recipe questions": ["view.panelSteps", "tools.recipe", "tools.recipeFiles"],
   "run recipe on files": ["tools.recipeFiles", "tools.watch"],
   "watched folder": ["tools.watch"],

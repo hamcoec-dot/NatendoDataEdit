@@ -2252,11 +2252,12 @@ async fn checkpoint_since(
     docs: DocsState<'_>,
     doc: u32,
     checkpoint: u32,
+    header: bool,
     offset: u64,
     want: usize,
 ) -> CmdResult<docs::SinceView> {
     let docs = docs.inner().clone();
-    blocking(move || docs.checkpoint_since(doc, checkpoint, offset, want)).await
+    blocking(move || docs.checkpoint_since(doc, checkpoint, header, offset, want)).await
 }
 
 /// Save what changed since a checkpoint as a CSV report chosen in the Save dialog; `None` if cancelled.
@@ -2267,6 +2268,7 @@ async fn checkpoint_since_report(
     recent: RecentState<'_>,
     doc: u32,
     checkpoint: u32,
+    header: bool,
 ) -> CmdResult<Option<u64>> {
     let docs = docs.inner().clone();
     let recent = recent.inner().clone();
@@ -2284,7 +2286,7 @@ async fn checkpoint_since_report(
         let Some(path) = dialog.save_file() else {
             return Ok(None);
         };
-        let n = docs.checkpoint_since_report(doc, checkpoint, &path)?;
+        let n = docs.checkpoint_since_report(doc, checkpoint, header, &path)?;
         private_copy(&docs, &recent, doc, &path)?;
         Ok(Some(n))
     })

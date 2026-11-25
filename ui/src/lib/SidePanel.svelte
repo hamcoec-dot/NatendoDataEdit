@@ -32,8 +32,7 @@
       onSave: () => void;
       now: () => number;
       restoreCheckpoint: (c: import("./backend").Checkpoint) => Promise<void>;
-      goToCell: (row: number, col: number) => void;
-      stopJob: () => void;
+      showSince: (c: import("./backend").Checkpoint) => void;
     };
     /** The Record panel's hooks: move the active cell, and take in a changed document. */
     record: { onGo: (row: number, col: number) => void };
@@ -224,7 +223,7 @@
     {#if !tab}
       <p class="note">Open a file to see its summary and charts.</p>
     {:else if which === "steps"}
-      <StepsPanel {tab} {titles} {...steps} />
+      <StepsPanel {tab} {...steps} />
     {:else if which === "record"}
       <RecordPanel {tab} {titles} {...record} />
     {:else if which === "filters"}

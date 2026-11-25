@@ -113,7 +113,7 @@ interface MockDoc {
   undo: { apply: () => () => void; inverse: () => void }[];
   redo: (() => () => void)[];
   /** Checkpoints: named moments, by mark (see `markOf`), with the cells as they were (the stand-in's way to compare). */
-  checkpoints?: { id: number; name: string; mark: number; auto: boolean; snap?: Map<string, string> }[];
+  checkpoints?: { id: number; name: string; mark: number; auto: boolean; snap?: Map<string, string>; order?: number[]; cols?: number[] }[];
   /** The mark of the state before the oldest undo step (new again after a save). */
   baseMark?: number;
   clean: number;
@@ -3874,40 +3874,67 @@ export class MockBackend implements Backend {
     const list = (d.checkpoints ??= []);
     const auto = list.find((c) => c.mark === mark && c.auto);
     if (auto) Object.assign(auto, { auto: false, name: n });
-    else list.push({ id: ++markSeq, name: n, mark, auto: false, snap: new Map(d.edits) });
+    else list.push({ id: ++markSeq, name: n, mark, auto: false, snap: new Map(d.edits), order: [...this.orderOf(d)], cols: [...this.colsOf(d)] });
     return this.cpList(d);
   }
-  /** The cells that differ now from a checkpoint (the stand-in compares the edits it kept). */
-  private sinceCells(d: MockDoc, c: { snap?: Map<string, string> }): import("./backend").SinceCell[] {
-    const keys = new Set([...(c.snap?.keys() ?? []), ...d.edits.keys()]);
-    const out: import("./backend").SinceCell[] = [];
-    for (const k of [...keys].sort((a, b) => Number(a.split(":")[0]) - Number(b.split(":")[0]) || Number(a.split(":")[1]) - Number(b.split(":")[1]))) {
-      const [ids, ps] = k.split(":");
-      const id = Number(ids);
-      const p = Number(ps);
-      const base = id >= 0 && p < d.baseCols ? generated(id, p) : "";
-      const before = c.snap?.get(k) ?? base;
-      const now = d.edits.get(k) ?? base;
-      if (before !== now) out.push({ id, row: this.orderOf(d).indexOf(id), col: p, old: before, new: now });
-    }
-    return out;
-  }
-  async checkpointSince(doc: number, checkpoint: number, offset: number, want: number): Promise<import("./backend").SinceView> {
-    const d = this.get(doc);
+  /** What differs now from a checkpoint (the stand-in compares the edits, rows and columns it kept). */
+  private sinceView(d: MockDoc, checkpoint: number, header: boolean): import("./backend").SinceView {
     const c = (d.checkpoints ?? []).find((x) => x.id === checkpoint);
     if (!c) throw err("invalid", "there is no such checkpoint");
     const r = this.reach(d, c.mark);
     if (r === null) throw err("invalid", "That checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or the file was saved.");
     if (r > 0) throw err("invalid", "That checkpoint is ahead of the table (you went back past it): go to it first, then compare.");
-    const cells = this.sinceCells(d, c);
-    const rows = new Set(cells.map((x) => x.id)).size;
-    return { totals: { steps: -r, rows_changed: rows, cells_changed: cells.length, rows_added: 0, rows_removed: 0, cols_added: 0, cols_removed: 0, cols_moved: false, reordered: false }, cells: cells.slice(offset, offset + want) };
+    const order = this.orderOf(d);
+    const cols = this.colsOf(d);
+    const thenOrder = c.order ?? order;
+    const thenCols = c.cols ?? cols;
+    const value = (edits: Map<string, string> | undefined, id: number, p: number) => edits?.get(`${id}:${p}`) ?? (id >= 0 && p < d.baseCols ? generated(id, p) : "");
+    const nowSet = new Set(order);
+    const thenSet = new Set(thenOrder);
+    const kept = thenOrder.filter((id) => nowSet.has(id)).sort((a, b) => a - b);
+    const line = (edits: Map<string, string> | undefined, id: number, map: number[]) => map.map((p) => value(edits, id, p)).join(" | ");
+    type Line = import("./backend").SinceCell;
+    const at = (id: number) => order.indexOf(id);
+    const cells: Line[] = [];
+    for (const id of kept) for (const p of cols.filter((x) => thenCols.includes(x))) {
+      const old = value(c.snap, id, p);
+      const now = value(d.edits, id, p);
+      if (old !== now) cells.push({ kind: "cell", id, row: at(id), col: cols.indexOf(p), removed_col: null, old, new: now });
+    }
+    const gone: Line[] = thenOrder.filter((id) => !nowSet.has(id)).sort((a, b) => a - b).map((id) => ({ kind: "row_removed", id, row: null, col: null, removed_col: null, old: line(c.snap, id, thenCols), new: "(taken out)" }));
+    const made: Line[] = order.filter((id) => !thenSet.has(id)).sort((a, b) => a - b).map((id) => ({ kind: "row_added", id, row: at(id), col: null, removed_col: null, old: "(new)", new: line(d.edits, id, cols) }));
+    const removed_cols = thenCols.map((p, i) => ({ at: i, p })).filter((x) => !cols.includes(x.p)).map((x) => ({ at: x.at, p: x.p, title: header ? value(c.snap, thenOrder[0]!, x.p) : "" }));
+    const lost: Line[] = removed_cols.flatMap((x, i) => kept.filter((id) => !(header && id === thenOrder[0])).map((id): Line => ({ kind: "col_removed", id, row: at(id), col: null, removed_col: i, old: value(c.snap, id, x.p), new: "(column taken out)" })));
+    const all = [...cells, ...gone, ...made, ...lost];
+    const added_cols = cols.map((p, i) => ({ p, i })).filter((x) => !thenCols.includes(x.p)).map((x) => x.i);
+    const a = thenCols.filter((p) => cols.includes(p));
+    const b = cols.filter((p) => thenCols.includes(p));
+    const moved_cols = b.filter((p, i) => a[i] !== p).map((p) => cols.indexOf(p));
+    return {
+      totals: {
+        steps: -r,
+        rows_changed: new Set(cells.map((x) => x.id)).size,
+        cells_changed: cells.length,
+        rows_added: made.length,
+        rows_removed: gone.length,
+        cols_added: added_cols.length,
+        cols_removed: removed_cols.length,
+        cols_moved: moved_cols.length > 0,
+        reordered: thenOrder.filter((id) => nowSet.has(id)).join() !== order.filter((id) => thenSet.has(id)).join(),
+        added_cols,
+        removed_cols: removed_cols.map((x) => ({ at: x.at, title: x.title })),
+        moved_cols,
+        entries: all.length,
+      },
+      cells: all,
+    };
   }
-  async checkpointSinceReport(doc: number, checkpoint: number): Promise<number | null> {
-    const d = this.get(doc);
-    const c = (d.checkpoints ?? []).find((x) => x.id === checkpoint);
-    if (!c) throw err("invalid", "there is no such checkpoint");
-    return this.sinceCells(d, c).length;
+  async checkpointSince(doc: number, checkpoint: number, header: boolean, offset: number, want: number): Promise<import("./backend").SinceView> {
+    const v = this.sinceView(this.get(doc), checkpoint, header);
+    return { totals: v.totals, cells: v.cells.slice(offset, offset + want) };
+  }
+  async checkpointSinceReport(doc: number, checkpoint: number, header: boolean): Promise<number | null> {
+    return this.sinceView(this.get(doc), checkpoint, header).totals.entries;
   }
   async checkpointRemove(doc: number, checkpoint: number): Promise<import("./backend").Checkpoint[]> {
     const d = this.get(doc);

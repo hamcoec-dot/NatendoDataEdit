@@ -39,6 +39,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import PrivacyDialog from "./lib/PrivacyDialog.svelte";
   import MailDialog from "./lib/MailDialog.svelte";
   import ChangesDialog from "./lib/ChangesDialog.svelte";
+  import SinceDialog from "./lib/SinceDialog.svelte";
   import RecipeDialog from "./lib/RecipeDialog.svelte";
   import { answerPairs, keepAnswers, withPhrase, type RecipeOpened, type RecipeView } from "./lib/recipe";
   import BatchDialog from "./lib/BatchDialog.svelte";
@@ -152,6 +153,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   let mailProblem = $state("");
   /** List of my changes: open, and what it found (null while it looks). */
   let changesOpen = $state(false);
+  /** The "what changed since a checkpoint" window, and the checkpoint the menu entry would compare with. */
+  let sinceFor = $state<{ doc: number; checkpoint: Checkpoint } | null>(null);
+  let sinceNewest = $state<{ doc: number; ready: boolean; why: string }>({ doc: -1, ready: false, why: "" });
   let recipeOpen = $state(false);
   let recipeCurrent = $state<RecipeView | null>(null);
   let recipeFile = $state<RecipeOpened | null>(null);
@@ -5567,6 +5571,40 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
 
+  const NO_CHECKPOINT = "No checkpoint yet: name this moment first (Ctrl+Alt+K).";
+  /** The newest checkpoint the table can be compared with, or why there is none. */
+  function newestSince(list: Checkpoint[]): { checkpoint: Checkpoint | null; why: string } {
+    const checkpoint = [...list].reverse().find((c) => c.since_note === "") ?? null;
+    return { checkpoint, why: checkpoint ? "" : (list.at(-1)?.since_note ?? NO_CHECKPOINT) };
+  }
+  // Whether the menu entry is greyed follows every change of the table and of the checkpoints.
+  $effect(() => {
+    const t = tab;
+    if (!t) return;
+    void t.info.history_pos;
+    void t.info.step_mark;
+    void t.checkpointTick;
+    const doc = t.id;
+    void backend()
+      .checkpointList(doc)
+      .then((list) => {
+        const n = newestSince(list);
+        if (tab?.id === doc) sinceNewest = { doc, ready: !!n.checkpoint, why: n.why };
+      })
+      .catch(() => {});
+  });
+  async function openSince(): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    try {
+      const n = newestSince(await backend().checkpointList(t.id));
+      if (n.checkpoint) sinceFor = { doc: t.id, checkpoint: n.checkpoint };
+      else say(n.why);
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
   function cancelJob(): void {
     if (tab) void backend().cancelJob(tab.id);
   }
@@ -5939,6 +5977,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "edit.note", label: "&Note and flag on this row…", keys: ["Shift+F2"], run: () => { const t = tab; if (t) notesRow = t.cell.row; }, enabled: ready },
     { id: "edit.changes", label: "List of &my changes…", run: () => void openChanges(), enabled: ready },
     { id: "edit.checkpoint", label: "&Name this moment (checkpoint)…", keys: ["Ctrl+Alt+K"], run: () => nameMoment(), enabled: hasTab },
+    { id: "edit.sinceCheckpoint", label: "What changed since a checkpoint…", run: () => void openSince(), enabled: () => !!tab && sinceNewest.doc === tab.id && sinceNewest.ready, why: () => sinceNewest.why },
     { id: "tools.recipe", label: "&Recipe (save or run steps)…", run: () => void openRecipes(), enabled: ready },
     { id: "tools.searchFolder", label: "Search a &folder of files…", keys: ["Ctrl+Shift+F"], run: () => { folderSearchOpen = true; } },
     { id: "view.showEdits", label: "Show my &edits", run: () => setShowEdits(!tab?.showEdits), enabled: hasTab, checked: () => !!tab?.showEdits },
@@ -6335,7 +6374,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       items: [
         "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "edit.sanitize", "-",
         "edit.copyNames", "edit.copyNamesText", "edit.copyWithNames", "edit.pasteNames", "-",
-        "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "edit.gotoSpecial", "-", "edit.note", "edit.changes", "edit.checkpoint", "-",
+        "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "edit.gotoSpecial", "-", "edit.note", "edit.changes", "edit.checkpoint", "edit.sinceCheckpoint", "-",
         "edit.deleteRows", "edit.deleteCols", "edit.moveRowsUp", "edit.moveRowsDown", "edit.moveColsLeft", "edit.moveColsRight",
       ],
     },
@@ -6395,8 +6434,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
-    tab: ["file.save", "file.saveAs", "-", "tools.encoding", "edit.checkpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "edit.checkpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    tab: ["file.save", "file.saveAs", "-", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
@@ -7568,6 +7607,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
                   class="item"
                   class:hot={menuIndex === pos}
                   disabled={!reg.enabled(id)}
+                  title={reg.enabled(id) ? undefined : c.why?.()}
                   onmouseenter={() => (menuIndex = pos)}
                   onclick={() => void runCmd(id)}
                 >
@@ -7934,8 +7974,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           onSave: () => void openRecipes(),
           now: localNow,
           restoreCheckpoint,
-          goToCell: goToChange,
-          stopJob: cancelJob,
+          showSince: (c) => { if (tab) sinceFor = { doc: tab.id, checkpoint: c }; },
         }}
         onFilterValue={(col, value, cut) => void setRule(col, cut ? { type: "conditions", first: { type: "text", op: "begins_with", text: value.replace(/…$/, ""), match_case: true } } : value === "" ? { type: "values", values: [], blanks: true } : { type: "values", values: [value], blanks: false })}
         onClose={() => showPanel(null)}
@@ -8017,6 +8056,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
             class="item"
             class:hot={context.index === pos}
             disabled={!reg.enabled(id)}
+            title={reg.enabled(id) ? undefined : c.why?.()}
             onmouseenter={() => {
               if (context) context.index = pos;
             }}
@@ -8262,6 +8302,18 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     onOpen={() => void openRecipeFile()}
     onRun={(f, p, a) => void runRecipe(f, p, a)}
     onClose={() => { recipeOpen = false; recipeFile = null; grid?.focus(); }}
+  />
+{/if}
+
+{#if sinceFor && tab && tab.id === sinceFor.doc}
+  <SinceDialog
+    doc={sinceFor.doc}
+    checkpoint={sinceFor.checkpoint}
+    header={tab.header}
+    titles={shownTitles(tab)}
+    onGo={(row, col) => { sinceFor = null; goToChange(row, col); }}
+    onStop={cancelJob}
+    onClose={() => { sinceFor = null; grid?.focus(); }}
   />
 {/if}
 

@@ -3,12 +3,14 @@
   // to the cell), and a report to save. It runs only when asked; a big change (Replace all over every row) is a job
   // with progress and Stop. Rows are followed by their id through sorts and deletes, and columns by their identity
   // through inserts, deletes and moves.
-  import { backend, errorText, type Checkpoint, type SinceView } from "./backend";
+  import { backend, errorText, type Checkpoint, type SinceCell, type SinceView } from "./backend";
   import FormShell from "./FormShell.svelte";
 
   interface Props {
     doc: number;
     checkpoint: Checkpoint;
+    /** The first row holds titles. */
+    header: boolean;
     /** Column titles now. */
     titles: string[];
     onGo: (row: number, col: number) => void;
@@ -16,7 +18,7 @@
     onStop: () => void;
     onClose: () => void;
   }
-  let { doc, checkpoint, titles, onGo, onStop, onClose }: Props = $props();
+  let { doc, checkpoint, header, titles, onGo, onStop, onClose }: Props = $props();
 
   const PAGE = 50;
   let view = $state<SinceView | null>(null);
@@ -28,7 +30,7 @@
   async function load(p: number): Promise<void> {
     busy = true;
     try {
-      view = await backend().checkpointSince(doc, checkpoint.id, p * PAGE, PAGE);
+      view = await backend().checkpointSince(doc, checkpoint.id, header, p * PAGE, PAGE);
       page = p;
       problem = "";
     } catch (e) {
@@ -42,8 +44,8 @@
 
   async function report(): Promise<void> {
     try {
-      const n = await backend().checkpointSinceReport(doc, checkpoint.id);
-      saved = n === null ? "" : `Saved ${n.toLocaleString()} changed cells.`;
+      const n = await backend().checkpointSinceReport(doc, checkpoint.id, header);
+      saved = n === null ? "" : `Saved ${n.toLocaleString()} ${n === 1 ? "line" : "lines"}.`;
     } catch (e) {
       problem = errorText(e);
     }
@@ -54,7 +56,12 @@
   const shorten = (v: string) => (v.length > 80 ? `${v.slice(0, 80)}…` : v);
   const t = $derived(view?.totals);
   const nothing = $derived(!!t && !t.cells_changed && !t.rows_added && !t.rows_removed && !t.cols_added && !t.cols_removed && !t.cols_moved && !t.reordered);
-  const pages = $derived(t ? Math.max(1, Math.ceil(t.cells_changed / PAGE)) : 1);
+  const pages = $derived(t ? Math.max(1, Math.ceil(t.entries / PAGE)) : 1);
+  /** A column taken out: its title at the checkpoint, or where it was. */
+  const gone = (c: { at: number; title: string }) => c.title || `Column ${c.at + 1} (at the checkpoint)`;
+  const list = (names: string[]) => (names.length > 12 ? `${names.slice(0, 12).join(", ")} and ${(names.length - 12).toLocaleString()} more` : names.join(", "));
+  const columnOf = (c: SinceCell) =>
+    c.kind === "cell" ? title(c.col ?? 0) : c.kind === "col_removed" ? gone(t!.removed_cols[c.removed_col ?? 0]!) : "(whole row)";
 </script>
 
 <FormShell title={`What changed since “${checkpoint.name}”`} wide onClose={() => { if (busy) onStop(); onClose(); }}>
@@ -71,25 +78,25 @@
           {#if t.cells_changed}<li>{plural(t.cells_changed, "cell")} changed in {plural(t.rows_changed, "row")}</li>{/if}
           {#if t.rows_added}<li>{plural(t.rows_added, "row")} added</li>{/if}
           {#if t.rows_removed}<li>{plural(t.rows_removed, "row")} taken out</li>{/if}
-          {#if t.cols_added}<li>{plural(t.cols_added, "column")} added</li>{/if}
-          {#if t.cols_removed}<li>{plural(t.cols_removed, "column")} taken out</li>{/if}
-          {#if t.cols_moved}<li>Columns moved</li>{/if}
+          {#if t.cols_added}<li>{plural(t.cols_added, "column")} added: {list(t.added_cols.map(title))}</li>{/if}
+          {#if t.cols_removed}<li>{plural(t.cols_removed, "column")} taken out: {list(t.removed_cols.map(gone))}</li>{/if}
+          {#if t.cols_moved}<li>Columns moved: {list(t.moved_cols.map(title))}</li>{/if}
           {#if t.reordered}<li>Rows sorted or moved</li>{/if}
           <li class="note">{plural(t.steps, "step")} since the checkpoint.</li>
         </ul>
       {/if}
       {#if view.cells.length}
-        <div class="table" role="table" aria-label="Changed cells">
+        <div class="table" role="table" aria-label="What changed">
           <div class="head" role="row"><span>Row</span><span>Column</span><span>Was</span><span>Now</span></div>
           {#each view.cells as c, i (i)}
-            <button type="button" class="line" role="row" disabled={c.row === null} onclick={() => c.row !== null && onGo(c.row, c.col)} title={c.row === null ? "This row is not in the table any more" : "Go to this cell"}>
-              <span>{c.row === null ? "—" : (c.row + 1).toLocaleString()}</span><span>{title(c.col)}</span><span class="old">{shorten(c.old) || "(blank)"}</span><span>{shorten(c.new) || "(blank)"}</span>
+            <button type="button" class="line" role="row" disabled={c.row === null} onclick={() => c.row !== null && onGo(c.row, c.col ?? 0)} title={c.row === null ? "This row is not in the table any more" : "Go to this row"}>
+              <span>{c.row === null ? "—" : (c.row + 1).toLocaleString()}</span><span>{columnOf(c)}</span><span class:old={c.kind !== "row_added"}>{shorten(c.old) || "(blank)"}</span><span>{shorten(c.new) || "(blank)"}</span>
             </button>
           {/each}
         </div>
         <div class="pager" data-testid="since-pager">
           <button type="button" class="small" disabled={busy || page === 0} onclick={() => void load(page - 1)}>Previous {PAGE}</button>
-          <span class="note">Changed cells {(page * PAGE + 1).toLocaleString()} to {Math.min(t.cells_changed, (page + 1) * PAGE).toLocaleString()} of {t.cells_changed.toLocaleString()} (page {page + 1} of {pages})</span>
+          <span class="note">Lines {(page * PAGE + 1).toLocaleString()} to {Math.min(t.entries, (page + 1) * PAGE).toLocaleString()} of {t.entries.toLocaleString()} (page {page + 1} of {pages})</span>
           <button type="button" class="small" disabled={busy || page + 1 >= pages} onclick={() => void load(page + 1)}>Next {PAGE}</button>
         </div>
       {/if}
@@ -97,7 +104,7 @@
     {#if saved}<p class="note" role="status">{saved}</p>{/if}
   </div>
   {#snippet buttons()}
-    <button type="button" class="primary" data-enter disabled={!view || nothing || busy} onclick={() => void report()}>Save as a report…</button>
+    <button type="button" class="primary" data-enter disabled={!view || !view.totals.entries || busy} onclick={() => void report()}>Save as a report…</button>
     <button type="button" onclick={() => { if (busy) onStop(); onClose(); }}>Close</button>
   {/snippet}
 </FormShell>
@@ -137,7 +144,7 @@
     cursor: pointer;
   }
   .line:disabled {
-    opacity: 0.55;
+    cursor: default;
   }
   .line span {
     overflow: hidden;

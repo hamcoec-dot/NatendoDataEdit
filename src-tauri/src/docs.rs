@@ -11,6 +11,7 @@
 //! lock between steps so the first screen can be drawn while a big file is
 //! still being read.
 
+use natendo_engine::document::since::SincePlan;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -464,9 +465,9 @@ pub struct Entry {
     recipe: Mutex<RecipeLog>,
     /// Named moments in the undo history (see `Checkpoints`).
     checkpoints: Mutex<Checkpoints>,
-    /// The last "what changed since this checkpoint" plan, kept while the document is as it was
-    /// (checkpoint id, document revision, plan), so paging does not compare again.
-    since_plan: Mutex<Option<(u32, u64, natendo_engine::document::since::SincePlan)>>,
+    /// The last "what changed since this checkpoint" plan, kept while the document is as it was, so paging does not
+    /// compare again.
+    since_plan: Mutex<Option<KeptSince>>,
     /// The filter panel's column codes (see `FacetCache`).
     facets: Mutex<natendo_engine::filter::FacetCache>,
     /// The other list of the last "match people" run (for accepting).
@@ -1069,6 +1070,14 @@ impl Checkpoints {
         }
         id
     }
+}
+
+/// A "since this checkpoint" plan and what it was made for.
+struct KeptSince {
+    checkpoint: u32,
+    header: bool,
+    revision: u64,
+    plan: Arc<SincePlan>,
 }
 
 /// What changed since a checkpoint, as the screen asks for it.
@@ -5084,109 +5093,142 @@ impl Docs {
             .ok_or_else(|| CmdError::new("invalid", "there is no such checkpoint"))
     }
 
-    /// The plan of "what changed since this checkpoint": a job with progress and Cancel the first time (and after
-    /// any change), kept while the document stays as it is. Never run while a list is drawn: only when asked.
-    fn since_plan_for(
+    /// Runs `f` with the plan of "what changed since this checkpoint" and the document it was made for, under ONE read
+    /// lock: no change can come between the plan's check and the page read. The plan is made as a job with progress
+    /// and Cancel the first time (and again after any change) and kept while the document stays as it is. Never run
+    /// while a list is drawn: only when asked.
+    fn with_since<T>(
         &self,
         entry: &Entry,
         cp: u32,
-    ) -> CmdResult<(natendo_engine::document::since::SincePlan, u64, u32)> {
+        header: bool,
+        f: impl FnOnce(&Document, &SincePlan, u64, u32) -> CmdResult<T>,
+    ) -> CmdResult<T> {
         let (mark, wm) = self.checkpoint_mark(entry, cp)?;
-        {
-            let d = entry.read();
-            let cached = entry.since_plan.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some((c, rev, plan)) = cached.as_ref() {
-                if *c == cp && *rev == d.revision() {
-                    return Ok((plan.clone(), mark, wm));
-                }
-            }
-        }
-        let job = entry.start("Comparing with the checkpoint")?;
         let d = entry.read();
-        let plan = d.since_plan(mark, wm, &job.progress)?;
-        *entry.since_plan.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some((cp, d.revision(), plan.clone()));
-        Ok((plan, mark, wm))
+        let kept = entry
+            .since_plan
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .filter(|k| k.checkpoint == cp && k.header == header && k.revision == d.revision())
+            .map(|k| k.plan.clone());
+        let plan = match kept {
+            Some(plan) => plan,
+            None => {
+                let job = entry.start("Comparing with the checkpoint")?;
+                let plan = Arc::new(d.since_plan(mark, wm, header, &job.progress)?);
+                *entry.since_plan.lock().unwrap_or_else(|p| p.into_inner()) = Some(KeptSince {
+                    checkpoint: cp,
+                    header,
+                    revision: d.revision(),
+                    plan: plan.clone(),
+                });
+                plan
+            }
+        };
+        f(&d, &plan, mark, wm)
     }
 
-    /// What changed since a checkpoint: every count, and one page of the changed cells (was / now, in row id order).
+    /// What changed since a checkpoint: every count, and one page of the list (changed cells, rows taken out, rows
+    /// made, cells of columns taken out).
     pub fn checkpoint_since(
         &self,
         id: u32,
         cp: u32,
+        header: bool,
         offset: u64,
         want: usize,
     ) -> CmdResult<SinceView> {
         let entry = self.get(id)?;
-        let (plan, mark, wm) = self.since_plan_for(&entry, cp)?;
-        let d = entry.read();
-        let cells = d.since_page(&plan, mark, wm, offset, want.min(500))?;
-        Ok(SinceView {
-            totals: plan.totals.clone(),
-            cells,
+        self.with_since(&entry, cp, header, |d, plan, mark, wm| {
+            Ok(SinceView {
+                totals: plan.totals.clone(),
+                cells: d.since_page(plan, mark, wm, offset, want.min(500))?,
+            })
         })
     }
 
-    /// Write what changed since a checkpoint as a CSV report to `path`; returns the cells written.
-    pub fn checkpoint_since_report(&self, id: u32, cp: u32, path: &Path) -> CmdResult<u64> {
+    /// Write the whole list of what changed since a checkpoint as a CSV report to `path`; returns the lines written.
+    /// Columns are named by the first row only when it holds titles (`header`): otherwise "Column N", so that no data
+    /// value becomes a name.
+    pub fn checkpoint_since_report(
+        &self,
+        id: u32,
+        cp: u32,
+        header: bool,
+        path: &Path,
+    ) -> CmdResult<u64> {
+        use natendo_engine::document::since::SinceKind;
+        use std::io::Write as _;
         self.check_writable(path)?;
         let entry = self.get(id)?;
-        let (plan, mark, wm) = self.since_plan_for(&entry, cp)?;
-        let d = entry.read();
-        if d.path()
-            .is_some_and(|p| natendo_engine::save::same_path(p, path))
-        {
-            return Err(Error::Invalid("choose another name: that is the open file".into()).into());
-        }
-        let titles: Vec<String> = (0..d.col_count())
-            .map(|c| {
-                d.cell(0, c)
-                    .filter(|t| !t.is_empty())
-                    .unwrap_or_else(|| format!("Column {}", c + 1))
-            })
-            .collect();
-        let file = std::fs::File::create(path).map_err(|e| CmdError::new("io", e.to_string()))?;
-        let mut out = std::io::BufWriter::new(file);
-        let mut line = String::new();
-        let mut put = |fields: &[&str], out: &mut dyn std::io::Write| -> CmdResult<()> {
-            line.clear();
-            for (i, f) in fields.iter().enumerate() {
-                if i > 0 {
-                    line.push(',');
-                }
-                natendo_engine::scan::write_field(
-                    f,
-                    natendo_engine::dialect::Dialect::CSV,
-                    &mut line,
+        self.with_since(&entry, cp, header, |d, plan, mark, wm| {
+            if d.path()
+                .is_some_and(|p| natendo_engine::save::same_path(p, path))
+            {
+                return Err(
+                    Error::Invalid("choose another name: that is the open file".into()).into(),
                 );
             }
-            line.push_str("\r\n");
-            out.write_all(line.as_bytes())
-                .map_err(|e| CmdError::new("io", e.to_string()))
-        };
-        put(&["Row now", "Column", "Was", "Now"], &mut out)?;
-        let t = &plan.totals;
-        let mut offset = 0u64;
-        loop {
-            let page = d.since_page(&plan, mark, wm, offset, 5_000)?;
-            if page.is_empty() {
-                break;
+            let named = |title: Option<String>, at: u32| {
+                title
+                    .filter(|t| header && !t.is_empty())
+                    .unwrap_or_else(|| format!("Column {}", at + 1))
+            };
+            let titles: Vec<String> = (0..d.col_count())
+                .map(|c| named(if header { d.cell(0, c) } else { None }, c))
+                .collect();
+            let removed: Vec<String> = plan
+                .totals
+                .removed_cols
+                .iter()
+                .map(|c| named(Some(c.title.clone()), c.at))
+                .collect();
+            let io = |e: std::io::Error| CmdError::new("io", e.to_string());
+            let mut out = std::io::BufWriter::new(std::fs::File::create(path).map_err(io)?);
+            let mut line = String::new();
+            let mut put = |fields: &[&str], out: &mut dyn std::io::Write| -> CmdResult<()> {
+                line.clear();
+                for (i, f) in fields.iter().enumerate() {
+                    if i > 0 {
+                        line.push(',');
+                    }
+                    natendo_engine::scan::write_field(
+                        f,
+                        natendo_engine::dialect::Dialect::CSV,
+                        &mut line,
+                    );
+                }
+                line.push_str("\r\n");
+                out.write_all(line.as_bytes()).map_err(io)
+            };
+            put(&["Row now", "Column", "Was", "Now"], &mut out)?;
+            let mut offset = 0u64;
+            loop {
+                let page = d.since_page(plan, mark, wm, offset, 5_000)?;
+                if page.is_empty() {
+                    break;
+                }
+                offset += page.len() as u64;
+                for c in &page {
+                    let row = c.row.map_or(String::new(), |r| (r + 1).to_string());
+                    let column = match (c.kind, c.col, c.removed_col) {
+                        (SinceKind::Cell, Some(col), _) => titles
+                            .get(col as usize)
+                            .cloned()
+                            .unwrap_or_else(|| format!("Column {}", col + 1)),
+                        (SinceKind::ColRemoved, _, Some(i)) => {
+                            removed.get(i as usize).cloned().unwrap_or_default()
+                        }
+                        _ => "(whole row)".to_string(),
+                    };
+                    put(&[&row, &column, &c.old, &c.new], &mut out)?;
+                }
             }
-            offset += page.len() as u64;
-            for c in &page {
-                let row = c.row.map_or(String::new(), |r| (r + 1).to_string());
-                let col = titles
-                    .get(c.col as usize)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Column {}", c.col + 1));
-                put(&[&row, &col, &c.old, &c.new], &mut out)?;
-            }
-        }
-        use std::io::Write as _;
-        out.flush()
-            .map_err(|e| CmdError::new("io", e.to_string()))?;
-        let _ = t;
-        Ok(offset)
+            out.flush().map_err(io)?;
+            Ok(offset)
+        })
     }
 
     /// Refuse while the steps panel looks back.
@@ -10582,7 +10624,7 @@ ca,California
         );
         docs.set_cells(id, vec![(1, 0, "Anna".into()), (3, 1, "pq".into())])
             .unwrap();
-        let v = docs.checkpoint_since(id, begin, 0, 10).unwrap();
+        let v = docs.checkpoint_since(id, begin, true, 0, 10).unwrap();
         assert_eq!(
             (
                 v.totals.rows_changed,
@@ -10601,14 +10643,17 @@ ca,California
             ("ann", "Anna", Some(1))
         );
         // A page past the first: the same plan, the next cells.
-        let second = docs.checkpoint_since(id, begin, 1, 10).unwrap();
+        let second = docs.checkpoint_since(id, begin, true, 1, 10).unwrap();
         assert_eq!(second.cells.len(), 1);
         assert_eq!(second.cells[0].new, "pq");
         // The list says it can be compared.
         assert_eq!(docs.checkpoint_list(id).unwrap()[0].since_note, "");
         // The report: a CSV with a line per cell.
         let out = std::env::temp_dir().join(format!("since-report-{}.csv", std::process::id()));
-        assert_eq!(docs.checkpoint_since_report(id, begin, &out).unwrap(), 2);
+        assert_eq!(
+            docs.checkpoint_since_report(id, begin, true, &out).unwrap(),
+            2
+        );
         let text = std::fs::read_to_string(&out).unwrap();
         assert!(text.starts_with("Row now,Column,Was,Now"), "{text}");
         assert!(text.contains("ann,"), "{text}");
@@ -10627,7 +10672,7 @@ ca,California
             .iter()
             .find(|c| c.name == "Before Split into rows")
             .expect("the automatic checkpoint");
-        let v = docs.checkpoint_since(id, before.id, 0, 10).unwrap();
+        let v = docs.checkpoint_since(id, before.id, true, 0, 10).unwrap();
         // a|b|c makes two more rows (p|q was edited to pq above, so it does not split).
         assert_eq!(v.totals.rows_added, 2, "added once");
         // Going back past the checkpoint leaves it ahead of the table: refused, with a plain note.
@@ -10642,12 +10687,69 @@ ca,California
             "{}",
             ahead.since_note
         );
-        let e = docs.checkpoint_since(id, ahead.id, 0, 10).unwrap_err();
+        let e = docs
+            .checkpoint_since(id, ahead.id, true, 0, 10)
+            .unwrap_err();
         assert!(e.message.contains("ahead of the table"), "{}", e.message);
     }
 
     /// B4: risky bulk changes name a moment first; cheap ones do not; the automatic ones are capped at 20 and
     /// never push out a named one; a big paste and a delete of several rows count too.
+    /// B4 part 2, review fixes: the report names columns from the first row only when it holds titles (no data value
+    /// becomes a column name); rows taken out and columns taken out are listed; a page is read against the table its
+    /// plan was made for, also after an edit between two pages.
+    #[test]
+    fn since_report_titles_lists_and_a_fresh_plan_after_an_edit() {
+        let docs = Docs::default();
+        let p = tmp(
+            "since2.csv",
+            b"Secret Person,Elm Street\nann,Oslo\nbob,Rome\ncat,Lyon\n",
+        );
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let begin = docs.checkpoint_add(id, "begin").unwrap()[0].id;
+        docs.set_cells(id, vec![(1, 0, "Anna".into())]).unwrap();
+        docs.delete_rows(id, 2, 1).unwrap();
+        docs.delete_cols(id, 1, 1).unwrap();
+        let out = std::env::temp_dir().join(format!("since-titles-{}.csv", std::process::id()));
+        // Without a header row: "Column N", never a value of the first row.
+        let n = docs
+            .checkpoint_since_report(id, begin, false, &out)
+            .unwrap();
+        // One changed cell, one row taken out, three cells of the column taken out (the rows still there).
+        assert_eq!(n, 5);
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            text.contains("Column 1,ann,Anna") && text.contains("Column 2,Oslo,(column taken out)"),
+            "{text}"
+        );
+        assert!(
+            text.contains(",(whole row),bob | Rome,(taken out)"),
+            "{text}"
+        );
+        assert!(
+            !text.contains(",Secret Person,ann") && !text.contains(",Elm Street,Oslo"),
+            "{text}"
+        );
+        // With a header row the titles name the columns, the taken-out one by its title at the checkpoint.
+        docs.checkpoint_since_report(id, begin, true, &out).unwrap();
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            text.contains("Secret Person,ann,Anna")
+                && text.contains("Elm Street,Oslo,(column taken out)"),
+            "{text}"
+        );
+        let _ = std::fs::remove_file(&out);
+        // A page, then an edit, then the next page: compared again, totals and lines of the table as it is now.
+        let first = docs.checkpoint_since(id, begin, true, 0, 2).unwrap();
+        assert_eq!(first.totals.cells_changed, 1);
+        docs.set_cells(id, vec![(2, 0, "Katja".into())]).unwrap();
+        let second = docs.checkpoint_since(id, begin, true, 0, 10).unwrap();
+        assert_eq!(second.totals.cells_changed, 2);
+        assert_eq!(second.cells.len() as u64, second.totals.entries);
+        assert!(second.cells.iter().any(|c| c.new == "Katja"));
+    }
+
     #[test]
     fn risky_changes_make_automatic_checkpoints() {
         let docs = Docs::default();

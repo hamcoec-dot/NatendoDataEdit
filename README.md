@@ -1176,16 +1176,22 @@ selection, a column or the whole table:
   reachable") when the undo history is trimmed past it (10,000 steps or 512 MB),
   when a new change replaces what you had undone, and when you save the file,
   because saving starts the undo history again. Checkpoints are not saved to disk
-  and go when the tab closes. **What changed since this checkpoint** (the Δ button on a
-  checkpoint): the counts first (cells changed and in how many rows, rows added or taken out,
-  columns added, taken out or moved, rows sorted or moved), then the changed cells 50 at a
-  time with their old and new values; a click goes to the cell, and the report saves them all
-  as a CSV file. It is worked out from the undo steps the app already keeps, so a checkpoint
-  still costs nothing while it sits, and it runs only when you ask: a Replace all over a
-  million rows takes about half a second, with progress and Stop. Rows are followed by their
-  identity through sorts and deletes, columns through inserts, deletes and moves. It is
-  greyed, with the reason, for the checkpoint that is the table now, for one ahead of the
-  table (you went back past it) and for one that is no longer reachable.
+  and go when the tab closes. **What changed since this checkpoint** (Edit > What changed
+  since a checkpoint, command search, the tab and cell right-click menus, which
+  compare with the newest checkpoint they can; or the Δ button on any
+  checkpoint): the counts first (cells changed and in how many rows, rows added
+  or taken out, the names of the columns added, taken out or moved, rows sorted
+  or moved), then the list, 50 lines at a time: the changed cells with their old
+  and new values, the rows taken out with the values they had, the new rows, and
+  the cells of every column taken out. A click goes to the row, and the report
+  saves the whole list as a CSV file (columns are named by the first row only
+  when it holds titles). It is worked out from the undo steps the app already
+  keeps, so a checkpoint still costs nothing while it sits, and it runs only
+  when you ask: a Replace all over a million rows takes about half a second,
+  with progress and Stop. Rows are followed by their identity through sorts and
+  deletes, columns through inserts, deletes and moves. It is greyed, with the
+  reason, for the checkpoint that is the table now, for one ahead of the table
+  (you went back past it) and for one that is no longer reachable.
 
 ![Checkpoints at the top of the Steps panel](docs/screenshots/checkpoints.png)
 
