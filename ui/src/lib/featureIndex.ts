@@ -264,6 +264,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "cleaners": ["clean.tools"],
   "recipes": ["tools.recipe"],
   "recipe steps panel": ["view.panelSteps", "tools.recipe"],
+  "record panel": ["view.panelRecord", "view.recordNext", "view.recordPrev"],
   "recipe questions": ["view.panelSteps", "tools.recipe", "tools.recipeFiles"],
   "run recipe on files": ["tools.recipeFiles", "tools.watch"],
   "watched folder": ["tools.watch"],

@@ -4,6 +4,7 @@
   // row). Page Up / Page Down move between rows.
   import { untrack } from "svelte";
   import { backend, errorText, type DocInfo } from "./backend";
+  import RecordFields from "./RecordFields.svelte";
   import { parseTsv } from "./tsv";
 
   interface Props {
@@ -132,18 +133,7 @@
 <div class="backdrop" role="presentation">
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="form-title" tabindex="-1" bind:this={box} onkeydown={onKey}>
     <h2 id="form-title">Row {(row + 1).toLocaleString()} of {total.toLocaleString()}</h2>
-    <div class="fields">
-      {#each values as _, i (i)}
-        <label>
-          <span class="name" title={titles[i] ?? `Column ${i + 1}`}>{titles[i] ?? `Column ${i + 1}`}</span>
-          {#if (values[i] ?? "").includes("\n") || (values[i] ?? "").length > 80}
-            <textarea rows="3" bind:value={values[i]} class:changed={values[i] !== original[i]}></textarea>
-          {:else}
-            <input type="text" bind:value={values[i]} class:changed={values[i] !== original[i]} />
-          {/if}
-        </label>
-      {/each}
-    </div>
+    <RecordFields order={values.map((_, i) => i)} {titles} bind:values {original} windowed />
     {#if cols > shown}<p class="note">The first {shown.toLocaleString()} of {cols.toLocaleString()} columns are shown.</p>{/if}
     {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
     <div class="buttons">
@@ -188,28 +178,6 @@
     font-size: 16px;
     margin: 0 0 10px;
   }
-  .fields {
-    overflow: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding-right: 4px;
-  }
-  label {
-    display: grid;
-    grid-template-columns: minmax(90px, 30%) 1fr;
-    gap: 10px;
-    align-items: start;
-  }
-  .name {
-    color: var(--muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    padding-top: 4px;
-  }
-  input,
-  textarea,
   button {
     font: inherit;
     color: var(--text);
@@ -217,12 +185,6 @@
     border: 1px solid var(--border);
     border-radius: 5px;
     padding: 3px 8px;
-  }
-  textarea {
-    resize: vertical;
-  }
-  .changed {
-    border-color: var(--accent);
   }
   button {
     cursor: pointer;

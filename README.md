@@ -1112,6 +1112,18 @@ selection, a column or the whole table:
 
 ![The recipe steps panel looking at the table after step 1](docs/screenshots/steps-panel.png)
 *Looking back at the table after step 1; step 4, a paste, can't be part of a recipe.*
+- **Record panel** (View > Record panel, Alt+R): the row of the active cell as a
+  list of fields, beside the table. It follows the selection (Page Up and Page
+  Down in the panel, or Ctrl+Alt+Up and Ctrl+Alt+Down anywhere, flip to the
+  previous or next row), has a search box over titles and values, a star to
+  pin a field to the top (kept with the view, by title), hidden columns shown
+  dimmed on request, a click on a title to jump the grid to that cell, and
+  editing in place: Enter or leaving a field saves it as one undo step, Esc
+  puts it back. Protected columns and locked files show the field disabled
+  with the reason; a long value opens in a bigger editor. The panel reads one
+  row at a time, so it costs nothing on a big file.
+
+![The Record panel beside a table of made-up names](docs/screenshots/record-panel.png)
 - **Recipe questions:** in the steps panel, press ? on a step to have the
   recipe ask for one of its values each time it runs ("Which county?",
   "Election date?"), with the last answer filled in. One recipe then serves

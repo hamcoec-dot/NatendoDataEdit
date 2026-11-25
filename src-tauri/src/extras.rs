@@ -589,7 +589,24 @@ pub struct View {
     /// Rows with a height of their own: (row, pixels), rows increasing.
     #[serde(default)]
     pub row_heights: Vec<(u64, u32)>,
+    /// The filter panel's cards: (column in the order shown, "values" | "numbers" | "dates").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facets: Vec<ViewFacet>,
+    /// Titles of the fields pinned to the top of the Record panel (matched by title like the columns).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub record_pins: Vec<String>,
 }
+
+/// One filter-panel card of a view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewFacet {
+    pub col: u32,
+    pub kind: String,
+}
+
+/// Most pinned fields (and filter cards) a view keeps.
+pub const MAX_RECORD_PINS: usize = 200;
 
 fn one() -> u32 {
     1
@@ -619,6 +636,19 @@ impl View {
                 .is_some_and(|f| f.decimals > 10 || f.symbol.chars().count() > 4)
         }) {
             return bad("a column's display format is not valid");
+        }
+        if self.record_pins.len() > MAX_RECORD_PINS
+            || self.record_pins.iter().any(|t| t.chars().count() > 1_000)
+        {
+            return bad("the view pins too many or too long fields");
+        }
+        if self.facets.len() > 32
+            || self
+                .facets
+                .iter()
+                .any(|f| !matches!(f.kind.as_str(), "values" | "numbers" | "dates"))
+        {
+            return bad("the view lists too many filter cards or one that is not valid");
         }
         if self.row_lines > 10 {
             return bad("rows can be at most 10 lines tall");
@@ -759,6 +789,31 @@ pub fn write_atomic_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn record_pins_and_filter_cards_round_trip_in_a_view() {
+        let v = View::from_json(
+            br#"{"name":"Mine","record_pins":["Name","City"],"facets":[{"col":1,"kind":"numbers"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(v.record_pins, vec!["Name", "City"]);
+        assert_eq!(v.facets.len(), 1);
+        let again = View::from_json(&serde_json::to_vec(&v).unwrap()).unwrap();
+        assert_eq!(again, v);
+        // Older views have none, and write none.
+        let old = View::from_json(br#"{"name":"Old"}"#).unwrap();
+        assert!(old.record_pins.is_empty() && old.facets.is_empty());
+        let text = String::from_utf8(serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(!text.contains("record_pins") && !text.contains("facets"));
+        // Too many pins, a card of an unknown kind, and junk are refused.
+        let many = format!(
+            r#"{{"name":"M","record_pins":[{}]}}"#,
+            vec!["\"a\""; 201].join(",")
+        );
+        assert!(View::from_json(many.as_bytes()).is_err());
+        assert!(View::from_json(br#"{"name":"M","facets":[{"col":0,"kind":"x"}]}"#).is_err());
+        assert!(View::from_json(br#"{"name":"M","record_pins":[1]}"#).is_err());
+    }
 
     #[test]
     fn row_heights_in_a_view_are_checked() {

@@ -868,6 +868,14 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     prefs.save();
   }
 
+  /** Record panel: the next or previous row, the same column. */
+  function recordFlip(d: number): void {
+    const t = tab;
+    if (!t) return;
+    const to = Math.max(t.firstRow, Math.min(t.info.rows - 1, t.cell.row + d));
+    grid?.select({ row: to, col: t.cell.col });
+  }
+
   function shownTitles(t: Tab): string[] {
     return Array.from({ length: Math.min(t.info.cols, 2000) }, (_, c) => columnTitle(t, c));
   }
@@ -927,6 +935,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       row_lines: t.rowLines,
       row_heights: t.rowHeights.empty ? undefined : t.rowHeights.toView(),
       facets: t.facetCards.map((c) => ({ col: c.col, kind: c.kind })),
+      record_pins: t.recordPins.length ? [...t.recordPins] : undefined,
       freeze_rows: t.frozenRows,
       freeze_cols: t.frozenCols,
       sort: t.sort ? $state.snapshot(t.sort) : null,
@@ -1093,6 +1102,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       const c = to(f.col);
       return c === null || c === undefined || c < 0 ? [] : [{ col: c, kind: f.kind === "numbers" || f.kind === "dates" ? f.kind : "values", range: null }];
     });
+    t.recordPins = (v.record_pins ?? []).filter((p): p is string => typeof p === "string").slice(0, 200);
     t.rowLines = Math.min(MAX_ROW_LINES, Math.max(1, Math.round(v.row_lines ?? 1) || 1));
     {
       // Rows past this file's end (a view from another file) are dropped, not an error.
@@ -6183,6 +6193,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "view.panel", label: "Side &panel", keys: ["Ctrl+F1"], run: () => showPanel(prefs.data.panel ? null : panelTab), checked: () => !!prefs.data.panel },
     { id: "view.panelSummary", label: "Column summary", run: () => showPanel("summary"), checked: () => prefs.data.panel === "summary" },
     { id: "view.panelFilters", label: "Filter panel", keys: ["Alt+Shift+L"], run: () => showPanel("filters"), checked: () => prefs.data.panel === "filters" },
+    { id: "view.panelRecord", label: "&Record panel (this row as a list of fields)", keys: ["Alt+R"], run: () => showPanel(prefs.data.panel === "record" ? null : "record"), checked: () => prefs.data.panel === "record" },
+    { id: "view.recordNext", label: "Record: next row", keys: ["Ctrl+Alt+ArrowDown"], run: () => recordFlip(1), enabled: hasTab },
+    { id: "view.recordPrev", label: "Record: previous row", keys: ["Ctrl+Alt+ArrowUp"], run: () => recordFlip(-1), enabled: hasTab },
     { id: "view.panelSteps", label: "Recipe steps", keys: ["Alt+Shift+R"], run: () => showPanel("steps"), checked: () => prefs.data.panel === "steps" },
     { id: "view.panelChart", label: "Chart", run: () => showPanel("chart"), checked: () => prefs.data.panel === "chart" },
     { id: "view.panelFiles", label: "Files in this folder", run: () => showPanel("files"), checked: () => prefs.data.panel === "files" },
@@ -6221,7 +6234,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       label: "&View",
       items: [
         "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze", "-", "view.splitRows", "view.splitCols", "-", "view.zoomIn", "view.zoomOut", "view.zoomReset", "-",
-        "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
+        "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelRecord", "view.recordPrev", "view.recordNext", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
         "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
@@ -6383,7 +6396,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
   }
 
-  const SAFE_IN_FIELDS = /^(file\.|view\.zoom|window\.|help\.|find\.)/;
+  const SAFE_IN_FIELDS = /^(file\.|view\.zoom|view\.record|window\.|help\.|find\.)/;
 
   function menuKey(e: KeyboardEvent): boolean {
     const list = openMenu !== null ? menus[openMenu]?.items : context?.items;
@@ -7792,6 +7805,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         read={READ}
         onOpened={opened}
         onSetRule={(col, rule) => setRule(col, rule)}
+        record={{ onGo: (row, col) => grid?.select({ row, col }), onInfo: (info) => tab?.update(info, true) }}
         steps={{
           onInfo: (info) => {
             const t = tab;

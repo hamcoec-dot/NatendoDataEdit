@@ -104,6 +104,8 @@ export interface View {
   row_heights?: [number, number][];
   /** The filter panel's cards (older views have none). */
   facets?: { col: number; kind: "values" | "numbers" | "dates" }[];
+  /** Titles of the fields pinned in the Record panel (older views have none). */
+  record_pins?: string[];
 }
 /** A view as "Pick up where you left off" keeps it on disk: only how the
  *  table is laid out. Filters, highlight rules and data checks can hold
