@@ -118,7 +118,7 @@ const start = async (files) => {
   await dismiss(m);
   return m;
 };
-const invoke = (page, cmd, args) => page.evaluate(([c, a]) => window.__TAURI_INTERNALS__.invoke(c, a), [cmd, args || {}]);
+const invoke = (page, cmd, args) => page.evaluate(([c, a]) => window.__TAURI_INTERNALS__.invoke(c, a).catch((e) => { throw new Error(typeof e === "string" ? e : JSON.stringify(e)); }), [cmd, args || {}]);
 const cmd = async (page, q) => {
   await page.keyboard.press("Alt+q");
   await page.keyboard.type(q);
@@ -175,20 +175,20 @@ const proof = async () => {
   ok(rep.cells === per * 3 && rep.rows === per * 3, `the report counts exactly ${per * 3} cells in ${per * 3} rows (${rep.cells}, ${rep.rows})`);
   const kinds = Object.fromEntries(rep.kinds);
   ok(kinds.homoglyph === per && kinds.smart_quote === per && kinds.odd_space === per, `per kind ${per} each (${JSON.stringify(rep.kinds)})`);
-  const pv = await invoke(m, "clean_preview_page", { doc: 1, spec: spec(), now: Date.now() / 1000, offset: 0, want: 50 });
+  const pv = await invoke(m, "clean_preview_page", { doc: 1, spec: spec(), now: 46000.5, offset: 0, want: 50 });
   ok(pv.changed === per * 3, `the preview counts every changed cell exactly (${pv.changed})`);
   ok(pv.homoglyph_cells === per, `look-alike cells counted (${pv.homoglyph_cells})`);
-  const pv2 = await invoke(m, "clean_preview_page", { doc: 1, spec: spec(), now: Date.now() / 1000, offset: 100, want: 50 });
+  const pv2 = await invoke(m, "clean_preview_page", { doc: 1, spec: spec(), now: 46000.5, offset: 100, want: 50 });
   ok(pv2.changes.length === 50 && pv2.changes[0].number !== pv.changes[0].number, "a later page lists other cells");
-  const rep2 = await invoke(m, "data_op", { doc: 1, op: { op: "clean", spec: spec(), now: Date.now() / 1000 } });
-  const c1 = await cellOf(m, 1, 1, 0);
-  const c2 = await cellOf(m, 1, 2, 0);
+  const rep2 = await invoke(m, "data_op", { doc: 1, op: { op: "clean", spec: spec(), now: 46000.5 } });
+  const c1 = await cellOf(m, 1, 2, 0);
+  const c2 = await cellOf(m, 1, 3, 0);
   ok(c1 === "Smart 1" && c2 === "O'Brien 2", `cells fixed (${c1}, ${c2})`);
-  ok((await cellOf(m, 1, 4, 0)) === "Москва 4", "an all-Cyrillic name is untouched");
+  ok((await cellOf(m, 1, 5, 0)) === "Москва 4", "an all-Cyrillic name is untouched");
   const after = await invoke(m, "xray_report", { doc: 1, cols: [], keepFirst: true });
   ok(after.cells === 0, `X-ray finds nothing after Sanitize (${after.cells})`);
-  await invoke(m, "data_op", { doc: 1, op: { op: "undo" } });
-  ok((await cellOf(m, 1, 1, 0)) === "Smаrt 1", "one undo puts it all back");
+  await invoke(m, "change", { doc: 1, change: { op: "undo" } });
+  ok((await cellOf(m, 1, 2, 0)) === "Smаrt 1", "one undo puts it all back");
   ok(fileHash() === before, "the file on disk is byte for byte the same");
 };
 
