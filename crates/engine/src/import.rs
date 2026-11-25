@@ -387,6 +387,18 @@ fn exact_cell(text: &str) -> Result<Value, Error> {
     if t.starts_with(|c: char| c == '-' || c.is_ascii_digit()) {
         return Ok(Value::String(t.to_string()));
     }
+    // The common cases without a second parse: a plain string, true, false, null.
+    if let Some(inner) = t.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        if !inner.contains(['\\', '"']) {
+            return Ok(Value::String(inner.to_string()));
+        }
+    }
+    match t {
+        "null" => return Ok(Value::Null),
+        "true" => return Ok(Value::Bool(true)),
+        "false" => return Ok(Value::Bool(false)),
+        _ => {}
+    }
     serde_json::from_str(t).map_err(bad_json)
 }
 

@@ -197,9 +197,15 @@ pub fn read_table_report(
                         if !seen.contains(&(i as u32)) {
                             seen.push(i as u32);
                         }
-                        format!("{:.14e}", x)
-                            .parse::<f64>()
-                            .map_or_else(|_| x.to_string(), |y| y.to_string())
+                        let s = x.to_string();
+                        // The shortest text of up to 15 digits is what SQLite shows too.
+                        if s.bytes().filter(u8::is_ascii_digit).count() <= 15 {
+                            s
+                        } else {
+                            format!("{:.14e}", x)
+                                .parse::<f64>()
+                                .map_or(s, |y| y.to_string())
+                        }
                     }
                     ValueRef::Real(x) => x.to_string(),
                     ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
