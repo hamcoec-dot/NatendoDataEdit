@@ -6986,6 +6986,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const sessionSaver = window.setInterval(() => (SECOND_WINDOW ? syncSecond() : void saveSession()), SECOND_WINDOW ? 3_000 : 10_000);
     if (!SECOND_WINDOW) void backend().versionsKeep(prefs.data.keepEarlierSaves).catch(() => {});
     const autosaver = window.setInterval(() => void autosaveTick(), 15_000);
+    // A stale answer (a change held the document) is followed by a fresh one: the tab takes that as its state.
+    backend().onFreshInfo((info) => {
+      const t = tabs.find((x) => x.id === info.id);
+      if (t) t.update(info, false);
+    });
     const timer = window.setInterval(async () => {
       for (const t of tabs) {
         if (t.info.indexed && !t.info.error) continue;

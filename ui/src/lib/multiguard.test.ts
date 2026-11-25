@@ -195,6 +195,7 @@ const NOT_WRITES = [
   "suggestRules",
   "checksSidecarLoad",
   "checksSidecarKeep",
+  "onFreshInfo",
   "checksOpen",
   "takeOpened",
   "onOpened",

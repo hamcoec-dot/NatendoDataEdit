@@ -9,6 +9,8 @@ mod applog;
 mod assoc;
 mod batch;
 mod docs;
+#[cfg(test)]
+mod lockaudit;
 mod extras;
 mod imports;
 mod links;
@@ -672,8 +674,9 @@ async fn view_open(window: WebviewWindow) -> CmdResult<Option<View>> {
 }
 
 #[tauri::command]
-fn set_read_only(docs: DocsState<'_>, doc: u32, on: bool) -> CmdResult<DocInfo> {
-    docs.set_read_only(doc, on)
+async fn set_read_only(docs: DocsState<'_>, doc: u32, on: bool) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.set_read_only(doc, on)).await
 }
 
 #[tauri::command]
@@ -2456,8 +2459,11 @@ fn close_document(
 }
 
 #[tauri::command]
-fn doc_info(docs: DocsState<'_>, doc: u32) -> CmdResult<DocInfo> {
-    docs.info(doc)
+async fn doc_info(docs: DocsState<'_>, doc: u32) -> CmdResult<DocInfo> {
+    // Never on the window's thread: while a change holds the document this answers at once from the
+    // last reading (marked stale); only the very first question can wait, on the blocking pool.
+    let docs = docs.inner().clone();
+    blocking(move || docs.info(doc)).await
 }
 
 /// A window of cells in the engine's binary form (no JSON on the hot path).
@@ -2740,8 +2746,9 @@ async fn clear_filter(docs: DocsState<'_>, doc: u32) -> CmdResult<DocInfo> {
 }
 
 #[tauri::command]
-fn filter_spec(docs: DocsState<'_>, doc: u32) -> CmdResult<Option<FilterSpec>> {
-    docs.filter_spec(doc)
+async fn filter_spec(docs: DocsState<'_>, doc: u32) -> CmdResult<Option<FilterSpec>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.filter_spec(doc)).await
 }
 
 #[tauri::command]

@@ -1,6 +1,7 @@
 // Typed access to the Rust side. In a plain browser (vite dev, tests) a stub
 // backend with a generated document stands in, so the UI can be worked on
 // without the desktop shell.
+import { InfoGuard } from "./infoguard";
 import type { Cleaner, CleanPreview, CleanSpec, ExampleSpec, SplitName } from "./clean";
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, SubtotalSpec, Summary, View } from "./views";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
@@ -28,6 +29,8 @@ export interface DocInfo {
   filter_cols: number[];
   /** Looking at an earlier recipe step: changes and saving are refused. */
   peeking?: boolean;
+  /** Answered from the last reading while a change held the document (see infoguard.ts); never kept as a tab's state. */
+  stale?: boolean;
   /** Moves when what the rows hold changes (not with filters). */
   data_revision?: number;
   /** A filter rule sits on a deleted column: rows stay hidden without a funnel. */
@@ -1203,6 +1206,8 @@ export interface Backend {
   newDocument(): Promise<DocInfo>;
   closeDocument(doc: number): Promise<void>;
   docInfo(doc: number): Promise<DocInfo>;
+  /** Told the fresh info that follows a stale answer (the tab takes it as its state). */
+  onFreshInfo(listener: (info: DocInfo) => void): void;
   viewport(doc: number, row: number, rows: number, col: number, cols: number, maxChars: number): Promise<ViewportData>;
   cellText(doc: number, row: number, col: number): Promise<{ text: string; truncated: boolean }>;
   setCells(doc: number, cells: [number, number, string][]): Promise<DocInfo>;
@@ -1628,8 +1633,12 @@ class TauriBackend implements Backend {
   closeDocument(doc: number) {
     return call<void>("close_document", { doc });
   }
+  private infoGuard = new InfoGuard((doc) => call<DocInfo>("doc_info", { doc }));
   docInfo(doc: number) {
-    return call<DocInfo>("doc_info", { doc });
+    return this.infoGuard.get(doc);
+  }
+  onFreshInfo(listener: (info: DocInfo) => void) {
+    this.infoGuard.onFresh = listener;
   }
   async viewport(doc: number, row: number, rows: number, col: number, cols: number, maxChars: number) {
     const reply = await call<ArrayBuffer | number[]>("viewport", { doc, row, rows, col, cols, maxChars });

@@ -709,6 +709,7 @@ export class MockBackend implements Backend {
   async closeDocument(doc: number): Promise<void> {
     this.docs.delete(doc);
   }
+  onFreshInfo(): void {}
   async docInfo(doc: number): Promise<DocInfo> {
     return this.refresh(this.get(doc));
   }

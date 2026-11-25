@@ -402,6 +402,9 @@ pub struct Entry {
     error: Mutex<Option<String>>,
     /// Name shown for a document with no file yet (imports).
     title: Mutex<Option<String>>,
+    /// The last `DocInfo` read under the lock: what `Docs::info` answers with (marked stale) while a
+    /// change holds the document, so the window never waits for the lock.
+    last_info: Mutex<Option<DocInfo>>,
     /// Read-only: every change and every save over the file is refused.
     locked: AtomicBool,
     /// The steps panel is showing an earlier step (the later ones are in
@@ -515,6 +518,15 @@ impl Entry {
     // consistent (every op is applied whole), so keep going.
     fn read(&self) -> RwLockReadGuard<'_, Document> {
         self.doc.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The read lock if it can be had now (`None` while a change holds the document).
+    fn try_read(&self) -> Option<RwLockReadGuard<'_, Document>> {
+        match self.doc.try_read() {
+            Ok(d) => Some(d),
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
     }
 
     fn write(&self) -> RwLockWriteGuard<'_, Document> {
@@ -1326,6 +1338,10 @@ pub struct DocInfo {
     pub read_only: bool,
     /// Looking at an earlier recipe step: changes and saving are off.
     pub peeking: bool,
+    /// An answer made while a change held the document: the figures are from the last time they
+    /// could be read (the live parts are current). The UI never takes a stale answer as the tab's
+    /// state and asks again; see `ui/src/lib/infoguard.ts`.
+    pub stale: bool,
     /// Rows the user hid (still saved).
     pub hidden_rows: u64,
     /// Protected columns (changes pass them over).
@@ -1508,6 +1524,7 @@ impl Docs {
             line_by_line: AtomicBool::new(line_by_line),
             error: Mutex::new(None),
             title: Mutex::new(None),
+            last_info: Mutex::new(None),
             locked: AtomicBool::new(false),
             peeking: AtomicBool::new(false),
             checks: Mutex::new(None),
@@ -1659,7 +1676,7 @@ impl Docs {
         let entries: Vec<(u32, Arc<Entry>)> =
             self.map().iter().map(|(k, v)| (*k, v.clone())).collect();
         for (id, e) in entries {
-            let Some(p) = e.read().path().map(Path::to_path_buf) else {
+            let Some(p) = e.current_path() else {
                 continue;
             };
             // Data from a private origin keeps the tab private whatever
@@ -2077,8 +2094,10 @@ impl Docs {
         Ok(out)
     }
 
+    /// The tab's file; never waits for the document (while a change holds it, the path noted at
+    /// the last reading is answered).
     pub fn path_of(&self, id: u32) -> CmdResult<Option<PathBuf>> {
-        Ok(self.get(id)?.read().path().map(Path::to_path_buf))
+        Ok(self.get(id)?.current_path())
     }
 
     pub fn info(&self, id: u32) -> CmdResult<DocInfo> {
@@ -2093,15 +2112,60 @@ impl Docs {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
+        let read_only = entry.locked.load(Ordering::Relaxed);
+        let peeking = entry.peeking.load(Ordering::Relaxed);
+        // A change holds the document: answer from the last reading (stale), with the parts that
+        // do not need the lock brought up to date, instead of making the caller wait.
+        let Some(d) = entry.try_read() else {
+            let last = entry
+                .last_info
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            if let Some(mut info) = last {
+                info.read_only = read_only;
+                info.peeking = peeking;
+                info.stale = true;
+                if let (None, Some(t)) = (&info.path, title) {
+                    info.name = t;
+                }
+                return Ok(info);
+            }
+            // Nothing read yet (the very first question came during a change): wait for it. The
+            // commands that call this run on the blocking pool, never on the window's thread.
+            return Ok(self.info_waiting(&entry, id, error, title));
+        };
+        Ok(Self::info_from(&entry, id, &d, error, title))
+    }
+
+    /// `info`, waiting for the document's lock (for the first answer only).
+    fn info_waiting(
+        &self,
+        entry: &Entry,
+        id: u32,
+        error: Option<String>,
+        title: Option<String>,
+    ) -> DocInfo {
         let d = entry.read();
-        entry.note_path(&d);
-        let mut info = describe(id, &d, entry.line_by_line.load(Ordering::Relaxed), error);
+        Self::info_from(entry, id, &d, error, title)
+    }
+
+    fn info_from(
+        entry: &Entry,
+        id: u32,
+        d: &Document,
+        error: Option<String>,
+        title: Option<String>,
+    ) -> DocInfo {
+        entry.note_path(d);
+        let mut info = describe(id, d, entry.line_by_line.load(Ordering::Relaxed), error);
         info.read_only = entry.locked.load(Ordering::Relaxed);
         info.peeking = entry.peeking.load(Ordering::Relaxed);
         if let (None, Some(t)) = (&info.path, title) {
             info.name = t;
         }
-        Ok(info)
+        *entry.last_info.lock().unwrap_or_else(|p| p.into_inner()) = Some(info.clone());
+        info
     }
 
     /// The tab's name without its extension ("voters" for voters.csv), for
@@ -6863,6 +6927,7 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         layout_confidence: d.detection().map(|x| x.confidence),
         read_only: false,
         peeking: false,
+        stale: false,
         hidden_rows: d.hidden_rows(),
         protected: d.protected_cols(),
         protected_skipped: d.protected_skipped(),
@@ -7996,6 +8061,67 @@ mod tests {
         assert!(docs
             .match_accept(ia, &[(c.id, c.other_row, c.score)])
             .is_err());
+    }
+
+    /// Holds the document's write lock (as a running change does) for `ms`, then lets go.
+    fn hold_write(docs: &Docs, id: u32, ms: u64) -> std::thread::JoinHandle<()> {
+        let entry = docs.get(id).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h = std::thread::spawn(move || {
+            let _w = entry.doc.write().unwrap();
+            tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        });
+        rx.recv().unwrap();
+        h
+    }
+
+    #[test]
+    fn commands_that_ask_about_a_document_never_wait_for_a_change_to_finish() {
+        let a = tmp("lock_a.csv", b"a,b
+1,2
+3,4
+");
+        let docs = Docs::default();
+        let ia = docs.open_path(&a, false).unwrap().id;
+        let fresh = wait(&docs, ia);
+        assert!(!fresh.stale);
+        let t0 = std::time::Instant::now();
+        let h = hold_write(&docs, ia, 600);
+        // info: at once, stale, same figures; the live parts (read-only) are current.
+        docs.set_read_only(ia, true).unwrap_or_else(|_| fresh.clone());
+        let got = docs.info(ia).unwrap();
+        assert!(got.stale, "answered from the last reading");
+        assert_eq!((got.rows, got.cols, got.data_revision), (fresh.rows, fresh.cols, fresh.data_revision));
+        assert!(got.read_only, "live parts are current");
+        // path_of and private_changed never wait either.
+        assert_eq!(docs.path_of(ia).unwrap().as_deref(), Some(a.as_path()));
+        docs.private_changed();
+        docs.set_private(ia, true).unwrap();
+        docs.set_private(ia, false).unwrap();
+        assert!(t0.elapsed() < std::time::Duration::from_millis(300), "no waiting: {:?}", t0.elapsed());
+        h.join().unwrap();
+        // After the change let go: a fresh answer follows.
+        let after = docs.info(ia).unwrap();
+        assert!(!after.stale);
+    }
+
+    #[test]
+    fn the_first_answer_during_a_change_waits_on_its_own_thread_and_is_fresh() {
+        // A document whose first reading never happened: the stored info is cleared as if new.
+        let a = tmp("lock_b.csv", b"a
+1
+");
+        let docs = Docs::default();
+        let ia = docs.open_path(&a, false).unwrap().id;
+        wait(&docs, ia);
+        *docs.get(ia).unwrap().last_info.lock().unwrap() = None;
+        let h = hold_write(&docs, ia, 300);
+        let t0 = std::time::Instant::now();
+        let got = docs.info(ia).unwrap();
+        assert!(!got.stale, "with nothing stored it waits for a real answer");
+        assert!(t0.elapsed() >= std::time::Duration::from_millis(200));
+        h.join().unwrap();
     }
 
     #[test]
