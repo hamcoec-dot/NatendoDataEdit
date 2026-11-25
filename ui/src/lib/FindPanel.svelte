@@ -8,6 +8,7 @@
   import { FLAG_NAMES, type NoteMark } from "./notes";
   import { MAX_SAVED_SEARCHES, prefs, type SavedSearch } from "./prefs.svelte";
   import { cellDiff } from "./textDiff";
+  import { clearSkipsWhenClosed, previewMark, previewStale, type PreviewMark } from "./ghosts";
   import { clearFindHistory, findHistory, rememberFind, rememberReplace, stepHistory } from "./findHistory.svelte";
   import type { Tab } from "./tab.svelte";
   import { findSpecOf, type FindOptions } from "./filters";
@@ -221,6 +222,33 @@
     tab.findVersion++;
     tab.onRedraw?.();
     recount();
+  });
+
+  // The preview's unticked changes live and die with the preview (one place), and a change to the rows' data
+  // or an undo while it is open closes it (the unticked keys are row numbers as they were when it was made).
+  let previewAt: PreviewMark | null = null;
+  $effect(() => {
+    const open = pending !== null;
+    untrack(() => {
+      if (clearSkipsWhenClosed(open, unticked)) {
+        tab.ghostVersion++;
+        tab.onRedraw?.();
+      }
+      previewAt = open ? (previewAt ?? previewMark(tab.info)) : null;
+    });
+  });
+  $effect(() => {
+    void [tab.info.data_revision, tab.info.history_pos];
+    untrack(() => {
+      if (pending && previewStale(previewAt, tab.info)) {
+        pending = null;
+        previewed = null;
+        tabParts = [];
+        titleChanges = [];
+        previewAt = null;
+        status = "The data changed (an edit, a sort or an undo), so the preview was closed: press Replace all… to see the changes again.";
+      }
+    });
   });
 
   // ---- ghost diff: what Replace all would change in the cells on screen, and how many cells in all ----

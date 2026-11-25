@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GhostLoader, GHOST_DEBOUNCE_MS, visibleGhost, type GhostMap } from "./ghosts";
+import { GhostLoader, GHOST_DEBOUNCE_MS, clearSkipsWhenClosed, previewMark, previewStale, visibleGhost, type GhostMap } from "./ghosts";
 import { MockBackend } from "./mock";
 import type { FindSpec, GhostWindow } from "./backend";
 
@@ -109,6 +109,31 @@ describe("unticked changes follow their row, not its place", () => {
 
 const TAB = String.fromCharCode(9);
 const CRLF = String.fromCharCode(13, 10);
+
+describe("the preview's unticked changes live and die with the preview", () => {
+  it("closing the preview, however it closes, clears them (one helper)", () => {
+    const skip = new Set(["7:2", "9:2"]);
+    expect(clearSkipsWhenClosed(true, skip)).toBe(false);
+    expect(skip.size).toBe(2);
+    expect(clearSkipsWhenClosed(false, skip)).toBe(true);
+    expect(skip.size).toBe(0);
+    expect(clearSkipsWhenClosed(false, skip)).toBe(false);
+  });
+
+  it("an edit, a sort or an undo while the preview is open makes it stale; a filter does not", async () => {
+    const m = new MockBackend();
+    const d = await m.newDocument();
+    await m.dataOp(d.id, { op: "paste", spec: { row: 0, col: 0, op: "none", skip_blanks: false, transpose: false }, text: ["b", "a", "c", "a"].join(String.fromCharCode(13, 10)) });
+    const open = previewMark(await m.docInfo(d.id));
+    expect(previewStale(open, await m.docInfo(d.id))).toBe(false);
+    await m.sortRows(d.id, { keys: [{ col: 0, descending: false, kind: "text", match_case: false }], keep_first: false });
+    expect(previewStale(open, await m.docInfo(d.id))).toBe(true);
+    const again = previewMark(await m.docInfo(d.id));
+    await m.setCells(d.id, [[0, 0, "z"]]);
+    expect(previewStale(again, await m.docInfo(d.id))).toBe(true);
+    expect(previewStale(null, await m.docInfo(d.id))).toBe(false);
+  });
+});
 
 describe("the browser stand-in's ghosts and count", () => {
   const spec = (text: string, extra: Partial<FindSpec> = {}): FindSpec =>

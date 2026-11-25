@@ -17,6 +17,24 @@ export function visibleGhost(ghosts: GhostMap, skip: ReadonlySet<string>, row: n
   return g && !skip.has(`${g.number}:${col}`) ? g : undefined;
 }
 
+/** What the open Replace preview was made from: the rows' data revision and the undo position. A change to
+ *  either (an edit, a sort, an insert, an undo) renumbers or changes rows, so the preview's unticked changes
+ *  (kept by the row's number AT THE TIME) would point at other rows: the preview is closed instead. */
+export interface PreviewMark {
+  rev: number | undefined;
+  pos: number;
+}
+export const previewMark = (info: { data_revision?: number; history_pos: number }): PreviewMark => ({ rev: info.data_revision, pos: info.history_pos });
+export const previewStale = (m: PreviewMark | null, info: { data_revision?: number; history_pos: number }): boolean => !!m && (m.rev !== info.data_revision || m.pos !== info.history_pos);
+
+/** The unticked changes belong to an open preview only: once it is closed (however it closed) they go, or the
+ *  ghosts would hide cells that a plain Replace all will change. The one place this is done. */
+export function clearSkipsWhenClosed(open: boolean, skip: Set<string>): boolean {
+  if (open || skip.size === 0) return false;
+  skip.clear();
+  return true;
+}
+
 export class GhostLoader {
   private base = "";
   private key = "";
