@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type SpecialPick = "blanks" | "numbers" | "text" | "row_diff" | "edited" | "problems";
+  export type SpecialPick = "blanks" | "numbers" | "text" | "row_diff" | "edited" | "problems" | "wrong_width";
   export type SpecialAction = "light" | "fill" | "clear";
   export interface SpecialChoice {
     pick: SpecialPick;
@@ -49,6 +49,7 @@
     ["row_diff", "Row differences"],
     ["edited", "Cells changed since the file was opened or saved"],
     ["problems", "Cells that fail a data check"],
+    ["wrong_width", "Rows with the wrong number of fields"],
   ];
   let done = false;
   function run(): void {

@@ -79,6 +79,10 @@ export interface DocInfo {
   column_changes: boolean;
   repair_count: number;
   unclosed_quotes: boolean;
+  /** The usual number of fields, and the file's rows with another number. */
+  usual_fields?: number;
+  ragged_rows?: number;
+  first_row_ragged?: boolean;
   long_quoted_cells: boolean;
   line_bound_from: number | null;
   error: string | null;
@@ -450,7 +454,8 @@ export type SpecialKind =
   | { kind: "text" }
   | { kind: "row_diff"; against: number; exact: boolean }
   | { kind: "edited" }
-  | { kind: "problems"; checks: CheckSpec };
+  | { kind: "problems"; checks: CheckSpec }
+  | { kind: "wrong_width" };
 export interface SpecialSpec {
   kind: SpecialKind;
   row: number;
@@ -860,6 +865,7 @@ export type DataOp =
   | { op: "fill_example"; spec: ExampleSpec }
   | { op: "compute"; spec: ComputeSpec }
   | { op: "show_problems"; spec: CheckSpec; passing?: boolean }
+  | { op: "show_ragged"; pick?: "all" | "short" | "long"; keep_first: boolean }
   | { op: "show_shape"; spec: ShapeFilter }
   | { op: "sort_problems"; spec: CheckSpec }
   | { op: "check_column"; spec: CheckSpec; title?: string }

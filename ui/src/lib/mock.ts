@@ -3,6 +3,7 @@
 // the desktop shell and by tests. It is not the engine; it only has to
 // behave the same at the command level.
 
+import { COLUMNS_CHANGED } from "./ragged";
 import { mockDrill, mockItems, mockPivot, type ItemList, type PivotField, type PivotGrid, type PivotSpec } from "./pivot";
 import { isIsoDate, shapeRegex } from "./lint";
 import { shapeOf } from "./insights";
@@ -728,6 +729,15 @@ export class MockBackend implements Backend {
     }
     return rows;
   }
+  /** Test hook: which rows of a document count as short and long. */
+  fakeRagged = new Map<number, { short: number[]; long: number[] }>();
+  markRagged(doc: number, short: number[], long: number[], usual: number): DocInfo {
+    this.fakeRagged.set(doc, { short, long });
+    const d = this.get(doc);
+    Object.assign(d.info, { usual_fields: usual, ragged_rows: short.length + long.length });
+    return this.refresh(d);
+  }
+
   async newDocument(): Promise<DocInfo> {
     // As the backend's: one blank cell.
     const info = this.make("Untitled", 1, 1);
@@ -2475,6 +2485,17 @@ export class MockBackend implements Backend {
         }
         if (s.keep_first && rows > 0) keep.add(this.rowId(d, 0));
         return this.report(this.setView(d, keep, { columns: [], keep_first: s.keep_first }), { rows: shown });
+      }
+      case "show_ragged": {
+        // The stand-in has no file rows of other widths: tests name them.
+        if (d.info.column_changes) throw err("invalid", COLUMNS_CHANGED);
+        const marks = this.fakeRagged.get(doc) ?? { short: [], long: [] };
+        const pick = op.pick ?? "all";
+        const ids = [...(pick === "long" ? [] : marks.short), ...(pick === "short" ? [] : marks.long)];
+        const keep = new Set<number>(ids.map((r) => this.rowId(d, r)));
+        const shown = keep.size;
+        if (op.keep_first && rows > 0) keep.add(this.rowId(d, 0));
+        return this.report(this.setView(d, keep, { columns: [], keep_first: op.keep_first }), { rows: shown, groups: pick === "long" ? 0 : marks.short.length });
       }
       case "show_problems":
       case "sort_problems":

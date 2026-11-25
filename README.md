@@ -852,6 +852,15 @@ everything is also in command search.
 
 ### Checking data
 
+- **Shifted and ragged rows:** when a file has rows with a different number of
+  fields than most (a stray comma in a name, a line broken in two), a note says
+  how many and what the usual number is; **Review** shows only those rows.
+  Data menu, command search and the row right-click menu show all of them, only
+  the short ones or only the long ones, and Go to special picks them. Editing a
+  cell never adds empty fields to a short row: it keeps its own width until you
+  give it a value past its end. After columns are added, removed or moved,
+  saving writes every row at the same width, so the commands are greyed until
+  that change is undone.
 - **Data checks** per column or row: required, number (with limits, whole
   numbers), date (with limits), length, from a list, pattern, no repeats, or
   your own expression. Cells that fail are marked; show only the rows with

@@ -34,6 +34,9 @@ pub enum SpecialKind {
     /// Failing one of these data checks (a row check picks every asked
     /// cell of its row).
     Problems { checks: CheckSpec },
+    /// Rows with a different number of fields than most (every asked cell of
+    /// such a row).
+    WrongWidth,
 }
 
 /// What to look through.
@@ -127,6 +130,11 @@ impl Document {
             read_cols.push(a);
         }
         let reader = Cols::new(self, &read_cols);
+        // Found over the whole table before the rows are looked at.
+        let ragged = match spec.kind {
+            SpecialKind::WrongWidth => Some(self.ragged_rows(false, progress)?),
+            _ => None,
+        };
         let n = end - start;
         let kind = &spec.kind;
         let ctx = self.read_ctx(spec.read);
@@ -155,6 +163,9 @@ impl Document {
                         for (k, &col) in cols.iter().enumerate() {
                             let v = reader.get(&buf, k);
                             let hit = match kind {
+                                SpecialKind::WrongWidth => ragged
+                                    .as_ref()
+                                    .is_some_and(|r| r.is_short(id) || r.is_long(id)),
                                 SpecialKind::Blanks => blank(v),
                                 SpecialKind::Numbers => rds[k].number(v).is_some(),
                                 SpecialKind::Text => !blank(v) && rds[k].number(v).is_none(),
@@ -530,5 +541,12 @@ mod tests {
         d.hide_rows(1, 1).unwrap();
         // Shown rows: a, x, (blank), y.
         assert_eq!(pick(&d, SpecialKind::Blanks, vec![0]).cells, vec![(2, 0)]);
+    }
+
+    #[test]
+    fn rows_of_the_wrong_width_are_picked_whole() {
+        let d = doc("a,b\n1,2\n3\n4,5,6\n7,8\n");
+        let w = pick(&d, SpecialKind::WrongWidth, vec![0, 1]);
+        assert_eq!(w.cells, vec![(2, 0), (2, 1), (3, 0), (3, 1)]);
     }
 }
