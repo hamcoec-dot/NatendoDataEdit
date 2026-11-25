@@ -64,11 +64,11 @@ describe("first row is headers, remembered per file", () => {
   });
 
   it("keeps the zero-padding answer per file as a fingerprint and yes/no only, and forgets it with the rest", async () => {
-    expect(await recallPad("C:\Data\ids.xlsx")).toBeNull();
-    await rememberPad("C:\Data\ids.xlsx", true);
+    expect(await recallPad("C:/Data/ids.xlsx")).toBeNull();
+    await rememberPad("C:/Data/ids.xlsx", true);
     expect(await recallPad("c:/data/IDS.xlsx")).toBe(true);
-    await rememberPad("C:\Data\ids.xlsx", false);
-    expect(await recallPad("C:\Data\ids.xlsx")).toBe(false);
+    await rememberPad("C:/Data/ids.xlsx", false);
+    expect(await recallPad("C:/Data/ids.xlsx")).toBe(false);
     const kept = store.get("nde.padzeros.v1") ?? "";
     expect(kept).not.toMatch(/ids|Data|xlsx/i);
     forgetHeaders();
