@@ -190,7 +190,13 @@ fn key_parts(ra: &RowA) -> Vec<&str> {
 }
 
 fn is_blank(parts: &[&str], trim: bool) -> bool {
-    parts.iter().all(|p| if trim { p.trim().is_empty() } else { p.is_empty() })
+    parts.iter().all(|p| {
+        if trim {
+            p.trim().is_empty()
+        } else {
+            p.is_empty()
+        }
+    })
 }
 
 /// Empty keys, repeated keys and the first few repeated keys (as written) of one table. Reads only the key
@@ -315,8 +321,14 @@ impl Document {
         let width = cols_a as usize;
         let mut read = |id: u32, r: u64| -> RowA {
             reader.read(self, id, &mut buf);
-            let vals: Vec<String> = (0..width).map(|c| reader.get(&buf, c).to_string()).collect();
-            let keys: Vec<String> = spec.keys.iter().map(|&k| vals[k as usize].clone()).collect();
+            let vals: Vec<String> = (0..width)
+                .map(|c| reader.get(&buf, c).to_string())
+                .collect();
+            let keys: Vec<String> = spec
+                .keys
+                .iter()
+                .map(|&k| vals[k as usize].clone())
+                .collect();
             RowA {
                 number: self.row_number(r).unwrap_or(r) + 1,
                 vals,
@@ -324,7 +336,11 @@ impl Document {
             }
         };
         let removed: Vec<RowA> = listed.removed.iter().map(|&(id, r)| read(id, r)).collect();
-        let changed: Vec<RowA> = listed.changed.iter().map(|&(id, r, _)| read(id, r)).collect();
+        let changed: Vec<RowA> = listed
+            .changed
+            .iter()
+            .map(|&(id, r, _)| read(id, r))
+            .collect();
         Ok(DiffFirst {
             pairing,
             titles_a,
@@ -394,11 +410,14 @@ impl Document {
         for j in index.map.iter().flatten() {
             used[*j as usize] = true;
         }
-        let only_b_cols: Vec<u32> = (0..index.newer_cols).filter(|j| !used[*j as usize]).collect();
+        let only_b_cols: Vec<u32> = (0..index.newer_cols)
+            .filter(|j| !used[*j as usize])
+            .collect();
         let reader_b = Cols::new(other, &only_b_cols);
         let reader_bk = Cols::new(other, &keys_b);
 
-        let mut header: Vec<String> = vec!["Change".into(), "Row (first)".into(), "Row (second)".into()];
+        let mut header: Vec<String> =
+            vec!["Change".into(), "Row (first)".into(), "Row (second)".into()];
         header.extend(titles_a.iter().cloned());
         header.extend(only_b_cols.iter().map(|&j| titles_b[j as usize].clone()));
         header.push("What changed".into());
@@ -416,7 +435,10 @@ impl Document {
         progress.start((removed.len() + changed.len() + listed.added.len()) as u64);
         let check = |out: &Vec<u8>| -> Result<(), Error> {
             if out.len() > MAX_TABLE_BYTES {
-                return Err(Error::Invalid("the diff table would be too large; compare part of the file (filter it first)".into()));
+                return Err(Error::Invalid(
+                    "the diff table would be too large; compare part of the file (filter it first)"
+                        .into(),
+                ));
             }
             Ok(())
         };
@@ -433,7 +455,10 @@ impl Document {
             if !is_blank(&parts, spec.trim) {
                 a_side
                     .entry(key_hash(&parts, spec.match_case, spec.trim))
-                    .or_insert(Entry { kind: Kind::Removed, cols: Box::new([]) });
+                    .or_insert(Entry {
+                        kind: Kind::Removed,
+                        cols: Box::new([]),
+                    });
             }
             check(&out)?;
         }
@@ -482,9 +507,24 @@ impl Document {
             push_line(&mut out, &line);
             rows_out += 1;
             let key = key_hash(&ka, spec.match_case, spec.trim);
-            let bcols: Box<[u32]> = changed_cols.iter().filter_map(|&c| index.map[c as usize]).collect();
-            a_side.insert(key, Entry { kind: Kind::Changed, cols: changed_cols.into_boxed_slice() });
-            b_side.insert(key, Entry { kind: Kind::Changed, cols: bcols });
+            let bcols: Box<[u32]> = changed_cols
+                .iter()
+                .filter_map(|&c| index.map[c as usize])
+                .collect();
+            a_side.insert(
+                key,
+                Entry {
+                    kind: Kind::Changed,
+                    cols: changed_cols.into_boxed_slice(),
+                },
+            );
+            b_side.insert(
+                key,
+                Entry {
+                    kind: Kind::Changed,
+                    cols: bcols,
+                },
+            );
             check(&out)?;
             progress.step(1)?;
         }
@@ -504,7 +544,10 @@ impl Document {
             if !is_blank(&parts, spec.trim) {
                 b_side
                     .entry(key_hash(&parts, spec.match_case, spec.trim))
-                    .or_insert(Entry { kind: Kind::Added, cols: Box::new([]) });
+                    .or_insert(Entry {
+                        kind: Kind::Added,
+                        cols: Box::new([]),
+                    });
             }
             check(&out)?;
         }
@@ -546,7 +589,8 @@ impl Document {
             return Err(Error::Changed);
         }
         let n = self.row_count();
-        let first = u64::from(index.spec.keep_first && side != Side::Result) | u64::from(side == Side::Result);
+        let first = u64::from(index.spec.keep_first && side != Side::Result)
+            | u64::from(side == Side::Result);
         if n <= first {
             return Ok(None);
         }
@@ -564,7 +608,11 @@ impl Document {
             let mut done = 0u64;
             while done < b.saturating_sub(a) {
                 let take = BLOCK.min(b - a - done);
-                let (s0, e0) = if backward { (b - done - take, b - done) } else { (a + done, a + done + take) };
+                let (s0, e0) = if backward {
+                    (b - done - take, b - done)
+                } else {
+                    (a + done, a + done + take)
+                };
                 done += take;
                 let parts: Vec<u64> = (s0..e0).step_by(MAX_WINDOW as usize).collect();
                 let found: Vec<Result<Option<(u64, Option<u32>)>, Error>> = parts
@@ -573,9 +621,13 @@ impl Document {
                         let we = (ws + MAX_WINDOW).min(e0);
                         let m = self.diff_marks(index, side, ws, we - ws, 0, u32::MAX / 2)?;
                         Ok(if backward {
-                            m.iter().max_by_key(|x| (x.row, x.col)).map(|x| (x.row, x.col))
+                            m.iter()
+                                .max_by_key(|x| (x.row, x.col))
+                                .map(|x| (x.row, x.col))
                         } else {
-                            m.iter().min_by_key(|x| (x.row, x.col)).map(|x| (x.row, x.col))
+                            m.iter()
+                                .min_by_key(|x| (x.row, x.col))
+                                .map(|x| (x.row, x.col))
                         })
                     })
                     .collect();
@@ -585,7 +637,11 @@ impl Document {
                         hits.push(h);
                     }
                 }
-                let hit = if backward { hits.into_iter().max() } else { hits.into_iter().min() };
+                let hit = if backward {
+                    hits.into_iter().max()
+                } else {
+                    hits.into_iter().min()
+                };
                 if let Some((row, col)) = hit {
                     // The first marked column of that row (the whole row when the row is marked as a whole).
                     let in_row = self.diff_marks(index, side, row, 1, 0, u32::MAX / 2)?;
@@ -618,9 +674,12 @@ impl Document {
             return Err(Error::Changed);
         }
         let reader = Cols::new(self, &keys);
-        let first = u64::from(index.spec.keep_first && side != Side::Result) | u64::from(side == Side::Result);
+        let first = u64::from(index.spec.keep_first && side != Side::Result)
+            | u64::from(side == Side::Result);
         let r0 = row.max(first);
-        let r1 = row.saturating_add(rows.min(MAX_WINDOW)).min(self.row_count());
+        let r1 = row
+            .saturating_add(rows.min(MAX_WINDOW))
+            .min(self.row_count());
         let c1 = col.saturating_add(cols);
         let mut out = Vec::new();
         let mut buf = Vec::new();
@@ -641,13 +700,29 @@ impl Document {
             };
             let Some(e) = entry else { continue };
             match e.kind {
-                Kind::Added => out.push(DiffMark { row: r, col: None, kind: 1 }),
-                Kind::Removed => out.push(DiffMark { row: r, col: None, kind: 2 }),
+                Kind::Added => out.push(DiffMark {
+                    row: r,
+                    col: None,
+                    kind: 1,
+                }),
+                Kind::Removed => out.push(DiffMark {
+                    row: r,
+                    col: None,
+                    kind: 2,
+                }),
                 Kind::Changed => {
                     for &c in e.cols.iter() {
-                        let shown = if side == Side::Result { c + RESULT_LEAD } else { c };
+                        let shown = if side == Side::Result {
+                            c + RESULT_LEAD
+                        } else {
+                            c
+                        };
                         if shown >= col && shown < c1 {
-                            out.push(DiffMark { row: r, col: Some(shown), kind: 0 });
+                            out.push(DiffMark {
+                                row: r,
+                                col: Some(shown),
+                                kind: 0,
+                            });
                         }
                     }
                 }
@@ -689,24 +764,99 @@ mod tests {
     fn rows_are_paired_by_key_and_columns_by_title() {
         let (a, b) = (doc(A), doc(B));
         let o = a.diff_files(&b, &spec(&[0]), &Progress::new()).unwrap();
-        assert_eq!((o.report.same, o.report.changed, o.report.added, o.report.removed), (1, 2, 1, 1));
+        assert_eq!(
+            (
+                o.report.same,
+                o.report.changed,
+                o.report.added,
+                o.report.removed
+            ),
+            (1, 2, 1, 1)
+        );
         assert_eq!(o.report.cells, 2, "Bo's city and Cy's name");
         assert_eq!(o.report.only_b, vec!["zip".to_string()]);
         assert!(o.report.only_a.is_empty());
         assert_eq!(o.report.moved, 3);
         let l = lines(&o);
-        assert_eq!(l[0], "Change,Row (first),Row (second),id,name,city,zip,What changed");
-        assert!(l.iter().any(|x| x.starts_with("removed,5,,4,Di,Quito,,")), "{l:?}");
-        assert!(l.iter().any(|x| x.starts_with("changed,3,,2,Bo,Osaka,100,") && x.contains("city: Lisbon → Osaka")), "{l:?}");
-        assert!(l.iter().any(|x| x.starts_with("added,,,5,Eve,New,1,")), "{l:?}");
+        assert_eq!(
+            l[0],
+            "Change,Row (first),Row (second),id,name,city,zip,What changed"
+        );
+        assert!(
+            l.iter().any(|x| x.starts_with("removed,5,,4,Di,Quito,,")),
+            "{l:?}"
+        );
+        assert!(
+            l.iter().any(|x| x.starts_with("changed,3,,2,Bo,Osaka,100,")
+                && x.contains("city: Lisbon → Osaka")),
+            "{l:?}"
+        );
+        assert!(
+            l.iter().any(|x| x.starts_with("added,,,5,Eve,New,1,")),
+            "{l:?}"
+        );
+    }
+
+    #[test]
+    fn the_shared_fixture_gives_what_the_browser_stand_in_must_give_too() {
+        let fx: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/diff.json")).unwrap();
+        let keys: Vec<u32> = fx["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_u64().unwrap() as u32)
+            .collect();
+        let a = doc(fx["a"].as_str().unwrap());
+        let b = doc(fx["b"].as_str().unwrap());
+        let o = a.diff_files(&b, &spec(&keys), &Progress::new()).unwrap();
+        let r = &fx["report"];
+        let n = |k: &str| r[k].as_u64().unwrap();
+        assert_eq!(
+            (
+                o.report.same,
+                o.report.changed,
+                o.report.added,
+                o.report.removed,
+                o.report.cells
+            ),
+            (
+                n("same"),
+                n("changed"),
+                n("added"),
+                n("removed"),
+                n("cells")
+            )
+        );
+        assert_eq!(o.report.moved as u64, n("moved"));
+        assert_eq!(
+            o.report.only_b,
+            r["only_b"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        );
+        let want: Vec<String> = fx["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(lines(&o), want);
     }
 
     #[test]
     fn a_re_sorted_file_gives_the_same_result() {
         let a = doc(A);
         let sorted = doc("city,id,name,zip\r\nNew,5,Eve,1\r\nPerth,3,Cyd,6000\r\nOsaka,2,Bo,100\r\nDayton,1,Ann,45402\r\n");
-        let x = a.diff_files(&doc(B), &spec(&[0]), &Progress::new()).unwrap();
-        let y = a.diff_files(&sorted, &spec(&[0]), &Progress::new()).unwrap();
+        let x = a
+            .diff_files(&doc(B), &spec(&[0]), &Progress::new())
+            .unwrap();
+        let y = a
+            .diff_files(&sorted, &spec(&[0]), &Progress::new())
+            .unwrap();
         assert_eq!(x.report, y.report);
         let mut lx = lines(&x);
         let mut ly = lines(&y);
@@ -719,7 +869,15 @@ mod tests {
     fn comparing_a_table_with_itself_gives_all_the_same() {
         let a = doc(A);
         let o = a.diff_files(&a, &spec(&[0]), &Progress::new()).unwrap();
-        assert_eq!((o.report.same, o.report.changed, o.report.added, o.report.removed), (4, 0, 0, 0));
+        assert_eq!(
+            (
+                o.report.same,
+                o.report.changed,
+                o.report.added,
+                o.report.removed
+            ),
+            (4, 0, 0, 0)
+        );
         assert_eq!(lines(&o).len(), 1, "only the title row");
     }
 
@@ -734,7 +892,9 @@ mod tests {
         assert_eq!((o.report.empty_a, o.report.empty_b), (2, 1));
         // The first "1" pairs with the first "1" (same), the second with the second (changed b -> B).
         assert_eq!(o.report.changed, 1);
-        assert!(lines(&o).iter().any(|x| x.starts_with("changed,") && x.contains("v: b → B")));
+        assert!(lines(&o)
+            .iter()
+            .any(|x| x.starts_with("changed,") && x.contains("v: b → B")));
     }
 
     #[test]
@@ -747,10 +907,17 @@ mod tests {
         s.trim = true;
         s.match_case = true;
         let o = a.diff_files(&b, &s, &Progress::new()).unwrap();
-        assert_eq!((o.report.removed, o.report.added), (1, 1), "case still counts when asked to");
+        assert_eq!(
+            (o.report.removed, o.report.added),
+            (1, 1),
+            "case still counts when asked to"
+        );
         s.match_case = false;
         let o = a.diff_files(&b, &s, &Progress::new()).unwrap();
-        assert_eq!((o.report.removed, o.report.added, o.report.changed), (0, 0, 1));
+        assert_eq!(
+            (o.report.removed, o.report.added, o.report.changed),
+            (0, 0, 1)
+        );
     }
 
     #[test]
@@ -773,7 +940,10 @@ mod tests {
         };
         // Before: Bo (shown row 2) city changed, Cy (3) name changed, Di (4) removed.
         let m = marks(&a, &idx);
-        assert_eq!(m.iter().map(|x| (x.row, x.col, x.kind)).collect::<Vec<_>>(), vec![(2, Some(2), 0), (3, Some(1), 0), (4, None, 2)]);
+        assert_eq!(
+            m.iter().map(|x| (x.row, x.col, x.kind)).collect::<Vec<_>>(),
+            vec![(2, Some(2), 0), (3, Some(1), 0), (4, None, 2)]
+        );
         // Sort by name descending: the marks stay on the same people.
         let spec_sort = crate::sort::SortSpec {
             keys: vec![crate::sort::SortKey {
@@ -790,10 +960,16 @@ mod tests {
         idx.follow_order(Side::A, a.data_revision());
         let m = marks(&a, &idx);
         // Names now: Di, Cy, Bo, Ann on rows 1..4.
-        assert_eq!(m.iter().map(|x| (x.row, x.col, x.kind)).collect::<Vec<_>>(), vec![(1, None, 2), (2, Some(1), 0), (3, Some(2), 0)]);
+        assert_eq!(
+            m.iter().map(|x| (x.row, x.col, x.kind)).collect::<Vec<_>>(),
+            vec![(1, None, 2), (2, Some(1), 0), (3, Some(2), 0)]
+        );
         // An edit makes the marks out of date.
         a.set_cell(1, 1, "Zed".into()).unwrap();
-        assert!(matches!(a.diff_marks(&idx, Side::A, 0, 10, 0, 10), Err(Error::Changed)));
+        assert!(matches!(
+            a.diff_marks(&idx, Side::A, 0, 10, 0, 10),
+            Err(Error::Changed)
+        ));
     }
 
     #[test]
@@ -804,35 +980,58 @@ mod tests {
         let mut bm = b.diff_marks(&o.index, Side::B, 0, 10, 0, 10).unwrap();
         bm.sort_by_key(|x| (x.row, x.col));
         // B's columns: city(0), id(1), name(2), zip(3): Bo's city (row 2), Cy's name (row 3), Eve added (row 4).
-        assert_eq!(bm.iter().map(|x| (x.row, x.col, x.kind)).collect::<Vec<_>>(), vec![(2, Some(0), 0), (3, Some(2), 0), (4, None, 1)]);
+        assert_eq!(
+            bm.iter()
+                .map(|x| (x.row, x.col, x.kind))
+                .collect::<Vec<_>>(),
+            vec![(2, Some(0), 0), (3, Some(2), 0), (4, None, 1)]
+        );
         let result = o.table.into_document().unwrap();
         let mut idx = o.index;
         idx.follow_order(Side::Result, result.data_revision());
         let mut rm = result.diff_marks(&idx, Side::Result, 0, 20, 0, 20).unwrap();
         rm.sort_by_key(|x| (x.row, x.col));
         // Result rows: removed(Di), changed(Bo), changed(Cy), added(Eve); columns 3.. are the first table's.
-        assert_eq!(rm.iter().map(|x| (x.row, x.col, x.kind)).collect::<Vec<_>>(), vec![(1, None, 2), (2, Some(5), 0), (3, Some(4), 0), (4, None, 1)]);
+        assert_eq!(
+            rm.iter()
+                .map(|x| (x.row, x.col, x.kind))
+                .collect::<Vec<_>>(),
+            vec![(1, None, 2), (2, Some(5), 0), (3, Some(4), 0), (4, None, 1)]
+        );
     }
 
     #[test]
     fn next_difference_walks_the_marked_rows_both_ways_and_wraps() {
         let a = doc(A);
-        let o = a.diff_files(&doc(B), &spec(&[0]), &Progress::new()).unwrap();
+        let o = a
+            .diff_files(&doc(B), &spec(&[0]), &Progress::new())
+            .unwrap();
         let p = Progress::new();
         let mut at = 0;
         let mut seen = Vec::new();
         for _ in 0..4 {
-            let (row, wrapped, _) = a.diff_next(&o.index, Side::A, at, false, &p).unwrap().unwrap();
+            let (row, wrapped, _) = a
+                .diff_next(&o.index, Side::A, at, false, &p)
+                .unwrap()
+                .unwrap();
             seen.push((row, wrapped));
             at = row;
         }
         assert_eq!(seen, vec![(2, false), (3, false), (4, false), (2, true)]);
-        let (row, wrapped, col) = a.diff_next(&o.index, Side::A, 2, true, &p).unwrap().unwrap();
+        let (row, wrapped, col) = a
+            .diff_next(&o.index, Side::A, 2, true, &p)
+            .unwrap()
+            .unwrap();
         assert_eq!((row, wrapped), (4, true));
         assert_eq!(col, None, "the removed row is marked as a whole");
         let same = doc(A);
-        let none = same.diff_files(&same, &spec(&[0]), &Progress::new()).unwrap();
-        assert!(same.diff_next(&none.index, Side::A, 0, false, &p).unwrap().is_none());
+        let none = same
+            .diff_files(&same, &spec(&[0]), &Progress::new())
+            .unwrap();
+        assert!(same
+            .diff_next(&none.index, Side::A, 0, false, &p)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -849,6 +1048,9 @@ mod tests {
         assert_eq!(o.report.cells, 5_000);
         let p = Progress::new();
         p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(matches!(a.diff_files(&b, &spec(&[0]), &p), Err(Error::Cancelled)));
+        assert!(matches!(
+            a.diff_files(&b, &spec(&[0]), &p),
+            Err(Error::Cancelled)
+        ));
     }
 }

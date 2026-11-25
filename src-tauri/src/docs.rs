@@ -3132,7 +3132,11 @@ impl Docs {
                 }
             })?;
         drop(job);
-        let natendo_engine::diff::DiffOutcome { table, report, mut index } = out;
+        let natendo_engine::diff::DiffOutcome {
+            table,
+            report,
+            mut index,
+        } = out;
         let doc = table.into_document()?;
         let (rid, _) = self.insert(doc, false)?;
         self.inherit_private(rid, &[a, b], &[]);
@@ -3143,7 +3147,15 @@ impl Docs {
             let mut m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
             // A newer diff of the same tabs replaces the older one.
             m.retain(|_, d| !(d.a == a && d.b == b));
-            m.insert(id, DiffState { index, a, b, result: rid });
+            m.insert(
+                id,
+                DiffState {
+                    index,
+                    a,
+                    b,
+                    result: rid,
+                },
+            );
         }
         Ok(DiffReportOut {
             info: self.info(rid)?,
@@ -3172,15 +3184,37 @@ impl Docs {
             }
         };
         let m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
-        let Some((did, st)) = m.iter().filter(|(_, s)| s.a == id || s.b == id || s.result == id).max_by_key(|(k, _)| **k) else {
-            return Ok(DiffMarksOut { diff: None, out_of_date: false, marks: Vec::new() });
+        let Some((did, st)) = m
+            .iter()
+            .filter(|(_, s)| s.a == id || s.b == id || s.result == id)
+            .max_by_key(|(k, _)| **k)
+        else {
+            return Ok(DiffMarksOut {
+                diff: None,
+                out_of_date: false,
+                marks: Vec::new(),
+            });
         };
-        let side = if st.result == id { Side::Result } else if st.a == id { Side::A } else { Side::B };
+        let side = if st.result == id {
+            Side::Result
+        } else if st.a == id {
+            Side::A
+        } else {
+            Side::B
+        };
         if !st.index.current(side, d.data_revision()) {
-            return Ok(DiffMarksOut { diff: Some(*did), out_of_date: true, marks: Vec::new() });
+            return Ok(DiffMarksOut {
+                diff: Some(*did),
+                out_of_date: true,
+                marks: Vec::new(),
+            });
         }
         let marks = d.diff_marks(&st.index, side, row, rows, col, cols)?;
-        Ok(DiffMarksOut { diff: Some(*did), out_of_date: false, marks })
+        Ok(DiffMarksOut {
+            diff: Some(*did),
+            out_of_date: false,
+            marks,
+        })
     }
 
     /// The next (previous) difference after a row of tab `id` (a job: Cancel).
@@ -3190,10 +3224,20 @@ impl Docs {
         let job = entry.start("Looking for the next difference")?;
         let d = entry.read();
         let m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
-        let Some((_, st)) = m.iter().filter(|(_, s)| s.a == id || s.b == id || s.result == id).max_by_key(|(k, _)| **k) else {
+        let Some((_, st)) = m
+            .iter()
+            .filter(|(_, s)| s.a == id || s.b == id || s.result == id)
+            .max_by_key(|(k, _)| **k)
+        else {
             return Ok(None);
         };
-        let side = if st.result == id { Side::Result } else if st.a == id { Side::A } else { Side::B };
+        let side = if st.result == id {
+            Side::Result
+        } else if st.a == id {
+            Side::A
+        } else {
+            Side::B
+        };
         let hit = d.diff_next(&st.index, side, row, backward, &job.progress)?;
         Ok(hit.map(|(row, wrapped, col)| DiffJump { row, col, wrapped }))
     }
@@ -3209,7 +3253,12 @@ impl Docs {
     /// A tab was only re-ordered (a sort): the diff still fits its rows, so it follows the new revision.
     fn diff_follow_sort(&self, id: u32, before: u64, after: u64) {
         use natendo_engine::diff::Side;
-        for st in self.diffs.lock().unwrap_or_else(|p| p.into_inner()).values_mut() {
+        for st in self
+            .diffs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values_mut()
+        {
             for (tab, side) in [(st.a, Side::A), (st.b, Side::B), (st.result, Side::Result)] {
                 if tab == id && st.index.current(side, before) {
                     st.index.follow_order(side, after);
@@ -8624,6 +8673,82 @@ Cy
         std::fs::create_dir(c.with_file_name("lint_c.csv.ndchecks")).unwrap();
         let e = docs.checks_sidecar_keep(ic, rules, true).unwrap_err();
         assert!(e.message.contains("could not be saved"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_diff_opens_a_result_tab_that_is_private_when_a_source_is_and_follows_a_sort() {
+        use natendo_engine::diff::DiffSpec;
+        use natendo_engine::sort::{SortKey, SortKind, SortSpec};
+        let a = tmp("diff_a.csv", b"id,name\r\n1,Ann\r\n2,Bo\r\n3,Cy\r\n");
+        let b = tmp("diff_b.csv", b"id,name\r\n1,Ann\r\n2,Bob\r\n4,Di\r\n");
+        let docs = Docs::default();
+        let ia = docs.open_path(&a, false).unwrap().id;
+        let ib = docs.open_path(&b, false).unwrap().id;
+        wait(&docs, ia);
+        wait(&docs, ib);
+        let spec = DiffSpec {
+            keys: vec![0],
+            keep_first: true,
+            ..Default::default()
+        };
+        let out = docs.diff_files(ia, ib, spec.clone()).unwrap();
+        assert_eq!(
+            (
+                out.report.same,
+                out.report.changed,
+                out.report.added,
+                out.report.removed
+            ),
+            (1, 1, 1, 1)
+        );
+        assert!(!docs.is_private(out.info.id).unwrap());
+        // The marks on the first table: Bo's name changed (row 2), Cy removed (row 3).
+        let m = docs.diff_marks(ia, 0, 10, 0, 10).unwrap();
+        assert_eq!(
+            m.marks.iter().map(|x| (x.row, x.col)).collect::<Vec<_>>(),
+            vec![(2, Some(1)), (3, None)]
+        );
+        // A sort only re-orders the rows: the marks follow, by key.
+        let sort = SortSpec {
+            keys: vec![SortKey {
+                col: 1,
+                descending: true,
+                kind: SortKind::Text,
+                match_case: false,
+            }],
+            keep_first: true,
+            ..Default::default()
+        };
+        docs.sort(ia, sort).unwrap();
+        let m = docs.diff_marks(ia, 0, 10, 0, 10).unwrap();
+        assert!(!m.out_of_date);
+        assert_eq!(
+            m.marks.iter().map(|x| (x.row, x.col)).collect::<Vec<_>>(),
+            vec![(1, None), (2, Some(1))]
+        );
+        // An edit makes them out of date.
+        docs.set_cells(ia, vec![(1, 1, "Zed".into())]).unwrap();
+        let m = docs.diff_marks(ia, 0, 10, 0, 10).unwrap();
+        assert!(m.out_of_date && m.marks.is_empty());
+        // Next difference, and clearing.
+        let again = docs.diff_files(ia, ib, spec.clone()).unwrap();
+        assert!(again.diff > out.diff);
+        assert!(docs.diff_next(ib, 0, false).unwrap().is_some());
+        docs.diff_clear(ia);
+        assert!(docs.diff_marks(ib, 0, 10, 0, 10).unwrap().diff.is_none());
+        // A table compared with itself: all the same.
+        let me = docs.diff_files(ib, ib, spec.clone()).unwrap();
+        assert_eq!(
+            (me.report.changed, me.report.added, me.report.removed),
+            (0, 0, 0)
+        );
+        // A private source makes the result private.
+        docs.set_private(ib, true).unwrap();
+        let p = docs.diff_files(ia, ib, spec).unwrap();
+        assert!(
+            docs.is_private(p.info.id).unwrap(),
+            "the result of a private tab is private"
+        );
     }
 
     #[test]

@@ -4187,6 +4187,34 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         if (rep) say(`Wrote ${plural(rep.files, "file")} holding ${plural(rep.rows, "row")} into the folder you chose.${splitPrivateText(rep)}`);
         return;
       }
+      if (r.diff) {
+        const dreq = r.diff;
+        const rep = await runJob("Comparing", () => backend().diffFiles(t.id, dreq.other, dreq.spec));
+        if (!rep) return;
+        addTab(rep.info, false);
+        const nt = tabs[tabs.length - 1];
+        if (nt) {
+          nt.header = true;
+          nt.headerTouched = true;
+          nt.diffOn = true;
+          nt.bump();
+        }
+        t.diffOn = true;
+        t.diffVersion++;
+        const other = tabs.find((x) => x.id === dreq.other);
+        if (other) {
+          other.diffOn = true;
+          other.diffVersion++;
+        }
+        const c = rep.report;
+        const warn: string[] = [];
+        if (c.repeated) warn.push(`${plural(c.repeated, "key")} appear more than once${c.dup_a.length ? ` in the first file (${c.dup_a.slice(0, 3).join(", ")}${c.dup_a.length > 3 ? ", …" : ""})` : ""}${c.dup_b.length ? ` and in the second (${c.dup_b.slice(0, 3).join(", ")}${c.dup_b.length > 3 ? ", …" : ""})` : ""} (paired in order)`);
+        if (c.empty_a || c.empty_b) warn.push(`rows with an empty key are never paired (${c.empty_a} in the first file, ${c.empty_b} in the second)`);
+        if (c.only_a.length || c.only_b.length) warn.push(`columns only in the first file: ${c.only_a.join(", ") || "none"}; only in the second: ${c.only_b.join(", ") || "none"}`);
+        if (c.truncated) warn.push("more rows differ than are listed (showing the first 1,000,000; the counts are exact)");
+        say(`Compared by key: ${plural(c.changed, "changed row")} (${plural(c.cells, "cell")}), ${plural(c.added, "added row")}, ${plural(c.removed, "removed row")}, ${plural(c.same, "row")} the same. The differences opened as a new tab and are marked in all three tabs (Alt+F7 next, Alt+Shift+F7 previous).${warn.length ? ` Note: ${warn.join("; ")}.` : ""}`);
+        return;
+      }
       if (r.table) {
         const req = r.table;
         const rep = await runJob("Building the table", () => backend().tableReport(t.id, req));
@@ -5650,6 +5678,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.nextProblem", label: "Jump to &next problem", keys: ["F7"], run: () => void jumpProblem(false), enabled: ready },
     { id: "data.prevProblem", label: "Jump to &previous problem", keys: ["Shift+F7"], run: () => void jumpProblem(true), enabled: ready },
     { id: "data.checkNow", label: "Check the whole table &now", run: () => { const t = tab; if (t) void checkNow(t); }, enabled: () => ready() && !!tab?.checks.length },
+    { id: "data.diffNext", label: "Next &difference (compared files)", keys: ["Alt+F7"], run: () => void jumpDiff(false), enabled: () => !!tab?.diffOn },
+    { id: "data.diffPrev", label: "Previous differen&ce (compared files)", keys: ["Alt+Shift+F7"], run: () => void jumpDiff(true), enabled: () => !!tab?.diffOn },
+    { id: "data.diffClear", label: "Clear the &differences (compared files)", run: () => void clearDiff(), enabled: () => !!tab?.diffOn },
     { id: "data.unmarkChecks", label: "Hide problem marks", run: () => { if (tab) keepChecks(tab.checks, false); }, enabled: () => !!tab?.checksMarked },
     { id: "help.logs", label: "Open the &log folder", run: () => void backend().openLogFolder().catch((e: unknown) => say(errorText(e))) },
     {
@@ -6036,7 +6067,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
-        "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.fieldCheck", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
+        "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "-",
         "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",
@@ -6072,7 +6103,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
@@ -6539,6 +6570,47 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     } catch (e) {
       say(errorText(e));
     }
+  }
+
+  /** Alt+F7 / Alt+Shift+F7: the next (previous) difference of a compared tab, wrapping round. */
+  async function jumpDiff(backward: boolean): Promise<void> {
+    const t = tab;
+    if (!t || !t.diffOn) return;
+    if (t.diffOutOfDate) {
+      say("The differences are out of date: the tab was edited after the compare. Compare again (Tools > Compare).");
+      return;
+    }
+    try {
+      const j = await runJob("Looking for the next difference", () => backend().diffNext(t.id, t.cell.row, backward));
+      if (j === null) return;
+      if (!j) {
+        say("No differences found in this tab.");
+        return;
+      }
+      grid?.select({ row: j.row, col: j.col ?? t.cell.col });
+      say(j.wrapped ? "Back at the top: the first difference." : "Difference");
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  /** Take the differences off the compared tabs. */
+  async function clearDiff(): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    try {
+      await backend().diffClear(t.id);
+    } catch {
+      // Closed meanwhile.
+    }
+    for (const x of tabs) {
+      if (x.diffOn) {
+        x.diffOn = false;
+        x.diffVersion++;
+        x.bump();
+      }
+    }
+    say("The differences are cleared.");
   }
 
   /** Check this pattern (pill menu): a rule that every value in the column must have the column's shape. */
@@ -7587,6 +7659,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     <span class="spacer"></span>
     {#if findOpen && tab && tab.findCount !== null}<span class="muted" title="Cells that match the find bar's search">Find: {tab.findCount.toLocaleString()}</span>{/if}
     {#if extendMode}<button type="button" class="small" title="Arrow keys grow the selection. Click to end (or F8, or Esc)." onclick={() => toggleExtend()}>Extend selection</button>{/if}
+    {#if tab?.diffOn}
+      <span class={tab.diffOutOfDate ? "msg" : "muted"} title="Compared by key (Tools > Compare). Alt+F7 next difference, Alt+Shift+F7 previous.">{tab.diffOutOfDate ? "Differences out of date: compare again" : "Differences marked"}</span>
+      <button type="button" class="small" title="Take the colours off the compared tabs" onclick={() => void clearDiff()}>Clear</button>
+    {/if}
     {#if tab && tab.checks.length}
       {@const note = problemNote(tab)}
       {#if note}<span class="msg" title="The rule this cell breaks (F7 jumps to the next problem)">{note}</span>{/if}
@@ -8165,6 +8241,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     others={tabs.filter((x) => x !== t).map((x) => ({ id: x.id, name: x.info.name }))}
     onRun={(r, header) => { toolsKind = null; void runTools(r, header); }}
     onClose={() => { toolsKind = null; grid?.focus(); }}
+    onPickFile={async () => {
+      const o = await openOther();
+      return o ? { id: o.id, name: o.name } : null;
+    }}
   />
 {/if}
 

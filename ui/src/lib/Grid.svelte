@@ -28,6 +28,9 @@
   const PROBLEM = 255;
   const PROBLEM_COLOR = "#e5484d";
   const GHOST_COLOR = "#1a9a5b";
+  /** Differences of a key-aware diff: changed cell, added row, removed row. */
+  const DIFF_COLORS = ["#e8a317", "#1a9a5b", "#e5484d"];
+  const DIFF_TIPS = ["Changed: the other file has another value (the What changed column of the result says what)", "Added: this row is only in the second file", "Removed: this row is not in the second file"];
   /** The ghost for a cell, unless the open Replace preview has it unticked (kept by the row's number). */
   function ghostAt(r: number, c: number): { number: number; after: string; cut: boolean } | undefined {
     return visibleGhost(tab.ghosts, tab.ghostSkip, r, c);
@@ -282,6 +285,8 @@
     void prefs.data.showInvisible;
     void prefs.data.problemStyle;
     void prefs.data.showGhosts;
+    void tab.diffOn;
+    void tab.diffVersion;
     void tab.busy;
     void tab.ghostVersion;
     void prefs.data.alignNumbers;
@@ -582,6 +587,7 @@
     wantMarks(rows, cols);
     wantFindHits(rows, cols);
     wantGhosts(rows, cols);
+    wantDiff(rows, cols);
     wantNotes(rows);
   }
 
@@ -641,6 +647,50 @@
     const t = tab;
     const { spec, replacement } = want;
     ghostLoader.want(base, key, () => Promise.all(areas.map((a) => backend().replaceGhosts(t.id, spec, replacement, a.start, a.end - a.start, c0, c1 - c0))));
+  }
+
+  // ---- key-aware diff: the differences on screen, looked up by key in the engine ----
+  let diffKey = "";
+  let diffTimer: ReturnType<typeof setTimeout> | null = null;
+  function wantDiff(rows: { frozen: Span; body: Span }, cols: { frozen: Span; body: Span }): void {
+    if (!tab.diffOn) {
+      if (tab.diffMarks.size || tab.diffOutOfDate) {
+        tab.diffMarks = new Map();
+        tab.diffOutOfDate = false;
+        tab.diffVersion++;
+      }
+      diffKey = "";
+      return;
+    }
+    const c0 = Math.min(cols.frozen.start, cols.body.start);
+    const c1 = Math.max(cols.frozen.end, cols.body.end);
+    const areas = [rows.frozen, rows.body].filter((a) => a.end > a.start);
+    const key = `${tab.id}|${tab.version}|${tab.info.data_revision}|${tab.diffVersion}|${areas.map((a) => `${a.start}-${a.end}`).join(",")}|${c0}-${c1}`;
+    if (key === diffKey) return;
+    diffKey = key;
+    const t = tab;
+    if (diffTimer) clearTimeout(diffTimer);
+    diffTimer = setTimeout(() => {
+      diffTimer = null;
+      if (diffKey !== key) return;
+      void Promise.all(areas.map((a) => backend().diffMarks(t.id, a.start, a.end - a.start, c0, c1 - c0)))
+        .then((all) => {
+          // An answer for rows, data or a window that is no longer the one on screen is dropped.
+          if (diffKey !== key) return;
+          const m = new Map<string, number>();
+          let out = false;
+          for (const w of all) {
+            out ||= w.out_of_date;
+            for (const k of w.marks) m.set(`${k.row}:${k.col ?? "*"}`, k.kind);
+          }
+          t.diffMarks = m;
+          t.diffOutOfDate = out;
+          draw();
+        })
+        .catch(() => {
+          if (diffKey === key) diffKey = "";
+        });
+    }, 60);
   }
 
   // ---- highlight rules -------------------------------------------------------
@@ -1290,6 +1340,7 @@
       }
     }
     const ghostsOn = tab.ghosts.size > 0 && prefs.data.showGhosts;
+    const diffOn = tab.diffOn && tab.diffMarks.size > 0;
     // Long text that spills into the empty cells to its right, drawn after
     // every column (so the next cells' backgrounds don't cover it).
     const spills: { text: string; x: number; y: number; to: number; h: number; colour: string }[] = [];
@@ -1462,6 +1513,15 @@
             if (to > x + cw) spills.push({ text, x: tx, y: ty, to, h: rh, colour: ctx.fillStyle as string });
             else ctx.fillText(text, tx, ty);
             if (link) ctx.fillRect(tx, ty + Math.round(fontPx * 0.55), Math.min(w, cw - 2 * pad), 1);
+          }
+        }
+        if (diffOn) {
+          const dk = tab.diffMarks.get(`${r}:${c}`) ?? tab.diffMarks.get(`${r}:*`);
+          if (dk !== undefined) {
+            ctx.fillStyle = DIFF_COLORS[dk] ?? DIFF_COLORS[0]!;
+            ctx.globalAlpha = dk === 0 ? 0.4 : 0.22;
+            ctx.fillRect(x, y, cw - 1, rh - 1);
+            ctx.globalAlpha = 1;
           }
         }
         const ghost = ghostsOn ? ghostAt(r, c) : undefined;
@@ -2227,6 +2287,8 @@
         const c = i === undefined ? undefined : tab.checks[i];
         if (c) rule = `Problem: ${describeCheck(c)}${own === undefined ? " (row rule)" : ""}`;
       }
+      const dm = !link && cellHit ? (tab.diffMarks.get(`${cellHit.row}:${cellHit.col}`) ?? tab.diffMarks.get(`${cellHit.row}:*`)) : undefined;
+      if (dm !== undefined && !gh) rule = DIFF_TIPS[dm] ?? "";
       tip = link ? `${link}\nCtrl+click to open` : gh ? `Replace all would change this cell:\n${tab.cache.get(cellHit!.row, cellHit!.col) ?? ""}\n\u2192 ${gh.after}${gh.cut ? "\u2026" : ""}` : rule;
       const pointer = h.area === "cell" && ((e.ctrlKey && !!linkAt(h.row, h.col)) || onTickBox(x, y, h.row, h.col) || onPickButton(x, y, h.row, h.col));
       const r = tab.drawRect;

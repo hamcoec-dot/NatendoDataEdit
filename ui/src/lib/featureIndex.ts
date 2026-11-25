@@ -196,6 +196,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   // Checking data
   "data checks": ["data.checks", "data.unmarkChecks", "data.clearChecks"],
   "rules with names a wavy underline and jump to next problem": ["data.nextProblem", "data.prevProblem", "data.checkNow", "data.checks", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "data.patternCheck"],
+  "compare two files by key": ["tools.compare", "data.diffNext", "data.diffPrev", "data.diffClear"],
   "check fields with patterns": ["data.fieldCheck"],
   "clean up suggestions": ["clean.suggest"],
   // Import and export

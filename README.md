@@ -851,6 +851,26 @@ everything is also in command search.
 
 ![Cells that break the rules have a wavy red underline; the status bar names the rule](docs/screenshots/rule-underline.png)
 *A real-date rule on joined and a not-blank rule on first_name: F7 stops on each problem.*
+- **Compare two files by key** (Tools > Compare with another open file, leave
+  "Compare whole rows" unticked): tick the key columns (an ID, or a name and a
+  birth date); rows are paired by key and columns by their **titles**, so a
+  re-sorted file, or one with columns in another order, compares the same.
+  **Choose another file…** opens the second file as a tab right there. Before
+  the result it warns about keys that appear more than once (it names the
+  first ones and pairs them in order), rows with an empty key (never paired
+  with each other), and columns that are only in one file (or moved). The
+  result opens as a new tab: Change (changed, added, removed), the row numbers
+  in both files, every column of both files, and "What changed" (`city:
+  Lisbon → Osaka`). The same colours mark the differences in the first file,
+  the second file and the result: amber cells for changed values, green rows
+  that are only in the second file, red rows that are not in it. **Alt+F7**
+  jumps to the next difference and **Alt+Shift+F7** to the previous one;
+  **Clear** (or Data > Clear the differences) takes the colours off. The
+  colours are found again from each row's key whenever the rows are drawn, so
+  they stay on the right people after a sort, a filter or hiding rows; edit
+  one of the tabs and they say "out of date: compare again". Up to 1,000,000
+  differing rows are listed (the counts are always exact). Comparing a tab
+  with itself gives all rows the same. The result of a private file is private.
 - **Check fields with patterns:** one simple screen with a pattern box next to
   each column and ready-made patterns (e-mail, ZIP, phone, web address,
   letters, digits). Then show the rows that fail or pass, put failing rows

@@ -284,6 +284,12 @@ export class Tab {
   ghostWant: { spec: FindSpec; replacement: string } | null = null;
   ghosts = new Map<string, { number: number; after: string; cut: boolean }>();
   ghostSkip = new Set<string>();
+  /** Key-aware diff (Tools > Compare, by key): this tab is in a diff, and the differences on screen
+   *  ("row:col" or "row:*" -> 0 changed cell, 1 added row, 2 removed row), looked up by key in the engine. */
+  diffOn = $state(false);
+  diffMarks = new Map<string, number>();
+  diffOutOfDate = $state(false);
+  diffVersion = $state(0);
   ghostPartial = $state(false);
   ghostVersion = $state(0);
   ghostCount = $state<{ cells: number | null; exact: boolean } | null>(null);
