@@ -383,7 +383,7 @@ const scenarios = {
       { name: "fill", file: BIG, cmdText: "Show problems as a red fill" },
       { name: "underline", file: BIG, cmdText: "Show problems as a wavy underline" },
     ];
-    for (const mode of modes) {
+    for (const mode of modes.filter((x) => !process.env.NO_RULES || x.file === PLAIN)) {
       const m = await start([mode.file]);
       await ensureRows(m);
       if (mode.file === BIG) {

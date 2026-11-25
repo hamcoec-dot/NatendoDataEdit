@@ -8048,6 +8048,83 @@ mod tests {
     }
 
     #[test]
+    fn rules_are_kept_beside_a_file_only_when_asked_and_never_for_private_or_encrypted_files() {
+        use natendo_engine::validate::{Check, CheckKind};
+        let rules = vec![Check::new(Some(0), CheckKind::Required)];
+        let docs = Docs::default();
+        // A plain file: kept, read back (and the file holds the rule, not the cells).
+        let a = tmp(
+            "lint_a.csv",
+            b"name
+Ann
+
+",
+        );
+        let ia = docs.open_path(&a, false).unwrap().id;
+        wait(&docs, ia);
+        assert!(docs.checks_sidecar_load(ia).unwrap().is_none());
+        let name = docs.checks_sidecar_keep(ia, rules.clone(), true).unwrap();
+        assert_eq!(name, "lint_a.csv.ndchecks");
+        let got = docs.checks_sidecar_load(ia).unwrap().unwrap();
+        assert_eq!((got.checks.len(), got.skipped), (1, 0));
+        let text = std::fs::read_to_string(a.with_file_name(&name)).unwrap();
+        assert!(!text.contains("Ann"));
+        // No rules removes it.
+        docs.checks_sidecar_keep(ia, vec![], true).unwrap();
+        assert!(docs.checks_sidecar_load(ia).unwrap().is_none());
+        // A private tab (private file mode) is refused.
+        docs.set_private(ia, true).unwrap();
+        let e = docs
+            .checks_sidecar_keep(ia, rules.clone(), true)
+            .unwrap_err();
+        assert!(e.message.contains("private"), "{}", e.message);
+        assert!(!a.with_file_name("lint_a.csv.ndchecks").exists());
+        docs.set_private(ia, false).unwrap();
+        // A file in a private folder is refused even when the tab itself is not marked.
+        let b = tmp(
+            "lint_b.csv",
+            b"name
+Bob
+",
+        );
+        let ib = docs.open_path(&b, false).unwrap().id;
+        wait(&docs, ib);
+        let folder = b.clone();
+        docs.set_private_check(Arc::new(move |p: &Path| p == folder.as_path()));
+        let e = docs
+            .checks_sidecar_keep(ib, rules.clone(), true)
+            .unwrap_err();
+        assert!(e.message.contains("private"), "{}", e.message);
+        docs.set_private_check(Arc::new(|_: &Path| false));
+        // A tab opened from an encrypted file is private and has no plain file beside it: refused.
+        let enc = b.with_file_name("lint_b.ndenc");
+        docs.save_encrypted(ib, &enc, "a long enough password")
+            .unwrap();
+        let ie = docs
+            .open_encrypted(&enc, "a long enough password")
+            .unwrap()
+            .id;
+        wait(&docs, ie);
+        assert!(docs.checks_sidecar_keep(ie, rules.clone(), true).is_err());
+        assert!(!b.with_file_name("lint_b.ndenc.ndchecks").exists());
+        // An unsaved tab has no place to keep them.
+        let n = docs.new_document().unwrap().id;
+        assert!(docs.checks_sidecar_keep(n, rules.clone(), true).is_err());
+        // A place that cannot be written gives a clear message, not a crash.
+        let c = tmp(
+            "lint_c.csv",
+            b"name
+Cy
+",
+        );
+        let ic = docs.open_path(&c, false).unwrap().id;
+        wait(&docs, ic);
+        std::fs::create_dir(c.with_file_name("lint_c.csv.ndchecks")).unwrap();
+        let e = docs.checks_sidecar_keep(ic, rules, true).unwrap_err();
+        assert!(e.message.contains("could not be saved"), "{}", e.message);
+    }
+
+    #[test]
     fn privacy_tools() {
         use natendo_engine::clean::{Cleaner, Step};
         use natendo_engine::privacy::{ColumnAction, PrivateKind, SafeCopy, Secret};
