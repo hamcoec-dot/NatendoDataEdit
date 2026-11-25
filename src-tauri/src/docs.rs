@@ -7388,6 +7388,7 @@ mod tests {
         // A locked file refuses a computed column but can show problems.
         let checks = CheckSpec {
             checks: vec![Check {
+                name: None,
                 col: Some(0),
                 kind: CheckKind::Unique { match_case: false },
             }],

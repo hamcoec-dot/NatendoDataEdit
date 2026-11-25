@@ -429,6 +429,7 @@ mod tests {
         assert!(pick(&d, SpecialKind::Edited, vec![0]).cells.is_empty());
         let checks = CheckSpec {
             checks: vec![Check {
+                name: None,
                 col: Some(0),
                 kind: CheckKind::Number {
                     min: None,

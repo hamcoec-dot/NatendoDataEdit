@@ -133,6 +133,29 @@ pub struct CheckReport {
     pub repeats: Vec<(u32, Vec<u64>)>,
 }
 
+/// Where a jump to the next problem landed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Jump {
+    /// Shown row.
+    pub row: u64,
+    /// Column of the cell to select (a row rule: the row's first column not hidden).
+    pub col: u32,
+    /// The check's number.
+    pub check: u32,
+    /// The problem is a row rule's (the whole row), not one cell's.
+    pub row_rule: bool,
+}
+
+/// The result of a jump: the problem found (none: the table has none in shown columns),
+/// whether the search wrapped round the table, and how many problems in hidden columns
+/// it passed over on the way.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct JumpResult {
+    pub hit: Option<Jump>,
+    pub wrapped: bool,
+    pub hidden_skipped: u64,
+}
+
 /// A problem cell on screen (`col` is `None` for a row check).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct CheckMark {
@@ -367,7 +390,12 @@ impl Check {
     /// What to say about this rule: its name, else a sentence made from its kind
     /// ("Number from 1 to 9", "One of 12 values", "Matches ^\\d{5}$").
     pub fn describe(&self) -> String {
-        if let Some(n) = self.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        if let Some(n) = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
             return n.to_string();
         }
         fn range<T: std::fmt::Display>(what: &str, min: &Option<T>, max: &Option<T>) -> String {
@@ -655,6 +683,7 @@ impl Document {
                     CheckKind::Required => "required",
                     CheckKind::Number { .. } => "number",
                     CheckKind::Date { .. } => "date",
+                    CheckKind::DateIso => "ISO date",
                     CheckKind::Length { .. } => "length",
                     CheckKind::List { .. } => "list",
                     CheckKind::Pattern { .. } => "pattern",
@@ -789,6 +818,159 @@ impl Document {
         Ok(parts.into_iter().flatten().collect())
     }
 
+    /// The next problem cell after (`from_row`, `from_col`) in the order the table is shown
+    /// (row by row, left to right), or before it with `backward`, wrapping round the table
+    /// (`wrapped`). A row rule lands on the row's first column that is not in `skip_cols`.
+    /// Problems in `skip_cols` (hidden columns) are passed over, and `hidden_skipped` counts
+    /// the ones passed on the way. Looks in blocks of rows, in parallel inside a block, and
+    /// stops at the first block with a hit; cancellable through `progress`.
+    #[allow(clippy::too_many_arguments)] // a start (2 numbers), a direction and the run's state
+    pub fn next_problem(
+        &self,
+        from_row: u64,
+        from_col: u32,
+        backward: bool,
+        spec: &CheckSpec,
+        repeats: &[(u32, Vec<u64>)],
+        skip_cols: &[u32],
+        progress: &Progress,
+    ) -> Result<JumpResult, Error> {
+        self.ready_for_bulk()?;
+        let c = compile(self, spec)?;
+        let n = self.row_count();
+        let first_row = u64::from(spec.keep_first && n > 0);
+        let mut out = JumpResult::default();
+        if n <= first_row {
+            return Ok(out);
+        }
+        let Some(first_col) = (0..self.col_count()).find(|k| !skip_cols.contains(k)) else {
+            return Ok(out);
+        };
+        let from_row = from_row.min(n - 1).max(first_row);
+        // One row's problem cells: (column, check, row rule), hidden columns counted and left out.
+        let row_cells = |r: u64, hidden: &mut u64| -> Vec<(u32, u32, bool)> {
+            let mut v = Vec::new();
+            for m in self.marks_in(&c, r..r + 1, 0..u32::MAX, spec, repeats) {
+                match m.col {
+                    Some(k) if skip_cols.contains(&k) => *hidden += 1,
+                    Some(k) => v.push((k, m.check, false)),
+                    None => v.push((first_col, m.check, true)),
+                }
+            }
+            v.sort_by_key(|x| (x.0, x.1));
+            v
+        };
+        let pick = |cells: &[(u32, u32, bool)], after: Option<u32>| -> Option<(u32, u32, bool)> {
+            let ok = |k: u32| match after {
+                None => true,
+                Some(a) if backward => k < a,
+                Some(a) => k > a,
+            };
+            if backward {
+                cells.iter().rev().find(|x| ok(x.0)).copied()
+            } else {
+                cells.iter().find(|x| ok(x.0)).copied()
+            }
+        };
+        // The start row, past the start cell.
+        let mut hidden = 0u64;
+        let here = row_cells(from_row, &mut hidden);
+        if let Some((k, ch, rr)) = pick(&here, Some(from_col)) {
+            out.hit = Some(Jump {
+                row: from_row,
+                col: k,
+                check: ch,
+                row_rule: rr,
+            });
+            out.hidden_skipped = hidden;
+            return Ok(out);
+        }
+        // The rows after (before) it, then, wrapped, the rows from the other end up to it.
+        let ranges: [(std::ops::Range<u64>, bool); 2] = if backward {
+            [(first_row..from_row, false), (from_row + 1..n, true)]
+        } else {
+            [(from_row + 1..n, false), (first_row..from_row, true)]
+        };
+        let total: u64 = ranges
+            .iter()
+            .map(|r| r.0.end.saturating_sub(r.0.start))
+            .sum::<u64>()
+            + 1;
+        progress.start(total);
+        const BLOCK: u64 = 1 << 15;
+        const PART: u64 = 2048;
+        for (range, wrapped) in ranges {
+            let (a, b) = (range.start, range.end);
+            if a >= b {
+                continue;
+            }
+            let blocks = (b - a).div_ceil(BLOCK);
+            for k in 0..blocks {
+                // Block k counted from the near end (from the start going forward, from the end going back).
+                let (s0, e0) = if backward {
+                    (b.saturating_sub((k + 1) * BLOCK).max(a), b - k * BLOCK)
+                } else {
+                    (a + k * BLOCK, (a + (k + 1) * BLOCK).min(b))
+                };
+                let parts = (e0 - s0).div_ceil(PART);
+                let found: Vec<(Option<(u64, u32, u32, bool)>, u64)> = (0..parts)
+                    .into_par_iter()
+                    .map(|i| {
+                        let (ps, pe) = (s0 + i * PART, (s0 + (i + 1) * PART).min(e0));
+                        let mut hid = 0u64;
+                        let rows: Box<dyn Iterator<Item = u64>> = if backward {
+                            Box::new((ps..pe).rev())
+                        } else {
+                            Box::new(ps..pe)
+                        };
+                        for r in rows {
+                            let cells = row_cells(r, &mut hid);
+                            if let Some((kk, ch, rr)) = pick(&cells, None) {
+                                return (Some((r, kk, ch, rr)), hid);
+                            }
+                        }
+                        (None, hid)
+                    })
+                    .collect();
+                // Parts in the order they are met (the last part first going back).
+                let ordered: Vec<_> = if backward {
+                    found.into_iter().rev().collect()
+                } else {
+                    found
+                };
+                for (hit, hid) in ordered {
+                    hidden += hid;
+                    if let Some((r, kk, ch, rr)) = hit {
+                        out.hit = Some(Jump {
+                            row: r,
+                            col: kk,
+                            check: ch,
+                            row_rule: rr,
+                        });
+                        out.wrapped = wrapped;
+                        out.hidden_skipped = hidden;
+                        return Ok(out);
+                    }
+                }
+                progress.step(e0 - s0)?;
+            }
+        }
+        // Nothing elsewhere: the start row's own cells before the start cell (wrapping onto itself).
+        let mut hid = 0u64;
+        let again = row_cells(from_row, &mut hid);
+        if let Some((k, ch, rr)) = pick(&again, None) {
+            out.hit = Some(Jump {
+                row: from_row,
+                col: k,
+                check: ch,
+                row_rule: rr,
+            });
+            out.wrapped = true;
+        }
+        out.hidden_skipped = hidden;
+        Ok(out)
+    }
+
     fn marks_in(
         &self,
         c: &Compiled,
@@ -839,7 +1021,10 @@ pub fn check_spec(spec: &CheckSpec) -> Result<(), Error> {
         return Err(Error::Invalid(format!("at most {MAX_CHECKS} checks")));
     }
     for c in &spec.checks {
-        if c.name.as_deref().is_some_and(|n| n.chars().count() > MAX_NAME_CHARS) {
+        if c.name
+            .as_deref()
+            .is_some_and(|n| n.chars().count() > MAX_NAME_CHARS)
+        {
             return Err(Error::Invalid(format!(
                 "a rule name can be at most {MAX_NAME_CHARS} characters"
             )));
@@ -886,14 +1071,287 @@ mod tests {
     }
 
     #[test]
+    fn iso_dates_are_real_calendar_dates_written_year_month_day() {
+        for ok in [
+            "2024-02-29",
+            "2000-02-29",
+            "1999-12-31",
+            "2023-02-28",
+            "0001-01-01",
+        ] {
+            assert!(is_iso_date(ok), "{ok}");
+        }
+        for bad in [
+            "2023-02-29",
+            "1900-02-29",
+            "02/03/2024",
+            "2024-2-3",
+            "2024-13-01",
+            "2024-00-10",
+            "2024-04-31",
+            "2024-01-32",
+            "20240131",
+            "2024-01-3",
+            " 2024-01-31",
+            "2024-01-31 ",
+            "２０２４-01-31",
+            "",
+            "2024/01/31",
+        ] {
+            assert!(!is_iso_date(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_iso_date_rule_marks_bad_cells_and_leaves_blanks() {
+        let d = Document::from_bytes(
+            b"when\r\n2024-02-29\r\n2023-02-29\r\n\r\n02/03/2024\r\n".to_vec(),
+            crate::OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        let s = spec(vec![Check::new(Some(0), CheckKind::DateIso)]);
+        let r = d.run_checks(&s, &Progress::new()).unwrap();
+        assert_eq!(r.problems, 2);
+        assert_eq!(
+            r.listed.iter().map(|p| p.row).collect::<Vec<_>>(),
+            vec![2, 4]
+        );
+    }
+
+    #[test]
+    fn rules_say_what_they_are_and_old_files_without_names_still_read() {
+        let named = Check {
+            name: Some("5-digit ZIP".into()),
+            ..Check::new(Some(0), CheckKind::Required)
+        };
+        assert_eq!(named.describe(), "5-digit ZIP");
+        assert_eq!(
+            Check::new(Some(0), CheckKind::Required).describe(),
+            "Required (not blank)"
+        );
+        assert_eq!(
+            Check::new(
+                Some(0),
+                CheckKind::Number {
+                    min: Some(1.0),
+                    max: Some(9.0),
+                    whole: true
+                }
+            )
+            .describe(),
+            "Whole number from 1 to 9"
+        );
+        assert_eq!(
+            Check::new(Some(0), CheckKind::DateIso).describe(),
+            "Date written YYYY-MM-DD"
+        );
+        // A rule written before names existed has no name field.
+        let old: Check = serde_json::from_str(r#"{"col":2,"kind":{"type":"required"}}"#).unwrap();
+        assert_eq!(old.name, None);
+        // And a rule with no name writes none.
+        assert!(!serde_json::to_string(&old).unwrap().contains("name"));
+        // A name that is too long is refused.
+        let long = Check {
+            name: Some("x".repeat(MAX_NAME_CHARS + 1)),
+            ..old
+        };
+        assert!(check_spec(&spec(vec![long])).is_err());
+    }
+
+    /// A table whose problems are known: the model lists every problem cell by scanning the cells.
+    fn lint_table(r: &mut impl FnMut() -> u64, rows: usize) -> String {
+        let mut csv = String::from("a,b,c,d\r\n");
+        for i in 0..rows {
+            let a = if r() % 5 == 0 {
+                String::new()
+            } else {
+                format!("n{}", r() % 7)
+            };
+            let b = if r() % 4 == 0 {
+                "99".to_string()
+            } else {
+                (r() % 5).to_string()
+            };
+            let c = if r() % 6 == 0 {
+                "bad".to_string()
+            } else {
+                format!("{:03}", r() % 1000)
+            };
+            let d = if r() % 9 == 0 {
+                "dup".to_string()
+            } else {
+                format!("u{i}")
+            };
+            csv.push_str(&format!("{a},{b},{c},{d}\r\n"));
+        }
+        csv
+    }
+
+    fn lint_spec() -> CheckSpec {
+        spec(vec![
+            Check::new(Some(0), CheckKind::Required),
+            Check::new(
+                Some(1),
+                CheckKind::Number {
+                    min: Some(0.0),
+                    max: Some(5.0),
+                    whole: false,
+                },
+            ),
+            Check::new(
+                Some(2),
+                CheckKind::Pattern {
+                    pattern: crate::find::Pattern {
+                        text: "[0-9]{3}".into(),
+                        kind: crate::find::PatternKind::Regex,
+                        ..Default::default()
+                    },
+                },
+            ),
+            Check::new(Some(3), CheckKind::Unique { match_case: false }),
+            // A row rule: the row's b and c must differ in length.
+            Check::new(
+                None,
+                CheckKind::Expression {
+                    expr: "LEN([b]) <> LEN([c])".into(),
+                },
+            ),
+        ])
+    }
+
+    #[test]
+    fn next_problem_equals_a_scan_of_every_cell_both_ways_with_wrap_hidden_columns_and_hidden_rows()
+    {
+        let mut x = 99u64;
+        let mut r = move || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            x >> 33
+        };
+        for case in 0..12 {
+            let rows = 30 + (r() % 40) as usize;
+            let csv = lint_table(&mut r, rows);
+            let mut d =
+                Document::from_bytes(csv.into_bytes(), crate::OpenOptions::default(), Some("csv"))
+                    .unwrap();
+            if case % 3 == 1 {
+                d.hide_rows(2 + r() % 5, 3 + r() % 6).unwrap();
+            }
+            let s = lint_spec();
+            let p = Progress::new();
+            let rep = d.run_checks(&s, &p).unwrap();
+            let skip: Vec<u32> = if case % 2 == 0 { vec![] } else { vec![2] };
+            let first_col = (0..4u32).find(|k| !skip.contains(k)).unwrap();
+            // Every problem cell the table has, in reading order, hidden columns left out.
+            let mut cells: Vec<(u64, u32)> = d
+                .problem_marks(0..d.row_count(), &s, &rep.repeats, &p)
+                .unwrap()
+                .into_iter()
+                .filter_map(|m| match m.col {
+                    Some(k) if skip.contains(&k) => None,
+                    Some(k) => Some((m.row, k)),
+                    None => Some((m.row, first_col)),
+                })
+                .collect();
+            cells.sort_unstable();
+            cells.dedup();
+            assert!(cells.len() > 3, "case {case} has problems");
+            for row in 1..d.row_count() {
+                for col in 0..4u32 {
+                    for backward in [false, true] {
+                        let got = d
+                            .next_problem(row, col, backward, &s, &rep.repeats, &skip, &p)
+                            .unwrap();
+                        let pos = (row, col);
+                        let want = if backward {
+                            cells
+                                .iter()
+                                .rev()
+                                .find(|c| **c < pos)
+                                .map(|c| (*c, false))
+                                .or(cells.last().map(|c| (*c, true)))
+                        } else {
+                            cells
+                                .iter()
+                                .find(|c| **c > pos)
+                                .map(|c| (*c, false))
+                                .or(cells.first().map(|c| (*c, true)))
+                        };
+                        assert_eq!(
+                            got.hit.as_ref().map(|j| ((j.row, j.col), got.wrapped)),
+                            want,
+                            "case {case} from ({row},{col}) backward {backward}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn next_problem_reports_the_hidden_column_problems_it_passed_and_none_when_there_are_none() {
+        let d = Document::from_bytes(
+            b"a,b\r\nx,\r\n,\r\nx,\r\n".to_vec(),
+            crate::OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        // Column b is required but blank in every row, and hidden: nothing to jump to there.
+        let s = spec(vec![Check::new(Some(1), CheckKind::Required)]);
+        let p = Progress::new();
+        let rep = d.run_checks(&s, &p).unwrap();
+        let r = d
+            .next_problem(1, 0, false, &s, &rep.repeats, &[1], &p)
+            .unwrap();
+        assert_eq!(r.hit, None);
+        // Not hidden: found, in the next row.
+        let r = d
+            .next_problem(1, 0, false, &s, &rep.repeats, &[], &p)
+            .unwrap();
+        assert_eq!(r.hit.map(|j| (j.row, j.col)), Some((1, 1)));
+        // A problem in a hidden column is passed on the way to one in a shown column.
+        let s2 = spec(vec![
+            Check::new(Some(1), CheckKind::Required),
+            Check::new(Some(0), CheckKind::Required),
+        ]);
+        let rep2 = d.run_checks(&s2, &p).unwrap();
+        let r = d
+            .next_problem(1, 0, false, &s2, &rep2.repeats, &[1], &p)
+            .unwrap();
+        assert_eq!(r.hit.map(|j| (j.row, j.col)), Some((2, 0)));
+        assert!(r.hidden_skipped >= 1);
+    }
+
+    #[test]
+    fn next_problem_can_be_cancelled() {
+        let mut csv = String::from("a\r\n");
+        for _ in 0..200_000 {
+            csv.push_str("x\r\n");
+        }
+        let d = Document::from_bytes(csv.into_bytes(), crate::OpenOptions::default(), Some("csv"))
+            .unwrap();
+        let s = spec(vec![Check::new(Some(0), CheckKind::Required)]);
+        let p = Progress::new();
+        p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(
+            d.next_problem(1, 0, false, &s, &[], &[], &p),
+            Err(Error::Cancelled)
+        ));
+    }
+
+    #[test]
     fn checks_find_the_right_cells() {
         let d = doc();
         let s = spec(vec![
             Check {
+                name: None,
                 col: Some(0),
                 kind: CheckKind::Unique { match_case: false },
             },
             Check {
+                name: None,
                 col: Some(1),
                 kind: CheckKind::Number {
                     min: Some(0.0),
@@ -902,10 +1360,12 @@ mod tests {
                 },
             },
             Check {
+                name: None,
                 col: Some(1),
                 kind: CheckKind::Required,
             },
             Check {
+                name: None,
                 col: Some(2),
                 kind: CheckKind::Pattern {
                     pattern: Pattern {
@@ -916,6 +1376,7 @@ mod tests {
                 },
             },
             Check {
+                name: None,
                 col: Some(3),
                 kind: CheckKind::Date {
                     min: Some("2024-01-01".into()),
@@ -923,6 +1384,7 @@ mod tests {
                 },
             },
             Check {
+                name: None,
                 col: Some(4),
                 kind: CheckKind::List {
                     values: vec!["CA".into(), "NY".into()],
@@ -930,6 +1392,7 @@ mod tests {
                 },
             },
             Check {
+                name: None,
                 col: None,
                 kind: CheckKind::Expression {
                     expr: "OR(ISBLANK([start]), [age] < 100)".into(),
@@ -975,6 +1438,7 @@ mod tests {
         )
         .unwrap();
         let s = spec(vec![Check {
+            name: None,
             col: Some(0),
             kind: CheckKind::Number {
                 min: None,
@@ -997,8 +1461,15 @@ mod tests {
     fn bad_checks_are_refused() {
         let d = doc();
         let bad = |k: CheckKind, col: Option<u32>| {
-            d.run_checks(&spec(vec![Check { col, kind: k }]), &Progress::new())
-                .is_err()
+            d.run_checks(
+                &spec(vec![Check {
+                    name: None,
+                    col,
+                    kind: k,
+                }]),
+                &Progress::new(),
+            )
+            .is_err()
         };
         assert!(bad(CheckKind::Required, None));
         assert!(bad(CheckKind::Required, Some(99)));
@@ -1026,6 +1497,7 @@ mod tests {
         let many = spec(
             (0..=MAX_CHECKS)
                 .map(|_| Check {
+                    name: None,
                     col: Some(0),
                     kind: CheckKind::Required,
                 })
@@ -1045,6 +1517,7 @@ mod field_tests {
     fn zip_spec() -> CheckSpec {
         CheckSpec {
             checks: vec![Check {
+                name: None,
                 col: Some(1),
                 kind: CheckKind::Pattern {
                     pattern: Pattern {

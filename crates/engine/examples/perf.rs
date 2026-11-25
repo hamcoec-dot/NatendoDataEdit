@@ -1753,7 +1753,11 @@ fn main() {
     let checks = |kinds: Vec<(u32, CheckKind)>| CheckSpec {
         checks: kinds
             .into_iter()
-            .map(|(c, kind)| DataCheck { col: Some(c), kind })
+            .map(|(c, kind)| DataCheck {
+                name: None,
+                col: Some(c),
+                kind,
+            })
             .collect(),
         keep_first: true,
         ..Default::default()
