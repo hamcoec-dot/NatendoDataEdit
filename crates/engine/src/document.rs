@@ -440,7 +440,7 @@ pub struct Document {
     /// A unique, rising id for each undo step (same length and order as `undo`) and each redo step (as `redo`):
     /// `history_pos` repeats after an undo and a new edit, a step id never does. Checkpoints are marks made of
     /// these ids (see `step_mark`).
-    undo_ids: Vec<u64>,
+    undo_ids: std::collections::VecDeque<u64>,
     redo_ids: Vec<u64>,
     /// The mark of the state before the oldest undo step: new when the document is made, and new again whenever
     /// that state can no longer be reached (history trimmed, saved over).
@@ -597,7 +597,7 @@ impl Document {
             undo_budget: MAX_UNDO_BYTES,
             undo: Vec::new(),
             redo: Vec::new(),
-            undo_ids: Vec::new(),
+            undo_ids: Default::default(),
             redo_ids: Vec::new(),
             base_mark: next_step_id(),
             clean_depth: Some(0),
@@ -1143,7 +1143,7 @@ impl Document {
     /// A mark of the state the table is in now: the id of the last change done (or of the start of the history).
     /// It is stable and never reused, so it names this exact state for as long as the history reaches it.
     pub fn step_mark(&self) -> u64 {
-        self.undo_ids.last().copied().unwrap_or(self.base_mark)
+        self.undo_ids.back().copied().unwrap_or(self.base_mark)
     }
 
     /// How to get to the state `mark` names: negative is that many undos, positive that many redos, `None` when
@@ -1931,7 +1931,7 @@ impl Document {
         let inv = self.apply(op);
         self.redo_bytes += inv.cost();
         self.redo.push(inv);
-        if let Some(m) = self.undo_ids.pop() {
+        if let Some(m) = self.undo_ids.pop_back() {
             self.redo_ids.push(m);
         }
         self.history_pos -= 1;
@@ -1948,7 +1948,7 @@ impl Document {
         self.undo_bytes += inv.cost();
         self.undo.push(inv);
         if let Some(m) = self.redo_ids.pop() {
-            self.undo_ids.push(m);
+            self.undo_ids.push_back(m);
         }
         self.trim_undo();
         self.history_pos += 1;
@@ -1960,7 +1960,7 @@ impl Document {
         let inv = self.apply(op);
         self.undo_bytes += inv.cost();
         self.undo.push(inv);
-        self.undo_ids.push(next_step_id());
+        self.undo_ids.push_back(next_step_id());
         if self.clean_depth.is_some_and(|d| d > self.undo.len() - 1) {
             // The saved state was on the redo branch we are discarding.
             self.clean_depth = None;
