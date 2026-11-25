@@ -1413,6 +1413,15 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
     }
 }
 
+/// What a CSV report wrote.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+pub struct Written {
+    /// Lines of the list.
+    pub entries: u64,
+    /// Cells given an apostrophe by the formula guard.
+    pub guarded: u64,
+}
+
 /// What a split into files wrote.
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
 pub struct SplitReport {
@@ -1426,6 +1435,8 @@ pub struct SplitReport {
     pub private_missed: u64,
     /// The folder was empty, so the folder itself was made private.
     pub private_folder: bool,
+    /// Cells given an apostrophe by the formula guard.
+    pub guarded: u64,
 }
 
 /// A cell value or name as a safe Windows file name part: no path
@@ -2024,7 +2035,7 @@ impl Docs {
     }
 
     /// Write the list of changes as a CSV report to `path`.
-    pub fn save_change_report(&self, id: u32, path: &Path) -> CmdResult<u64> {
+    pub fn save_change_report(&self, id: u32, path: &Path, guard: bool) -> CmdResult<Written> {
         self.check_writable(path)?;
         let entry = self.get(id)?;
         let job = entry.start("Writing the list of changes")?;
@@ -2041,8 +2052,11 @@ impl Docs {
                     .unwrap_or_else(|| format!("Column {}", c + 1))
             })
             .collect();
-        let list = d.save_change_report(path, &titles, &job.progress)?;
-        Ok(list.cells_total + list.added_total + list.deleted_total)
+        let list = d.save_change_report(path, &titles, guard, &job.progress)?;
+        Ok(Written {
+            entries: list.cells_total + list.added_total + list.deleted_total,
+            guarded: list.guarded,
+        })
     }
 
     /// The first few labels or letters as text.
@@ -5158,7 +5172,8 @@ impl Docs {
         cp: u32,
         header: bool,
         path: &Path,
-    ) -> CmdResult<u64> {
+        guard: bool,
+    ) -> CmdResult<Written> {
         use natendo_engine::document::since::SinceKind;
         use std::io::Write as _;
         self.check_writable(path)?;
@@ -5188,17 +5203,19 @@ impl Docs {
             let io = |e: std::io::Error| CmdError::new("io", e.to_string());
             let mut out = std::io::BufWriter::new(std::fs::File::create(path).map_err(io)?);
             let mut line = String::new();
+            let mut guarded = 0u64;
             let mut put = |fields: &[&str], out: &mut dyn std::io::Write| -> CmdResult<()> {
                 line.clear();
                 for (i, f) in fields.iter().enumerate() {
                     if i > 0 {
                         line.push(',');
                     }
-                    natendo_engine::scan::write_field(
+                    guarded += u64::from(natendo_engine::scan::write_field_guarded(
                         f,
                         natendo_engine::dialect::Dialect::CSV,
+                        guard,
                         &mut line,
-                    );
+                    ));
                 }
                 line.push_str("\r\n");
                 out.write_all(line.as_bytes()).map_err(io)
@@ -5227,7 +5244,10 @@ impl Docs {
                 }
             }
             out.flush().map_err(io)?;
-            Ok(offset)
+            Ok(Written {
+                entries: offset,
+                guarded,
+            })
         })
     }
 
@@ -7118,15 +7138,18 @@ impl Docs {
                 | natendo_engine::encoding::Encoding::Utf7
         ) {
             for part in &parts {
-                d.write_part(&part.ids, spec.keep_first, &mut std::io::sink())?;
+                d.write_part(&part.ids, spec.keep_first, spec.guard, &mut std::io::sink())?;
             }
         }
         job.progress.start(parts.len() as u64);
         let mut rows = 0u64;
+        let mut guarded = 0u64;
         for (n, (part, path)) in parts.iter().zip(&paths).enumerate() {
             let done = crate::extras::write_atomic_with(path, |f| {
                 let mut w = std::io::BufWriter::with_capacity(1 << 20, f);
-                d.write_part(&part.ids, spec.keep_first, &mut w)?;
+                guarded += d
+                    .write_part(&part.ids, spec.keep_first, spec.guard, &mut w)?
+                    .1;
                 std::io::Write::flush(&mut w).map_err(natendo_engine::Error::from)?;
                 Ok(())
             })
@@ -7152,6 +7175,7 @@ impl Docs {
             private: 0,
             private_missed: 0,
             private_folder: false,
+            guarded,
         })
     }
 
@@ -8271,6 +8295,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
         let spec = SplitParts {
+            guard: false,
             col: Some(0),
             every: 0,
             keep_first: true,
@@ -9685,6 +9710,7 @@ Cy
             },
         };
         let spec = SafeCopy {
+            guard: false,
             columns: vec![ColumnAction::Keep, scramble("a long enough phrase")],
             header: true,
             read: ReadOptions::default(),
@@ -9796,6 +9822,7 @@ Cy
             .split_to_files(
                 ia,
                 &natendo_engine::tools::SplitParts {
+                    guard: false,
                     col: None,
                     every: 1,
                     keep_first: true,
@@ -10651,7 +10678,9 @@ ca,California
         // The report: a CSV with a line per cell.
         let out = std::env::temp_dir().join(format!("since-report-{}.csv", std::process::id()));
         assert_eq!(
-            docs.checkpoint_since_report(id, begin, true, &out).unwrap(),
+            docs.checkpoint_since_report(id, begin, true, &out, false)
+                .unwrap()
+                .entries,
             2
         );
         let text = std::fs::read_to_string(&out).unwrap();
@@ -10693,6 +10722,90 @@ ca,California
         assert!(e.message.contains("ahead of the table"), "{}", e.message);
     }
 
+    /// The CSV formula guard through the shell: each of the four outputs with it on and off. Off writes the text as
+    /// it is; a save of the file itself never changes it.
+    #[test]
+    fn formula_guard_on_reports_safe_copy_and_split_never_on_save() {
+        let docs = Docs::default();
+        let body: &[u8] = b"name,note\nann,=1+1\n@bob,-5\ncat,+1 555 0100\n";
+        let p = tmp("guard.csv", body);
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let begin = docs.checkpoint_add(id, "begin").unwrap()[0].id;
+        let dir = std::env::temp_dir().join(format!("nd-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let read = |p: &Path| std::fs::read_to_string(p).unwrap();
+        // Safe copy: on is 3 cells (the number stays), off is the file's text.
+        let spec = |guard| natendo_engine::privacy::SafeCopy {
+            columns: vec![
+                natendo_engine::privacy::ColumnAction::Keep,
+                natendo_engine::privacy::ColumnAction::Keep,
+            ],
+            header: true,
+            read: Default::default(),
+            guard,
+        };
+        let out = dir.join("safe.csv");
+        let r = docs.save_safe_copy(id, &out, &spec(true), 0.0).unwrap();
+        assert_eq!(r.guarded, 3);
+        assert_eq!(
+            read(&out),
+            "name,note\r\nann,'=1+1\r\n'@bob,-5\r\ncat,'+1 555 0100\r\n"
+        );
+        let r = docs.save_safe_copy(id, &out, &spec(false), 0.0).unwrap();
+        assert_eq!(r.guarded, 0);
+        assert_eq!(
+            read(&out),
+            "name,note\r\nann,=1+1\r\n@bob,-5\r\ncat,+1 555 0100\r\n"
+        );
+        // Split: off unless asked.
+        let split = |guard| natendo_engine::tools::SplitParts {
+            col: None,
+            every: 10,
+            keep_first: true,
+            guard,
+        };
+        let r = docs
+            .split_to_files(id, &split(false), &dir, "off", false, &|_| {})
+            .unwrap();
+        assert_eq!(r.guarded, 0);
+        assert_eq!(read(&dir.join("off - 1.csv")).as_bytes(), body);
+        let r = docs
+            .split_to_files(id, &split(true), &dir, "on", false, &|_| {})
+            .unwrap();
+        assert_eq!(r.guarded, 3);
+        assert!(read(&dir.join("on - 1.csv")).contains("\nann,'=1+1\n'@bob,-5\n"));
+        // The two reports.
+        docs.set_cells(id, vec![(1, 0, "=cmd".into())]).unwrap();
+        let out = dir.join("changes.csv");
+        let w = docs.save_change_report(id, &out, true).unwrap();
+        assert_eq!((w.entries, w.guarded), (1, 1));
+        assert!(read(&out).contains(",ann,'=cmd"), "{}", read(&out));
+        let w = docs.save_change_report(id, &out, false).unwrap();
+        assert_eq!(w.guarded, 0);
+        assert!(read(&out).contains(",ann,=cmd"), "{}", read(&out));
+        let out = dir.join("since.csv");
+        let w = docs
+            .checkpoint_since_report(id, begin, true, &out, true)
+            .unwrap();
+        assert_eq!((w.entries, w.guarded), (1, 1));
+        assert!(read(&out).contains(",ann,'=cmd"), "{}", read(&out));
+        let w = docs
+            .checkpoint_since_report(id, begin, true, &out, false)
+            .unwrap();
+        assert_eq!(w.guarded, 0);
+        assert!(read(&out).contains(",ann,=cmd"), "{}", read(&out));
+        // Saving the file itself never adds an apostrophe.
+        docs.save(id, None, false, true, None).unwrap();
+        let saved = read(&p);
+        assert!(
+            !saved.contains('\'') && saved.contains("=cmd,=1+1"),
+            "{saved}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// B4: risky bulk changes name a moment first; cheap ones do not; the automatic ones are capped at 20 and
     /// never push out a named one; a big paste and a delete of several rows count too.
     /// B4 part 2, review fixes: the report names columns from the first row only when it holds titles (no data value
@@ -10714,8 +10827,9 @@ ca,California
         let out = std::env::temp_dir().join(format!("since-titles-{}.csv", std::process::id()));
         // Without a header row: "Column N", never a value of the first row.
         let n = docs
-            .checkpoint_since_report(id, begin, false, &out)
-            .unwrap();
+            .checkpoint_since_report(id, begin, false, &out, false)
+            .unwrap()
+            .entries;
         // One changed cell, one row taken out, three cells of the column taken out (the rows still there).
         assert_eq!(n, 5);
         let text = std::fs::read_to_string(&out).unwrap();
@@ -10732,7 +10846,8 @@ ca,California
             "{text}"
         );
         // With a header row the titles name the columns, the taken-out one by its title at the checkpoint.
-        docs.checkpoint_since_report(id, begin, true, &out).unwrap();
+        docs.checkpoint_since_report(id, begin, true, &out, false)
+            .unwrap();
         let text = std::fs::read_to_string(&out).unwrap();
         assert!(
             text.contains("Secret Person,ann,Anna")

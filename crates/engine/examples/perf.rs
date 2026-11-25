@@ -2417,6 +2417,7 @@ fn main() {
             },
         };
         let spec = SafeCopy {
+            guard: false,
             columns: vec![
                 ColumnAction::Keep,
                 clean(Step::Mask {
@@ -2948,7 +2949,7 @@ fn main() {
         drop(list);
         let report = dir.join("perf-changes.csv");
         let t = Instant::now();
-        doc.save_change_report(&report, &[], &p).unwrap();
+        doc.save_change_report(&report, &[], false, &p).unwrap();
         check.budget(
             "change report of 20M changed cells (streamed)",
             t.elapsed(),

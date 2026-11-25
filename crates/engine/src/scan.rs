@@ -415,6 +415,62 @@ pub fn write_field(value: &str, d: Dialect, out: &mut String) {
     write_field_as(value, d, Quoting::Needed, out)
 }
 
+/// A value whose whole text is a signed number: digits, with `.` or `,` only
+/// between digits (grouping or decimal mark), an optional exponent and `%`.
+fn signed_number(v: &str) -> bool {
+    let Some(rest) = v.strip_prefix(['+', '-']) else {
+        return false;
+    };
+    let rest = rest.strip_suffix('%').unwrap_or(rest);
+    let (body, exponent) = match rest.split_once(['e', 'E']) {
+        Some((b, e)) => (b, Some(e)),
+        None => (rest, None),
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if exponent.is_some_and(|e| !digits(e.strip_prefix(['+', '-']).unwrap_or(e))) {
+        return false;
+    }
+    // A leading mark (".5") is a number; two marks together or a trailing one
+    // after a grouped number are not.
+    let body = body.strip_prefix(['.', ',']).unwrap_or(body);
+    body.split(['.', ',']).all(digits)
+}
+
+/// True when a spreadsheet could run this cell's text as a formula: it starts
+/// (after any spaces) with `=`, `+`, `-`, `@`, their full-width forms, a tab
+/// or a carriage return. A signed number such as `-1,234.50` is left alone;
+/// `=` never is.
+pub fn formula_risk(value: &str) -> bool {
+    let t = value.trim_start_matches([' ', '\u{a0}', '\u{3000}']);
+    match t.chars().next() {
+        Some('=' | '@' | '\t' | '\r' | '\u{ff1d}' | '\u{ff0b}' | '\u{ff0d}' | '\u{ff20}') => true,
+        Some('+' | '-') => !signed_number(t),
+        _ => false,
+    }
+}
+
+/// `value` as it goes into a guarded CSV: with one apostrophe in front when
+/// [`formula_risk`] says so, so a spreadsheet shows it as text.
+pub fn guard_formula(value: &str) -> std::borrow::Cow<'_, str> {
+    if formula_risk(value) {
+        std::borrow::Cow::Owned(format!("'{value}"))
+    } else {
+        std::borrow::Cow::Borrowed(value)
+    }
+}
+
+/// [`write_field`] with the formula guard when `guard` is on; true when the
+/// value got an apostrophe.
+pub fn write_field_guarded(value: &str, d: Dialect, guard: bool, out: &mut String) -> bool {
+    if guard && formula_risk(value) {
+        write_field(&guard_formula(value), d, out);
+        true
+    } else {
+        write_field(value, d, out);
+        false
+    }
+}
+
 /// How values are put in quotes when a file is written out again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -495,6 +551,100 @@ pub fn write_field_as(value: &str, d: Dialect, quoting: Quoting, out: &mut Strin
             out.push(qc);
         }
         _ => out.push_str(value),
+    }
+}
+
+#[cfg(test)]
+mod formula_guard_tests {
+    use super::*;
+
+    #[test]
+    fn risky_starts_get_one_apostrophe() {
+        for v in [
+            "=1+1",
+            "=",
+            "=-5",
+            "+1 555 0100",
+            "-1+1",
+            "-Smith",
+            "@SUM(A1)",
+            "+",
+            "-",
+            "--5",
+            "\tx",
+            "\t5",
+            "\rx",
+            " =1",
+            "   @a",
+            "\u{a0}=1",
+            "\u{ff1d}1+1",
+            "\u{ff0b}a",
+            "\u{ff0d}a",
+            "\u{ff20}a",
+            "\"=1+1\"x".trim_start_matches('"'),
+            "-1 000",
+            "-5 ",
+            "+1..2",
+            "-1,",
+            "-e5",
+            "-1e",
+            "-%",
+            "=5",
+            "+%5",
+        ] {
+            assert!(formula_risk(v), "{v:?}");
+            assert_eq!(guard_formula(v), format!("'{v}"), "{v:?}");
+            assert!(!formula_risk(&guard_formula(v)), "never twice: {v:?}");
+        }
+    }
+
+    #[test]
+    fn numbers_and_plain_text_are_left_alone() {
+        for v in [
+            "",
+            " ",
+            "a",
+            "a=b",
+            "1-1",
+            "5",
+            "'=1",
+            "-5",
+            "+1.5",
+            "-1,234.50",
+            "-1.234,50",
+            "-1,5",
+            "1e5",
+            "-1e5",
+            "+2.5E-3",
+            "12%",
+            "-12%",
+            "+.5",
+            "-,5",
+            " -5",
+            "email@example.com",
+            "\"=1+1\"",
+        ] {
+            assert!(!formula_risk(v), "{v:?}");
+            assert_eq!(guard_formula(v), v);
+        }
+    }
+
+    #[test]
+    fn the_test_runs_on_the_text_and_quoting_comes_after() {
+        for d in [Dialect::CSV, Dialect::TSV] {
+            let mut on = String::new();
+            let mut off = String::new();
+            let mut plain = String::new();
+            assert!(write_field_guarded("=a,\"b\"", d, true, &mut on));
+            assert!(!write_field_guarded("=a,\"b\"", d, false, &mut off));
+            write_field("=a,\"b\"", d, &mut plain);
+            assert_eq!(off, plain);
+            assert!(on.trim_start_matches('"').starts_with("'="), "{on}");
+        }
+        let mut semi = String::new();
+        let d = Dialect::new(b';', Some(b'"')).unwrap();
+        assert!(write_field_guarded("@a;b", d, true, &mut semi));
+        assert!(semi.contains("'@a;b"), "{semi}");
     }
 }
 

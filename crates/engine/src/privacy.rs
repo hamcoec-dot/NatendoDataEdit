@@ -504,6 +504,14 @@ pub struct SafeCopy {
     pub header: bool,
     #[serde(default)]
     pub read: ReadOptions,
+    /// Give cells a spreadsheet could run as formulas an apostrophe
+    /// ([`crate::scan::guard_formula`]). On unless turned off.
+    #[serde(default = "guard_on")]
+    pub guard: bool,
+}
+
+fn guard_on() -> bool {
+    true
 }
 
 /// What a share-safe copy wrote.
@@ -518,6 +526,9 @@ pub struct SafeCopyReport {
     pub blanked: u64,
     /// The same per column: (column, values blanked).
     pub blanked_cols: Vec<(u32, u64)>,
+    /// Cells given an apostrophe by the formula guard.
+    #[serde(default)]
+    pub guarded: u64,
 }
 
 impl Document {
@@ -557,7 +568,7 @@ impl Document {
         let seed = (now.to_bits() ^ 0x5eed_c0de).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         // One row's text, how many of its values changed, and the kept
         // columns (by position) whose value had to be blanked.
-        type Line = (String, u64, Vec<u32>);
+        type Line = (String, u64, Vec<u32>, u64);
         let line_of = |r: u64| -> Result<Option<Line>, Error> {
             let Some(id) = self.id_at(r) else {
                 return Ok(None);
@@ -567,6 +578,7 @@ impl Document {
             let mut line = String::new();
             let mut changed = 0;
             let mut blank = Vec::new();
+            let mut guarded = 0;
             for (k, &c) in kept.iter().enumerate() {
                 if k > 0 {
                     line.push_str(d.delimiter_str());
@@ -599,10 +611,12 @@ impl Document {
                     }
                     None => v,
                 };
-                crate::scan::write_field(v, d, &mut line);
+                guarded += u64::from(crate::scan::write_field_guarded(
+                    v, d, spec.guard, &mut line,
+                ));
             }
             line.push_str("\r\n");
-            Ok(Some((line, changed, blank)))
+            Ok(Some((line, changed, blank, guarded)))
         };
         let mut blanked = vec![0u64; kept.len()];
         progress.start(total);
@@ -615,7 +629,7 @@ impl Document {
                 .into_par_iter()
                 .map(line_of)
                 .collect::<Result<_, _>>()?;
-            for (line, changed, blank) in lines.into_iter().flatten() {
+            for (line, changed, blank, guarded) in lines.into_iter().flatten() {
                 for k in blank {
                     blanked[k as usize] += 1;
                 }
@@ -623,6 +637,7 @@ impl Document {
                 report.bytes += line.len() as u64;
                 report.rows += 1;
                 report.changed += changed;
+                report.guarded += guarded;
             }
             progress.step(end - start)?;
             start = end;
@@ -846,6 +861,7 @@ mod tests {
         })
         .unwrap();
         let spec = SafeCopy {
+            guard: false,
             columns: vec![
                 ColumnAction::Drop,
                 ColumnAction::Clean {
@@ -880,6 +896,7 @@ mod tests {
         std::fs::write(&src, "a,b\r\n1,2\r\n").unwrap();
         let opened = Document::open_indexed(&src, OpenOptions::default(), None).unwrap();
         let keep = SafeCopy {
+            guard: false,
             columns: vec![ColumnAction::Keep, ColumnAction::Keep],
             header: true,
             read: ReadOptions::default(),
@@ -893,6 +910,7 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::read_to_string(&copy).unwrap(), "a,b\r\n1,2\r\n");
         let all_dropped = SafeCopy {
+            guard: false,
             columns: vec![ColumnAction::Drop, ColumnAction::Drop],
             header: true,
             read: ReadOptions::default(),
@@ -978,6 +996,7 @@ mod tests {
         // 2026-11-13
         let now = 20_770.0;
         let spec = SafeCopy {
+            guard: false,
             columns: vec![ColumnAction::Keep, band()],
             header: true,
             read: ReadOptions::default(),

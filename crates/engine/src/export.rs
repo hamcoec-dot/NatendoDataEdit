@@ -1246,6 +1246,31 @@ mod tests {
         assert!(!sheet.contains("customHeight"));
     }
 
+    /// Excel never runs a cell of ours as a formula: anything that is not a
+    /// number or a date is an inline string, and no formula element exists.
+    #[test]
+    fn xlsx_writes_formula_like_text_as_text() {
+        let d = doc("a,b\n=1+1,@x\n+1 555,-2+3\n");
+        let mut out = Vec::new();
+        d.export(
+            &mut out,
+            &ExportOptions {
+                format: ExportFormat::Xlsx,
+                ..Default::default()
+            },
+            None,
+            &Progress::new(),
+        )
+        .unwrap();
+        let z = crate::zipread::Zip::open(&out).unwrap();
+        let sheet = z.read_string("xl/worksheets/sheet1.xml", 1 << 20).unwrap();
+        assert!(!sheet.contains("<f>") && !sheet.contains("<f "), "{sheet}");
+        for v in ["=1+1", "@x", "+1 555", "-2+3"] {
+            let cell = format!("t=\"inlineStr\"><is><t xml:space=\"preserve\">{v}</t>");
+            assert!(sheet.contains(&cell), "{v}: {sheet}");
+        }
+    }
+
     #[test]
     fn xlsx_heights_given_unsorted_repeated_or_out_of_range_are_still_right() {
         let d = doc("a,b

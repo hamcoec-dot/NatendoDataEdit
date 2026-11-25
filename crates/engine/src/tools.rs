@@ -475,6 +475,9 @@ pub struct SplitParts {
     pub every: u64,
     /// Each part starts with the title row.
     pub keep_first: bool,
+    /// Give cells a spreadsheet could run as formulas an apostrophe
+    /// ([`crate::scan::guard_formula`]). Off unless asked: parts are data.
+    pub guard: bool,
 }
 
 /// One part: its name (a column value, or "1", "2", ...) and its rows.
@@ -1699,17 +1702,18 @@ impl Document {
         Ok(parts)
     }
 
-    /// Write rows `ids` (with the title row first when `header`) in the
-    /// document's own separator, quotes, line break and encoding. Fields are
-    /// quoted where needed. Returns the bytes written.
-    /// Write one part to `out` (streamed in 1 MB pieces, so a part may be
-    /// any size); returns the bytes written.
+    /// Write rows `ids` (with the title row first when `header`) to `out` in
+    /// the document's own separator, quotes, line break and encoding, quoting
+    /// where needed (streamed in 1 MB pieces, so a part may be any size).
+    /// With `guard`, formula-like cells get an apostrophe. Returns the bytes
+    /// written and the cells guarded.
     pub fn write_part(
         &self,
         ids: &[u32],
         header: bool,
+        guard: bool,
         out: &mut dyn std::io::Write,
-    ) -> Result<u64, Error> {
+    ) -> Result<(u64, u64), Error> {
         let f = self.format();
         let all: Vec<u32> = (0..self.col_count()).collect();
         let reader = Cols::new(self, &all);
@@ -1721,6 +1725,7 @@ impl Document {
         let sep = String::from_utf8_lossy(f.dialect.delimiter()).into_owned();
         let mut piece: Vec<u8> = Vec::with_capacity(1 << 20);
         let mut written = 0u64;
+        let mut guarded = 0u64;
         if f.bom {
             piece.extend_from_slice(f.encoding.bom());
         }
@@ -1734,12 +1739,12 @@ impl Document {
                 if k > 0 {
                     text.push_str(&sep);
                 }
-                crate::scan::write_field_as(
+                guarded += u64::from(crate::scan::write_field_guarded(
                     reader.get(&buf, k),
                     f.dialect,
-                    crate::scan::Quoting::Needed,
+                    guard,
                     &mut text,
-                );
+                ));
             }
             text.push_str(brk);
             crate::encoding::encode(&text, f.encoding, &mut piece)
@@ -1752,7 +1757,7 @@ impl Document {
         }
         out.write_all(&piece)?;
         written += piece.len() as u64;
-        Ok(written)
+        Ok((written, guarded))
     }
 }
 
@@ -2424,6 +2429,7 @@ mod tests {
         let parts = d
             .split_parts(
                 &SplitParts {
+                    guard: false,
                     col: Some(0),
                     every: 0,
                     keep_first: true,
@@ -2436,7 +2442,7 @@ mod tests {
             ["a", "b"]
         );
         let mut out = Vec::new();
-        d.write_part(&parts[0].ids, true, &mut out).unwrap();
+        d.write_part(&parts[0].ids, true, false, &mut out).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "g;v\r\na;\"1;2\"\r\na;4\r\n"
@@ -2444,6 +2450,7 @@ mod tests {
         let parts = d
             .split_parts(
                 &SplitParts {
+                    guard: false,
                     col: None,
                     every: 2,
                     keep_first: true,
@@ -2456,6 +2463,7 @@ mod tests {
         assert!(d
             .split_parts(
                 &SplitParts {
+                    guard: false,
                     col: None,
                     every: 0,
                     keep_first: true

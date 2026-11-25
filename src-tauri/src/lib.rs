@@ -1647,7 +1647,8 @@ async fn save_change_report(
     docs: DocsState<'_>,
     recent: RecentState<'_>,
     doc: u32,
-) -> CmdResult<Option<u64>> {
+    guard: Option<bool>,
+) -> CmdResult<Option<docs::Written>> {
     let docs = docs.inner().clone();
     let recent = recent.inner().clone();
     blocking(move || {
@@ -1664,7 +1665,7 @@ async fn save_change_report(
         let Some(path) = dialog.save_file() else {
             return Ok(None);
         };
-        let n = docs.save_change_report(doc, &path)?;
+        let n = docs.save_change_report(doc, &path, guard.unwrap_or(true))?;
         private_copy(&docs, &recent, doc, &path)?;
         Ok(Some(n))
     })
@@ -2269,7 +2270,8 @@ async fn checkpoint_since_report(
     doc: u32,
     checkpoint: u32,
     header: bool,
-) -> CmdResult<Option<u64>> {
+    guard: Option<bool>,
+) -> CmdResult<Option<docs::Written>> {
     let docs = docs.inner().clone();
     let recent = recent.inner().clone();
     blocking(move || {
@@ -2286,7 +2288,8 @@ async fn checkpoint_since_report(
         let Some(path) = dialog.save_file() else {
             return Ok(None);
         };
-        let n = docs.checkpoint_since_report(doc, checkpoint, header, &path)?;
+        let guard = guard.unwrap_or(true);
+        let n = docs.checkpoint_since_report(doc, checkpoint, header, &path, guard)?;
         private_copy(&docs, &recent, doc, &path)?;
         Ok(Some(n))
     })
@@ -4391,7 +4394,7 @@ mod private_copy_tests {
         docs.set_cells(id, vec![(1, 0, "Bo".into())]).unwrap();
         // A change report and a recipe written from it go on the list.
         let report = dir.join("changes.csv");
-        docs.save_change_report(id, &report).unwrap();
+        docs.save_change_report(id, &report, true).unwrap();
         assert!(private_copy(&docs, &recent, id, &report).unwrap());
         assert!(recent.is_private(&report));
         let recipe = dir.join("r.recipe.json");

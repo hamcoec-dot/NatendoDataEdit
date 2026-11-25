@@ -54,6 +54,9 @@ pub struct ChangeList {
     pub moved_cols: bool,
     /// Rows are in another order than in the file (sorted or moved).
     pub reordered: bool,
+    /// Report cells given an apostrophe by the formula guard (reports only).
+    #[serde(default)]
+    pub guarded: u64,
 }
 
 impl ChangeList {
@@ -294,22 +297,25 @@ impl Document {
     /// Column, Old value, New value. `titles` names the columns. Every
     /// changed cell is written as it is found (nothing kept in memory);
     /// rows added or deleted are listed up to a million each. Returns the
-    /// list (without its cells).
+    /// list (without its cells). With `guard`, cells a spreadsheet could run
+    /// as formulas get an apostrophe ([`crate::scan::guard_formula`]).
     pub fn write_change_report(
         &self,
         out: &mut impl Write,
         titles: &[String],
+        guard: bool,
         progress: &Progress,
     ) -> Result<ChangeList, Error> {
         let d = crate::dialect::Dialect::CSV;
         let mut line = String::new();
+        let mut guarded = 0u64;
         let mut row = |fields: &[&str], out: &mut dyn Write| -> Result<(), Error> {
             line.clear();
             for (i, f) in fields.iter().enumerate() {
                 if i > 0 {
                     line.push(',');
                 }
-                crate::scan::write_field(f, d, &mut line);
+                guarded += u64::from(crate::scan::write_field_guarded(f, d, guard, &mut line));
             }
             line.push_str("\r\n");
             out.write_all(line.as_bytes())?;
@@ -332,7 +338,7 @@ impl Document {
             ],
             out,
         )?;
-        let list = self.walk_changes(progress, REPORT_ROWS_LISTED, |cells, _| {
+        let mut list = self.walk_changes(progress, REPORT_ROWS_LISTED, |cells, _| {
             for c in cells {
                 row(
                     &[
@@ -398,6 +404,7 @@ impl Document {
                 out,
             )?;
         }
+        list.guarded = guarded;
         Ok(list)
     }
 
@@ -406,6 +413,7 @@ impl Document {
         &self,
         path: &std::path::Path,
         titles: &[String],
+        guard: bool,
         progress: &Progress,
     ) -> Result<ChangeList, Error> {
         if self.path().is_some_and(|p| crate::save::same_path(p, path)) {
@@ -416,7 +424,7 @@ impl Document {
         let (temp, file) = crate::save::create_temp(path)?;
         let done = (|| -> Result<ChangeList, Error> {
             let mut w = std::io::BufWriter::with_capacity(1 << 20, &file);
-            let l = self.write_change_report(&mut w, titles, progress)?;
+            let l = self.write_change_report(&mut w, titles, guard, progress)?;
             w.flush()?;
             file.sync_all()?;
             Ok(l)
@@ -485,7 +493,7 @@ mod tests {
         // The nine is now in column 1 (b, c, new).
         assert!(l.cells.iter().any(|c| c.col == 1 && c.new == "nine"));
         let mut out = Vec::new();
-        d.write_change_report(&mut out, &["b".into(), "c".into(), "new".into()], &p)
+        d.write_change_report(&mut out, &["b".into(), "c".into(), "new".into()], false, &p)
             .unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("Change,Row now,Row in the file,Column,Old value,New value\r\n"));
@@ -538,7 +546,7 @@ mod more_tests {
         assert_eq!((l.cells[0].row, l.cells[0].col), (1, 0));
         // The report has every one.
         let mut out = Vec::new();
-        d.write_change_report(&mut out, &[], &p).unwrap();
+        d.write_change_report(&mut out, &[], false, &p).unwrap();
         let lines = out
             .split(|&b| b == b'\n')
             .filter(|l| l.starts_with(b"Cell changed"))
