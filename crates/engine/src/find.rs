@@ -2203,7 +2203,7 @@ impl Document {
                             Ok(_) => {}
                             Err(x) => err = Some(x),
                         }
-                        None
+                        None::<()>
                     });
                     if let Some(x) = err {
                         return Err(x);
