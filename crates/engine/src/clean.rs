@@ -3139,7 +3139,7 @@ mod tests {
         for i in 0..10 {
             text.push_str(&format!("P\u{430}ul\u{2019}s{i}\r\n"));
         }
-        let mut d = doc(&text);
+        let d = doc(&text);
         let mut o = crate::xray::SanitizeOptions::usual();
         o.homoglyphs = false;
         let spec = |options| CleanSpec {
