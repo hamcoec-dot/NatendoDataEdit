@@ -19,8 +19,6 @@ const url = process.argv[3] || "http://localhost:5301";
     if (!cond) failed++;
     console.log(`${cond ? "PASS" : "FAIL"} ${msg}`);
   };
-  const TAB = String.fromCharCode(9);
-  const EOL = String.fromCharCode(13, 10);
   const run = async (id) => {
     await p.evaluate((id) => window.__nde.reg.run(id), id);
     await p.waitForTimeout(500);
@@ -28,17 +26,16 @@ const url = process.argv[3] || "http://localhost:5301";
   const text = async () => ((await p.locator("body").textContent()) || "").replace(/\s+/g, " ");
   const info = () => p.evaluate(() => ({ rows: window.__nde.tab.info.rows, filtered: window.__nde.tab.info.filtered }));
 
-  await run("file.new");
-  await p.evaluate(
-    async (t0) => {
-      const t = window.__nde.tab;
-      t.update(await window.__nde.backend.dataOp(t.id, { op: "paste", spec: { row: 0, col: 0, op: "none", skip_blanks: false, transpose: false }, text: t0 }).then((r) => r.info), true);
-      t.header = true;
-      t.bump();
-    },
-    [["id", "name", "city"], ["1", "ann", "Oslo"], ["2", "bob", ""], ["3", "cat", "Rome"], ["4", "Smith", "John"], ["5", "eve", "Lyon"]].map((r) => r.join(TAB)).join(EOL),
-  );
-  await p.waitForTimeout(400);
+  // The stand-in's large generated file (new tables have no file rows to filter).
+  await p.keyboard.press("Control+o");
+  await p.waitForFunction(() => window.__nde.tab && window.__nde.tab.info.indexed && window.__nde.tab.info.rows > 1000, null, { timeout: 30000 });
+  await p.waitForTimeout(800);
+  await p.evaluate(() => {
+    const t = window.__nde.tab;
+    t.header = true;
+    t.bump();
+  });
+  await p.waitForTimeout(300);
   ok(!/different number of fields/.test(await text()), "no note for a file without ragged rows");
   await p.evaluate(() => {
     const t = window.__nde.tab;
