@@ -113,9 +113,13 @@ describe("command search ranking on the real commands", () => {
   });
 
   it("is fast enough to run on every key press", () => {
-    const t0 = performance.now();
-    for (const q of ["d", "de", "ded", "dedu", "dedup", "remove blank rows", "xyzzy typo"]) rank(items, q);
-    expect(performance.now() - t0).toBeLessThan(100);
+    // The best of three runs: a busy build machine slows one run, a slow ranking slows all of them.
+    const times = [0, 1, 2].map(() => {
+      const t0 = performance.now();
+      for (const q of ["d", "de", "ded", "dedu", "dedup", "remove blank rows", "xyzzy typo"]) rank(items, q);
+      return performance.now() - t0;
+    });
+    expect(Math.min(...times)).toBeLessThan(100);
   });
 });
 
