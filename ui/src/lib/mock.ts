@@ -52,6 +52,7 @@ import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, Spli
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
+import { readNumberFor } from "./readers";
 import { disjoint, type Rect } from "./selection";
 import type { CellFormula, FacetCard, Facets, FormulaReport, Insights, InsightSpec, Profile, ProfileSpec } from "./backend";
 import type { CompareCols, CompareColsReport, TitleSpec, SessionItem, SessionPlace, SessionTab, SpecialCells, SpecialSpec, AgentStatus, Check, CheckMark, CheckReport, CheckSpec, ComputePreview, ComputeSpec, FileType, JoinPreview, JoinSpec, OsOpen, TallySpec, ValueTally, LookAlikeSpec, LookAlikes, HandOver, ModifiedReport } from "./backend";
@@ -2163,7 +2164,8 @@ export class MockBackend implements Backend {
         if (!v) continue;
         seen.add(v);
         t.filled++;
-        const x = numberOf(v);
+        // A column typed Text or Id is never read as numbers (the engine does the same).
+        const x = readNumberFor(d.info.typed, c, v) === null ? null : numberOf(v);
         if (x === null) continue;
         t.numbers++;
         sum += x;

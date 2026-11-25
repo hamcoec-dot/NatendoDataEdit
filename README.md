@@ -382,6 +382,21 @@ everything is also in command search.
 - **Display formats** per column (numbers, percent, currency, dates, tick
   boxes) that change only how cells look, never the file.
 - Value types shown in colour (Ctrl+F8), colour scales and data bars.
+- **What a column holds** (Format > Treat this column as, or right-click a
+  heading, or click the small badge in its title): Text, Number, Date (the
+  file's date order, day first or month first) or Id. An Id is a code such as
+  a ZIP code, account number or phone number: it is never added up, sorted as
+  a number, given a colour scale or compared loosely (`007` is not `7`), and
+  an Excel export writes it as text. Text columns are the same. Nothing in the
+  file changes and the saved bytes are identical; Ctrl+Z puts the type back,
+  a saved view keeps it, and the program remembers it for the file next time
+  (a fingerprint of the path and the types only, never values; nothing for a
+  file in private mode). If the file's columns changed since, the types are
+  not applied (one click applies them anyway), and a Number or Date type is
+  only put back on a column where most of the first 1,000 rows really read
+  that way. Auto (the default) guesses from the cells, as before.
+
+  ![A ZIP column typed Id: the ID badge in its title, and "Text column: count only"](docs/screenshots/column-types.png)
 - Ctrl+click opens web and e-mail addresses.
 - **Command search** (Alt+Q, the same key as Excel's search box; change it
   under Help > Customize shortcuts): type a few letters or words and every
