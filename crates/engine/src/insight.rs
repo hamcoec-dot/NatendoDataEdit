@@ -157,7 +157,7 @@ fn pill(vals: &[String], shapes: &ShapeCounts, filled: usize) -> (Option<String>
     (top, share)
 }
 
-fn one(col: u32, vals: &[String], read: ReadOptions) -> Insight {
+fn one(col: u32, vals: &[String], rd: crate::coltype::Reader) -> Insight {
     let n = vals.len();
     let mut counts: HashMap<&str, u32> = HashMap::new();
     let mut nums: Vec<f64> = Vec::new();
@@ -170,7 +170,7 @@ fn one(col: u32, vals: &[String], read: ReadOptions) -> Insight {
         filled += 1;
         *counts.entry(v.as_str()).or_insert(0) += 1;
         shapes.add(shape_hash(v), i);
-        if let Some(x) = crate::coltype::Reader::plain(read).number(v) {
+        if let Some(x) = rd.number(v) {
             if x.is_finite() {
                 nums.push(x);
             }
@@ -256,13 +256,14 @@ impl Document {
                 Ok(out)
             })
             .collect::<Result<_, _>>()?;
+        let ctx = self.read_ctx(spec.read);
         let cols: Vec<Insight> = spec
             .cols
             .par_iter()
             .enumerate()
             .map(|(i, &c)| {
                 let vals: Vec<String> = parts.iter().flat_map(|p| p[i].iter().cloned()).collect();
-                one(c, &vals, spec.read)
+                one(c, &vals, ctx.reader(c))
             })
             .collect();
         Ok(Insights {

@@ -301,7 +301,7 @@ impl Acc {
         }
     }
 
-    fn add(&mut self, v: &str, read: ReadOptions) {
+    fn add(&mut self, v: &str, rd: crate::coltype::Reader) {
         self.rows += 1;
         if v.trim().is_empty() {
             self.blanks += 1;
@@ -324,7 +324,7 @@ impl Acc {
         if self.longest.as_ref().is_none_or(|s| len > s.0) {
             self.longest = Some((len, v.chars().take(200).collect()));
         }
-        if let Some(x) = crate::coltype::Reader::plain(read).number(v) {
+        if let Some(x) = rd.number(v) {
             self.numbers += 1;
             let delta = x - self.mean;
             self.mean += delta / self.numbers as f64;
@@ -334,7 +334,7 @@ impl Acc {
             if self.sample.len() < SAMPLE_CHUNK {
                 self.sample.push(x);
             }
-        } else if let Some(d) = crate::coltype::Reader::plain(read).date(v) {
+        } else if let Some(d) = rd.date(v) {
             self.dates += 1;
             self.dmin = self.dmin.min(d);
             self.dmax = self.dmax.max(d);
@@ -402,7 +402,7 @@ impl Document {
         check_cols(self, &[spec.col])?;
         let reader = Cols::new(self, &[spec.col]);
         let rows = self.data_rows(spec.keep_first);
-        let read = spec.read;
+        let rd = self.read_ctx(spec.read).reader(spec.col);
         let n = rows.end - rows.start;
         // Pass 1: shapes, lengths, ranges.
         progress.start(n * 2);
@@ -415,7 +415,7 @@ impl Document {
                 for r in s..e {
                     let id = self.id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
-                    a.add(reader.get(&buf, 0), read);
+                    a.add(reader.get(&buf, 0), rd);
                 }
                 progress.step(e - s)?;
                 Ok(a)
@@ -517,10 +517,8 @@ impl Document {
                         continue;
                     }
                     let x = match kind {
-                        HistKind::Numbers => crate::coltype::Reader::plain(read).number(v),
-                        HistKind::Dates => {
-                            crate::coltype::Reader::plain(read).date(v).map(f64::floor)
-                        }
+                        HistKind::Numbers => rd.number(v),
+                        HistKind::Dates => rd.date(v).map(f64::floor),
                         HistKind::Lengths => Some(v.chars().count() as f64),
                     };
                     if let Some(x) = x {
