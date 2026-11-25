@@ -108,6 +108,33 @@ pub fn shape_matches(s: &str, target: &str) -> bool {
     t.next().is_none()
 }
 
+/// A regular expression that matches exactly the values whose shape is `shape` (compare
+/// [`shape_matches`]): a 9 is any Unicode number (`\p{N}`, as `shape_of` counts them), an A any
+/// alphabetic character (`\p{Alphabetic}`), every other character itself; a shape of 40 characters
+/// and an ellipsis ("…") is the first 40 exactly and then at least one more character. Meant to be
+/// used for the whole cell (a `Pattern` check matches the whole cell).
+pub fn shape_regex(shape: &str) -> String {
+    let chars: Vec<char> = shape.chars().collect();
+    let capped = chars.len() == MAX_SHAPE_CHARS + 1 && chars[MAX_SHAPE_CHARS] == '…';
+    let body = if capped {
+        &chars[..MAX_SHAPE_CHARS]
+    } else {
+        &chars[..]
+    };
+    let mut out = String::new();
+    for &c in body {
+        match c {
+            '9' => out.push_str(r"\p{N}"),
+            'A' => out.push_str(r"\p{Alphabetic}"),
+            c => out.push_str(&regex::escape(&c.to_string())),
+        }
+    }
+    if capped {
+        out.push_str("(?s:.+)");
+    }
+    out
+}
+
 /// "Show the rows whose shape is (or is not) this one" (the pattern pill).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -655,6 +682,58 @@ mod tests {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/testdata/shapes.json");
         std::fs::write(path, serde_json::to_string_pretty(&fx).unwrap() + "\n").unwrap();
+    }
+
+    #[test]
+    fn shape_regex_matches_exactly_what_shape_matches_does() {
+        let mut r = lcg(17);
+        let pool: Vec<String> = (0..300).map(|_| random_value(&mut r)).collect();
+        let mut shapes: Vec<String> = pool.iter().map(|v| shape_of(v)).collect();
+        // (Only real shapes: a letter or digit in a "shape" cannot come from shape_of, which turns them into A and 9.)
+        shapes.extend((0..100).map(|_| shape_of(&random_value(&mut r))));
+        let compiled: Vec<regex::Regex> = shapes
+            .iter()
+            .map(|s| regex::Regex::new(&format!(r"\A(?:{})\z", shape_regex(s))).unwrap())
+            .collect();
+        let mut agreed_true = 0;
+        for _ in 0..100_000 {
+            let v = &pool[(r() % 300) as usize];
+            let i = (r() % shapes.len() as u64) as usize;
+            let want = shape_matches(v, &shapes[i]);
+            assert_eq!(
+                compiled[i].is_match(v),
+                want,
+                "value {v:?} shape {:?}",
+                shapes[i]
+            );
+            agreed_true += u32::from(want);
+        }
+        assert!(agreed_true > 100);
+        // Through the engine's own matcher, as a Pattern check uses it (whole cell).
+        for (v, s) in [
+            ("555-1234", "999-9999"),
+            ("٣٤٥", "999"),
+            ("x²y", "A9A"),
+            ("José", "AAAA"),
+        ] {
+            let m = crate::find::Matcher::new(&crate::find::Pattern {
+                text: shape_regex(s),
+                kind: crate::find::PatternKind::Regex,
+                match_case: true,
+                whole_cell: true,
+                ..Default::default()
+            })
+            .unwrap();
+            assert!(m.is_match(v), "{v} {s}");
+            assert!(!m.is_match(&format!("{v}!")), "{v} {s}");
+        }
+        // The cap form.
+        let long = "7".repeat(55);
+        let capped = shape_of(&long);
+        let re = regex::Regex::new(&format!(r"\A(?:{})\z", shape_regex(&capped))).unwrap();
+        assert!(
+            re.is_match(&long) && re.is_match(&"1".repeat(41)) && !re.is_match(&"1".repeat(40))
+        );
     }
 
     #[test]
