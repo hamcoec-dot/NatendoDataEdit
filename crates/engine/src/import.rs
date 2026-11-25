@@ -402,8 +402,148 @@ fn exact_cell(text: &str) -> Result<Value, Error> {
     serde_json::from_str(t).map_err(bad_json)
 }
 
+fn skip_ws(b: &[u8], mut i: usize) -> usize {
+    while matches!(b.get(i), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        i += 1;
+    }
+    i
+}
+
+/// The end (after the closing quote) of the string starting at `i`, and whether it has escapes.
+fn scan_string(b: &[u8], i: usize) -> Option<(usize, bool)> {
+    if b.get(i) != Some(&b'"') {
+        return None;
+    }
+    let mut j = i + 1;
+    let mut esc = false;
+    loop {
+        match b.get(j)? {
+            b'\\' => {
+                esc = true;
+                j += 2;
+            }
+            b'"' => return Some((j + 1, esc)),
+            _ => j += 1,
+        }
+    }
+}
+
+/// The text of a string token (quotes included) as a string.
+fn string_of(t: &str, start: usize, end: usize, esc: bool) -> Option<String> {
+    if esc {
+        serde_json::from_str::<String>(&t[start..end]).ok()
+    } else {
+        Some(t[start + 1..end - 1].to_string())
+    }
+}
+
+/// The end of the object or array starting at `i` (strings skipped properly).
+fn scan_container(b: &[u8], i: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut j = i;
+    loop {
+        match b.get(j)? {
+            b'{' | b'[' => {
+                depth += 1;
+                j += 1;
+            }
+            b'}' | b']' => {
+                depth = depth.checked_sub(1)?;
+                j += 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            b'"' => j = scan_string(b, j)?.0,
+            _ => j += 1,
+        }
+    }
+}
+
+/// One cell's value starting at `i` and where it ends: a number as its own text, a string unescaped, a
+/// nested container read as before. `None` for anything unexpected (the caller falls back to serde).
+fn fast_value(t: &str, i: usize) -> Option<(Value, usize)> {
+    let b = t.as_bytes();
+    match b.get(i)? {
+        b'"' => {
+            let (end, esc) = scan_string(b, i)?;
+            Some((Value::String(string_of(t, i, end, esc)?), end))
+        }
+        c if *c == b'-' || c.is_ascii_digit() => {
+            let mut j = i + 1;
+            while matches!(
+                b.get(j),
+                Some(b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+            ) {
+                j += 1;
+            }
+            Some((Value::String(t[i..j].to_string()), j))
+        }
+        b't' if t[i..].starts_with("true") => Some((Value::Bool(true), i + 4)),
+        b'f' if t[i..].starts_with("false") => Some((Value::Bool(false), i + 5)),
+        b'n' if t[i..].starts_with("null") => Some((Value::Null, i + 4)),
+        b'{' | b'[' => {
+            let end = scan_container(b, i)?;
+            Some((serde_json::from_str::<Value>(&t[i..end]).ok()?, end))
+        }
+        _ => None,
+    }
+}
+
+/// A whole row (an object or an array of cells) read by hand, much quicker than a general parse; `None`
+/// when anything is not as expected.
+fn fast_row(t: &str) -> Option<Value> {
+    let b = t.as_bytes();
+    let mut i = skip_ws(b, 0);
+    let open = *b.get(i)?;
+    if open != b'{' && open != b'[' {
+        return None;
+    }
+    let close = if open == b'{' { b'}' } else { b']' };
+    i = skip_ws(b, i + 1);
+    let mut map = serde_json::Map::new();
+    let mut list = Vec::new();
+    if b.get(i) != Some(&close) {
+        loop {
+            if open == b'{' {
+                let (ke, kesc) = scan_string(b, i)?;
+                let key = string_of(t, i, ke, kesc)?;
+                i = skip_ws(b, ke);
+                if b.get(i) != Some(&b':') {
+                    return None;
+                }
+                i = skip_ws(b, i + 1);
+                let (v, end) = fast_value(t, i)?;
+                map.insert(key, v);
+                i = end;
+            } else {
+                let (v, end) = fast_value(t, i)?;
+                list.push(v);
+                i = end;
+            }
+            i = skip_ws(b, i);
+            match b.get(i)? {
+                b',' => i = skip_ws(b, i + 1),
+                c if *c == close => break,
+                _ => return None,
+            }
+        }
+    }
+    if skip_ws(b, i + 1) != b.len() {
+        return None;
+    }
+    Some(if open == b'{' {
+        Value::Object(map)
+    } else {
+        Value::Array(list)
+    })
+}
+
 /// A row's text as a value whose own cells keep their numbers exactly.
 fn exact_row(text: &str) -> Result<Value, Error> {
+    if let Some(v) = fast_row(text) {
+        return Ok(v);
+    }
     let t = text.trim_start();
     if t.starts_with('{') {
         let members: Pairs = serde_json::from_str(text).map_err(bad_json)?;
@@ -1361,6 +1501,45 @@ mod tests {
             imp(r#"[[1.0,"a"],[12345678901234567890,true]]"#, "json", o),
             vec![vec!["1.0", "a"], vec!["12345678901234567890", "true"]]
         );
+    }
+
+    /// The hand-written row reader gives what the general one gives, on odd but valid rows.
+    #[test]
+    fn fast_rows_match_the_general_reader() {
+        let rows = [
+            r#"{"a":1,"b":"x"}"#,
+            "  { \"a\" : 1.50 , \"b\" :\n[1, 2.0, {\"z\":\"}\"}] ,\"c\":null,\"d\":true }  ",
+            r#"{"k\"ey":"va\\lue \u00e9 \ud83d\ude00","é":"ü","n":-0.10,"e":1E5,"m":{"q":[1.0,"a]b"]}}"#,
+            r#"[1,"two",3.50,false,null,[1,[2]],{"a":"b"}]"#,
+            "{}",
+            "[ ]",
+            r#"{"a":"","a":2}"#,
+        ];
+        for r in rows {
+            let fast = fast_row(r).unwrap_or_else(|| panic!("fast path refused {r}"));
+            // The general reader, with the same cell rule.
+            let slow = if r.trim_start().starts_with('{') {
+                let m: Pairs = serde_json::from_str(r).unwrap();
+                let mut out = serde_json::Map::new();
+                for (k, v) in m.0 {
+                    out.insert(k, exact_cell(v.get()).unwrap());
+                }
+                Value::Object(out)
+            } else {
+                let items: Vec<&serde_json::value::RawValue> = serde_json::from_str(r).unwrap();
+                Value::Array(
+                    items
+                        .into_iter()
+                        .map(|v| exact_cell(v.get()).unwrap())
+                        .collect(),
+                )
+            };
+            assert_eq!(fast, slow, "{r}");
+        }
+        // Not as expected: left to the general reader (which reports the error).
+        for r in ["{\"a\":}", "[1,]", "{\"a\" 1}", "[1] x", "{\"a\":\"x"] {
+            assert_eq!(fast_row(r), None, "{r}");
+        }
     }
 
     #[test]
