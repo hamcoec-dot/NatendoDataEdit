@@ -234,6 +234,8 @@ const xlsxScreen = async (m, want) => {
     ok((await cellOf(m, 1, 2, 1)) === "90210", "a five-digit zip is left as it is");
     ok((await cellOf(m, 1, 3, 1)) === "00501", "a short zip is padded");
     ok((await cellOf(m, 1, 1, 0)) === "1234567890123456789", "the long account number is still exact");
+    // WebView2 writes its local storage to disk a little later; give it time before the app is stopped.
+    await sleep(8000);
 
     // 3. next time the answer is remembered for the file.
     await killApp();
