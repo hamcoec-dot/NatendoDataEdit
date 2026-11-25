@@ -1127,6 +1127,9 @@ selection, a column or the whole table:
   when a new change replaces what you had undone, and when you save the file,
   because saving starts the undo history again. Checkpoints are not saved to disk
   and go when the tab closes.
+
+![Checkpoints at the top of the Steps panel](docs/screenshots/checkpoints.png)
+
 - **Recipe questions:** in the steps panel, press ? on a step to have the
   recipe ask for one of its values each time it runs ("Which county?",
   "Election date?"), with the last answer filled in. One recipe then serves
