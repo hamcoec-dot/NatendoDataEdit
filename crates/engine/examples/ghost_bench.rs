@@ -97,10 +97,7 @@ fn main() {
     let mut csv = String::new();
     for _ in 0..60 {
         csv.push_str(&vec![long.as_str(); 20].join(","));
-        csv.push_str(
-            "
-",
-        );
+        csv.push_str("\r\n");
     }
     let l = Document::from_bytes(csv.into_bytes(), OpenOptions::default(), Some("csv")).unwrap();
     let evil = spec("(a)b", PatternKind::Regex);
