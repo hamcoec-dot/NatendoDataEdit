@@ -1932,6 +1932,11 @@ export class MockBackend implements Backend {
     { label: "gbk", name: "GBK", direct: false },
     { label: "big5", name: "Big5", direct: false },
   ];
+  /** The name the engine gives an encoding (what the status bar shows). */
+  private static realName(label: string): string {
+    const m: Record<string, string> = { "utf-8": "UTF-8", "utf-16le": "UTF-16LE", "utf-16be": "UTF-16BE", "utf-32le": "UTF-32LE", "utf-32be": "UTF-32BE", shift_jis: "Shift_JIS", gbk: "GBK", big5: "Big5" };
+    return m[label] ?? label;
+  }
   private encodingSteps = new WeakSet<object>();
   async encodingChoices(): Promise<import("./backend").EncodingChoice[]> {
     return MockBackend.ENCODINGS.map((c) => ({ ...c }));
@@ -1953,10 +1958,10 @@ export class MockBackend implements Backend {
     if (!to.direct) throw err("invalid", `${to.name} cannot be read in place: reopen the file with it instead`);
     if (d.undo.some((s) => !this.encodingSteps.has(s.apply))) throw err("invalid", "Save or undo your changes first: they were made while the file was read as another encoding");
     if (d.info.peeking) throw err("peeking", "looking at an earlier recipe step: go back to the latest step to change or save");
-    if (d.info.encoding === to.name) return { ...d.info };
+    if (d.info.encoding === MockBackend.realName(to.label)) return { ...d.info };
     const apply = () => {
       const old = d.info.encoding;
-      d.info.encoding = to.name;
+      d.info.encoding = MockBackend.realName(to.label);
       return () => {
         d.info.encoding = old;
       };
@@ -1970,7 +1975,7 @@ export class MockBackend implements Backend {
     const to = MockBackend.ENCODINGS.find((c) => c.label === encoding);
     if (!to) throw err("invalid", "that encoding is not known");
     const info = await this.reopen(doc, lineByLine, layout);
-    this.get(info.id).info.encoding = to.name;
+    this.get(info.id).info.encoding = MockBackend.realName(to.label);
     return { ...this.get(info.id).info };
   }
   async scanEncodings(doc: number, _keepFirst: boolean): Promise<import("./backend").EncodingScan> {
