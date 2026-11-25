@@ -416,7 +416,7 @@ impl Document {
             .filter(|(i, _)| totals[*i] > 0)
             .map(|(i, kd)| (*kd, totals[i]))
             .collect();
-        report.kinds.sort_by(|a, b| b.1.cmp(&a.1));
+        report.kinds.sort_by_key(|a| std::cmp::Reverse(a.1));
         Ok(report)
     }
 
