@@ -143,10 +143,12 @@
   const unticked = new SvelteSet<string>();
   // The ghost diff leaves out the changes unticked here (kept by the row's number, so a sort or filter cannot move one).
   $effect(() => {
-    tab.ghostSkip = unticked;
     void unticked.size;
-    tab.ghostVersion++;
-    tab.onRedraw?.();
+    untrack(() => {
+      tab.ghostSkip = unticked;
+      tab.ghostVersion++;
+      tab.onRedraw?.();
+    });
   });
   /** The last Replace all changed rows here: "Show changed rows" is offered. */
   /** The tab and its version right after the last Replace all. */

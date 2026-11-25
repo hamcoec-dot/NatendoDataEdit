@@ -591,6 +591,8 @@ everything is also in command search.
   again) has finished. Changes you untick in the Replace all preview stay plain.
   It is display only, and it is off while a change runs on the file; turn it off
   with Find > Show changes in the grid (also on the cell menu while Find is open).
+![Cells Replace all would change show their new text in green while the replacement is typed](docs/screenshots/ghost-diff.png)
+*Lisbon becomes Porto: the cells on screen show it before anything changes.*
 - **Right-click a cell to find its value**: Find this value, Replace this
   value, or Find all like this in the column.
 - **Filter by formula** (Data > Filter by formula, or right-click a heading):
