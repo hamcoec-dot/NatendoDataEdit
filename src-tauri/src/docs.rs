@@ -4987,6 +4987,17 @@ impl Docs {
                 Logged::Off(_) => {}
             }
         }
+        // A table with no title row has data in its first row: a column type is then kept by position only, never
+        // by the first person's name or ID.
+        if !header {
+            for st in steps.iter_mut() {
+                if let RecipeOp::ColumnTypes { types } = st {
+                    for t in types.iter_mut() {
+                        t.title.clear();
+                    }
+                }
+            }
+        }
         Ok(Recipe {
             version: natendo_engine::recipe::RECIPE_VERSION,
             name: name.chars().filter(|c| !c.is_control()).take(200).collect(),
@@ -8342,6 +8353,53 @@ mod tests {
                 && !note.contains("1234567890123456789")
         );
         let _ = std::fs::remove_file(&db);
+    }
+
+    /// A1b review: a recipe recorded on a file with NO title row keeps no cell value (the first row is data).
+    #[test]
+    fn a_recipe_of_a_headerless_file_holds_no_cell_value() {
+        let p = tmp(
+            "a1b_noheader.csv",
+            b"Ann Lee,00123
+Bob Ray,00456
+",
+        );
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        docs.set_column_type(id, 1, natendo_engine::coltype::ColumnType::Id)
+            .unwrap();
+        let r = docs.recipe_of(id, false, "types").unwrap();
+        let json = String::from_utf8(r.to_json().unwrap()).unwrap();
+        assert!(
+            json.contains("column_types")
+                || json.contains("ColumnTypes")
+                || json.contains("\"type\""),
+            "{json}"
+        );
+        for v in ["Ann", "Lee", "00123", "Bob", "00456"] {
+            assert!(
+                !json.contains(v),
+                "the recipe holds a cell value ({v}): {json}"
+            );
+        }
+        // With a title row the title is kept (it is the column's name, not data).
+        let p2 = tmp(
+            "a1b_header.csv",
+            b"name,zip
+Ann Lee,00123
+",
+        );
+        let id2 = docs.open_path(&p2, false).unwrap().id;
+        wait(&docs, id2);
+        docs.set_column_type(id2, 1, natendo_engine::coltype::ColumnType::Id)
+            .unwrap();
+        let json2 =
+            String::from_utf8(docs.recipe_of(id2, true, "t").unwrap().to_json().unwrap()).unwrap();
+        assert!(
+            json2.contains("\"zip\"") && !json2.contains("Ann"),
+            "{json2}"
+        );
     }
 
     #[test]
