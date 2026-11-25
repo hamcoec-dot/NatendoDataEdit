@@ -829,7 +829,9 @@ everything is also in command search.
   writes a small `voters.csv.ndchecks` file beside the table (only the names,
   patterns and lists you typed, never cells; not for private or encrypted files
   or a read-only folder); when the file opens again the rules load and the
-  status bar says so, without running anything until you click Check now.
+  status bar says so. A rules file found beside a file is shown but never run
+  until you click Check now (so a file someone else sent cannot start a long
+  run, and its rules can be removed with Forget these rules).
   **Forget these rules** clears them. On the pattern pill, **Check this
   pattern** turns the column's shape into a rule.
 
