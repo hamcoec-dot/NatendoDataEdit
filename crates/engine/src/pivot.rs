@@ -22,11 +22,12 @@ use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::coltype::{ReadCtx, Reader};
 use crate::document::{Document, Progress};
 use crate::fill::{civil_from_days, format_number};
 use crate::ops::{check_cols, check_separator, Cols, CHUNK, MAX_CELL_BYTES};
 use crate::reshape::{push_line, too_big, Table, MAX_TABLE_BYTES, MAX_TABLE_CELLS};
-use crate::value::{self, natural_cmp, ReadOptions};
+use crate::value::{natural_cmp, ReadOptions};
 use crate::Error;
 
 /// Most row plus column fields.
@@ -597,16 +598,16 @@ const OTHER_KEY: &str = "\u{1}other";
 /// Reads one field's values into item keys.
 struct Keyer {
     group: Grouping,
-    read: ReadOptions,
+    rd: Reader,
     match_case: bool,
     trim: bool,
 }
 
 impl Keyer {
-    fn new(f: &PivotField, spec: &PivotSpec) -> Keyer {
+    fn new(f: &PivotField, spec: &PivotSpec, ctx: &ReadCtx) -> Keyer {
         Keyer {
             group: f.group,
-            read: spec.read,
+            rd: ctx.reader(f.col),
             match_case: spec.match_case,
             trim: !spec.keep_spaces,
         }
@@ -639,7 +640,7 @@ impl Keyer {
             }
             Grouping::Bins { start, size, end } => {
                 use std::fmt::Write;
-                match value::parse_number(t, self.read) {
+                match self.rd.number(t) {
                     None => out.push_str(OTHER_KEY),
                     Some(x) if x < start => out.push('<'),
                     Some(x) if end.is_some_and(|e| x >= e) => out.push('>'),
@@ -651,7 +652,7 @@ impl Keyer {
             }
             g => {
                 use std::fmt::Write;
-                let Some(days) = value::parse_date(t, self.read) else {
+                let Some(days) = self.rd.date(t) else {
                     out.push_str(OTHER_KEY);
                     return;
                 };
@@ -695,8 +696,10 @@ impl Keyer {
         match self.group {
             Grouping::None => {
                 let t = self.text(t);
-                let sort = value::parse_number(t, self.read)
-                    .or_else(|| value::parse_date(t, self.read))
+                let sort = self
+                    .rd
+                    .number(t)
+                    .or_else(|| self.rd.date(t))
                     .unwrap_or(f64::NAN);
                 (t.to_string(), sort)
             }
@@ -736,7 +739,9 @@ impl Keyer {
                 (key.into(), y * 100.0 + m)
             }
             Grouping::Day => {
-                let sort = value::parse_date(key, ReadOptions::default()).unwrap_or(f64::NAN);
+                let sort = Reader::plain(ReadOptions::default())
+                    .date(key)
+                    .unwrap_or(f64::NAN);
                 (key.into(), sort)
             }
             Grouping::Weekday => {
@@ -885,7 +890,7 @@ impl Acc {
     /// Add one cell. Returns the bytes newly held outside the accumulator.
     fn add(&mut self, v: &VSpec, t: &str, row: u64, hs: &(RandomState, RandomState)) -> usize {
         let blank = t.is_empty();
-        let num = || value::parse_number(t, v.read);
+        let num = || v.rd.number(t);
         match self {
             Acc::N(n) => {
                 let hit = match v.agg {
@@ -1178,7 +1183,7 @@ fn median_owned(mut w: Vec<f64>) -> Option<f64> {
 /// What reading needs of a value field.
 struct VSpec {
     agg: Agg,
-    read: ReadOptions,
+    rd: Reader,
     separator: String,
     /// Distinct count: "Ann" and "ann" differ (like row items).
     match_case: bool,
@@ -1436,16 +1441,21 @@ impl Document {
         spec.check(self)?;
         let dims: Vec<&PivotField> = spec.rows.iter().chain(&spec.cols).collect();
         let nd = dims.len();
-        let keyers: Vec<Keyer> = dims.iter().map(|f| Keyer::new(f, spec)).collect();
+        let ctx = self.read_ctx(spec.read);
+        let keyers: Vec<Keyer> = dims.iter().map(|f| Keyer::new(f, spec, &ctx)).collect();
         let picks: Vec<Option<Pick>> = dims.iter().map(|f| Pick::new(&f.items)).collect();
-        let fkeyers: Vec<Keyer> = spec.filters.iter().map(|f| Keyer::new(f, spec)).collect();
+        let fkeyers: Vec<Keyer> = spec
+            .filters
+            .iter()
+            .map(|f| Keyer::new(f, spec, &ctx))
+            .collect();
         let fpicks: Vec<Option<Pick>> = spec.filters.iter().map(|f| Pick::new(&f.items)).collect();
         let vspecs: Vec<VSpec> = spec
             .values
             .iter()
             .map(|v| VSpec {
                 agg: v.agg,
-                read: spec.read,
+                rd: ctx.reader(v.col),
                 separator: v.separator.clone(),
                 match_case: spec.match_case,
             })
@@ -3342,8 +3352,13 @@ impl Document {
             })
             .collect();
         let dims: Vec<&PivotField> = spec.rows.iter().chain(&spec.cols).collect();
-        let keyers: Vec<Keyer> = dims.iter().map(|f| Keyer::new(f, spec)).collect();
-        let fkeyers: Vec<Keyer> = spec.filters.iter().map(|f| Keyer::new(f, spec)).collect();
+        let ctx = self.read_ctx(spec.read);
+        let keyers: Vec<Keyer> = dims.iter().map(|f| Keyer::new(f, spec, &ctx)).collect();
+        let fkeyers: Vec<Keyer> = spec
+            .filters
+            .iter()
+            .map(|f| Keyer::new(f, spec, &ctx))
+            .collect();
         let fpicks: Vec<Option<Pick>> = spec.filters.iter().map(|f| Pick::new(&f.items)).collect();
         let mut cols: Vec<u32> = dims.iter().map(|f| f.col).collect();
         cols.extend(spec.filters.iter().map(|f| f.col));
