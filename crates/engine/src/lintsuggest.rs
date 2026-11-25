@@ -71,7 +71,7 @@ impl Document {
         }
         let take = rows.min(SAMPLE_ROWS);
         progress.start(take);
-        let read = ReadOptions::default();
+        let rd = self.read_ctx(ReadOptions::default()).reader(col);
         let mut blanks = 0usize;
         let mut filled = 0usize;
         let mut shapes: HashMap<String, usize> = HashMap::new();
@@ -103,7 +103,7 @@ impl Document {
             if is_iso_date(&v) {
                 iso += 1;
             }
-            if let Some(x) = crate::coltype::Reader::plain(read).number(&v) {
+            if let Some(x) = rd.number(&v) {
                 numbers += 1;
                 if x.fract() == 0.0 {
                     whole += 1;

@@ -150,7 +150,7 @@ fn plain_number(t: &str) -> bool {
 }
 
 impl ColAcc {
-    fn add(&mut self, v: &str, read: ReadOptions) {
+    fn add(&mut self, v: &str, rd: crate::coltype::Reader) {
         if v.trim().is_empty() {
             return;
         }
@@ -163,13 +163,13 @@ impl ColAcc {
             self.double += double as u64;
             example(&mut self.spaces_ex, v);
         }
-        if crate::coltype::Reader::plain(read).number(t).is_some() {
+        if rd.number(t).is_some() {
             self.numbers += 1;
             if !plain_number(t) && !t.ends_with('%') && !t.to_ascii_lowercase().contains('e') {
                 self.number_text += 1;
                 example(&mut self.number_ex, t);
             }
-        } else if crate::coltype::Reader::plain(read).date(t).is_some() {
+        } else if rd.date(t).is_some() {
             self.dates += 1;
             self.times |= t.contains(':');
             let s = shape(t);
@@ -234,6 +234,8 @@ impl Document {
         let partial = r1 < rows.end || n < width;
         let all: Vec<u32> = (0..n).collect();
         let reader = Cols::new(self, &all);
+        let ctx = self.read_ctx(read);
+        let rds: Vec<crate::coltype::Reader> = all.iter().map(|&c| ctx.reader(c)).collect();
         let state = RandomState::new();
         progress.start(r1 - r0);
         let chunks: Vec<Chunk> = (0..(r1 - r0).div_ceil(CHUNK))
@@ -257,7 +259,7 @@ impl Document {
                         let v = reader.get(&buf, i);
                         empty &= v.trim().is_empty();
                         v.hash(&mut h);
-                        acc.add(v, read);
+                        acc.add(v, rds[i]);
                     }
                     if empty {
                         c.blank += 1;

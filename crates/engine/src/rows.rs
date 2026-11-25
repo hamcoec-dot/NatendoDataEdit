@@ -238,6 +238,8 @@ impl Document {
             return Err(Error::OutOfRange);
         }
         let reader = Cols::new(self, wanted);
+        let ctx = self.read_ctx(read);
+        let rds: Vec<crate::coltype::Reader> = wanted.iter().map(|&c| ctx.reader(c)).collect();
         progress.start(rows);
         let chunks = rows.div_ceil(CHUNK);
         let acc = (0..chunks)
@@ -258,7 +260,7 @@ impl Document {
                             continue;
                         }
                         a.filled += 1;
-                        if let Some(x) = crate::coltype::Reader::plain(read).number(v) {
+                        if let Some(x) = rds[i].number(v) {
                             a.numbers += 1;
                             a.sum.add(x);
                             a.min = a.min.min(x);

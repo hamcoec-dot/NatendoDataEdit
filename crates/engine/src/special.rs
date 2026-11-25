@@ -129,7 +129,8 @@ impl Document {
         let reader = Cols::new(self, &read_cols);
         let n = end - start;
         let kind = &spec.kind;
-        let read = spec.read;
+        let ctx = self.read_ctx(spec.read);
+        let rds: Vec<crate::coltype::Reader> = cols.iter().map(|&c| ctx.reader(c)).collect();
         progress.start(n);
         let nchunks = (n as usize).div_ceil(CHUNK);
         let group = rayon::current_num_threads().max(1) * 4;
@@ -155,13 +156,8 @@ impl Document {
                             let v = reader.get(&buf, k);
                             let hit = match kind {
                                 SpecialKind::Blanks => blank(v),
-                                SpecialKind::Numbers => {
-                                    crate::coltype::Reader::plain(read).number(v).is_some()
-                                }
-                                SpecialKind::Text => {
-                                    !blank(v)
-                                        && crate::coltype::Reader::plain(read).number(v).is_none()
-                                }
+                                SpecialKind::Numbers => rds[k].number(v).is_some(),
+                                SpecialKind::Text => !blank(v) && rds[k].number(v).is_none(),
                                 SpecialKind::RowDiff { exact, .. } => {
                                     let o = other.unwrap_or("");
                                     if *exact {

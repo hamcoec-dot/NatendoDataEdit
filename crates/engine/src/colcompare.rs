@@ -427,9 +427,36 @@ mod tests {
             numbers: false,
             ..Default::default()
         };
-        assert_eq!(compare_cells("Main St", "main st", &strict, crate::coltype::Reader::plain(strict.read), crate::coltype::Reader::plain(strict.read)), Cmp::Different);
-        assert_eq!(compare_cells("5", "5.00", &strict, crate::coltype::Reader::plain(strict.read), crate::coltype::Reader::plain(strict.read)), Cmp::Different);
-        assert_eq!(compare_cells(" ", "", &strict, crate::coltype::Reader::plain(strict.read), crate::coltype::Reader::plain(strict.read)), Cmp::OnlyFirst);
+        assert_eq!(
+            compare_cells(
+                "Main St",
+                "main st",
+                &strict,
+                crate::coltype::Reader::plain(strict.read),
+                crate::coltype::Reader::plain(strict.read)
+            ),
+            Cmp::Different
+        );
+        assert_eq!(
+            compare_cells(
+                "5",
+                "5.00",
+                &strict,
+                crate::coltype::Reader::plain(strict.read),
+                crate::coltype::Reader::plain(strict.read)
+            ),
+            Cmp::Different
+        );
+        assert_eq!(
+            compare_cells(
+                " ",
+                "",
+                &strict,
+                crate::coltype::Reader::plain(strict.read),
+                crate::coltype::Reader::plain(strict.read)
+            ),
+            Cmp::OnlyFirst
+        );
     }
 
     #[test]
