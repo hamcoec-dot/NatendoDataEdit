@@ -289,6 +289,8 @@
     void font;
     void prefs.data.gridLines;
     void prefs.data.showInvisible;
+    // X-ray glows are drawn from this: turning it on or off must redraw (it used to redraw only when something else did).
+    void prefs.data.xray;
     void prefs.data.problemStyle;
     void prefs.data.showGhosts;
     void tab.diffOn;
