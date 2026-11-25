@@ -2221,6 +2221,7 @@ class TauriBackend implements Backend {
   }
   checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean) {
     return call<string>("checks_sidecar_keep", { doc, checks, keepFirst });
+  }
   replaceGhosts(doc: number, spec: FindSpec, replacement: string, row: number, rows: number, col: number, cols: number) {
     return call<GhostWindow>("replace_ghosts", { doc, spec, replacement, row, rows, col, cols });
   }
