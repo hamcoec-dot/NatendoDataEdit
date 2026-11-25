@@ -10,11 +10,12 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::coltype::Reader;
 use crate::document::{Document, Progress};
 use crate::ops::{check_cols, Cols};
 use crate::reshape::{push_line, too_big, MAX_TABLE_BYTES, MAX_TABLE_CELLS};
 use crate::table::Sink;
-use crate::value::{parse_date, parse_number, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Distinct values counted exactly; past this the count is "at least".
@@ -58,15 +59,15 @@ pub struct TypeMix {
 }
 
 impl TypeMix {
-    fn add(&mut self, v: &str, read: ReadOptions) {
+    fn add(&mut self, v: &str, rd: Reader) {
         let t = v.trim();
         if t.is_empty() {
             self.blank += 1;
-        } else if parse_number(t, read).is_some() {
+        } else if rd.number(t).is_some() {
             self.number += 1;
         } else if is_yes_no(t) {
             self.yes_no += 1;
-        } else if parse_date(t, read).is_some() {
+        } else if rd.date(t).is_some() {
             self.date += 1;
         } else {
             self.text += 1;
@@ -277,9 +278,9 @@ impl Acc {
         }
     }
 
-    fn add(&mut self, v: &str, read: ReadOptions) {
-        self.mix.add(v, read);
-        if let Some(x) = parse_number(v.trim(), read) {
+    fn add(&mut self, v: &str, rd: Reader) {
+        self.mix.add(v, rd);
+        if let Some(x) = rd.number(v.trim()) {
             self.sum.add(x);
             self.n += 1;
             self.min = self.min.min(x);
@@ -398,13 +399,15 @@ impl Document {
         let cols: Vec<u32> = (0..n).collect();
         let reader = Cols::new(self, &cols);
         let mut mixes = vec![TypeMix::default(); n as usize];
+        let ctx = self.read_ctx(read);
+        let rds: Vec<Reader> = (0..n).map(|c| ctx.reader(c)).collect();
         let mut buf = Vec::new();
         for i in 0..take {
             let r = rows.start + i * total / take.max(1);
             let Some(id) = self.id_at(r) else { continue };
             reader.read(self, id, &mut buf);
             for (c, m) in mixes.iter_mut().enumerate() {
-                m.add(reader.get(&buf, c), read);
+                m.add(reader.get(&buf, c), rds[c]);
             }
         }
         Ok(mixes.iter().map(TypeMix::kind).collect())
@@ -421,6 +424,7 @@ impl Document {
         self.ready_for_bulk()?;
         check_cols(self, &[col])?;
         let reader = Cols::new(self, &[col]);
+        let rd = self.read_ctx(read).reader(col);
         let rows = self.data_rows(skip_first);
         let (r0, r1) = (rows.start, rows.end);
         progress.start(r1 - r0);
@@ -435,7 +439,7 @@ impl Document {
                 for r in s..e {
                     let id = self.id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
-                    a.add(reader.get(&buf, 0), read);
+                    a.add(reader.get(&buf, 0), rd);
                 }
                 progress.step(e - s)?;
                 Ok(a)
@@ -451,7 +455,7 @@ impl Document {
                     .into_iter()
                     .map(|(k, c)| (k, c as f64)),
             );
-            self.recount(&reader, r0, r1, keys, 0, None, read, progress)?
+            self.recount(&reader, r0, r1, keys, 0, None, rd, progress)?
                 .into_iter()
                 .map(|(k, c)| (k, c as u64))
                 .filter(|x| x.1 > 0)
@@ -526,7 +530,7 @@ impl Document {
         let (r0, r1) = (rows.start, rows.end);
         let total = r1 - r0;
         progress.start(total);
-        let num = |s: &str| parse_number(s.trim(), spec.read);
+        let num = |s: &str| Reader::plain(spec.read).number(s.trim());
         match spec.kind {
             ChartKind::Line | ChartKind::Bar => {
                 let per = total.div_ceil(MAX_POINTS as u64).max(1);
@@ -641,7 +645,17 @@ impl Document {
                     // Count the leading values again, exactly.
                     let keys = leaders(groups.into_iter().map(|(k, v)| (k, v.0)));
                     let wc = pie.then_some(1);
-                    self.recount(&reader, r0, r1, keys, 0, wc, spec.read, progress)?
+                    self.recount(
+                        &reader,
+                        r0,
+                        r1,
+                        keys,
+                        0,
+                        wc,
+                        self.read_ctx(spec.read)
+                            .reader(spec.values.first().copied().unwrap_or(0)),
+                        progress,
+                    )?
                 } else {
                     groups.into_iter().map(|(k, v)| (k, v.1)).collect()
                 };
@@ -681,7 +695,7 @@ impl Document {
         keys: Vec<String>,
         kc: usize,
         wc: Option<usize>,
-        read: ReadOptions,
+        wrd: Reader,
         progress: &Progress,
     ) -> Result<Vec<(String, f64)>, Error> {
         let index: HashMap<&str, usize> = keys
@@ -707,7 +721,7 @@ impl Document {
                     };
                     let w = match wc {
                         None => 1.0,
-                        Some(w) => match parse_number(reader.get(&buf, w).trim(), read) {
+                        Some(w) => match wrd.number(reader.get(&buf, w).trim()) {
                             Some(x) => x,
                             None => continue,
                         },
@@ -789,12 +803,12 @@ impl Document {
             max: f64,
         }
         impl T {
-            fn take(&mut self, v: &str, read: ReadOptions) {
+            fn take(&mut self, v: &str, rd: Reader) {
                 let v = v.trim();
                 if !v.is_empty() {
                     self.filled += 1;
                 }
-                if let Some(x) = parse_number(v, read) {
+                if let Some(x) = rd.number(v) {
                     self.sum.add(x);
                     self.n += 1;
                     self.min = self.min.min(x);
@@ -903,6 +917,11 @@ impl Document {
             }
             Ok(())
         };
+        let col_readers: Vec<Reader> = spec
+            .cols
+            .iter()
+            .map(|&c| self.read_ctx(spec.read).reader(c))
+            .collect();
         let totals_bytes = spec.cols.len() * std::mem::size_of::<T>();
         let chunks = (rows.end - rows.start).div_ceil(CHUNK);
         let parts: Vec<Part> = (0..chunks)
@@ -967,7 +986,7 @@ impl Document {
                     charge(part.bytes.len() - before, n.max(1) as u64)?;
                     open.seg.line(n);
                     for (k, &c) in spec.cols.iter().enumerate() {
-                        open.totals[k].take(reader.get(&buf, c as usize), spec.read);
+                        open.totals[k].take(reader.get(&buf, c as usize), col_readers[k]);
                     }
                 }
                 if let Some(o) = cur {
