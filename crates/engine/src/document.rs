@@ -184,6 +184,8 @@ enum Op {
     /// are). Turning a filter on, changing it or clearing it is an undo step
     /// that changes no data.
     SetFilter(Option<Box<FilterPart>>),
+    /// Read the file's bytes as another (ASCII-compatible) encoding; undoing it reads them as the old one again.
+    SetEncoding(Encoding),
     /// Several ops applied in order as one undo step.
     Batch(Vec<Op>),
 }
@@ -227,7 +229,8 @@ impl Op {
             Op::Remove { .. }
             | Op::MoveRows { .. }
             | Op::ColRemove { .. }
-            | Op::MoveCols { .. } => 32,
+            | Op::MoveCols { .. }
+            | Op::SetEncoding(_) => 32,
         }
     }
 }
@@ -1145,6 +1148,48 @@ impl Document {
         }
         let k = d - n;
         k > self.redo.len() || !self.redo[self.redo.len() - k..].iter().all(Op::view_only)
+    }
+
+    /// True when nothing but reading the bytes in another encoding has changed since the file was opened or saved:
+    /// the only state in which the encoding can be switched again.
+    pub fn only_encoding_changes(&self) -> bool {
+        let Some(d) = self.clean_depth else {
+            // The saved state is gone: only an undo history of nothing else is safe.
+            return self.undo.iter().all(|o| matches!(o, Op::SetEncoding(_)));
+        };
+        d <= self.undo.len()
+            && self.undo[d..]
+                .iter()
+                .all(|o| matches!(o, Op::SetEncoding(_)) || o.view_only())
+    }
+
+    /// Read the file's bytes as `enc` from now on, one undo step. Only for a file read in place and an
+    /// ASCII-compatible `enc` (the row offsets stay valid, so nothing is read again): UTF-8 and the single-byte
+    /// encodings. Refused with unsaved changes (they were made against the old reading). Saving keeps the bytes
+    /// as they are unless Save As is given another encoding, which then converts every row.
+    pub fn set_encoding(&mut self, enc: Encoding) -> Result<(), Error> {
+        self.ready()?;
+        if !self.format.encoding.is_direct() {
+            return Err(Error::Invalid(format!(
+                "this file was decoded as {} when it opened: reopen it with the other encoding instead",
+                self.format.encoding
+            )));
+        }
+        if !enc.is_direct() {
+            return Err(Error::Invalid(format!(
+                "{enc} cannot be read in place: reopen the file with it instead"
+            )));
+        }
+        if enc == self.format.encoding {
+            return Ok(());
+        }
+        if !self.only_encoding_changes() {
+            return Err(Error::Invalid(
+                "Save or undo your changes first: they were made while the file was read as another encoding".into(),
+            ));
+        }
+        self.push(Op::SetEncoding(enc));
+        Ok(())
     }
 
     /// Changes done minus changes undone (see `history_pos`).
@@ -2235,6 +2280,11 @@ impl Document {
             self.data_revision += 1;
         }
         match op {
+            Op::SetEncoding(e) => {
+                let old = std::mem::replace(&mut self.format.encoding, e);
+                self.rows_changed();
+                Op::SetEncoding(old)
+            }
             Op::SetMap(m) => Op::SetMap(std::mem::replace(&mut self.cols, m)),
             Op::SetOrder(o) => {
                 let old = std::mem::replace(&mut self.order, o);
@@ -2669,6 +2719,80 @@ mod tests {
             steps += 1;
         }
         assert!((1..8).contains(&steps), "{steps}");
+    }
+
+    /// B2: reading the bytes as another encoding is one undo step, bumps the data revision, is refused with unsaved
+    /// edits (made against the old reading), and is refused for a file that was decoded when it opened.
+    #[test]
+    fn set_encoding_is_one_undo_step_and_refuses_edits() {
+        let bytes = b"name,city\r\nJos\xe9,Z\xfcrich\r\n".to_vec();
+        let opts = OpenOptions {
+            encoding: Some(Encoding::Utf8),
+            ..Default::default()
+        };
+        let mut d = Document::from_bytes(bytes.clone(), opts, None).unwrap();
+        let latin = Encoding::from_label("windows-1252").unwrap();
+        let pos = d.history_pos();
+        d.set_encoding(latin).unwrap();
+        assert_eq!(d.history_pos(), pos + 1, "one step");
+        assert_eq!(d.row_values(1).unwrap(), ["Jos\u{e9}", "Z\u{fc}rich"]);
+        assert!(
+            d.is_modified(),
+            "the reading differs from what the file says"
+        );
+        assert!(d.only_encoding_changes());
+        // Switching again before saving is fine (nothing else changed): back to UTF-8 and on to Latin-1.
+        d.set_encoding(Encoding::Utf8).unwrap();
+        d.set_encoding(latin).unwrap();
+        // An edit makes it refuse.
+        d.set_cell(1, 0, "x".into()).unwrap();
+        assert!(!d.only_encoding_changes());
+        let e = d.set_encoding(Encoding::Utf8).unwrap_err().to_string();
+        assert!(e.contains("Save or undo your changes first"), "{e}");
+        assert_eq!(d.format().encoding, latin, "a refusal changes nothing");
+        // Undo the edit and the encoding is switchable again; every encoding undo restores the old reading.
+        assert!(d.undo());
+        d.set_encoding(Encoding::Utf8).unwrap();
+        while d.undo() {}
+        assert_eq!(d.format().encoding, Encoding::Utf8);
+        // A file that was decoded when it opened (UTF-16) cannot switch in place.
+        let mut u16 = b"\xFF\xFE".to_vec();
+        crate::encoding::encode("a;b\r\n1;2\r\n", Encoding::Utf16Le, &mut u16).unwrap();
+        let mut d16 = Document::from_bytes(u16, OpenOptions::default(), None).unwrap();
+        assert!(d16.set_encoding(latin).is_err());
+        // And a target that needs a re-read (Shift_JIS) is refused too, whatever the file is.
+        let sjis = Encoding::from_label("shift_jis").unwrap();
+        let mut d8 = Document::from_bytes(
+            bytes,
+            OpenOptions {
+                encoding: Some(Encoding::Utf8),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert!(d8
+            .set_encoding(sjis)
+            .unwrap_err()
+            .to_string()
+            .contains("reopen"));
+    }
+
+    /// B2: the five bytes Windows-1252 leaves undefined read as Latin-1 controls, so text with them still scans.
+    #[test]
+    fn undefined_windows_1252_bytes_read_as_latin_1() {
+        let latin = Encoding::from_label("windows-1252").unwrap();
+        let bytes = b"a\r\n\x81\x8d\x8f\x90\x9d\r\n".to_vec();
+        let d = Document::from_bytes(
+            bytes,
+            OpenOptions {
+                encoding: Some(latin),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(d.row_values(1).unwrap(), ["\u{81}\u{8d}\u{8f}\u{90}\u{9d}"]);
     }
 
     /// B4: a mark names one exact state. Property test over random edit, undo, redo, structural-change sequences:

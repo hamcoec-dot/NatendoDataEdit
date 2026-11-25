@@ -1547,6 +1547,44 @@ mod tests {
         ));
     }
 
+    /// B2 / R9a: after the file is read in another encoding, saving to a third one converts every row (the raw bytes
+    /// are no longer copied as they are), so the output holds no byte of the old reading.
+    #[test]
+    fn switching_the_encoding_then_saving_as_utf8_transcodes_every_row() {
+        // The bytes of "caf\u{e9}" in UTF-8, opened as UTF-8.
+        let src = "id,name\n1,caf\u{e9}\n2,plain\n";
+        let opts = OpenOptions {
+            encoding: Some(Encoding::Utf8),
+            ..Default::default()
+        };
+        let mut d = Document::from_bytes(src.as_bytes().to_vec(), opts, None).unwrap();
+        let rev = d.data_revision();
+        let latin = Encoding::from_label("windows-1252").unwrap();
+        d.set_encoding(latin).unwrap();
+        assert!(d.data_revision() > rev, "Apply bumps the data revision");
+        assert_eq!(
+            d.row_values(1).unwrap(),
+            ["1", "caf\u{c3}\u{a9}"],
+            "now read as Windows-1252"
+        );
+        // Save as UTF-8: every row converted, not copied raw.
+        let mut f = d.format();
+        f.encoding = Encoding::Utf8;
+        let mut out = Vec::new();
+        d.write_to(&mut out, f, false).unwrap();
+        assert_eq!(out, "id,name\n1,caf\u{c3}\u{a9}\n2,plain\n".as_bytes());
+        assert!(std::str::from_utf8(&out).is_ok());
+        // Saved in the encoding it is read as: the bytes stay exactly as they were.
+        let mut same = Vec::new();
+        d.write_to(&mut same, d.format(), false).unwrap();
+        assert_eq!(same, src.as_bytes());
+        // One undo reads it as UTF-8 again.
+        assert!(d.undo());
+        assert_eq!(d.row_values(1).unwrap(), ["1", "caf\u{e9}"]);
+        assert!(d.redo());
+        assert_eq!(d.format().encoding, latin);
+    }
+
     #[test]
     fn convert_encoding_strictly() {
         let mut d = doc("x,é\n".as_bytes());

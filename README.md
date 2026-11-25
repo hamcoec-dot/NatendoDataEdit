@@ -1128,6 +1128,25 @@ selection, a column or the whole table:
 
 ![The recipe steps panel looking at the table after step 1](docs/screenshots/steps-panel.png)
 *Looking back at the table after step 1; step 4, a paste, can't be part of a recipe.*
+- **Change encoding** (Tools > Change encoding, or click the encoding in the status bar): read the
+  file as another encoding. The list offers UTF-8, Windows-1252 / Latin-1, UTF-16 and UTF-32
+  (either byte order), Shift_JIS, GBK and Big5; the arrow keys scrub, showing the first rows of
+  the file as the highlighted encoding reads them (a throwaway read of the start of the file;
+  nothing changes until Apply). Apply switches UTF-8 and the single-byte encodings in place, as
+  one undo step, with no re-read; the others reopen the file from disk (a new tab replaces this
+  one, and Cancel or an error keeps the old one). Both are refused with unsaved changes, and
+  both are refused with "The file changed on disk" when the file is no longer what was opened.
+  Apply changes how the file is read, not how it is saved: Save keeps the bytes as they are, and
+  Save As has its own encoding choice, which converts every row when it differs from the
+  encoding the file is read as. **Look for rows in another encoding** scans the raw bytes (one
+  pass, with progress and Cancel) and counts plain ASCII rows, valid UTF-8 rows with accents,
+  rows that are not valid UTF-8 (probably Windows-1252) and rows that look double-encoded; it can
+  show only the rows that are not valid or double-encoded. **Fix mojibake** (a Clean-up tool, also
+  a recipe step) turns text that was UTF-8 but read as Windows-1252 back into text (`cafÃ©`
+  becomes `café`, `â€™` becomes a curly quote), only when every character maps back to one
+  Windows-1252 byte, those bytes are valid UTF-8, and the result has fewer odd characters;
+  real text such as `café` is never touched. The five bytes Windows-1252 leaves undefined read as
+  Latin-1 controls.
 - **Record panel** (View > Record panel, Alt+R): the row of the active cell as a
   list of fields, beside the table. It follows the selection (Page Up and Page
   Down in the panel, or Ctrl+Alt+Up and Ctrl+Alt+Down anywhere, flip to the

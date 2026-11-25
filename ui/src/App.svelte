@@ -5,7 +5,7 @@ import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type 
   import { namesFromText } from "./lib/columnNames";
   import { onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
-  import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout, type Checkpoint } from "./lib/backend";
+  import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout, type Checkpoint, type EncodingChoice } from "./lib/backend";
   import { Tab, exportHandTab, importHandTab, type HandTab, type RowMap } from "./lib/tab.svelte";
 import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowheights";
   import { SECOND_WINDOW } from "./lib/windowRole";
@@ -47,6 +47,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import EditTools, { type ToolKind as EditKind } from "./lib/EditTools.svelte";
   import CleanDialog from "./lib/CleanDialog.svelte";
   import XrayDialog from "./lib/XrayDialog.svelte";
+  import EncodingPicker from "./lib/EncodingPicker.svelte";
   import SplitNameDialog from "./lib/SplitNameDialog.svelte";
   import InsertDialog from "./lib/InsertDialog.svelte";
   import RenameColumn from "./lib/RenameColumn.svelte";
@@ -260,6 +261,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** X-ray: what this screen shows (cells and columns with a gremlin), and the report dialog. */
   let xrayNow = $state<{ cells: number; cols: number } | null>(null);
   let xrayOpen = $state(false);
+  /** The Change encoding picker. */
+  let encodingOpen = $state(false);
   let fieldCheckOpen = $state(false);
   let matchOpen = $state(false);
   let streetOpen = $state(false);
@@ -1837,6 +1840,31 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (t?.info.path) layoutFor = { doc: t.id, modified: t.info.modified };
   }
 
+  /** Read the file as another encoding: an ASCII-compatible one in place (one undo step), any other by reopening the
+   *  file from disk (a new tab replaces this one; Cancel or an error keeps it). Refused with unsaved changes. */
+  async function changeEncoding(c: EncodingChoice, now: EncodingChoice | undefined): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    if (c.direct && now?.direct) {
+      if (await apply((x) => backend().encodingApply(x.id, c.label), true, t)) {
+        encodingOpen = false;
+        say(`The file is read as ${c.name} now. Ctrl+Z reads it as before. Save keeps its bytes as they are; use Save As to write it in another encoding.`);
+      }
+      return;
+    }
+    if (t.info.modified) {
+      say("Save or undo your changes first: reopening reads the file again from disk.");
+      return;
+    }
+    encodingOpen = false;
+    const keep: Layout | null =
+      t.info.layout_confidence === null
+        ? { delimiter: t.info.delimiter, quote: t.info.quote, escape: t.info.escape, merge: t.info.merge, skip_lines: t.info.preamble_lines }
+        : null;
+    await reopenTab(t, t.info.line_by_line, keep, false, c.label);
+    say(`The file is open again, read as ${c.name}.`);
+  }
+
   async function reopenWithLayout(layout: Layout): Promise<void> {
     layoutFor = null;
     const t = tab;
@@ -1868,9 +1896,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   }
 
   /** Replace tab `t` with its file opened again. */
-  async function reopenTab(t: Tab, lineByLine: boolean, layout: Layout | null, fresh = false): Promise<void> {
+  async function reopenTab(t: Tab, lineByLine: boolean, layout: Layout | null, fresh = false, encoding?: string): Promise<void> {
     try {
-      const d = await backend().reopen(t.id, lineByLine, layout);
+      const d = encoding ? await backend().reopenEncoding(t.id, encoding, lineByLine, layout) : await backend().reopen(t.id, lineByLine, layout);
       const i = tabs.indexOf(t);
       if (i < 0) {
         await backend().closeDocument(d.id).catch(() => {});
@@ -6108,6 +6136,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "view.problemsUnderline", label: "Show problems as a wavy &underline", run: () => { prefs.data.problemStyle = "underline"; prefs.save(); }, checked: () => prefs.data.problemStyle === "underline" },
     { id: "view.problemsBoth", label: "Show problems as fill and underline", run: () => { prefs.data.problemStyle = "both"; prefs.save(); }, checked: () => prefs.data.problemStyle === "both" },
     { id: "view.xray", label: "&X-ray gremlins (look-alike letters, odd spaces, smart quotes)", keys: ["Ctrl+Shift+X"], run: () => { prefs.data.xray = !prefs.data.xray; prefs.save(); if (!prefs.data.xray) xrayNow = null; }, checked: () => prefs.data.xray },
+    { id: "tools.encoding", label: "Change &encoding… (read the file as another encoding)", run: () => { encodingOpen = true; }, enabled: () => !!tab?.info.path && !!tab.info.indexed },
     { id: "view.xrayReport", label: "X-ray report for the selected columns or the file…", run: () => { xrayOpen = true; }, enabled: ready },
     { id: "edit.sanitize", label: "Sanitize selection (look-alike letters, odd spaces, smart quotes)…", run: () => { cleanTool = "sanitize"; }, enabled: ready },
     { id: "view.invisible", label: "Show &invisible characters", keys: ["Ctrl+Shift+H"], run: () => { prefs.data.showInvisible = !prefs.data.showInvisible; prefs.save(); }, checked: () => prefs.data.showInvisible },
@@ -6352,7 +6381,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "tools.fillBlanks", "tools.countRepeats", "tools.blankRepeats", "tools.breaks", "-",
         "tools.flip", "tools.deleteHidden", "tools.deleteHiddenCols", "-",
         "tools.reshape", "tools.stack", "tools.sample", "tools.selectionTab", "-",
-        "tools.compare", "tools.updates", "tools.split", "tools.combine", "tools.searchFolder", "tools.recipe", "tools.recipeFiles", "tools.watch", "-",
+        "tools.compare", "tools.updates", "tools.split", "tools.combine", "tools.searchFolder", "tools.recipe", "tools.recipeFiles", "tools.watch", "tools.encoding", "-",
         "tools.nextChange", "tools.prevChange", "tools.largest", "tools.smallest", "-",
         "tools.findPrivate",
       ],
@@ -6366,7 +6395,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
-    tab: ["file.save", "file.saveAs", "-", "edit.checkpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
+    tab: ["file.save", "file.saveAs", "-", "tools.encoding", "edit.checkpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "edit.checkpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
@@ -7964,7 +7993,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       {/if}
       {#if tab?.info.read_only}<button type="button" class="small" title="Locked: cells cannot change. Click to unlock." onclick={() => void toggleReadOnly()}>Locked</button>{/if}
       <span>{status.size}</span>
-      <span class="muted">{status.format}</span>
+      <button type="button" class="small" data-testid="encoding-button" title="Change how the file is read (encoding). Click, then use the arrow keys to see the first rows in each one." onclick={() => (encodingOpen = !!tab?.info.path)}>{status.format}</button>
       {#if tab?.info.modified && autosaveNote && prefs.data.autosave}<span class="muted" title="Unsaved changes are copied to a private folder every few minutes, so they can be recovered if the app stops. Set this in Options.">{autosaveNote}</span>{/if}
       {#if tab?.info.column_changes}<span class="muted" title="Columns were inserted, deleted or moved, so saving rewrites every row">columns changed</span>{/if}
     {:else if info}
@@ -8114,6 +8143,18 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     onOpen={openOther}
     onRun={(op, header) => { joinKind = null; void runDialog({ data: op }, header); grid?.focus(); }}
     onClose={() => { joinKind = null; grid?.focus(); }}
+  />
+{/if}
+
+{#if encodingOpen && tab}
+  <EncodingPicker
+    doc={tab.id}
+    current={tab.info.encoding}
+    header={tab.header}
+    onApply={(c, now) => void changeEncoding(c, now)}
+    onShow={(info) => { encodingOpen = false; tab?.update(info, true); say("Showing only the rows in another encoding. Data > Show all rows brings the rest back."); grid?.focus(); }}
+    onFixMojibake={() => { encodingOpen = false; cleanTool = "fix_mojibake"; }}
+    onClose={() => { encodingOpen = false; grid?.focus(); }}
   />
 {/if}
 

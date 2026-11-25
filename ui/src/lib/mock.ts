@@ -1931,6 +1931,73 @@ export class MockBackend implements Backend {
       columns: [...perCol.entries()].map(([col, m]) => ({ col, cells: m.cells, kinds: [...m.kinds.entries()] as [string, number][] })).sort((a, b) => b.cells - a.cells),
     };
   }
+  // ---- Encoding (stand-ins: a made-up file whose rows read differently in each encoding) ----
+  private static readonly ENCODINGS: import("./backend").EncodingChoice[] = [
+    { label: "utf-8", name: "UTF-8", direct: true },
+    { label: "windows-1252", name: "Windows-1252 / Latin-1", direct: true },
+    { label: "utf-16le", name: "UTF-16 LE", direct: false },
+    { label: "utf-16be", name: "UTF-16 BE", direct: false },
+    { label: "utf-32le", name: "UTF-32 LE", direct: false },
+    { label: "utf-32be", name: "UTF-32 BE", direct: false },
+    { label: "shift_jis", name: "Shift_JIS", direct: false },
+    { label: "gbk", name: "GBK", direct: false },
+    { label: "big5", name: "Big5", direct: false },
+  ];
+  /** The name the engine gives an encoding (what the status bar shows). */
+  private static realName(label: string): string {
+    const m: Record<string, string> = { "utf-8": "UTF-8", "utf-16le": "UTF-16LE", "utf-16be": "UTF-16BE", "utf-32le": "UTF-32LE", "utf-32be": "UTF-32BE", shift_jis: "Shift_JIS", gbk: "GBK", big5: "Big5" };
+    return m[label] ?? label;
+  }
+  private encodingSteps = new WeakSet<object>();
+  async encodingChoices(): Promise<import("./backend").EncodingChoice[]> {
+    return MockBackend.ENCODINGS.map((c) => ({ ...c }));
+  }
+  async encodingPreview(doc: number, encoding: string, rows: number): Promise<string[][]> {
+    this.get(doc);
+    const sample: Record<string, string[][]> = {
+      "utf-8": [["name", "city"], ["Jos\u00e9", "Z\u00fcrich"], ["Ren\u00e9e", "Li\u00e8ge"]],
+      "windows-1252": [["name", "city"], ["Jos\u00c3\u00a9", "Z\u00c3\u00bcrich"], ["Ren\u00c3\u00a9e", "Li\u00c3\u00a8ge"]],
+    };
+    const known = MockBackend.ENCODINGS.some((c) => c.label === encoding);
+    if (!known) throw err("invalid", "that encoding is not known");
+    return (sample[encoding] ?? [["name", "city"], ["Jos\ufffd\ufffd", "Z\ufffdrich"], ["\ufffd\ufffd", "Li\ufffdge"]]).slice(0, rows);
+  }
+  async encodingApply(doc: number, encoding: string): Promise<DocInfo> {
+    const d = this.get(doc);
+    const to = MockBackend.ENCODINGS.find((c) => c.label === encoding);
+    if (!to) throw err("invalid", "that encoding is not known");
+    if (!to.direct) throw err("invalid", `${to.name} cannot be read in place: reopen the file with it instead`);
+    if (d.undo.some((s) => !this.encodingSteps.has(s.apply))) throw err("invalid", "Save or undo your changes first: they were made while the file was read as another encoding");
+    if (d.info.peeking) throw err("peeking", "looking at an earlier recipe step: go back to the latest step to change or save");
+    if (d.info.encoding === MockBackend.realName(to.label)) return { ...d.info };
+    const apply = () => {
+      const old = d.info.encoding;
+      d.info.encoding = MockBackend.realName(to.label);
+      return () => {
+        d.info.encoding = old;
+      };
+    };
+    this.encodingSteps.add(apply);
+    return this.push(d, apply);
+  }
+  async reopenEncoding(doc: number, encoding: string, lineByLine: boolean, layout: Layout | null = null): Promise<DocInfo> {
+    const d = this.get(doc);
+    if (d.info.modified) throw err("modified", "Save or undo your changes first: reopening reads the file again from disk.");
+    const to = MockBackend.ENCODINGS.find((c) => c.label === encoding);
+    if (!to) throw err("invalid", "that encoding is not known");
+    const info = await this.reopen(doc, lineByLine, layout);
+    this.get(info.id).info.encoding = MockBackend.realName(to.label);
+    return { ...this.get(info.id).info };
+  }
+  async scanEncodings(doc: number, _keepFirst: boolean): Promise<import("./backend").EncodingScan> {
+    const d = this.get(doc);
+    const looked = Math.max(0, d.info.rows - 1);
+    return { looked, ascii: Math.max(0, looked - 3), utf8: 1, invalid: 1, double_encoded: 1, mixed: true, rows: 2 };
+  }
+  async encodingShowRows(doc: number, _keepFirst: boolean): Promise<DocInfo> {
+    return { ...this.get(doc).info };
+  }
+
   async xrayShow(doc: number): Promise<DocInfo> {
     return { ...this.get(doc).info };
   }

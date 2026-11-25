@@ -477,6 +477,18 @@ pub struct Entry {
     notes: Mutex<Option<natendo_engine::notes::NoteBook>>,
 }
 
+/// One encoding of the picker.
+#[derive(Debug, Serialize, Clone)]
+pub struct EncodingChoice {
+    pub label: String,
+    pub name: String,
+    /// The file can switch to it without reopening (ASCII-compatible: the row offsets stay valid).
+    pub direct: bool,
+}
+
+/// How much of the start of the file the scrub preview reads.
+const PREVIEW_HEAD_BYTES: u64 = 512 * 1024;
+
 /// A big document (or one whose last copy was stopped by a change) gets a
 /// recovery copy only once it has been left alone this long, so a copy that
 /// takes seconds is not started and thrown away while the user is still
@@ -1810,8 +1822,21 @@ impl Docs {
         line_by_line: bool,
         layout: Option<&Layout>,
     ) -> CmdResult<DocInfo> {
+        self.open_with_encoding(path, line_by_line, layout, None)
+    }
+
+    /// `open_with`, read as the encoding given (`None`: detect it). A new document: the one it comes from stays
+    /// open until the caller closes it, so a Cancel or an error keeps the old one.
+    pub fn open_with_encoding(
+        &self,
+        path: &Path,
+        line_by_line: bool,
+        layout: Option<&Layout>,
+        encoding: Option<Encoding>,
+    ) -> CmdResult<DocInfo> {
         let mut opts = OpenOptions {
             line_by_line,
+            encoding,
             ..Default::default()
         };
         if let Some(l) = layout {
@@ -6297,6 +6322,108 @@ impl Docs {
         Ok(d.xray_report(cols, keep_first, &job.progress)?)
     }
 
+    /// The encodings the picker offers (label, shown name, whether the file can switch to it without reopening).
+    pub fn encoding_choices() -> Vec<EncodingChoice> {
+        natendo_engine::encscan::picker_encodings()
+            .into_iter()
+            .filter_map(|(label, name)| {
+                Encoding::from_label(label).map(|e| EncodingChoice {
+                    label: label.to_string(),
+                    name: name.to_string(),
+                    direct: e.is_direct(),
+                })
+            })
+            .collect()
+    }
+
+    /// The file's bytes on disk are what this document was opened from (nothing else changed them): the
+    /// original bytes of a decoded file are gone, so every re-reading of the file starts from this check.
+    fn disk_unchanged(&self, id: u32) -> CmdResult<PathBuf> {
+        let entry = self.get(id)?;
+        let path = entry
+            .path
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or_else(|| CmdError::new("no_path", "this document has no file yet"))?;
+        if entry.read().changed_on_disk() {
+            return Err(CmdError::new(
+                "changed_on_disk",
+                "The file changed on disk since it was opened. Reopen it first.",
+            ));
+        }
+        Ok(path)
+    }
+
+    /// The first rows of the file read as `label`, laid out as this document is (the scrub preview). A throwaway
+    /// read of the head of the file: the document does not change.
+    pub fn encoding_preview(
+        &self,
+        id: u32,
+        label: &str,
+        rows: usize,
+    ) -> CmdResult<Vec<Vec<String>>> {
+        use std::io::Read;
+        let enc = Encoding::from_label(label)
+            .ok_or_else(|| CmdError::new("invalid", "that encoding is not known"))?;
+        let path = self.disk_unchanged(id)?;
+        let mut head = Vec::new();
+        std::fs::File::open(&path)
+            .and_then(|f| f.take(PREVIEW_HEAD_BYTES).read_to_end(&mut head))
+            .map_err(|e| CmdError::new("io", e.to_string()))?;
+        if natendo_engine::source::is_gzip(&head) {
+            return Err(CmdError::new(
+                "invalid",
+                "a compressed file has no encoding of its own to preview: open the unpacked file instead",
+            ));
+        }
+        let entry = self.get(id)?;
+        let d = entry.read();
+        let shown = d.preview_decoded(&head, enc, rows.min(40))?;
+        // A preview never carries more than a screen of text out.
+        Ok(shown
+            .into_iter()
+            .map(|r| {
+                r.into_iter()
+                    .take(60)
+                    .map(|c| c.chars().take(200).collect())
+                    .collect()
+            })
+            .collect())
+    }
+
+    /// Read the file's bytes as `label` without reopening (one undo step): only when both the file's reading and
+    /// `label` are ASCII-compatible. Refused with unsaved changes, while the Steps panel looks back, on a locked
+    /// file, and when the file changed on disk.
+    pub fn encoding_apply(&self, id: u32, label: &str) -> CmdResult<DocInfo> {
+        let enc = Encoding::from_label(label)
+            .ok_or_else(|| CmdError::new("invalid", "that encoding is not known"))?;
+        self.disk_unchanged(id)?;
+        self.edit(id, |d| d.set_encoding(enc))
+    }
+
+    /// Scan the shown rows' raw bytes for rows in another encoding: a job with progress and Cancel. Only counts
+    /// and row numbers come back, never a value.
+    pub fn scan_encodings(
+        &self,
+        id: u32,
+        keep_first: bool,
+    ) -> CmdResult<natendo_engine::encscan::EncodingScan> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for rows in another encoding")?;
+        let d = entry.read();
+        Ok(d.scan_encodings(keep_first, &job.progress)?)
+    }
+
+    /// Show only the rows the scan flagged (a view: nothing in the data changes).
+    pub fn encoding_show_rows(&self, id: u32, keep_first: bool) -> CmdResult<DocInfo> {
+        let scan = self.scan_encodings(id, keep_first)?;
+        self.edit_as(id, false, |d| {
+            let plan = d.plan_show_encoding_rows(&scan, keep_first)?;
+            d.apply_rows(plan)
+        })
+    }
+
     /// Show only the rows an X-ray finds gremlins in (a view: nothing in the data changes).
     pub fn xray_show(&self, id: u32, cols: &[u32], keep_first: bool) -> CmdResult<DocInfo> {
         let report = self.xray_report(id, cols, keep_first)?;
@@ -10266,6 +10393,93 @@ ca,California
         docs.fill_skipping(id, 1, 1, 0, 3, "x".into(), &[1])
             .unwrap();
         assert_eq!(docs.copy(id, 1, 1, 0, 3).unwrap(), "x\t2\tx\r\n");
+    }
+
+    /// B2: the picker's preview, Apply and scan on a real file: the preview reads the head as each encoding, Apply is
+    /// one undo step, both are refused when the file changed on disk (R9b, direct encodings too), Apply is refused
+    /// with unsaved edits, and a needs-reopen encoding is refused in place.
+    #[test]
+    fn encoding_preview_apply_scan_and_the_disk_check() {
+        let docs = Docs::default();
+        let bytes = b"name,city\nJos\xe9,Z\xfcrich\nAnn,Oslo\n";
+        let p = tmp("enc.csv", bytes);
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let first = docs.info(id).unwrap();
+        assert_eq!(
+            first.encoding, "windows-1252",
+            "detected as the legacy encoding"
+        );
+        // The preview: the head of the file read as each choice.
+        let utf8 = docs.encoding_preview(id, "utf-8", 5).unwrap();
+        assert!(utf8[1][0].contains('\u{fffd}'), "{utf8:?}");
+        let latin = docs.encoding_preview(id, "windows-1252", 5).unwrap();
+        assert_eq!(latin[1], ["Jos\u{e9}", "Z\u{fc}rich"]);
+        assert!(docs.encoding_preview(id, "no-such", 5).is_err());
+        // Apply (UTF-8 here: ASCII-compatible, no reopen): one undo step, the data revision moves.
+        let before = docs.info(id).unwrap();
+        let info = docs.encoding_apply(id, "utf-8").unwrap();
+        assert_eq!(info.history_pos, before.history_pos + 1);
+        assert!(info.data_revision > before.data_revision);
+        assert_eq!(info.encoding, "UTF-8");
+        assert!(docs.copy(id, 1, 1, 0, 2).unwrap().contains('\u{fffd}'));
+        // A needs-reopen encoding is refused in place, whatever the file is.
+        let e = docs.encoding_apply(id, "shift_jis").unwrap_err();
+        assert!(e.message.contains("reopen"), "{}", e.message);
+        // Edits make Apply refuse (they were made against the old reading).
+        docs.set_cells(id, vec![(2, 0, "Bob".into())]).unwrap();
+        let e = docs.encoding_apply(id, "windows-1252").unwrap_err();
+        assert!(
+            e.message.contains("Save or undo your changes first"),
+            "{}",
+            e.message
+        );
+        docs.undo(id).unwrap();
+        // The file changed on disk: preview and Apply both refuse, even for a direct encoding.
+        std::fs::write(
+            &p,
+            b"name,city\nJos\xe9,Z\xfcrich\nAnn,Oslo\nplus,one more\n",
+        )
+        .unwrap();
+        for e in [
+            docs.encoding_preview(id, "windows-1252", 5).unwrap_err(),
+            docs.encoding_apply(id, "windows-1252").unwrap_err(),
+        ] {
+            assert_eq!(e.kind, "changed_on_disk");
+            assert!(e.message.contains("changed on disk"), "{}", e.message);
+        }
+        // Reading the changed file again as another encoding is a new document (the old one is untouched).
+        let again = docs
+            .open_with_encoding(&p, false, None, Encoding::from_label("windows-1252"))
+            .unwrap();
+        assert_eq!(again.encoding, "windows-1252");
+        assert_eq!(wait(&docs, again.id).rows, 4);
+        assert_ne!(again.id, id);
+    }
+
+    #[test]
+    fn the_scan_marks_rows_and_shows_only_them() {
+        let docs = Docs::default();
+        let mut text = b"name\n".to_vec();
+        text.extend_from_slice(b"ok\n");
+        text.extend_from_slice("caf\u{e9}\n".as_bytes());
+        text.extend_from_slice(b"Jos\xe9\n");
+        text.extend_from_slice(b"fine\n");
+        let p = tmp("scan.csv", &text);
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        // Detection calls a mixed file Windows-1252: read it as UTF-8 first, as a person comparing would.
+        let info = docs
+            .open_with_encoding(&p, false, None, Some(Encoding::Utf8))
+            .unwrap();
+        wait(&docs, info.id);
+        let scan = docs.scan_encodings(info.id, true).unwrap();
+        assert_eq!(
+            (scan.ascii, scan.utf8, scan.invalid, scan.mixed),
+            (2, 1, 1, true)
+        );
+        let shown = docs.encoding_show_rows(info.id, true).unwrap();
+        assert_eq!(shown.rows, 2, "the title row and the one invalid row");
     }
 
     fn names(docs: &Docs, id: u32) -> Vec<String> {
