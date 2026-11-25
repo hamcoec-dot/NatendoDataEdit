@@ -78,7 +78,7 @@ fn main() {
     let mut d = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
     println!("{rows} rows; one big change after a checkpoint, then the diff since it.");
     let p = Progress::new();
-    let mut report = |what: &str, d: &Document, mark: u64, wm: u32| {
+    let report = |what: &str, d: &Document, mark: u64, wm: u32| {
         let mut best = f64::MAX;
         let mut plan = None;
         let mut peak_extra = 0usize;
