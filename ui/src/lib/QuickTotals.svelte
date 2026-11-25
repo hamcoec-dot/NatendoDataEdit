@@ -9,6 +9,7 @@
   import { fmt } from "./views";
   import { cellCountAreas } from "./selection";
   import { totalLabel, totalText, totalValue } from "./m9";
+  import { isTextLike, typeOf } from "./readers";
 
   let { tab }: { tab: Tab } = $props();
 
@@ -69,6 +70,14 @@
     return () => clearTimeout(timer);
   });
 
+  /** Every selected column is typed Text or Id: only a count means anything. */
+  const textOnly = $derived.by(() => {
+    const r = tab.singleRect();
+    if (!r || !tab.info.typed?.length) return false;
+    for (let c = r.col; c < r.col + r.cols; c++) if (!isTextLike(typeOf(tab.info.typed, c))) return false;
+    return true;
+  });
+
   let button = $state<HTMLButtonElement>();
   /** Where the list opens (fixed, as the status bar clips what overflows). */
   let at = $state({ right: 0, bottom: 0 });
@@ -125,7 +134,7 @@
       aria-expanded={open}
       onclick={toggle}
     >
-      {#if totals}{#each shownKinds(totals) as k, i (k)}{#if i > 0}<span class="gap"></span>{/if}{totalLabel(k)}: {totalText(totals, k, fmt)}{/each}{:else}Adding up…{/if}
+      {#if totals}{#each shownKinds(totals) as k, i (k)}{#if i > 0}<span class="gap"></span>{/if}{totalLabel(k)}: {totalText(totals, k, fmt)}{/each}{#if textOnly}<span class="gap"></span>Text column: count only{/if}{:else}Adding up…{/if}
     </button>
     {#if open && totals}
       <div class="pop" role="menu" style:right="{at.right}px" style:bottom="{at.bottom}px">

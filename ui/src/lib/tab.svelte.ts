@@ -671,8 +671,6 @@ export class Tab {
       return;
     }
     if (info.seq !== undefined) this.infoSeq = info.seq;
-    // The engine has the types an Undo asked for (or others): from here on the info is the truth.
-    if (this.typesAsked && sameTypes(this.typesAsked, info.column_types)) this.typesAsked = null;
     // A look change made just before this engine change is a step of its own
     // (while a saved view is applied, its look joins its first engine step).
     if (!this.grouping) this.recordView();
@@ -727,6 +725,8 @@ export class Tab {
     // Columns added or taken away: the sort's columns may be other ones now.
     if (info.cols !== this.info.cols) this.sortAt = null;
     this.info = info;
+    // The engine has the types an Undo asked for (or others): from here on the info is the truth.
+    if (this.typesAsked && sameTypes(this.typesAsked, info.column_types)) this.typesAsked = null;
     this.columns.setCount(info.cols);
     if (dataChanged || structural) this.cache.invalidate();
     this.bump();
