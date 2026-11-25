@@ -252,7 +252,7 @@ impl Document {
                 for r in s..e {
                     let id = self.id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
-                    for i in 0..wanted.len() {
+                    for (i, rd) in rds.iter().enumerate() {
                         let v = reader.get(&buf, i);
                         a.chars += v.chars().count() as u64;
                         let v = v.trim();
@@ -260,7 +260,7 @@ impl Document {
                             continue;
                         }
                         a.filled += 1;
-                        if let Some(x) = rds[i].number(v) {
+                        if let Some(x) = rd.number(v) {
                             a.numbers += 1;
                             a.sum.add(x);
                             a.min = a.min.min(x);

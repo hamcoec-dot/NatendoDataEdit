@@ -595,6 +595,7 @@ impl JoinSource {
         Ok(Arc::new(src))
     }
 
+    #[allow(clippy::too_many_arguments)] // the table, its text and how its keys and columns are read
     fn index(
         titles: Vec<String>,
         flat: Flat,
