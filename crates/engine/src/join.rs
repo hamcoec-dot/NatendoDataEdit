@@ -300,13 +300,15 @@ fn loose_part(p: &str, match_case: bool, out: &mut String) {
 
 /// The key of `parts` in `out`; `false` when it is blank (blank keys match
 /// nothing). A loose key that keeps no letters or digits is blank too.
-fn norm_key(parts: &[&str], spec: &JoinSpec, out: &mut String) -> bool {
+fn norm_key(parts: &[&str], spec: &JoinSpec, exact: &[bool], out: &mut String) -> bool {
     out.clear();
     let mut part = String::new();
     let mut any = false;
-    for p in parts {
+    for (i, p) in parts.iter().enumerate() {
         part.clear();
-        if spec.loose {
+        // A key column typed Id or Text compares exactly (00123 is not 123); loose then means only
+        // trimming and case.
+        if spec.loose && !exact.get(i).copied().unwrap_or(false) {
             loose_part(p, spec.match_case, &mut part);
             any |= !part.is_empty();
         } else {
@@ -372,6 +374,8 @@ pub struct JoinSource {
     /// How the key column (for a nearest-value match) and each added column are read.
     key_rd: crate::coltype::Reader,
     rds: Vec<crate::coltype::Reader>,
+    /// Per key: compared exactly (the key column is typed Id or Text, in either table).
+    exact: Vec<bool>,
     lookup: HashMap<String, u32>,
     /// Groups of rows with the same key, in first-seen order:
     /// `members[starts[g]..starts[g + 1]]`.
@@ -431,6 +435,25 @@ impl Flat {
 }
 
 impl JoinSource {
+    /// The same table indexed with other exact-key flags (a key column typed Id or Text in the first
+    /// table makes that key exact on both sides).
+    fn reindexed(&self, exact: Vec<bool>) -> Result<JoinSource, Error> {
+        let rows = (self.offs.len() - 1) / self.width.max(1);
+        JoinSource::index(
+            self.titles.clone(),
+            Flat {
+                text: self.text.clone(),
+                offs: self.offs.clone(),
+            },
+            self.width,
+            rows,
+            &self.spec,
+            self.key_rd,
+            self.rds.clone(),
+            exact,
+        )
+    }
+
     pub fn build(
         other: &Document,
         spec: &JoinSpec,
@@ -519,6 +542,10 @@ impl JoinSource {
             spec,
             key_rd,
             rds,
+            spec.other_keys
+                .iter()
+                .map(|&c| ctx.type_of(c).is_text_like())
+                .collect(),
         )
         .map(Arc::new)
     }
@@ -562,6 +589,7 @@ impl JoinSource {
             &spec,
             crate::coltype::Reader::plain(ReadOptions::default()),
             Vec::new(),
+            Vec::new(),
         )?;
         src.list = true;
         Ok(Arc::new(src))
@@ -575,6 +603,7 @@ impl JoinSource {
         spec: &JoinSpec,
         key_rd: crate::coltype::Reader,
         rds: Vec<crate::coltype::Reader>,
+        exact: Vec<bool>,
     ) -> Result<JoinSource, Error> {
         let nkeys = spec.other_keys.len();
         let range = spec.key_match != KeyMatch::Exact;
@@ -593,6 +622,7 @@ impl JoinSource {
             spec: spec.clone(),
             key_rd,
             rds,
+            exact: exact.clone(),
             lookup: HashMap::new(),
             starts: Vec::new(),
             members: Vec::new(),
@@ -641,7 +671,7 @@ impl JoinSource {
                 if !lookup.contains_key(&key) {
                     values.push(v);
                 }
-            } else if !norm_key(&parts, spec, &mut key) {
+            } else if !norm_key(&parts, spec, &exact, &mut key) {
                 // A loose key with no letters or digits: blank.
                 continue;
             }
@@ -786,7 +816,7 @@ impl JoinSource {
         }
         let g = match self.spec.key_match {
             KeyMatch::Exact => {
-                if !norm_key(parts, &self.spec, key) {
+                if !norm_key(parts, &self.spec, &self.exact, key) {
                     return Hit::Blank;
                 }
                 self.lookup.get(key.as_str()).copied()
@@ -957,6 +987,21 @@ fn clip(s: &str) -> String {
 }
 
 impl Document {
+    /// The exact-key flags this join needs when they differ from the source's (a key typed Id or Text in
+    /// either table is exact on both sides), else `None`.
+    fn aligned_exact(&self, src: &JoinSource, spec: &JoinSpec) -> Option<Vec<bool>> {
+        let ctx = self.read_ctx(ReadOptions::default());
+        let want: Vec<bool> = spec
+            .keys
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                ctx.type_of(c).is_text_like() || src.exact.get(i).copied().unwrap_or(false)
+            })
+            .collect();
+        (want != src.exact && !src.list).then_some(want)
+    }
+
     /// Plan a join (see [`JoinSpec`]).
     pub fn plan_join(
         &self,
@@ -964,6 +1009,14 @@ impl Document {
         spec: &JoinSpec,
         progress: &Progress,
     ) -> Result<(JoinPlan, JoinReport), Error> {
+        let aligned;
+        let src = match self.aligned_exact(src, spec) {
+            Some(e) => {
+                aligned = Arc::new(src.reindexed(e)?);
+                &aligned
+            }
+            None => src,
+        };
         let (mut plan, report, _) = self.join_walk(src, spec, progress, None)?;
         if !plan.filled.is_empty() {
             plan.src = Some(src.clone());
@@ -990,6 +1043,14 @@ impl Document {
         spec: &JoinSpec,
         progress: &Progress,
     ) -> Result<JoinPreview, Error> {
+        let aligned;
+        let src = match self.aligned_exact(src, spec) {
+            Some(e) => {
+                aligned = src.reindexed(e)?;
+                &aligned
+            }
+            None => src,
+        };
         let (plan, report, outs) = self.join_walk(src, spec, progress, Some(PREVIEW_ROWS))?;
         let (at, n) = plan.insert.unwrap_or((u32::MAX, 0));
         let width = (self.col_count() + n).min(PREVIEW_COLS as u32);
@@ -2195,8 +2256,8 @@ mod tests {
                 ..Default::default()
             };
             let (mut a, mut b) = (String::new(), String::new());
-            norm_key(&[x], &spec, &mut a);
-            norm_key(&[y], &spec, &mut b);
+            norm_key(&[x], &spec, &[], &mut a);
+            norm_key(&[y], &spec, &[], &mut b);
             assert_eq!(a == b, same, "{x} vs {y}");
         }
         // Keys with no letters or digits are blank: they match nothing.
@@ -2206,8 +2267,8 @@ mod tests {
                 ..Default::default()
             };
             let (mut a, mut b) = (String::new(), String::new());
-            assert!(!norm_key(&[x], &spec, &mut a));
-            assert!(!norm_key(&[y], &spec, &mut b));
+            assert!(!norm_key(&[x], &spec, &[], &mut a));
+            assert!(!norm_key(&[y], &spec, &[], &mut b));
         }
         let a = doc("id,n\r\n-,dash\r\n?,q\r\n");
         let b = doc("id,v\r\n.,dot\r\n#,hash\r\n");

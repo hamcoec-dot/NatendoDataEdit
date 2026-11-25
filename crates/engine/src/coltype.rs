@@ -383,6 +383,240 @@ mod tests {
         }
     }
 
+    // ---- the overlay through the engine's operations ----
+
+    use crate::filter::{CmpOp, ColumnFilter, Condition, FilterSpec, Rule};
+    use crate::sort::{SortKey, SortKind, SortSpec};
+    use crate::{Document, OpenOptions};
+
+    fn doc(csv: &str) -> Document {
+        Document::from_bytes(csv.as_bytes().to_vec(), OpenOptions::default(), Some("csv")).unwrap()
+    }
+
+    fn column(d: &Document, c: u32) -> Vec<String> {
+        (0..d.row_count()).map(|r| d.cell(r, c).unwrap()).collect()
+    }
+
+    fn typed(d: &mut Document, col: u32, t: ColumnType) {
+        let types = d.type_overlay().with(col, t);
+        d.set_column_types(types);
+    }
+
+    fn sort_by(d: &mut Document, kind: SortKind) {
+        d.sort(&SortSpec {
+            keys: vec![SortKey {
+                col: 0,
+                descending: false,
+                kind,
+                match_case: false,
+            }],
+            keep_first: false,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn an_id_column_sorts_as_ids_and_a_number_column_as_numbers() {
+        let body = "10
+2
+007
+0007
+7
+";
+        let mut d = doc(body);
+        typed(&mut d, 0, ColumnType::Id);
+        sort_by(&mut d, SortKind::Auto);
+        // By value, more leading zeros after: 2 < 7 < 007 < 0007 < 10.
+        assert_eq!(column(&d, 0), ["2", "7", "007", "0007", "10"]);
+        let mut d = doc("5
+-3
+12
+");
+        typed(&mut d, 0, ColumnType::Number);
+        sort_by(&mut d, SortKind::Auto);
+        assert_eq!(column(&d, 0), ["-3", "5", "12"]);
+    }
+
+    #[test]
+    fn a_typed_column_is_not_read_as_a_number_by_a_filter_or_the_stats() {
+        let body = "id
+12
+7
+30
+";
+        let over_ten = FilterSpec {
+            columns: vec![ColumnFilter {
+                col: 0,
+                rule: Rule::Conditions {
+                    first: Condition::Number {
+                        op: CmpOp::Gt,
+                        value: 10.0,
+                    },
+                    second: None,
+                    or: false,
+                },
+            }],
+            keep_first: true,
+            read: Default::default(),
+        };
+        let mut d = doc(body);
+        assert_eq!(d.set_filter(&over_ten).unwrap(), 3);
+        let mut d = doc(body);
+        typed(&mut d, 0, ColumnType::Id);
+        // Nothing matches: an Id is never a number (only the title row stays shown).
+        assert_eq!(d.set_filter(&over_ten).unwrap(), 1);
+        // The summary counts no numbers either.
+        let d2 = {
+            let mut d = doc(body);
+            typed(&mut d, 0, ColumnType::Text);
+            d
+        };
+        let s = d2
+            .summary(0, true, Default::default(), &crate::Progress::new())
+            .unwrap();
+        assert_eq!(s.mix.number, 0);
+    }
+
+    #[test]
+    fn a_type_change_is_not_an_edit_and_moves_the_data_revision() {
+        let mut d = doc("a,b
+1,2
+");
+        let (rev, pos, before) = (d.data_revision(), d.history_pos(), d.row_values(1).unwrap());
+        typed(&mut d, 1, ColumnType::Id);
+        assert!(
+            d.data_revision() > rev,
+            "results computed from numbers are out of date"
+        );
+        assert_eq!(d.history_pos(), pos, "not an edit: nothing to undo or save");
+        assert_eq!(d.row_values(1).unwrap(), before);
+        // The same types again change nothing.
+        let rev = d.data_revision();
+        let same = d.type_overlay().clone();
+        d.set_column_types(same);
+        assert_eq!(d.data_revision(), rev);
+    }
+
+    #[test]
+    fn a_key_typed_id_in_either_table_joins_exactly() {
+        use crate::join::{JoinSource, JoinSpec};
+        let a = |t: Option<ColumnType>| {
+            let mut d = doc("id,name
+007,x
+7,y
+");
+            if let Some(t) = t {
+                typed(&mut d, 0, t);
+            }
+            d
+        };
+        let spec = JoinSpec {
+            keys: vec![0],
+            other_keys: vec![0],
+            columns: vec![1],
+            keep_first: true,
+            other_header: true,
+            loose: true,
+            ..Default::default()
+        };
+        let matched = |first: &Document, other: &Document| {
+            let src = JoinSource::build(other, &spec, &crate::Progress::new()).unwrap();
+            let (_, report) = first
+                .plan_join(&src, &spec, &crate::Progress::new())
+                .unwrap();
+            report.matched
+        };
+        let other = {
+            let mut d = doc("id,city
+7,Oslo
+");
+            d.set_column_types(ColumnTypes::default());
+            d
+        };
+        // Loose, untyped: 007 and 7 are the same key, so both rows match.
+        assert_eq!(matched(&a(None), &other), 2);
+        // The first table's key typed Id: exact, only "7" matches.
+        assert_eq!(matched(&a(Some(ColumnType::Id)), &other), 1);
+        // The other table's key typed Id: exact too.
+        let mut typed_other = doc("id,city
+7,Oslo
+");
+        typed(&mut typed_other, 0, ColumnType::Id);
+        assert_eq!(matched(&a(None), &typed_other), 1);
+    }
+
+    /// The second half of the scan: `Reader::plain` reads a value with NO column type, so every use of it
+    /// outside tests is on this exact list, each with the reason it is a single typed value (or a value
+    /// that has no column). A new use fails here until it is reviewed and listed.
+    #[test]
+    fn untyped_readers_are_used_only_where_a_value_has_no_column() {
+        // (file, function, number of uses, reason)
+        let allowed: &[(&str, &str, usize, &str)] = &[
+            ("clean.rs", "step", 2, "Clean steps (reformat dates, date bands) are rewrites the person chose for the cells they selected"),
+            ("clean.rs", "number_value", 1, "Clean steps (round, calculate, in words) are rewrites the person chose for the cells they selected"),
+            ("editing.rs", "plan_group_calc", 1, "a group calculation that has no value column (count, running) reads nothing"),
+            ("expr.rs", "numeric", 2, "converts a value an expression already holds; column cells are typed when loaded (Node::Col)"),
+            ("expr.rs", "date", 1, "converts a value an expression already holds"),
+            ("expr.rs", "compare", 1, "converts a value an expression already holds"),
+            ("expr.rs", "call", 7, "functions of the expression language convert the values they are given"),
+            ("fill.rs", "new", 1, "a fill series reads the starting cells the person selected, as typed"),
+            ("filter.rs", "facet_counts_cached", 2, "a facet card on a column that does not exist has no type"),
+            ("join.rs", "from_list", 1, "a pasted list of keys has no column"),
+            ("ops.rs", "combine", 2, "Paste Special arithmetic: the person chose the operation for these cells"),
+            ("pivot.rs", "label", 1, "reads the program's own group key text (a month, a day), not a cell"),
+            ("privacy.rs", "kind_of_value", 1, "finds private data by how a value looks, whatever its column's type (a birth date typed Id is still private)"),
+            ("validate.rs", "bound_date", 1, "a limit the person typed in a check"),
+            ("validate.rs", "passes", 1, "a check the person wrote reads cells by its own rule, not by the column's type"),
+        ];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found: std::collections::BTreeMap<(String, String), usize> = Default::default();
+        for e in std::fs::read_dir(&dir).unwrap() {
+            let path = e.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if !name.ends_with(".rs") || name == "value.rs" || name == "coltype.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let code = text.split("#[cfg(test)]").next().unwrap_or("");
+            let mut current = String::new();
+            for line in code.lines() {
+                let t = line.trim_start();
+                if let Some(i) = t.find("fn ") {
+                    let head = &t[..i];
+                    if head.is_empty()
+                        || head == "pub "
+                        || head.starts_with("pub(")
+                        || head == "async "
+                    {
+                        let n: String = t[i + 3..]
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        if !n.is_empty() {
+                            current = n;
+                        }
+                    }
+                }
+                if t.starts_with("//") {
+                    continue;
+                }
+                let n = line.matches("::plain(").count();
+                if n > 0 {
+                    *found.entry((name.clone(), current.clone())).or_default() += n;
+                }
+            }
+        }
+        let want: std::collections::BTreeMap<(String, String), usize> = allowed
+            .iter()
+            .map(|(f, func, n, _)| ((f.to_string(), func.to_string()), *n))
+            .collect();
+        assert_eq!(
+            found, want,
+            "an untyped read outside the reviewed list: type it, or list it with its reason"
+        );
+    }
+
     /// The scan (R3): nothing outside `value.rs` and this file calls `parse_number` or `parse_date`, except
     /// the exact list of single typed values below (each with its reason). A new direct call fails here
     /// until someone puts it through [`ReadCtx`] or adds it to the list in review.
