@@ -2456,6 +2456,77 @@ async fn reopen(
     .await
 }
 
+/// Open the file of tab `doc` again as another encoding (a new document; the old one stays open until the screen
+/// closes it, so Cancel or an error keeps it). Refused with unsaved changes: they would be lost.
+#[tauri::command]
+async fn reopen_encoding(
+    docs: DocsState<'_>,
+    doc: u32,
+    encoding: String,
+    line_by_line: bool,
+    layout: Option<Layout>,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        let path = docs
+            .path_of(doc)?
+            .ok_or_else(|| CmdError::new("no_path", "this document has no file yet"))?;
+        if docs.info(doc)?.modified {
+            return Err(CmdError::new(
+                "modified",
+                "Save or undo your changes first: reopening reads the file again from disk.",
+            ));
+        }
+        let enc = natendo_engine::encoding::Encoding::from_label(&encoding)
+            .ok_or_else(|| CmdError::new("invalid", "that encoding is not known"))?;
+        docs.open_with_encoding(&path, line_by_line, layout.as_ref(), Some(enc))
+    })
+    .await
+}
+
+/// The encodings the picker offers.
+#[tauri::command]
+fn encoding_choices() -> Vec<docs::EncodingChoice> {
+    docs::Docs::encoding_choices()
+}
+
+/// The first rows of the file read as another encoding (the picker's scrub preview).
+#[tauri::command]
+async fn encoding_preview(
+    docs: DocsState<'_>,
+    doc: u32,
+    encoding: String,
+    rows: usize,
+) -> CmdResult<Vec<Vec<String>>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.encoding_preview(doc, &encoding, rows)).await
+}
+
+/// Read the file as another ASCII-compatible encoding without reopening (one undo step).
+#[tauri::command]
+async fn encoding_apply(docs: DocsState<'_>, doc: u32, encoding: String) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.encoding_apply(doc, &encoding)).await
+}
+
+/// Look for rows whose bytes are in another encoding (counts only).
+#[tauri::command]
+async fn scan_encodings(
+    docs: DocsState<'_>,
+    doc: u32,
+    keep_first: bool,
+) -> CmdResult<natendo_engine::encscan::EncodingScan> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.scan_encodings(doc, keep_first)).await
+}
+
+/// Show only the rows the encoding scan flagged.
+#[tauri::command]
+async fn encoding_show_rows(docs: DocsState<'_>, doc: u32, keep_first: bool) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.encoding_show_rows(doc, keep_first)).await
+}
+
 /// The likely layouts of a document's file, with previews.
 #[tauri::command]
 async fn layout_choices(docs: DocsState<'_>, doc: u32) -> CmdResult<LayoutChoices> {
@@ -4164,6 +4235,12 @@ pub fn run() {
             mail_preview,
             save_mail,
             run_checks,
+            reopen_encoding,
+            encoding_choices,
+            encoding_preview,
+            encoding_apply,
+            scan_encodings,
+            encoding_show_rows,
             xray_report,
             xray_show,
             check_marks,

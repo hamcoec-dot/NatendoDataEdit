@@ -3173,6 +3173,45 @@ mod tests {
         assert_eq!((on.changed, on.homoglyph_cells), (10, 10));
     }
 
+    /// B2: the Fix mojibake step changes only cells that are really double-encoded, lists them in the preview, is
+    /// one undo step and a second run changes nothing.
+    #[test]
+    fn fix_mojibake_changes_only_the_double_encoded_cells() {
+        let mut d =
+            doc("name\r\ncaf\u{c3}\u{a9}\r\ncaf\u{e9}\r\nO\u{e2}\u{20ac}\u{2122}Neil\r\nplain\r\n");
+        let spec = CleanSpec {
+            cleaner: cleaner(vec![Step::FixMojibake]),
+            scope: Scope::Columns { cols: vec![0] },
+            skip_first: true,
+            read: Default::default(),
+        };
+        let p = d.preview_clean(&spec, 0.0, 1, 100, 1_000_000).unwrap();
+        assert_eq!(p.changed, 2, "the two double-encoded cells, not the real é");
+        assert_eq!(p.changes[0].before, "caf\u{c3}\u{a9}");
+        assert_eq!(p.changes[0].after, "caf\u{e9}");
+        let plan = d
+            .plan_clean(&spec, 0.0, 1, 0, &crate::Progress::new())
+            .unwrap();
+        d.apply_clean(plan).unwrap();
+        assert_eq!(d.cell(1, 0).unwrap(), "caf\u{e9}");
+        assert_eq!(d.cell(2, 0).unwrap(), "caf\u{e9}");
+        assert_eq!(d.cell(3, 0).unwrap(), "O\u{2019}Neil");
+        assert_eq!(d.cell(4, 0).unwrap(), "plain");
+        assert_eq!(
+            d.preview_clean(&spec, 0.0, 1, 100, 1_000_000)
+                .unwrap()
+                .changed,
+            0
+        );
+        assert!(d.undo());
+        assert_eq!(d.cell(1, 0).unwrap(), "caf\u{c3}\u{a9}");
+        // It round trips in a saved cleaner (a recipe step).
+        let json = serde_json::to_string(&spec.cleaner).unwrap();
+        assert!(json.contains("fix_mojibake"), "{json}");
+        let back: Cleaner = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, spec.cleaner);
+    }
+
     #[test]
     fn sanitize_preview_pages_with_exact_counts() {
         let mut text = String::from("name\r\n");
