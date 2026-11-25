@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::coltype::{ReadCtx, Reader};
 use crate::document::{Document, Progress, View};
 use crate::find::{Matcher, Pattern};
 use crate::value::{self, ReadOptions};
@@ -208,16 +209,17 @@ struct Compiled {
     /// Physical columns read, sorted; tests refer to slots in it.
     wanted: Vec<u32>,
     tests: Vec<(usize, Test)>,
-    read: ReadOptions,
+    /// How each wanted column is read (by slot).
+    readers: Vec<Reader>,
 }
 
-fn day_of(text: &str, read: ReadOptions) -> Result<f64, Error> {
-    value::parse_date(text, read)
+fn day_of(text: &str, rd: Reader) -> Result<f64, Error> {
+    rd.date(text)
         .map(f64::floor)
         .ok_or_else(|| Error::BadPattern(format!("\"{text}\" is not a date")))
 }
 
-fn compile_cond(c: &Condition, read: ReadOptions) -> Result<Cond, Error> {
+fn compile_cond(c: &Condition, rd: Reader) -> Result<Cond, Error> {
     Ok(match c {
         Condition::Text {
             op,
@@ -236,9 +238,9 @@ fn compile_cond(c: &Condition, read: ReadOptions) -> Result<Cond, Error> {
         }
         Condition::Number { op, value } => Cond::Num(*op, *value),
         Condition::NumberBetween { low, high } => Cond::NumBetween(low.min(*high), high.max(*low)),
-        Condition::Date { op, value } => Cond::Date(*op, day_of(value, read)?),
+        Condition::Date { op, value } => Cond::Date(*op, day_of(value, rd)?),
         Condition::DateBetween { low, high } => {
-            let (a, b) = (day_of(low, read)?, day_of(high, read)?);
+            let (a, b) = (day_of(low, rd)?, day_of(high, rd)?);
             Cond::DateBetween(a.min(b), a.max(b))
         }
         Condition::Blank => Cond::Blank(true),
@@ -256,15 +258,14 @@ fn compile_cond(c: &Condition, read: ReadOptions) -> Result<Cond, Error> {
 pub const MAX_TOP: f64 = 1e9;
 
 impl Cond {
-    fn test(&self, s: &str, read: ReadOptions) -> bool {
+    fn test(&self, s: &str, rd: Reader) -> bool {
         match self {
             Cond::Match(m, negate) => m.is_match(s) != *negate,
-            Cond::Num(op, v) => value::parse_number(s, read).is_some_and(|x| op.test(x, *v)),
-            Cond::NumBetween(a, b) => {
-                value::parse_number(s, read).is_some_and(|x| x >= *a && x <= *b)
-            }
-            Cond::Date(op, v) => value::parse_date(s, read).is_some_and(|x| op.test(x.floor(), *v)),
-            Cond::DateBetween(a, b) => value::parse_date(s, read)
+            Cond::Num(op, v) => rd.number(s).is_some_and(|x| op.test(x, *v)),
+            Cond::NumBetween(a, b) => rd.number(s).is_some_and(|x| x >= *a && x <= *b),
+            Cond::Date(op, v) => rd.date(s).is_some_and(|x| op.test(x.floor(), *v)),
+            Cond::DateBetween(a, b) => rd
+                .date(s)
                 .map(f64::floor)
                 .is_some_and(|x| x >= *a && x <= *b),
             Cond::Blank(want) => s.is_empty() == *want,
@@ -273,7 +274,7 @@ impl Cond {
 }
 
 impl Test {
-    fn test(&self, s: &str, read: ReadOptions) -> bool {
+    fn test(&self, s: &str, rd: Reader) -> bool {
         match self {
             Test::Values(set, blanks) => {
                 if s.is_empty() {
@@ -282,12 +283,12 @@ impl Test {
                     set.contains(s)
                 }
             }
-            Test::Conds(a, None, _) => a.test(s, read),
+            Test::Conds(a, None, _) => a.test(s, rd),
             Test::Conds(a, Some(b), or) => {
                 if *or {
-                    a.test(s, read) || b.test(s, read)
+                    a.test(s, rd) || b.test(s, rd)
                 } else {
-                    a.test(s, read) && b.test(s, read)
+                    a.test(s, rd) && b.test(s, rd)
                 }
             }
         }
@@ -297,11 +298,11 @@ impl Test {
 /// One rule compiled to test single values (highlight rules).
 pub struct RuleMatcher {
     test: Test,
-    read: ReadOptions,
+    rd: Reader,
 }
 
 impl RuleMatcher {
-    pub fn new(rule: &Rule, read: ReadOptions) -> Result<RuleMatcher, Error> {
+    pub fn new(rule: &Rule, rd: Reader) -> Result<RuleMatcher, Error> {
         let test = match rule {
             Rule::Values { values, blanks } => {
                 if values.len() > 100_000 {
@@ -312,25 +313,26 @@ impl RuleMatcher {
                 Test::Values(values.iter().cloned().collect(), *blanks)
             }
             Rule::Conditions { first, second, or } => Test::Conds(
-                compile_cond(first, read)?,
-                second.as_ref().map(|s| compile_cond(s, read)).transpose()?,
+                compile_cond(first, rd)?,
+                second.as_ref().map(|s| compile_cond(s, rd)).transpose()?,
                 *or,
             ),
         };
-        Ok(RuleMatcher { test, read })
+        Ok(RuleMatcher { test, rd })
     }
 
     pub fn matches(&self, s: &str) -> bool {
-        self.test.test(s, self.read)
+        self.test.test(s, self.rd)
     }
 }
 
 impl Compiled {
     /// Rules by physical column.
-    fn new(rules: &[ColumnFilter], read: ReadOptions) -> Result<Compiled, Error> {
+    fn new(rules: &[ColumnFilter], ctx: &ReadCtx) -> Result<Compiled, Error> {
         let mut wanted: Vec<u32> = rules.iter().map(|c| c.col).collect();
         wanted.sort_unstable();
         wanted.dedup();
+        let readers: Vec<Reader> = wanted.iter().map(|p| ctx.reader_phys(*p)).collect();
         let mut tests = Vec::with_capacity(rules.len());
         for c in rules {
             let slot = wanted.binary_search(&c.col).expect("listed");
@@ -339,8 +341,11 @@ impl Compiled {
                     Test::Values(values.iter().cloned().collect(), *blanks)
                 }
                 Rule::Conditions { first, second, or } => Test::Conds(
-                    compile_cond(first, read)?,
-                    second.as_ref().map(|s| compile_cond(s, read)).transpose()?,
+                    compile_cond(first, readers[slot])?,
+                    second
+                        .as_ref()
+                        .map(|s| compile_cond(s, readers[slot]))
+                        .transpose()?,
                     *or,
                 ),
             };
@@ -349,14 +354,14 @@ impl Compiled {
         Ok(Compiled {
             wanted,
             tests,
-            read,
+            readers,
         })
     }
 
     fn passes(&self, cells: &[Cow<'_, str>]) -> bool {
         self.tests
             .iter()
-            .all(|(slot, t)| t.test(&cells[*slot], self.read))
+            .all(|(slot, t)| t.test(&cells[*slot], self.readers[*slot]))
     }
 }
 
@@ -406,7 +411,7 @@ impl Document {
                     ));
                 }
                 let col = c.col;
-                let read = spec.read;
+                let rd = self.read_ctx(spec.read).reader_phys(col);
                 let chunks = ((total - first) as usize).div_ceil(CHUNK);
                 progress.start(total - first);
                 let parts: Vec<Vec<f64>> = (0..chunks)
@@ -419,7 +424,7 @@ impl Document {
                         for pos in s..e {
                             let id = self.doc_id_at(pos as u64).expect("in range");
                             self.read_cells(id, &[col], &mut buf);
-                            if let Some(v) = value::parse_number(&buf[0], read) {
+                            if let Some(v) = rd.number(&buf[0]) {
                                 out.push(v);
                             }
                         }
@@ -470,7 +475,7 @@ impl Document {
             });
         }
         let resolved = self.resolve_top(&spec, progress)?;
-        let compiled = Compiled::new(&resolved.columns, spec.read)?;
+        let compiled = Compiled::new(&resolved.columns, &self.read_ctx(spec.read))?;
         progress.start(total);
         let first = usize::from(spec.keep_first && total > 0);
         let chunks = (total as usize).div_ceil(CHUNK);
@@ -589,7 +594,7 @@ impl Document {
         };
         let mut rules = others.columns.clone();
         // The target column is read too (its slot found below).
-        let compiled = Compiled::new(&rules, others.read)?;
+        let compiled = Compiled::new(&rules, &self.read_ctx(others.read))?;
         rules.clear();
         let mut wanted = compiled.wanted.clone();
         if let Err(i) = wanted.binary_search(&target) {
@@ -622,7 +627,7 @@ impl Document {
                     let pass = compiled
                         .tests
                         .iter()
-                        .all(|(slot, t)| t.test(&buf[remap[*slot]], compiled.read));
+                        .all(|(slot, t)| t.test(&buf[remap[*slot]], compiled.readers[*slot]));
                     if !pass {
                         continue;
                     }
@@ -667,7 +672,7 @@ impl Document {
             .into_iter()
             .map(|(value, count)| ValueCount { value, count })
             .collect();
-        sort_values(&mut values, spec.read);
+        sort_values(&mut values, self.read_ctx(spec.read).reader(col));
         Ok(ValueList {
             values,
             blanks,
@@ -759,6 +764,8 @@ impl Document {
         }
         let cols: Vec<u32> = need.iter().map(|&k| out[k].col).collect();
         let reader = crate::ops::Cols::new(self, &cols);
+        let ctx = self.read_ctx(read);
+        let readers: Vec<Reader> = need.iter().map(|&k| ctx.reader(out[k].col)).collect();
         let total = self.total_rows();
         let first = u64::from(keep_first && total > 0);
         let n = need.len();
@@ -778,9 +785,9 @@ impl Document {
                     for (i, &k) in need.iter().enumerate() {
                         let v = reader.get(&buf, i);
                         let x = if out[k].kind == FacetKind::Numbers {
-                            value::parse_number(v, read)
+                            readers[i].number(v)
                         } else {
-                            value::parse_date(v, read).map(f64::floor)
+                            readers[i].date(v).map(f64::floor)
                         };
                         if let Some(x) = x {
                             lim[i].0 = lim[i].0.min(x);
@@ -1209,8 +1216,9 @@ impl Document {
         }
         let keep_first = spec.keep_first;
         let read = spec.read;
+        let ctx = self.read_ctx(read);
         let pspec = self.to_physical_spec(spec)?;
-        let compiled = Compiled::new(&pspec.columns, read)?;
+        let compiled = Compiled::new(&pspec.columns, &self.read_ctx(read))?;
         let card_phys: Vec<Option<u32>> = cards
             .iter()
             .map(|c| {
@@ -1252,11 +1260,12 @@ impl Document {
             match codes {
                 Some(cc) => {
                     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                    let rd = card_phys[k].map_or(Reader::plain(read), |p| ctx.reader_phys(p));
                     for v in &cc.values {
                         let x = if c.kind == FacetKind::Numbers {
-                            value::parse_number(v, read)
+                            rd.number(v)
                         } else {
-                            value::parse_date(v, read).map(f64::floor)
+                            rd.date(v).map(f64::floor)
                         };
                         if let Some(x) = x {
                             lo = lo.min(x);
@@ -1286,10 +1295,11 @@ impl Document {
                                             continue;
                                         };
                                         self.read_cells(id, &[p], &mut buf);
+                                        let rd = ctx.reader_phys(p);
                                         let x = if c.kind == FacetKind::Numbers {
-                                            value::parse_number(&buf[0], read)
+                                            rd.number(&buf[0])
                                         } else {
-                                            value::parse_date(&buf[0], read).map(f64::floor)
+                                            rd.date(&buf[0]).map(f64::floor)
                                         };
                                         if let Some(x) = x {
                                             lo = lo.min(x);
@@ -1343,6 +1353,11 @@ impl Document {
                     .filter(|s| !s.is_empty())
             })
             .collect();
+        let card_readers: Vec<Reader> = cards
+            .iter()
+            .enumerate()
+            .map(|(k, _)| card_phys[k].map_or(Reader::plain(read), |p| ctx.reader_phys(p)))
+            .collect();
         let lands = |k: usize, v: &str| -> Lands {
             if v.trim().is_empty() {
                 return Lands::Blank;
@@ -1354,10 +1369,11 @@ impl Document {
                     _ => Lands::Value,
                 },
                 FacetKind::Numbers | FacetKind::Dates => {
+                    let rd = card_readers[k];
                     let x = if card.kind == FacetKind::Numbers {
-                        value::parse_number(v, read)
+                        rd.number(v)
                     } else {
-                        value::parse_date(v, read).map(f64::floor)
+                        rd.date(v).map(f64::floor)
                     };
                     match x.and_then(|x| bin_of(card, x)) {
                         Some(b) => Lands::Bin(b),
@@ -1375,7 +1391,8 @@ impl Document {
                 continue;
             }
             let key = Key::Rule(p, format!("{:?} {read:?}", pspec.columns[k].rule));
-            let f = |v: &str| u32::from(t.test(v, read));
+            let rd = ctx.reader_phys(p);
+            let f = |v: &str| u32::from(t.test(v, rd));
             self.refresh_entry(cache, &key, p, keep_first, &Coder::Fixed(&f), progress)?;
             used.insert(key.clone());
             rule_keys.push(key);
@@ -1425,7 +1442,10 @@ impl Document {
                 return Err(Error::Invalid("the filter panel lost a column".into()));
             };
             let pass = match key {
-                Key::Col(_) => cc.values.iter().map(|v| t.test(v, read)).collect(),
+                Key::Col(_) => {
+                    let rd = compiled.readers[*slot];
+                    cc.values.iter().map(|v| t.test(v, rd)).collect()
+                }
                 _ => vec![false, true],
             };
             rules.push(RuleAt {
@@ -1578,23 +1598,17 @@ impl Document {
 
 /// Numbers by value if all are numbers, dates by date if all are dates,
 /// else natural text order.
-fn sort_values(values: &mut [ValueCount], read: ReadOptions) {
-    if values
-        .iter()
-        .all(|v| value::parse_number(&v.value, read).is_some())
-    {
+fn sort_values(values: &mut [ValueCount], rd: Reader) {
+    if values.iter().all(|v| rd.number(&v.value).is_some()) {
         values.sort_by(|a, b| {
-            let x = value::parse_number(&a.value, read).unwrap_or(0.0);
-            let y = value::parse_number(&b.value, read).unwrap_or(0.0);
+            let x = rd.number(&a.value).unwrap_or(0.0);
+            let y = rd.number(&b.value).unwrap_or(0.0);
             x.total_cmp(&y).then_with(|| a.value.cmp(&b.value))
         });
-    } else if values
-        .iter()
-        .all(|v| value::parse_date(&v.value, read).is_some())
-    {
+    } else if values.iter().all(|v| rd.date(&v.value).is_some()) {
         values.sort_by(|a, b| {
-            let x = value::parse_date(&a.value, read).unwrap_or(0.0);
-            let y = value::parse_date(&b.value, read).unwrap_or(0.0);
+            let x = rd.date(&a.value).unwrap_or(0.0);
+            let y = rd.date(&b.value).unwrap_or(0.0);
             x.total_cmp(&y).then_with(|| a.value.cmp(&b.value))
         });
     } else {
@@ -1758,7 +1772,7 @@ mod tests {
                 percent: false,
                 bottom: false
             }),
-            ReadOptions::default()
+            Reader::plain(ReadOptions::default())
         )
         .is_err());
     }

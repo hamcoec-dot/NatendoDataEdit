@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::coltype::ReadCtx;
 use crate::document::Document;
 use crate::filter::{Rule, RuleMatcher};
 use crate::value::ReadOptions;
@@ -39,7 +40,7 @@ pub struct Mark {
 }
 
 /// Check rules before use (also for rules loaded from a view file).
-pub fn check(rules: &[Highlight], read: ReadOptions) -> Result<Vec<RuleMatcher>, Error> {
+pub fn check(rules: &[Highlight], ctx: &ReadCtx) -> Result<Vec<RuleMatcher>, Error> {
     if rules.len() > MAX_RULES {
         return Err(Error::Invalid(format!(
             "at most {MAX_RULES} highlight rules"
@@ -51,7 +52,7 @@ pub fn check(rules: &[Highlight], read: ReadOptions) -> Result<Vec<RuleMatcher>,
             if h.color >= PALETTE {
                 return Err(Error::Invalid("unknown highlight colour".into()));
             }
-            RuleMatcher::new(&h.rule, read)
+            RuleMatcher::new(&h.rule, ctx.reader(h.col))
         })
         .collect()
 }
@@ -71,7 +72,7 @@ impl Document {
         skip_first: bool,
         read: ReadOptions,
     ) -> Result<Vec<Mark>, Error> {
-        let m = check(rules, read)?;
+        let m = check(rules, &self.read_ctx(read))?;
         let rows = rows.min(MAX_ROWS);
         let cols = cols.min(MAX_COLS);
         let n = self.row_count();
@@ -179,9 +180,9 @@ mod tests {
         // Bounds: bad colours, too many rules, patterns under find limits.
         let mut bad = rules.clone();
         bad[0].color = PALETTE;
-        assert!(check(&bad, ReadOptions::default()).is_err());
+        assert!(check(&bad, &ReadCtx::plain(ReadOptions::default())).is_err());
         let many = vec![rules[0].clone(); MAX_RULES + 1];
-        assert!(check(&many, ReadOptions::default()).is_err());
+        assert!(check(&many, &ReadCtx::plain(ReadOptions::default())).is_err());
         let huge = Highlight {
             col: 0,
             rule: Rule::Conditions {
@@ -199,6 +200,6 @@ mod tests {
             color: 0,
             whole_row: false,
         };
-        assert!(check(&[huge], ReadOptions::default()).is_err());
+        assert!(check(&[huge], &ReadCtx::plain(ReadOptions::default())).is_err());
     }
 }

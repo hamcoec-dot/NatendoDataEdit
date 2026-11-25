@@ -88,6 +88,58 @@ impl ColumnTypes {
     }
 }
 
+/// How the cells of ONE column are read: the options and the column's type. Cheap to copy; hot loops ask
+/// the context for one per column and call it for every cell.
+#[derive(Debug, Clone, Copy)]
+pub struct Reader {
+    opts: ReadOptions,
+    ty: ColumnType,
+}
+
+impl Reader {
+    /// A reader of an untyped column (Auto).
+    pub fn plain(opts: ReadOptions) -> Reader {
+        Reader {
+            opts,
+            ty: ColumnType::Auto,
+        }
+    }
+
+    pub fn column_type(&self) -> ColumnType {
+        self.ty
+    }
+
+    pub fn options(&self) -> ReadOptions {
+        self.opts
+    }
+
+    /// The number a cell holds (Text, Id and Date columns hold none).
+    #[inline]
+    pub fn number(&self, s: &str) -> Option<f64> {
+        match self.ty {
+            ColumnType::Auto | ColumnType::Number => value::parse_number(s, self.opts),
+            ColumnType::Text | ColumnType::Id | ColumnType::Date(_) => None,
+        }
+    }
+
+    /// The date a cell holds, days since 1970-01-01 (Text, Id and Number columns hold none). `Date(Some)`
+    /// overrides the file-wide order for this column.
+    #[inline]
+    pub fn date(&self, s: &str) -> Option<f64> {
+        match self.ty {
+            ColumnType::Auto | ColumnType::Date(None) => value::parse_date(s, self.opts),
+            ColumnType::Date(Some(order)) => value::parse_date(
+                s,
+                ReadOptions {
+                    date_order: order,
+                    ..self.opts
+                },
+            ),
+            ColumnType::Text | ColumnType::Id | ColumnType::Number => None,
+        }
+    }
+}
+
 /// How one document's cells are read as numbers and dates: the read options plus its column types. Built
 /// from the document, so a caller cannot leave the types out.
 #[derive(Clone, Copy)]
@@ -138,10 +190,11 @@ impl<'a> ReadCtx<'a> {
     /// The number a cell holds when its column has type `t`.
     #[inline]
     pub fn number_as(&self, t: ColumnType, s: &str) -> Option<f64> {
-        match t {
-            ColumnType::Auto | ColumnType::Number => value::parse_number(s, self.opts),
-            ColumnType::Text | ColumnType::Id | ColumnType::Date(_) => None,
+        Reader {
+            opts: self.opts,
+            ty: t,
         }
+        .number(s)
     }
 
     /// The date a cell of column `col` holds (days since 1970-01-01). This is the one date entry point:
@@ -154,17 +207,28 @@ impl<'a> ReadCtx<'a> {
     /// The date a cell holds when its column has type `t`.
     #[inline]
     pub fn date_as(&self, t: ColumnType, s: &str) -> Option<f64> {
-        match t {
-            ColumnType::Auto => value::parse_date(s, self.opts),
-            ColumnType::Date(Some(order)) => value::parse_date(
-                s,
-                ReadOptions {
-                    date_order: order,
-                    ..self.opts
-                },
-            ),
-            ColumnType::Date(None) => value::parse_date(s, self.opts),
-            ColumnType::Text | ColumnType::Id | ColumnType::Number => None,
+        Reader {
+            opts: self.opts,
+            ty: t,
+        }
+        .date(s)
+    }
+
+    /// The reader of logical column `col`: one lookup, then any number of cells.
+    #[inline]
+    pub fn reader(&self, col: u32) -> Reader {
+        Reader {
+            opts: self.opts,
+            ty: self.type_of(col),
+        }
+    }
+
+    /// The reader of physical column `phys` (for code that already works on physical columns).
+    #[inline]
+    pub fn reader_phys(&self, phys: u32) -> Reader {
+        Reader {
+            opts: self.opts,
+            ty: self.types.get(phys),
         }
     }
 
