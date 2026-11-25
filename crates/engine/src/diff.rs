@@ -1068,7 +1068,7 @@ mod tests {
         let mut a = doc(A);
         let b = doc(B);
         let o = a.diff_files(&b, &spec(&[0]), &Progress::new()).unwrap();
-        let mut idx = o.index;
+        let idx = o.index;
         let marks = |d: &Document, idx: &DiffIndex| {
             let mut m = d.diff_marks(idx, Side::A, 0, 10, 0, 10).unwrap();
             m.sort_by_key(|x| (x.row, x.col));
@@ -1123,7 +1123,7 @@ mod tests {
             vec![(2, Some(0), 0), (3, Some(2), 0), (4, None, 1)]
         );
         let result = o.table.into_document().unwrap();
-        let mut idx = o.index;
+        let idx = o.index;
         idx.follow_order(Side::Result, result.data_revision());
         let mut rm = result.diff_marks(&idx, Side::Result, 0, 20, 0, 20).unwrap();
         rm.sort_by_key(|x| (x.row, x.col));
