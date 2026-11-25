@@ -594,6 +594,17 @@ impl Entry {
     }
 }
 
+/// Rules loaded from a `.ndchecks` file beside the table.
+#[derive(Debug, Clone, Serialize)]
+pub struct SidecarRules {
+    pub checks: Vec<natendo_engine::validate::Check>,
+    /// Rules left out because their column or pattern did not fit this table.
+    pub skipped: usize,
+    pub keep_first: bool,
+    /// The file's name, for the status line.
+    pub file: String,
+}
+
 /// The last data-check run: checks (as JSON), revision, unique repeats.
 type LastChecks = (String, u64, Vec<(u32, Vec<u64>)>);
 
@@ -5376,6 +5387,116 @@ impl Docs {
             _ => &[],
         };
         Ok(d.check_marks(row, rows, col, cols, spec, repeats)?)
+    }
+
+    /// The next (or previous) problem cell after a cell, in the order the table is shown
+    /// (a job: progress and Cancel). Columns in `skip_cols` (hidden ones) are passed over.
+    /// Unique rules are known from the last run while the data has not changed since.
+    #[allow(clippy::too_many_arguments)]
+    pub fn next_problem(
+        &self,
+        id: u32,
+        row: u64,
+        col: u32,
+        backward: bool,
+        spec: &CheckSpec,
+        skip_cols: &[u32],
+    ) -> CmdResult<natendo_engine::validate::JumpResult> {
+        let key = serde_json::to_string(&spec.checks).unwrap_or_default();
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for the next problem")?;
+        let d = entry.read();
+        let repeats: Vec<(u32, Vec<u64>)> = {
+            let last = entry.checks.lock().unwrap_or_else(|p| p.into_inner());
+            match last.as_ref() {
+                Some((k, rev, reps)) if *k == key && *rev == d.revision() => reps.clone(),
+                _ => Vec::new(),
+            }
+        };
+        Ok(d.next_problem(row, col, backward, spec, &repeats, skip_cols, &job.progress)?)
+    }
+
+    /// Rules a column's own values suggest (a job: progress and Cancel).
+    pub fn suggest_rules(
+        &self,
+        id: u32,
+        col: u32,
+        keep_first: bool,
+    ) -> CmdResult<Vec<natendo_engine::lintsuggest::Suggestion>> {
+        let entry = self.get(id)?;
+        let job = entry.start("Suggesting rules")?;
+        let d = entry.read();
+        Ok(d.suggest_rules(col, keep_first, &job.progress)?)
+    }
+
+    /// The rules file beside tab `id`'s file, if there is one (`None` when not): its rules that
+    /// fit this table, how many did not, and the file's name. Reading it runs nothing.
+    pub fn checks_sidecar_load(&self, id: u32) -> CmdResult<Option<SidecarRules>> {
+        use natendo_engine::checkfile::{checks_path, ChecksFile};
+        let Some(path) = self.path_of(id)? else {
+            return Ok(None);
+        };
+        let side = checks_path(&path);
+        let Some(file) = ChecksFile::load(&side)? else {
+            return Ok(None);
+        };
+        let entry = self.get(id)?;
+        let loaded = file.resolve(&entry.read());
+        Ok(Some(SidecarRules {
+            checks: loaded.checks,
+            skipped: loaded.skipped,
+            keep_first: loaded.keep_first,
+            file: side
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        }))
+    }
+
+    /// Keep tab `id`'s rules in a file beside its file (only when asked; no rules removes the
+    /// file). Refused for a private tab (private file or folder), an encrypted file, a file not
+    /// saved yet, and a folder that cannot be written. Returns the file's name.
+    pub fn checks_sidecar_keep(
+        &self,
+        id: u32,
+        checks: Vec<natendo_engine::validate::Check>,
+        keep_first: bool,
+    ) -> CmdResult<String> {
+        use natendo_engine::checkfile::{checks_path, ChecksFile};
+        if self.is_private(id)? {
+            return Err(CmdError::new(
+                "invalid",
+                "rules are not kept beside a file in private mode",
+            ));
+        }
+        if self.encrypted_from(id)?.is_some() {
+            return Err(CmdError::new(
+                "invalid",
+                "rules are not kept beside an encrypted file",
+            ));
+        }
+        let path = self.path_of(id)?.ok_or_else(|| {
+            CmdError::new("invalid", "save the file first: rules are kept beside it")
+        })?;
+        if self.is_private_path(&path) {
+            return Err(CmdError::new(
+                "invalid",
+                "rules are not kept beside a file in private mode",
+            ));
+        }
+        let side = checks_path(&path);
+        let entry = self.get(id)?;
+        let file = ChecksFile::for_rules(&entry.read(), &checks, keep_first);
+        file.save(&side).map_err(|e| {
+            CmdError::new(
+                "invalid",
+                format!("the rules could not be saved beside the file (is the folder read-only?): {e}"),
+            )
+        })?;
+        Ok(side
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default())
     }
 
     /// Build a pivot or unpivot table from a document and open it as a new,

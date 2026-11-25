@@ -16,6 +16,8 @@ export interface PrefsData {
   gridLines: boolean;
   /** View › Show invisible characters (display only). */
   showInvisible: boolean;
+  /** How a cell that breaks a rule shows: a red fill, a wavy underline, or both. */
+  problemStyle: "fill" | "underline" | "both";
   /** Numbers and dates line up on the right (as in Excel), unless a column
    *  has its own alignment. */
   alignNumbers: boolean;
@@ -133,6 +135,7 @@ const DEFAULTS: PrefsData = {
   editPanel: false,
   gridLines: true,
   showInvisible: false,
+  problemStyle: "fill",
   alignNumbers: true,
   colLetters: false,
   insights: false,
@@ -179,6 +182,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       editPanel: p.editPanel === true,
       gridLines: p.gridLines !== false,
       showInvisible: p.showInvisible === true,
+      problemStyle: p.problemStyle === "underline" || p.problemStyle === "both" ? p.problemStyle : "fill",
       alignNumbers: p.alignNumbers !== false,
       colLetters: p.colLetters === true,
       insights: p.insights === true,

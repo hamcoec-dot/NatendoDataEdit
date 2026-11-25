@@ -4,7 +4,12 @@
 // behave the same at the command level.
 
 import { mockDrill, mockItems, mockPivot, type ItemList, type PivotField, type PivotGrid, type PivotSpec } from "./pivot";
+import { isIsoDate, shapeRegex } from "./lint";
+import { shapeOf } from "./insights";
 import type {
+  JumpResult,
+  RuleSuggestion,
+  SidecarRules,
   AppInfo,
   Backend,
   Change,
@@ -3705,6 +3710,8 @@ export class MockBackend implements Backend {
         const n = numberOf(v);
         return n === null || (k.min !== null && n < k.min) || (k.max !== null && n > k.max) || (k.whole && !Number.isInteger(n));
       }
+      case "date_iso":
+        return !isIsoDate(v);
       case "date":
         return Number.isNaN(Date.parse(v)) || (!!k.min && v < k.min) || (!!k.max && v > k.max);
       case "length": {
@@ -3777,6 +3784,60 @@ export class MockBackend implements Backend {
       });
     }
     return out;
+  }
+  /** Rules kept beside a file, by document. */
+  sidecars = new Map<number, { checks: Check[]; keep_first: boolean }>();
+  async nextProblem(doc: number, row: number, col: number, backward: boolean, skipCols: number[], spec: CheckSpec): Promise<JumpResult> {
+    this.calls.push("nextProblem");
+    const d = this.get(doc);
+    const n = this.rowCount(d);
+    const marks = await this.checkMarks(doc, 0, n, 0, this.colCount(d), spec);
+    const first = Array.from({ length: this.colCount(d) }, (_, i) => i).find((i) => !skipCols.includes(i));
+    let hidden = 0;
+    const cells: [number, number, number, boolean][] = [];
+    for (const m of marks) {
+      if (m.col !== null && skipCols.includes(m.col)) {
+        hidden++;
+        continue;
+      }
+      if (m.col === null && first === undefined) continue;
+      cells.push([m.row, m.col ?? first!, m.check, m.col === null]);
+    }
+    cells.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+    const uniq = cells.filter((c, i) => i === 0 || c[0] !== cells[i - 1]![0] || c[1] !== cells[i - 1]![1]);
+    const after = backward ? [...uniq].reverse().find((c) => c[0] < row || (c[0] === row && c[1] < col)) : uniq.find((c) => c[0] > row || (c[0] === row && c[1] > col));
+    const hit = after ?? (backward ? uniq.at(-1) : uniq[0]);
+    return { hit: hit ? { row: hit[0], col: hit[1], check: hit[2], row_rule: hit[3] } : null, wrapped: !after && !!hit, hidden_skipped: hidden };
+  }
+  async suggestRules(doc: number, col: number, keepFirst: boolean): Promise<RuleSuggestion[]> {
+    this.calls.push("suggestRules");
+    const d = this.get(doc);
+    const vals: string[] = [];
+    for (let r = keepFirst ? 1 : 0; r < this.rowCount(d); r++) vals.push(this.value(d, r, col));
+    const filled = vals.filter((v) => v.trim());
+    const out: RuleSuggestion[] = [];
+    if (filled.length < 5) return out;
+    if (filled.length === vals.length) out.push({ check: { col, kind: { type: "required" } }, why: `none of the ${vals.length} values looked at is blank`, share: 1 });
+    const shapes = new Map<string, number>();
+    for (const v of filled) shapes.set(shapeOf(v), (shapes.get(shapeOf(v)) ?? 0) + 1);
+    const top = [...shapes].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0]!;
+    if (top[1] / filled.length >= 0.99 && !top[0].endsWith("…") && /[9A]/.test(top[0])) {
+      if (top[0] === "9999-99-99" && filled.every(isIsoDate)) out.push({ check: { col, name: "Date written YYYY-MM-DD", kind: { type: "date_iso" } }, why: `${filled.length} of ${filled.length} filled values are real dates written year-month-day`, share: 1 });
+      else out.push({ check: { col, name: `Matches ${top[0]}`, kind: { type: "pattern", pattern: { text: shapeRegex(top[0]), kind: "regex", match_case: true } as never } }, why: `${top[1]} of ${filled.length} filled values are written ${top[0]}`, share: top[1] / filled.length });
+    }
+    if (new Set(filled).size === filled.length && filled.length >= 20) out.push({ check: { col, kind: { type: "unique", match_case: false } }, why: `all ${filled.length} filled values looked at are different`, share: 1 });
+    return out;
+  }
+  async checksSidecarLoad(doc: number): Promise<SidecarRules | null> {
+    this.calls.push("checksSidecarLoad");
+    const s = this.sidecars.get(doc);
+    return s ? { checks: s.checks, skipped: 0, keep_first: s.keep_first, file: "mock.csv.ndchecks" } : null;
+  }
+  async checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean): Promise<string> {
+    this.calls.push("checksSidecarKeep");
+    if (checks.length) this.sidecars.set(doc, { checks, keep_first: keepFirst });
+    else this.sidecars.delete(doc);
+    return "mock.csv.ndchecks";
   }
   async checksSave(): Promise<string | null> {
     return "checks.json";

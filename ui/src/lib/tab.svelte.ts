@@ -227,6 +227,15 @@ export class Tab {
   /** Data checks (kept with views) and whether problems are marked. */
   checks = $state<Check[]>([]);
   checksMarked = $state(false);
+  /** Cells with a problem on screen ("row:col", or "row:*" for a row rule) -> the number of the rule
+   *  that marks it. Kept apart from `marks` (colours), so nothing else can collide with it. */
+  problems = new Map<string, number>();
+  /** Bumped when `problems` is replaced (the status line reads it). */
+  problemsVersion = $state(0);
+  /** The last full run of the rules: how many rules and problems, and the data it ran on. */
+  lastRun = $state<{ rules: number; problems: number; revision: number | undefined } | null>(null);
+  /** Said in the status line when rules were read from a file beside the table. */
+  rulesNote = $state("");
   /** "Show my edits": cells that differ from the file get a corner mark. */
   showEdits = $state(false);
   /** Cells Go To Special lit up ("row:col", shown rows); gone with the

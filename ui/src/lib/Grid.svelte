@@ -18,6 +18,7 @@
   import { colLetters } from "./goto";
   import { invisibleRuns } from "./invisible";
   import { insightText, pillParts } from "./insights";
+  import { describeCheck } from "./lint";
   import { formulaHelp } from "./cellformula";
   import { FUNCTIONS } from "./m8";
   /** Odd spaces with View › Show invisible characters on. */
@@ -273,6 +274,7 @@
     void font;
     void prefs.data.gridLines;
     void prefs.data.showInvisible;
+    void prefs.data.problemStyle;
     void prefs.data.alignNumbers;
     void prefs.data.colLetters;
     void prefs.data.insights;
@@ -639,6 +641,10 @@
     const edits = tab.showEdits;
     if (!rules.length && !checks.length && !edits) {
       if (tab.marks.size) tab.marks = new Map();
+      if (tab.problems.size) {
+        tab.problems = new Map();
+        tab.problemsVersion++;
+      }
       tab.edits.clear();
       marksKey = "";
       return;
@@ -661,18 +667,23 @@
       .then((all) => {
         if (marksKey !== key) return;
         const m = new Map<string, number>();
-        const lists = all.slice(0, areas.length * 2) as ({ row: number; col?: number | null } & ({ color: number } | object))[][];
+        const pm = new Map<string, number>();
+        const lists = all.slice(0, areas.length * 2) as ({ row: number; col?: number | null; check?: number } & ({ color: number } | object))[][];
         t.edits.clear();
         for (const list of all.slice(areas.length * 2) as [number, number][][]) for (const [row, col] of list) t.edits.add(`${row}:${col}`);
         lists.forEach((list, i) => {
           const problem = i >= areas.length;
           for (const k of list) {
             const id = `${k.row}:${k.col ?? "*"}`;
-            if (problem) m.set(id, PROBLEM);
-            else if (!m.has(id) && "color" in k) m.set(id, k.color);
+            if (problem) {
+              m.set(id, PROBLEM);
+              pm.set(id, k.check ?? 0);
+            } else if (!m.has(id) && "color" in k) m.set(id, k.color);
           }
         });
         t.marks = m;
+        t.problems = pm;
+        t.problemsVersion++;
         draw();
       })
       .catch((e: unknown) => onMessage(errorText(e)));
@@ -1228,6 +1239,18 @@
       }
     }
     const typeColour = { number: "#2f6fd0", date: "#2e8b57" } as const;
+    // Problem cells: a red fill, a wavy underline or both (View > Show problems as).
+    const problemStyle = prefs.data.problemStyle;
+    const underline = problemStyle !== "fill" && tab.problems.size > 0;
+    let firstShown = -1;
+    if (underline) {
+      for (let c = 0; c < tab.info.cols; c++) {
+        if (tab.columns.width(c) !== 0) {
+          firstShown = c;
+          break;
+        }
+      }
+    }
     // Long text that spills into the empty cells to its right, drawn after
     // every column (so the next cells' backgrounds don't cover it).
     const spills: { text: string; x: number; y: number; to: number; h: number; colour: string }[] = [];
@@ -1242,6 +1265,8 @@
       const align = tab.columns.aligns.get(c);
       const clipText = tab.columns.clips.has(c);
       let y = rs.pos;
+      // The wavy lines of this column, drawn as one path.
+      let wave: Path2D | null = null;
       ctx.save();
       ctx.beginPath();
       ctx.rect(x, rs.pos, cw, geom.between(rs.start, rs.end));
@@ -1279,7 +1304,17 @@
           ctx.strokeRect(x + 1.5, y + 1.5, cw - 3, rh - 3);
         }
         const mark = tab.marks.size ? (tab.marks.get(`${r}:${c}`) ?? tab.marks.get(`${r}:*`)) : undefined;
-        if (mark !== undefined) {
+        if (underline && (tab.problems.has(`${r}:${c}`) || (c === firstShown && tab.problems.has(`${r}:*`)))) {
+          const wy = y + rh - 3;
+          const end = x + Math.min(cw, 600) - 2;
+          wave ??= new Path2D();
+          wave.moveTo(x + 2, wy);
+          for (let wx = x + 2; wx < end; wx += 4) {
+            wave.lineTo(wx + 2, wy - 2);
+            wave.lineTo(wx + 4, wy);
+          }
+        }
+        if (mark !== undefined && !(mark === PROBLEM && problemStyle === "underline")) {
           ctx.fillStyle = mark === PROBLEM ? PROBLEM_COLOR : (PALETTE[mark]?.color ?? colors.accent);
           ctx.globalAlpha = 0.28;
           ctx.fillRect(x, y, cw, rh);
@@ -1398,6 +1433,11 @@
           ctx.fillStyle = colors.accent;
           ctx.fillRect(x, y + rh - 2, cw, 2);
         }
+      }
+      if (wave) {
+        ctx.strokeStyle = PROBLEM_COLOR;
+        ctx.lineWidth = 1.3;
+        ctx.stroke(wave);
       }
       ctx.restore();
       if (prefs.data.gridLines) {
@@ -2108,7 +2148,14 @@
       }
       // A link's address shows when pointed at (Ctrl+click opens it).
       const link = h.area === "cell" ? linkAt(h.row, h.col) : null;
-      tip = link ? `${link}\nCtrl+click to open` : "";
+      let rule = "";
+      if (!link && h.area === "cell" && tab.problems.size) {
+        const own = tab.problems.get(`${h.row}:${h.col}`);
+        const i = own ?? tab.problems.get(`${h.row}:*`);
+        const c = i === undefined ? undefined : tab.checks[i];
+        if (c) rule = `Problem: ${describeCheck(c)}${own === undefined ? " (row rule)" : ""}`;
+      }
+      tip = link ? `${link}\nCtrl+click to open` : rule;
       const pointer = h.area === "cell" && ((e.ctrlKey && !!linkAt(h.row, h.col)) || onTickBox(x, y, h.row, h.col) || onPickButton(x, y, h.row, h.col));
       const r = tab.drawRect;
       const grab =

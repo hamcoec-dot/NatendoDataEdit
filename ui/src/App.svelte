@@ -78,6 +78,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import ProfileDialog from "./lib/ProfileDialog.svelte";
   import { FULL_SAMPLE, MAX_INSIGHT_COLS, QUICK_SAMPLE } from "./lib/insights";
   import ChecksDialog from "./lib/ChecksDialog.svelte";
+  import { describeCheck, jumpText, shapeRegex } from "./lib/lint";
   import FieldCheckDialog from "./lib/FieldCheckDialog.svelte";
   import MatchDialog from "./lib/MatchDialog.svelte";
   import StreetDialog from "./lib/StreetDialog.svelte";
@@ -408,6 +409,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     active = tabs.length - 1;
     void tick().then(() => grid?.focus());
     if (guess) void guessHeader(t);
+    void loadSidecar(t);
     // A document the second window makes itself (a result tab) is its own.
     if (SECOND_WINDOW && !fromOtherWindow) void backend().windowClaim(handOverOf(t)).catch(() => {});
     void backend()
@@ -5645,6 +5647,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.filterFormula", label: "Filter by formula…", run: () => { computeMode = "filter"; computeOpen = true; }, enabled: ready },
     { id: "data.checks", label: "Data checks (&validation)…", run: () => { checksOpen = true; }, enabled: ready },
     { id: "data.fieldCheck", label: "Check &fields with patterns…", run: () => { fieldCheckOpen = true; }, enabled: ready },
+    { id: "data.nextProblem", label: "Jump to &next problem", keys: ["F7"], run: () => void jumpProblem(false), enabled: ready },
+    { id: "data.prevProblem", label: "Jump to &previous problem", keys: ["Shift+F7"], run: () => void jumpProblem(true), enabled: ready },
+    { id: "data.checkNow", label: "Check the whole table &now", run: () => { const t = tab; if (t) void checkNow(t); }, enabled: () => ready() && !!tab?.checks.length },
     { id: "data.unmarkChecks", label: "Hide problem marks", run: () => { if (tab) keepChecks(tab.checks, false); }, enabled: () => !!tab?.checksMarked },
     { id: "help.logs", label: "Open the &log folder", run: () => void backend().openLogFolder().catch((e: unknown) => say(errorText(e))) },
     {
@@ -5810,6 +5815,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "view.zoomReset", label: "&Zoom 100%", keys: ["Ctrl+Alt+0"], run: () => prefs.setZoom(1) },
     { id: "view.cellBar", label: "&Expand cell bar", keys: ["Ctrl+Shift+U"], run: () => { cellBarExpanded = !cellBarExpanded; }, checked: () => cellBarExpanded },
     { id: "view.gridLines", label: "&Gridlines", run: () => { prefs.data.gridLines = !prefs.data.gridLines; prefs.save(); }, checked: () => prefs.data.gridLines },
+    { id: "view.problemsFill", label: "Show problems as a red &fill", run: () => { prefs.data.problemStyle = "fill"; prefs.save(); }, checked: () => prefs.data.problemStyle === "fill" },
+    { id: "view.problemsUnderline", label: "Show problems as a wavy &underline", run: () => { prefs.data.problemStyle = "underline"; prefs.save(); }, checked: () => prefs.data.problemStyle === "underline" },
+    { id: "view.problemsBoth", label: "Show problems as fill and underline", run: () => { prefs.data.problemStyle = "both"; prefs.save(); }, checked: () => prefs.data.problemStyle === "both" },
     { id: "view.invisible", label: "Show &invisible characters", keys: ["Ctrl+Shift+H"], run: () => { prefs.data.showInvisible = !prefs.data.showInvisible; prefs.save(); }, checked: () => prefs.data.showInvisible },
     { id: "view.fontBigger", label: "Larger te&xt", run: () => { prefs.data.fontSize = Math.min(28, prefs.data.fontSize + 1); prefs.save(); } },
     { id: "view.fontSmaller", label: "Smaller tex&t", run: () => { prefs.data.fontSize = Math.max(9, prefs.data.fontSize - 1); prefs.save(); } },
@@ -5932,6 +5940,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.patternOdd", label: "Show rows that break the column's pattern", run: () => void showShape(patternCol(), true, false), enabled: () => ready() && !!patternShape(patternCol()) },
     { id: "data.patternOddBlanks", label: "Show rows that break the pattern, and blank ones", run: () => void showShape(patternCol(), true, true), enabled: () => ready() && !!patternShape(patternCol()) },
     { id: "data.patternMatch", label: "Show rows that match the column's pattern", run: () => void showShape(patternCol(), false, false), enabled: () => ready() && !!patternShape(patternCol()) },
+    { id: "data.patternCheck", label: "Check this pattern (add a rule)", run: () => checkPattern(patternCol()), enabled: () => !!patternShape(patternCol()) },
     { id: "data.patternCopy", label: "Copy the column's pattern", run: () => void copyPattern(patternCol()), enabled: () => !!patternShape(patternCol()) },
     { id: "data.showDuplicates", label: "S&how duplicates…", run: () => openOp("show_duplicates"), enabled: ready },
     { id: "data.removeBlankRows", label: "Remove &blank rows", run: () => removeBlanks(false), enabled: ready, repeatable: true },
@@ -6012,7 +6021,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.invisible", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
@@ -6026,7 +6035,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
-        "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.fieldCheck", "data.unmarkChecks", "data.clearChecks", "-",
+        "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.fieldCheck", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "-",
         "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",
@@ -6062,10 +6071,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
-    pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCopy"],
+    pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
 
@@ -6479,6 +6488,97 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     t.checksMarked = mark && checks.length > 0;
     t.checkVersion++;
     t.bump();
+  }
+
+  /** The rules as a spec (what the engine runs). */
+  function ruleSpec(t: Tab): CheckSpec {
+    return { checks: $state.snapshot(t.checks) as Check[], keep_first: t.header, read: READ, now: localDays() };
+  }
+
+  /** Run the rules over the whole table once (a job with progress and Cancel) and keep the figures. */
+  async function checkNow(t: Tab): Promise<boolean> {
+    if (!t.checks.length) return false;
+    try {
+      const rep = await runJob("Checking", () => backend().runChecks(t.id, ruleSpec(t)));
+      if (!rep) return false;
+      t.lastRun = { rules: t.checks.length, problems: rep.problems, revision: t.info.data_revision };
+      t.checkVersion++;
+      t.bump();
+      return true;
+    } catch (e) {
+      say(errorText(e));
+      return false;
+    }
+  }
+
+  /** F7 / Shift+F7: the next (previous) problem cell, in the order the table is shown. Problems in hidden
+   *  columns are passed over and counted in the message. Rules with a Unique check need the last full run to
+   *  be current: if it is not, it runs once first, and the jump then uses that result even if the data moved on. */
+  async function jumpProblem(backward: boolean): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    if (!t.checks.length) {
+      say("There are no rules yet. Add some in Data checks.");
+      checksOpen = true;
+      return;
+    }
+    if (!t.checksMarked) {
+      t.checksMarked = true;
+      t.checkVersion++;
+    }
+    const stale = !t.lastRun || t.lastRun.revision !== t.info.data_revision;
+    if (stale && t.checks.some((c) => c.kind.type === "unique")) await checkNow(t);
+    try {
+      const r = await runJob("Looking for the next problem", () => backend().nextProblem(t.id, t.cell.row, t.cell.col, backward, hiddenColsOf(t), ruleSpec(t)));
+      if (!r) return;
+      const rule = r.hit ? describeCheck(t.checks[r.hit.check] ?? t.checks[0]!) + (r.hit.row_rule ? " (row rule)" : "") : null;
+      const notCurrent = t.lastRun && t.lastRun.revision !== t.info.data_revision ? " (not current)" : "";
+      say(jumpText(r, rule) + notCurrent);
+      if (r.hit) grid?.select({ row: r.hit.row, col: r.hit.col });
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  /** Check this pattern (pill menu): a rule that every value in the column must have the column's shape. */
+  function checkPattern(col: number): void {
+    const t = tab;
+    const s = patternShape(col);
+    if (!t || !s) return;
+    if (s.endsWith("…")) {
+      say("That pattern is cut short (long values), so it cannot be made a rule.");
+      return;
+    }
+    const rule: Check = { col, name: `Matches ${s}`, kind: { type: "pattern", pattern: { text: shapeRegex(s), kind: "regex", match_case: true } as never } };
+    keepChecks([...t.checks, rule], true);
+    t.lastRun = null;
+    say(`Added the rule “Matches ${s}”: cells in this column that are not written that way are marked. F7 jumps to the next one.`);
+  }
+
+  /** The rule the active cell breaks, for the status bar ("" when none). */
+  function problemNote(t: Tab): string {
+    void t.problemsVersion;
+    if (!t.problems.size) return "";
+    const own = t.problems.get(`${t.cell.row}:${t.cell.col}`);
+    const i = own ?? t.problems.get(`${t.cell.row}:*`);
+    const c = i === undefined ? undefined : t.checks[i];
+    return c ? `Rule: ${describeCheck(c)}${own === undefined ? " (row rule)" : ""}` : "";
+  }
+
+  /** Rules kept beside the file load when it opens (never run on their own: "Check now" does that). */
+  async function loadSidecar(t: Tab): Promise<void> {
+    try {
+      const s = await backend().checksSidecarLoad(t.id);
+      if (!s || !s.checks.length || t.checks.length) return;
+      t.checks = s.checks;
+      t.checksMarked = true;
+      t.checkVersion++;
+      t.rulesNote = `Loaded ${s.checks.length === 1 ? "1 rule" : `${s.checks.length} rules`} from ${s.file}${s.skipped ? ` (${s.skipped} did not fit this table)` : ""}`;
+      t.bump();
+      say(t.rulesNote);
+    } catch (e) {
+      say(`The rules file beside this file was not used: ${errorText(e)}`);
+    }
   }
 
   /** The column a pattern command acts on: the one whose pill menu it was picked from, else the active column. */
@@ -7479,6 +7579,14 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     <span class="spacer"></span>
     {#if findOpen && tab && tab.findCount !== null}<span class="muted" title="Cells that match the find bar's search">Find: {tab.findCount.toLocaleString()}</span>{/if}
     {#if extendMode}<button type="button" class="small" title="Arrow keys grow the selection. Click to end (or F8, or Esc)." onclick={() => toggleExtend()}>Extend selection</button>{/if}
+    {#if tab && tab.checks.length}
+      {@const note = problemNote(tab)}
+      {#if note}<span class="msg" title="The rule this cell breaks (F7 jumps to the next problem)">{note}</span>{/if}
+      <span class="muted" title={tab.rulesNote || "How many rules are set and how many problems the last full check found. F7 jumps to the next problem."}>
+        {plural(tab.checks.length, "rule")}{#if tab.lastRun}, {plural(tab.lastRun.problems, "problem")}{#if tab.lastRun.revision !== tab.info.data_revision} (not current){/if}{/if}
+      </span>
+      {#if !tab.lastRun || tab.lastRun.revision !== tab.info.data_revision}<button type="button" class="small" title="Run the rules over the whole table" onclick={() => { const t = tab; if (t) void checkNow(t); }}>Check now</button>{/if}
+    {/if}
     {#if status}
       {#if tab}<QuickTotals {tab} />{/if}
       {#if status.sel}<span>{status.sel}</span>{/if}

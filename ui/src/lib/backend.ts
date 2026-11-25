@@ -797,6 +797,7 @@ export type CheckKind =
   | { type: "required" }
   | { type: "number"; min: number | null; max: number | null; whole: boolean }
   | { type: "date"; min: string | null; max: string | null }
+  | { type: "date_iso" }
   | { type: "length"; min: number | null; max: number | null }
   | { type: "list"; values: string[]; match_case: boolean }
   | { type: "pattern"; pattern: Pattern }
@@ -812,6 +813,33 @@ export interface Check {
   /** Column (ignored for expressions). */
   col: number | null;
   kind: CheckKind;
+  /** What the rule is called ("5-digit ZIP"); a sentence made from the kind when none. */
+  name?: string | null;
+}
+/** Where a jump to the next problem landed. */
+export interface Jump {
+  row: number;
+  col: number;
+  check: number;
+  row_rule: boolean;
+}
+export interface JumpResult {
+  hit: Jump | null;
+  wrapped: boolean;
+  hidden_skipped: number;
+}
+/** A rule the data suggests (never applied until the person ticks it). */
+export interface RuleSuggestion {
+  check: Check;
+  why: string;
+  share: number;
+}
+/** Rules read from a `.ndchecks` file beside the table. */
+export interface SidecarRules {
+  checks: Check[];
+  skipped: number;
+  keep_first: boolean;
+  file: string;
 }
 export interface CheckSpec {
   checks: Check[];
@@ -1499,6 +1527,13 @@ export interface Backend {
   forgetScrambleKey(): Promise<void>;
   runChecks(doc: number, spec: CheckSpec): Promise<CheckReport>;
   checkMarks(doc: number, row: number, rows: number, col: number, cols: number, spec: CheckSpec): Promise<CheckMark[]>;
+  /** The next (previous) problem cell after a cell; `skipCols` are passed over (hidden columns). */
+  nextProblem(doc: number, row: number, col: number, backward: boolean, skipCols: number[], spec: CheckSpec): Promise<JumpResult>;
+  suggestRules(doc: number, col: number, keepFirst: boolean): Promise<RuleSuggestion[]>;
+  /** The rules file beside the table, or null when there is none. */
+  checksSidecarLoad(doc: number): Promise<SidecarRules | null>;
+  /** Keep rules beside the file (an empty list removes the file); the file's name. */
+  checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean): Promise<string>;
   /** Shows the Save dialog; the file's name, or null when cancelled. */
   checksSave(checks: Check[]): Promise<string | null>;
   /** Shows the Open dialog; null when cancelled. */
@@ -2143,6 +2178,18 @@ class TauriBackend implements Backend {
   }
   checkMarks(doc: number, row: number, rows: number, col: number, cols: number, spec: CheckSpec) {
     return call<CheckMark[]>("check_marks", { doc, row, rows, col, cols, spec });
+  }
+  nextProblem(doc: number, row: number, col: number, backward: boolean, skipCols: number[], spec: CheckSpec) {
+    return call<JumpResult>("next_problem", { doc, row, col, backward, skipCols, spec });
+  }
+  suggestRules(doc: number, col: number, keepFirst: boolean) {
+    return call<RuleSuggestion[]>("suggest_rules", { doc, col, keepFirst });
+  }
+  checksSidecarLoad(doc: number) {
+    return call<SidecarRules | null>("checks_sidecar_load", { doc });
+  }
+  checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean) {
+    return call<string>("checks_sidecar_keep", { doc, checks, keepFirst });
   }
   checksSave(checks: Check[]) {
     return call<string | null>("checks_save", { checks });

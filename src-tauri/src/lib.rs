@@ -3283,6 +3283,56 @@ async fn check_marks(
     blocking(move || docs.check_marks(doc, row, rows, col, cols, &spec)).await
 }
 
+/// The next (previous) problem cell after a cell.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn next_problem(
+    docs: DocsState<'_>,
+    doc: u32,
+    row: u64,
+    col: u32,
+    backward: bool,
+    skip_cols: Vec<u32>,
+    spec: natendo_engine::validate::CheckSpec,
+) -> CmdResult<natendo_engine::validate::JumpResult> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.next_problem(doc, row, col, backward, &spec, &skip_cols)).await
+}
+
+/// Rules a column's values suggest.
+#[tauri::command]
+async fn suggest_rules(
+    docs: DocsState<'_>,
+    doc: u32,
+    col: u32,
+    keep_first: bool,
+) -> CmdResult<Vec<natendo_engine::lintsuggest::Suggestion>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.suggest_rules(doc, col, keep_first)).await
+}
+
+/// The rules file beside the table, if any.
+#[tauri::command]
+async fn checks_sidecar_load(
+    docs: DocsState<'_>,
+    doc: u32,
+) -> CmdResult<Option<docs::SidecarRules>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.checks_sidecar_load(doc)).await
+}
+
+/// Keep the rules in a file beside the table (empty list removes the file).
+#[tauri::command]
+async fn checks_sidecar_keep(
+    docs: DocsState<'_>,
+    doc: u32,
+    checks: Vec<natendo_engine::validate::Check>,
+    keep_first: bool,
+) -> CmdResult<String> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.checks_sidecar_keep(doc, checks, keep_first)).await
+}
+
 /// Largest checks file read.
 const MAX_CHECKS_FILE: u64 = 4 << 20;
 
@@ -3931,6 +3981,10 @@ pub fn run() {
             save_mail,
             run_checks,
             check_marks,
+            next_problem,
+            suggest_rules,
+            checks_sidecar_load,
+            checks_sidecar_keep,
             checks_save,
             checks_open,
             file_types,
