@@ -5,6 +5,8 @@
   // through inserts, deletes and moves.
   import { backend, errorText, type Checkpoint, type SinceCell, type SinceView } from "./backend";
   import FormShell from "./FormShell.svelte";
+  import { guardNote } from "./csvguard";
+  import { prefs } from "./prefs.svelte";
 
   interface Props {
     doc: number;
@@ -44,8 +46,8 @@
 
   async function report(): Promise<void> {
     try {
-      const n = await backend().checkpointSinceReport(doc, checkpoint.id, header);
-      saved = n === null ? "" : `Saved ${n.toLocaleString()} ${n === 1 ? "line" : "lines"}.`;
+      const w = await backend().checkpointSinceReport(doc, checkpoint.id, header, prefs.data.csvFormulaGuard);
+      saved = w === null ? "" : `Saved ${w.entries.toLocaleString()} ${w.entries === 1 ? "line" : "lines"}.${guardNote(w.guarded)}`;
     } catch (e) {
       problem = errorText(e);
     }

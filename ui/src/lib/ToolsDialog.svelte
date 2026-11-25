@@ -8,6 +8,8 @@
   import { untrack } from "svelte";
   import type { Combine, DataOp, DiffSpec, SplitParts, TableOp } from "./backend";
   import FormShell from "./FormShell.svelte";
+  import { GUARD_LABEL } from "./csvguard";
+  import { prefs } from "./prefs.svelte";
   import { toolsRequest, type ToolKind } from "./m10";
 
   export interface ToolsRun {
@@ -68,6 +70,8 @@
   let trim = $state(true);
   let byCol = $state(true);
   let every = $state(100);
+  // The Split dialog's own tick: off unless the person chose it last time.
+  let guard = $state(prefs.data.csvFormulaGuardSplit);
   let blankRows = $state(1);
   let perRow = $state(3);
   let down = $state(false);
@@ -114,6 +118,7 @@
       trim,
       byCol,
       every,
+      guard,
       blankRows,
       perRow,
       down,
@@ -220,6 +225,10 @@
     <label class="row"><input type="checkbox" bind:checked={drawnOrder} /> Keep the order drawn (otherwise as in the table)</label>
   {/if}
   {#if kind !== "combine"}<label class="row"><input type="checkbox" bind:checked={myHeader} /> The first row holds titles{kind === "split" ? " (each file gets them)" : ""}</label>{/if}
+  {#if kind === "split"}
+    <label class="row"><input type="checkbox" data-testid="split-guard" bind:checked={guard} onchange={() => { prefs.data.csvFormulaGuardSplit = guard; prefs.save(); }} /> {GUARD_LABEL}</label>
+    <p class="note">Off by default: the files keep your values exactly. Ticked, cells starting with = + - @ get an apostrophe in front (plain numbers do not).</p>
+  {/if}
   {#if kind === "reshape" || kind === "stack" || kind === "sample" || kind === "compare"}
     <p class="note">The result opens as a new table; this file does not change.</p>
   {:else if kind === "split"}

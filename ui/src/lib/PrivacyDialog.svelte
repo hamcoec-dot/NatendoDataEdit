@@ -7,6 +7,8 @@
   import { MIN_PHRASE, type Step } from "./clean";
   import FormShell from "./FormShell.svelte";
   import { KIND_WORDS } from "./privacy";
+  import { GUARD_LABEL } from "./csvguard";
+  import { prefs } from "./prefs.svelte";
 
   type Choice = "keep" | "drop" | "mask" | "year" | "age" | "scramble";
 
@@ -22,6 +24,8 @@
     onClose: () => void;
   }
   let { titles, cols, header, findings, problem = "", onRun, onClose }: Props = $props();
+  /** Preset from the setting; changing it here changes this copy only. */
+  let guard = $state(prefs.data.csvFormulaGuard);
 
   /** Privacy-safe first choices for each kind. */
   const DEFAULT: Record<PrivateKind, Choice> = {
@@ -86,7 +90,7 @@
       if (c === "drop") return { action: "drop" };
       return { action: "clean", cleaner: { version: 1, name: "", steps: [step(c, col)!] } };
     });
-    onRun({ columns, header, read: { decimal_comma: false, date_order: dayFirst ? "dmy" : "mdy" } });
+    onRun({ columns, header, read: { decimal_comma: false, date_order: dayFirst ? "dmy" : "mdy" }, guard });
   }
 
   const LABELS: [Choice, string][] = [
@@ -130,6 +134,7 @@
   {#if choices.includes("age") || choices.includes("year")}
     <label class="row"><input type="checkbox" bind:checked={dayFirst} /> Dates are day first (31/12/1980)</label>
   {/if}
+  <label class="row"><input type="checkbox" data-testid="safe-guard" bind:checked={guard} /> {GUARD_LABEL}</label>
   {#if needsPhrase}
     <label class="row">Secret phrase <input type="password" autocomplete="off" spellcheck="false" bind:value={phrase} /></label>
     <p class="note">The same value always gives the same scrambled text with the same phrase, so copies still match each other (Social Security, phone, licence and e-mail columns ignore spaces, punctuation and case). <strong>Anyone with the phrase can work out the originals</strong>: use a long phrase (at least {MIN_PHRASE} characters, several words), never reuse it, and choose Leave out instead when sharing outside the office. The phrase is never saved.</p>

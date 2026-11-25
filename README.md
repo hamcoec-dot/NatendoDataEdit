@@ -962,6 +962,16 @@ everything is also in command search.
 - **Split one file into many** (by a column's value or a row count) and
   **combine many files into one**.
 - **Append** the rows of another file.
+- **CSV export safety** (File > Options, or command search): a spreadsheet
+  can run a CSV cell that starts with `=`, `+`, `-` or `@` as a formula. With
+  the setting on (it is, to start with), the list of changes, the report of
+  what changed since a checkpoint and the share-safe copy put one apostrophe
+  in front of such a cell, so Excel shows it as text (`'=1+1`); plain numbers
+  such as `-5`, `+1.5` or `-1,234.50` stay as they are, and the message says
+  how many cells were changed. Split into files has its own tick, off to start
+  with. A file read back into this app or another program keeps the
+  apostrophe, which is why saving your own file never adds one. Excel files
+  are not affected: their cells are written as text, never as formulas.
 - **Encrypted copies** (`.ndenc`): a password-protected copy that opens only
   in this app, straight into memory, never to disk.
 

@@ -10,6 +10,7 @@ import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type 
 import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowheights";
   import { SECOND_WINDOW } from "./lib/windowRole";
   import { invisibleNote, xrayNote } from "./lib/invisible";
+  import { GUARD_LABEL, guardNote } from "./lib/csvguard";
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu, SELECTION_FREE } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
@@ -534,7 +535,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       const blanks = (rep.blanked_cols ?? []).map(([c, n]) => `${plural(n, "value")} in ${columnTitle(t, c)}`).join(", ");
       say(
         `Saved a share-safe copy: ${plural(rep.rows, "row")}, ${plural(rep.cols, "column")}${rep.changed ? `, ${plural(rep.changed, "value")} masked` : ""}. The open file did not change.` +
-          (rep.blanked ? ` ${blanks} could not be read and were left blank, not copied as they were.` : ""),
+          (rep.blanked ? ` ${blanks} could not be read and were left blank, not copied as they were.` : "") +
+          guardNote(rep.guarded),
       );
     } catch (e) {
       privacyProblem = errorText(e);
@@ -4285,7 +4287,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         const spec = r.split;
         // null: the folder dialog was cancelled.
         const rep = await runJob("Splitting into files", () => backend().splitToFiles(t.id, spec, false));
-        if (rep) say(`Wrote ${plural(rep.files, "file")} holding ${plural(rep.rows, "row")} into the folder you chose.${splitPrivateText(rep)}`);
+        if (rep) say(`Wrote ${plural(rep.files, "file")} holding ${plural(rep.rows, "row")} into the folder you chose.${splitPrivateText(rep)}${guardNote(rep.guarded)}`);
         return;
       }
       if (r.diff) {
@@ -4358,7 +4360,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         if (a !== "replace") return;
         try {
           const rep = await runJob("Splitting into files", () => backend().splitToFiles(t.id, spec, true));
-          if (rep) say(`Wrote ${plural(rep.files, "file")} holding ${plural(rep.rows, "row")} (${plural(rep.replaced, "file")} replaced).${splitPrivateText(rep)}`);
+          if (rep) say(`Wrote ${plural(rep.files, "file")} holding ${plural(rep.rows, "row")} (${plural(rep.replaced, "file")} replaced).${splitPrivateText(rep)}${guardNote(rep.guarded)}`);
         } catch (e2) {
           say(errorText(e2));
         }
@@ -5981,6 +5983,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "tools.recipe", label: "&Recipe (save or run steps)…", run: () => void openRecipes(), enabled: ready },
     { id: "tools.searchFolder", label: "Search a &folder of files…", keys: ["Ctrl+Shift+F"], run: () => { folderSearchOpen = true; } },
     { id: "view.showEdits", label: "Show my &edits", run: () => setShowEdits(!tab?.showEdits), enabled: hasTab, checked: () => !!tab?.showEdits },
+    { id: "file.csvGuard", label: GUARD_LABEL, run: () => { prefs.data.csvFormulaGuard = !prefs.data.csvFormulaGuard; prefs.save(); say(prefs.data.csvFormulaGuard ? "Reports and share-safe copies now put an apostrophe in front of cells Excel could run as formulas." : "Reports and share-safe copies now write every cell as it is."); }, checked: () => prefs.data.csvFormulaGuard },
     { id: "file.options", label: "Op&tions…", run: () => { optionsOpen = true; }, enabled: () => !SECOND_WINDOW },
     { id: "data.profile", label: "Column &profile…", run: () => { profileCol = tab?.cell.col ?? null; }, enabled: ready },
     { id: "data.counts", label: "Cou&nt values in a new tab", keys: ["Alt+Shift+F"], run: () => void openCounts(), enabled: ready },
@@ -7190,8 +7193,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (!t) return;
     if (!(await privacyGate("The report writes the old and new value of every changed cell to a file."))) return;
     try {
-      const n = await runJob("Writing the list of changes", () => backend().saveChangeReport(t.id));
-      if (n !== null) say(`Saved the list of changes (${plural(n, "change")}) as a CSV report.`);
+      const w = await runJob("Writing the list of changes", () => backend().saveChangeReport(t.id, prefs.data.csvFormulaGuard));
+      if (w) say(`Saved the list of changes (${plural(w.entries, "change")}) as a CSV report.${guardNote(w.guarded)}`);
     } catch (e) {
       say(errorText(e));
     }

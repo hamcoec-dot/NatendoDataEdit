@@ -74,6 +74,10 @@ export interface PrefsData {
   /** Warn before private-looking data leaves the app (export, print, Save
    *  As, large copies). */
   privacyWarnings: boolean;
+  /** CSV formula guard for the reports and the share-safe copy. */
+  csvFormulaGuard: boolean;
+  /** The Split dialog's own tick (split files are data: off by default). */
+  csvFormulaGuardSplit: boolean;
   /** Searches saved by name in the find bar (only when Save is pressed). */
   savedSearches: SavedSearch[];
 }
@@ -166,6 +170,8 @@ const DEFAULTS: PrefsData = {
   reopenLast: "ask",
   askHeader: true,
   privacyWarnings: true,
+  csvFormulaGuard: true,
+  csvFormulaGuardSplit: false,
   savedSearches: [],
 };
 
@@ -215,6 +221,8 @@ export function parsePrefs(raw: string | null): PrefsData {
       reopenLast: p.reopenLast === "always" || p.reopenLast === "never" ? p.reopenLast : "ask",
       askHeader: p.askHeader !== false,
       privacyWarnings: p.privacyWarnings !== false,
+      csvFormulaGuard: p.csvFormulaGuard !== false,
+      csvFormulaGuardSplit: p.csvFormulaGuardSplit === true,
       savedSearches: savedSearches(p.savedSearches),
       autosaveMinutes: typeof p.autosaveMinutes === "number" && Number.isFinite(p.autosaveMinutes) ? Math.min(60, Math.max(1, Math.round(p.autosaveMinutes))) : 2,
     };

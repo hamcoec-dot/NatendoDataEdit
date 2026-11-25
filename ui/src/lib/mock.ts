@@ -48,7 +48,7 @@ import { encodeViewport, decodeViewport, type ViewportData } from "./binary";
 import { parseTsv, toTsv } from "./tsv";
 import { runCleaner, type Cleaner, type CleanPreview, type CleanSpec } from "./clean";
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, Summary, View } from "./views";
-import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, TableReport, Totals } from "./backend";
+import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, Written, TableReport, Totals } from "./backend";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
@@ -3155,7 +3155,8 @@ export class MockBackend implements Backend {
     throw err("invalid", "the browser preview has no files to rename; the desktop app does");
   }
 
-  async splitToFiles(): Promise<SplitReport | null> {
+  async splitToFiles(_doc?: number, spec?: { guard?: boolean }): Promise<SplitReport | null> {
+    this.calls.push(`splitToFiles:guard=${spec?.guard === true}`);
     throw err("invalid", "the browser preview cannot write files; the desktop app does");
   }
 
@@ -3610,7 +3611,8 @@ export class MockBackend implements Backend {
     const n = this.rowCount(d);
     const kept = Array.from({ length: d.info.cols }, (_, c) => spec.columns[c] ?? { action: "keep" }).filter((a) => a.action !== "drop").length;
     if (!kept) throw err("invalid", "keep at least one column");
-    return { rows: Math.max(0, n - (spec.header ? 1 : 0)), cols: kept, changed: 0, bytes: 0 };
+    this.calls.push(`saveSafeCopy:guard=${spec.guard !== false}`);
+    return { rows: Math.max(0, n - (spec.header ? 1 : 0)), cols: kept, changed: 0, bytes: 0, guarded: spec.guard !== false ? 2 : 0 };
   }
   /** Cell edits that differ from the generated file (stand-in for the
    *  engine's full comparison). */
@@ -3682,9 +3684,10 @@ export class MockBackend implements Backend {
   async openFolderHit(): Promise<Opened> {
     return this.openSample();
   }
-  async saveChangeReport(doc: number): Promise<number | null> {
+  async saveChangeReport(doc: number, guard = true): Promise<Written | null> {
     const l = await this.changeList(doc);
-    return l.cells_total + l.added_total + l.deleted_total;
+    this.calls.push(`saveChangeReport:guard=${guard}`);
+    return { entries: l.cells_total + l.added_total + l.deleted_total, guarded: guard ? 2 : 0 };
   }
   private watch: import("./watch").WatchStatus = { running: false, folder: null, recipe: null, out: null, done: 0, failed: 0, log: [] };
   async watchPick(which: "folder" | "recipe" | "out"): Promise<import("./watch").WatchStatus> {
@@ -3933,8 +3936,9 @@ export class MockBackend implements Backend {
     const v = this.sinceView(this.get(doc), checkpoint, header);
     return { totals: v.totals, cells: v.cells.slice(offset, offset + want) };
   }
-  async checkpointSinceReport(doc: number, checkpoint: number, header: boolean): Promise<number | null> {
-    return this.sinceView(this.get(doc), checkpoint, header).totals.entries;
+  async checkpointSinceReport(doc: number, checkpoint: number, header: boolean, guard = true): Promise<Written | null> {
+    this.calls.push(`checkpointSinceReport:guard=${guard}`);
+    return { entries: this.sinceView(this.get(doc), checkpoint, header).totals.entries, guarded: guard ? 2 : 0 };
   }
   async checkpointRemove(doc: number, checkpoint: number): Promise<import("./backend").Checkpoint[]> {
     const d = this.get(doc);

@@ -32,6 +32,8 @@ export interface ToolChoices {
   trim: boolean;
   byCol: boolean;
   every: number;
+  /** Split: the CSV formula guard tick. */
+  guard?: boolean;
   blankRows: number;
   perRow: number;
   down: boolean;
@@ -108,7 +110,7 @@ export function toolsRequest(kind: ToolKind, c: ToolChoices): ToolsRequest | str
       };
     case "split":
       if (!c.byCol && (!whole(c.every) || c.every < 1)) return "Choose how many rows go in each file.";
-      return { split: { col: c.byCol ? c.col : null, every: c.byCol ? 0 : c.every, keep_first: c.header } };
+      return { split: { col: c.byCol ? c.col : null, every: c.byCol ? 0 : c.every, keep_first: c.header, guard: !!c.guard } };
     case "combine":
       return { combine: { header: c.header, by_title: c.header && c.byTitle, source: c.source } };
   }

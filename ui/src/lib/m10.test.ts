@@ -41,7 +41,7 @@ describe("tools requests", () => {
     expect(toolsRequest("sample", { ...base, sizeKind: "every", size: 0 })).toMatch(/every/i);
     expect(toolsRequest("compare", { ...base, other: -1 })).toMatch(/Open the other/);
     expect(toolsRequest("compare", { ...base, wholeRow: true, cols: [] })).toMatchObject({ table: { op: "compare", other: 2, spec: { keys: [] } } });
-    expect(toolsRequest("split", { ...base, byCol: false, every: 1000 })).toEqual({ split: { col: null, every: 1000, keep_first: true } });
+    expect(toolsRequest("split", { ...base, byCol: false, every: 1000 })).toEqual({ split: { col: null, every: 1000, keep_first: true, guard: false } });
     expect(toolsRequest("combine", { ...base, header: false })).toEqual({ combine: { header: false, by_title: false, source: true } });
   });
 });

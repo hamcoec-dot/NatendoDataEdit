@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import { backend, errorText, type AgentStatus, type FileType } from "./backend";
   import FormShell from "./FormShell.svelte";
+  import { GUARD_LABEL } from "./csvguard";
   import { prefs } from "./prefs.svelte";
 
   interface Props {
@@ -160,6 +161,11 @@
       <button type="button" disabled={clearing} onclick={clearVersions}>Delete earlier saves now</button>
       {#if cleared}<span class="note">{cleared}</span>{/if}
     </div>
+  </fieldset>
+  <fieldset>
+    <legend>Export safety</legend>
+    <label class="row"><input type="checkbox" data-testid="opt-csv-guard" bind:checked={prefs.data.csvFormulaGuard} onchange={() => prefs.save()} /> {GUARD_LABEL}</label>
+    <p class="note">Cells starting with = + - @ get an apostrophe in front in reports and share-safe copies; plain numbers such as -5 do not. Saving your own file never changes it. Split into files has its own tick.</p>
   </fieldset>
   <fieldset>
     <legend>Private data</legend>

@@ -328,8 +328,17 @@ export interface SplitParts {
   col: number | null;
   every: number;
   keep_first: boolean;
+  /** CSV formula guard; off when left out. */
+  guard?: boolean;
+}
+/** What a CSV report wrote. */
+export interface Written {
+  entries: number;
+  /** Cells given an apostrophe by the formula guard. */
+  guarded: number;
 }
 export interface SplitReport {
+  guarded?: number;
   files: number;
   rows: number;
   replaced: number;
@@ -555,6 +564,8 @@ export interface SafeCopy {
   columns: ColumnAction[];
   header: boolean;
   read: ReadOptions;
+  /** CSV formula guard; on when left out. */
+  guard?: boolean;
 }
 /** One changed cell (rows are positions in the whole table, from 0). */
 export interface CellChange {
@@ -586,6 +597,7 @@ export interface SafeCopyReport {
   /** Values no step could read, written blank (never as they were). */
   blanked?: number;
   blanked_cols?: [number, number][];
+  guarded?: number;
 }
 export interface PrivateState {
   file: boolean;
@@ -1647,7 +1659,7 @@ export interface Backend {
   /** Cells in an area that differ from the file: [shown row, column]. */
   editedCells(doc: number, row: number, rows: number, col: number, cols: number): Promise<[number, number][]>;
   /** The list of changes as a CSV report the user names (null: cancelled). */
-  saveChangeReport(doc: number): Promise<number | null>;
+  saveChangeReport(doc: number, guard: boolean): Promise<Written | null>;
   /** Watched folder: choose the folder, recipe or results folder. */
   watchPick(which: "folder" | "recipe" | "out"): Promise<import("./watch").WatchStatus>;
   watchStatus(): Promise<import("./watch").WatchStatus>;
@@ -1708,7 +1720,7 @@ export interface Backend {
   /** What changed since a checkpoint: the counts and a page of the changed cells (a job with progress and Cancel). */
   checkpointSince(doc: number, checkpoint: number, header: boolean, offset: number, want: number): Promise<SinceView>;
   /** The same as a CSV report the user names (null: cancelled): the number of cells written. */
-  checkpointSinceReport(doc: number, checkpoint: number, header: boolean): Promise<number | null>;
+  checkpointSinceReport(doc: number, checkpoint: number, header: boolean, guard: boolean): Promise<Written | null>;
   /** Change step `k`; the steps after it run again. */
   stepsChange(doc: number, k: number, change: import("./recipe").StepChange, now: number, force: boolean): Promise<DocInfo>;
   /** Make a text in step `k` a question asked each time the recipe runs. */
@@ -2301,8 +2313,8 @@ class TauriBackend implements Backend {
   editedCells(doc: number, row: number, rows: number, col: number, cols: number) {
     return call<[number, number][]>("edited_cells", { doc, row, rows, col, cols });
   }
-  saveChangeReport(doc: number) {
-    return call<number | null>("save_change_report", { doc });
+  saveChangeReport(doc: number, guard: boolean) {
+    return call<Written | null>("save_change_report", { doc, guard });
   }
   watchPick(which: "folder" | "recipe" | "out") {
     return call<import("./watch").WatchStatus>("watch_pick", { which });
@@ -2409,8 +2421,8 @@ class TauriBackend implements Backend {
   checkpointSince(doc: number, checkpoint: number, header: boolean, offset: number, want: number) {
     return call<SinceView>("checkpoint_since", { doc, checkpoint, header, offset, want });
   }
-  checkpointSinceReport(doc: number, checkpoint: number, header: boolean) {
-    return call<number | null>("checkpoint_since_report", { doc, checkpoint, header });
+  checkpointSinceReport(doc: number, checkpoint: number, header: boolean, guard: boolean) {
+    return call<Written | null>("checkpoint_since_report", { doc, checkpoint, header, guard });
   }
   stepsChange(doc: number, k: number, change: import("./recipe").StepChange, now: number, force: boolean) {
     return call<DocInfo>("steps_change", { doc, k, change, now, force });
