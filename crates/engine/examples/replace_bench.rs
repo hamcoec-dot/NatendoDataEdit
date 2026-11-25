@@ -48,7 +48,10 @@ fn generate(path: &std::path::Path, rows: u64) -> std::io::Result<()> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let rows: u64 = args.first().and_then(|a| a.parse().ok()).unwrap_or(1_000_000);
+    let rows: u64 = args
+        .first()
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(1_000_000);
     let repeats: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(7);
     let dir = std::env::temp_dir().join("nde-find-bench");
     std::fs::create_dir_all(&dir).unwrap();
@@ -69,9 +72,24 @@ fn main() {
     };
     let p = Progress::new();
     for (name, text, kind, rep) in [
-        ("plan_replace, plain 'name' -> 'Nom' (every row)", "name", PatternKind::Plain, "Nom"),
-        ("plan_replace, regex (v)([0-9])  -> $2$1 (columns 8..20)", "(v)([0-9])", PatternKind::Regex, "$2$1"),
-        ("plan_replace, plain 'City 1' (a third of the rows)", "City 1", PatternKind::Plain, "Town 1"),
+        (
+            "plan_replace, plain 'name' -> 'Nom' (every row)",
+            "name",
+            PatternKind::Plain,
+            "Nom",
+        ),
+        (
+            "plan_replace, regex (v)([0-9])  -> $2$1 (columns 8..20)",
+            "(v)([0-9])",
+            PatternKind::Regex,
+            "$2$1",
+        ),
+        (
+            "plan_replace, plain 'City 1' (a third of the rows)",
+            "City 1",
+            PatternKind::Plain,
+            "Town 1",
+        ),
     ] {
         let spec = FindSpec {
             pattern: Pattern {
