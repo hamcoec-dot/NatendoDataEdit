@@ -184,12 +184,8 @@ fn no_sync_command_waits_for_a_documents_lock() {
     }
     assert!(
         bad.is_empty(),
-        "sync commands that can freeze the window:
-{}",
-        bad.join(
-            "
-"
-        )
+        "sync commands that can freeze the window:\n{}",
+        bad.join("\n")
     );
 }
 
@@ -198,16 +194,13 @@ fn no_sync_command_waits_for_a_documents_lock() {
 #[test]
 fn a_sync_command_calling_the_waiting_info_is_reported() {
     let m = methods();
-    let bad = "fn doc_info(docs: DocsState<'_>, doc: u32) -> CmdResult<DocInfo> {
-    docs.info(doc)
-}";
+    let bad =
+        "fn doc_info(docs: DocsState<'_>, doc: u32) -> CmdResult<DocInfo> {\n    docs.info(doc)\n}";
     assert!(
         !waiting_through(bad, &m).is_empty(),
         "docs.info( from a sync command must be reported"
     );
-    let good = "fn doc_info(docs: DocsState<'_>, doc: u32) -> CmdResult<DocInfo> {
-    docs.info_now(doc)
-}";
+    let good = "fn doc_info(docs: DocsState<'_>, doc: u32) -> CmdResult<DocInfo> {\n    docs.info_now(doc)\n}";
     assert!(waiting_through(good, &m).is_empty());
 }
 
