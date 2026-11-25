@@ -5974,6 +5974,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "find.batch", label: "Replace from a &list…", run: () => { batchOpen = true; }, enabled: ready },
     { id: "find.next", label: "Find &next", multiArea: true, keys: ["F3", "Shift+F4"], run: () => findAgain(false), enabled: hasTab },
     { id: "find.prev", label: "Find &previous", multiArea: true, keys: ["Shift+F3"], run: () => findAgain(true), enabled: hasTab },
+    { id: "find.ghosts", label: "Show &changes in the grid (Replace)", run: () => { prefs.data.showGhosts = !prefs.data.showGhosts; prefs.save(); say(prefs.data.showGhosts ? "The cells Replace all would change show their new text in green while you type the replacement." : "Changes are not shown in the grid."); }, checked: () => prefs.data.showGhosts, enabled: hasTab },
     { id: "find.thisValue", label: "Find this &value", run: () => findValue("find"), enabled: hasTab },
     { id: "find.replaceValue", label: "Replace this val&ue…", run: () => findValue("replace"), enabled: ready },
     { id: "find.allInColumn", label: "Find all &like this in the column", run: () => findValue("column"), enabled: hasTab },
@@ -6039,7 +6040,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "-",
         "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",
-        "find.find", "find.replace", "find.batch", "find.next", "find.prev",
+        "find.find", "find.replace", "find.batch", "find.next", "find.prev", "find.ghosts",
       ],
     },
     {
@@ -6071,7 +6072,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
@@ -7031,9 +7032,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     openMenu = null;
     // The cut items show only while something is cut.
     const cutItems = new Set(["edit.moveCut", "edit.cancelCut"]);
+    // "Show changes in the grid" is on the cell menu only while Find is open.
+    const ghostItem = "find.ghosts";
     // The counts items (and their line) only in a counts tab.
     const counts = !!tab?.countsOf;
-    let items = (contextItems[area] ?? []).filter((i) => (tab?.cut || !cutItems.has(i)) && (counts || (i !== "data.countsShow" && i !== "data.countsHide")) && (i !== "data.pivotRefresh" || (!!tab && pivotOf.has(tab.id))));
+    let items = (contextItems[area] ?? []).filter((i) => (tab?.cut || !cutItems.has(i)) && (i !== ghostItem || findOpen) && (counts || (i !== "data.countsShow" && i !== "data.countsHide")) && (i !== "data.pivotRefresh" || (!!tab && pivotOf.has(tab.id))));
     if (!counts && items[0] === "-") items = items.slice(1);
     // Nothing is picked until the pointer or an arrow key moves onto an item.
     context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items, index: -1 };

@@ -579,6 +579,18 @@ everything is also in command search.
   taken out and put in marked inside each cell (Ctrl+Alt+Enter); a regular
   expression replacement that names a group the pattern lacks (`$2`, or
   `$1a` for `${1}a`) is caught before anything changes.
+- **Ghost diff: see the replacement before you press Replace all.** As soon as
+  the Replace box has text, the cells on screen that Replace all would change
+  show their new text in green (on a tall row the old text sits above it, struck
+  out; point at a cell to read both in full). It uses the very same routine as
+  Replace all, so the cells and the new text are exactly what the replace would
+  make, and every Find option counts: the selection, several blocks, a column,
+  hidden rows and columns and protected columns. The Find bar says "Would change
+  18 of the cells you can see; Replace all would change about… cells" and gives
+  the exact figure when the whole-file count (which stops the moment you type
+  again) has finished. Changes you untick in the Replace all preview stay plain.
+  It is display only, and it is off while a change runs on the file; turn it off
+  with Find > Show changes in the grid (also on the cell menu while Find is open).
 - **Right-click a cell to find its value**: Find this value, Replace this
   value, or Find all like this in the column.
 - **Filter by formula** (Data > Filter by formula, or right-click a heading):
