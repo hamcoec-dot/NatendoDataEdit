@@ -277,6 +277,16 @@ export class Tab {
    *  up), its version (bumped on each change) and the lit cells "row:col". */
   findSpec: FindSpec | null = null;
   findVersion = 0;
+  /** The ghost diff: the search and replacement the Replace box holds now (null: none), what Replace all
+   *  would make of the cells on screen ("row:col" -> the new text and the row's number), the changes the
+   *  open preview has unticked ("number:col", by the row's number so a sort cannot move them), and the
+   *  count of cells Replace all would change (`exact` once the count job has finished). */
+  ghostWant: { spec: FindSpec; replacement: string } | null = null;
+  ghosts = new Map<string, { number: number; after: string; cut: boolean }>();
+  ghostSkip = new Set<string>();
+  ghostPartial = $state(false);
+  ghostVersion = $state(0);
+  ghostCount = $state<{ cells: number | null; exact: boolean } | null>(null);
   /** How many cells match while the find bar is open (the status bar). */
   findCount = $state<number | null>(null);
   findHits = new Set<string>();

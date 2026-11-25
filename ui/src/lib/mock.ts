@@ -1302,6 +1302,33 @@ export class MockBackend implements Backend {
     return out;
   }
 
+  /** The ghost diff: the same routine as Replace all (`planReplace`), for the cells of a window. */
+  async replaceGhosts(doc: number, spec: FindSpec, replacement: string, row: number, rows: number, col: number, cols: number): Promise<import("./backend").GhostWindow> {
+    this.calls.push("replaceGhosts");
+    const d = this.get(doc);
+    if (!spec.pattern.text) return { ghosts: [], partial: false };
+    const plan = this.planReplace(d, spec, replacement);
+    const hidden = new Set(spec.hidden_cols ?? []);
+    const ghosts = plan.changes
+      .filter(([r, c]) => r >= row && r < row + rows && c >= col && c < col + cols && !hidden.has(c))
+      .map(([r, c, out]) => ({ row: r, number: this.pos(d, r), col: c, after: out.slice(0, 20_000), cut: out.length > 20_000 }));
+    return { ghosts, partial: false };
+  }
+  /** Tests: held back by a promise to make the count slow. */
+  countGate: Promise<void> | null = null;
+  private countSeq = new Map<number, number>();
+  async replaceCount(doc: number, spec: FindSpec, replacement: string): Promise<number> {
+    this.calls.push("replaceCount");
+    const seq = (this.countSeq.get(doc) ?? 0) + 1;
+    this.countSeq.set(doc, seq);
+    if (this.countGate) await this.countGate;
+    if (this.countSeq.get(doc) !== seq) throw err("cancelled", "a newer count started");
+    return this.planReplace(this.get(doc), spec, replacement).changes.length;
+  }
+  async replaceCountCancel(doc: number): Promise<void> {
+    this.calls.push("replaceCountCancel");
+    this.countSeq.set(doc, (this.countSeq.get(doc) ?? 0) + 1);
+  }
   async findMarks(doc: number, spec: FindSpec, row: number, rows: number, col: number, cols: number): Promise<[number, number][]> {
     const d = this.get(doc);
     if (!spec.pattern.text) return [];

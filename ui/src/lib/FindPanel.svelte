@@ -141,6 +141,13 @@
   let tabParts = $state<{ t: Tab; spec: FindSpec; r: ReplaceReport }[]>([]);
   /** Changes unticked in the preview ("row:col"); they are left as they are. */
   const unticked = new SvelteSet<string>();
+  // The ghost diff leaves out the changes unticked here (kept by the row's number, so a sort or filter cannot move one).
+  $effect(() => {
+    tab.ghostSkip = unticked;
+    void unticked.size;
+    tab.ghostVersion++;
+    tab.onRedraw?.();
+  });
   /** The last Replace all changed rows here: "Show changed rows" is offered. */
   /** The tab and its version right after the last Replace all. */
   let changedAt = $state<[number, number] | null>(null);
@@ -214,7 +221,60 @@
     recount();
   });
 
+  // ---- ghost diff: what Replace all would change in the cells on screen, and how many cells in all ----
+  let ghostSeq = 0;
+  let ghostCountTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The count waits for typing to stop. */
+  const GHOST_COUNT_MS = 400;
+  function stopGhostCount(): void {
+    ghostSeq++;
+    if (ghostCountTimer) clearTimeout(ghostCountTimer);
+    ghostCountTimer = null;
+    void backend().replaceCountCancel(tab.id).catch(() => {});
+  }
+  $effect(() => {
+    void [options.text, options.kind, options.matchCase, options.wholeCell, options.wholeWord, options.ignoreAccents, options.escapes, options.includeHidden, options.scope, options.blank, options.titles, options.lookIn, options.cols.length, block, replacement, replace, prefs.data.showGhosts, tab.version];
+    const on = replace && replacement !== "" && prefs.data.showGhosts && searching();
+    const s = on ? $state.snapshot(spec()) : null;
+    untrack(() => {
+      // The count of the last search is stopped before anything new starts: never two counts at once.
+      stopGhostCount();
+      tab.ghostWant = s ? { spec: s, replacement } : null;
+      tab.ghostCount = s ? { cells: null, exact: false } : null;
+      tab.ghostVersion++;
+      tab.onRedraw?.();
+      if (!s) return;
+      const seq = ghostSeq;
+      ghostCountTimer = setTimeout(() => {
+        ghostCountTimer = null;
+        backend()
+          .replaceCount(tab.id, s, replacement)
+          .then((n) => {
+            if (seq === ghostSeq) tab.ghostCount = { cells: n, exact: true };
+          })
+          .catch(() => {
+            // Cancelled by the next keystroke, a bad pattern, or a file being changed: no figure.
+          });
+      }, GHOST_COUNT_MS);
+    });
+  });
+  /** The ghost diff's line: what shows on screen, and the count of all (about… until the job has finished). */
+  const ghostText = $derived.by(() => {
+    void tab.ghostVersion;
+    if (!tab.ghostWant || !tab.ghostCount) return "";
+    const seen = tab.ghosts.size;
+    const all = tab.ghostCount.exact ? tab.ghostCount.cells!.toLocaleString() : "about…";
+    const more = tab.ghostPartial ? " (more changes are not shown)" : "";
+    return `Would change ${seen.toLocaleString()} of the cells you can see${more}; Replace all would change ${all} cells`;
+  });
+
   onDestroy(() => {
+    stopGhostCount();
+    tab.ghostWant = null;
+    tab.ghostCount = null;
+    tab.ghosts = new Map();
+    tab.ghostSkip = new Set();
+    tab.ghostVersion++;
     if (countTimer) clearTimeout(countTimer);
     countSeq++;
     void backend().findCountCancel(tab.id).catch(() => {});
@@ -870,6 +930,7 @@
       {/if}
     </span>
     {#if countText}<span class="count" aria-live="polite">{countText}</span>{/if}
+    {#if ghostText}<span class="count ghosts" aria-live="polite" title="What Replace all would do to the cells on screen (shown in green). Turn it off with View > Show changes in the grid.">{ghostText}</span>{/if}
     <button type="button" title="Find previous (Shift+F3, Shift+Enter)" aria-label="Find previous" onclick={() => void next(true)}>↑</button>
     <button type="button" title="Find next (F3, Enter)" aria-label="Find next" onclick={() => void next(false)}>↓</button>
     <button type="button" title="Find all (Alt+Enter)" onclick={() => void findAll()}>Find all</button>

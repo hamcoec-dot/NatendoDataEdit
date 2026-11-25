@@ -865,6 +865,21 @@ export interface CheckReport {
   per_check: number[];
   listed: Problem[];
 }
+/** A cell Replace all would change, as the grid shows it before the change. */
+export interface Ghost {
+  row: number;
+  /** The row's number in the document (a change unticked in the preview is kept by it). */
+  number: number;
+  col: number;
+  after: string;
+  /** `after` was cut at 20,000 characters. */
+  cut: boolean;
+}
+export interface GhostWindow {
+  ghosts: Ghost[];
+  /** The time ran out: more changes are not shown. */
+  partial: boolean;
+}
 export interface CheckMark {
   row: number;
   col: number | null;
@@ -1541,6 +1556,11 @@ export interface Backend {
   checksSidecarLoad(doc: number): Promise<SidecarRules | null>;
   /** Keep rules beside the file (an empty list removes the file); the file's name. */
   checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean): Promise<string>;
+  /** What Replace all would make of the cells in a window (read-only; "busy" while a change runs). */
+  replaceGhosts(doc: number, spec: FindSpec, replacement: string, row: number, rows: number, col: number, cols: number): Promise<GhostWindow>;
+  /** How many cells Replace all would change (one count at a time per tab; cancelled by a newer one). */
+  replaceCount(doc: number, spec: FindSpec, replacement: string): Promise<number>;
+  replaceCountCancel(doc: number): Promise<void>;
   /** Shows the Save dialog; the file's name, or null when cancelled. */
   checksSave(checks: Check[]): Promise<string | null>;
   /** Shows the Open dialog; null when cancelled. */
@@ -2201,6 +2221,14 @@ class TauriBackend implements Backend {
   }
   checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean) {
     return call<string>("checks_sidecar_keep", { doc, checks, keepFirst });
+  replaceGhosts(doc: number, spec: FindSpec, replacement: string, row: number, rows: number, col: number, cols: number) {
+    return call<GhostWindow>("replace_ghosts", { doc, spec, replacement, row, rows, col, cols });
+  }
+  replaceCount(doc: number, spec: FindSpec, replacement: string) {
+    return call<number>("replace_count", { doc, spec, replacement });
+  }
+  replaceCountCancel(doc: number) {
+    return call<void>("replace_count_cancel", { doc });
   }
   checksSave(checks: Check[]) {
     return call<string | null>("checks_save", { checks });

@@ -19,6 +19,7 @@
   import { invisibleRuns } from "./invisible";
   import { insightText, pillParts } from "./insights";
   import { describeCheck } from "./lint";
+  import { GhostLoader, visibleGhost } from "./ghosts";
   import { formulaHelp } from "./cellformula";
   import { FUNCTIONS } from "./m8";
   /** Odd spaces with View › Show invisible characters on. */
@@ -26,6 +27,11 @@
   /** Mark value for a data-check problem (drawn red). */
   const PROBLEM = 255;
   const PROBLEM_COLOR = "#e5484d";
+  const GHOST_COLOR = "#1a9a5b";
+  /** The ghost for a cell, unless the open Replace preview has it unticked (kept by the row's number). */
+  function ghostAt(r: number, c: number): { number: number; after: string; cut: boolean } | undefined {
+    return visibleGhost(tab.ghosts, tab.ghostSkip, r, c);
+  }
   /** Corner mark on cells that differ from the file ("Show my edits"). */
   const EDIT_COLOR = "#f5a524";
   /** Find matches: a yellow that reads on light and dark grids. */
@@ -275,6 +281,9 @@
     void prefs.data.gridLines;
     void prefs.data.showInvisible;
     void prefs.data.problemStyle;
+    void prefs.data.showGhosts;
+    void tab.busy;
+    void tab.ghostVersion;
     void prefs.data.alignNumbers;
     void prefs.data.colLetters;
     void prefs.data.insights;
@@ -572,6 +581,7 @@
     positionEditor();
     wantMarks(rows, cols);
     wantFindHits(rows, cols);
+    wantGhosts(rows, cols);
     wantNotes(rows);
   }
 
@@ -603,6 +613,34 @@
         // A bad pattern or a busy file: nothing lit; asked again on the next draw.
         if (findKey === key) findKey = "";
       });
+  }
+
+  // ---- ghost diff: what Replace all would change in the cells on screen ----------
+  const ghostLoader = new GhostLoader({
+    has: () => tab.ghosts.size > 0 || tab.ghostPartial,
+    set: (m, partial) => {
+      tab.ghosts = m;
+      tab.ghostPartial = partial;
+      tab.ghostVersion++;
+      draw();
+    },
+  });
+  function wantGhosts(rows: { frozen: Span; body: Span }, cols: { frozen: Span; body: Span }): void {
+    const want = tab.ghostWant;
+    // Off: no search or replacement, the toggle, or a write job running on this document (nothing is
+    // drawn from a document about to change; it is asked again when the job ends).
+    if (!want || !prefs.data.showGhosts || !want.spec.pattern.text || tab.busy) {
+      ghostLoader.off();
+      return;
+    }
+    const c0 = Math.min(cols.frozen.start, cols.body.start);
+    const c1 = Math.max(cols.frozen.end, cols.body.end);
+    const areas = [rows.frozen, rows.body].filter((a) => a.end > a.start);
+    const base = JSON.stringify([tab.id, tab.version, tab.info.data_revision, want.spec, want.replacement]);
+    const key = `${base}|${areas.map((a) => `${a.start}-${a.end}`).join(",")}|${c0}-${c1}`;
+    const t = tab;
+    const { spec, replacement } = want;
+    ghostLoader.want(base, key, () => Promise.all(areas.map((a) => backend().replaceGhosts(t.id, spec, replacement, a.start, a.end - a.start, c0, c1 - c0))));
   }
 
   // ---- highlight rules -------------------------------------------------------
@@ -1251,6 +1289,7 @@
         }
       }
     }
+    const ghostsOn = tab.ghosts.size > 0 && prefs.data.showGhosts;
     // Long text that spills into the empty cells to its right, drawn after
     // every column (so the next cells' backgrounds don't cover it).
     const spills: { text: string; x: number; y: number; to: number; h: number; colour: string }[] = [];
@@ -1423,6 +1462,37 @@
             if (to > x + cw) spills.push({ text, x: tx, y: ty, to, h: rh, colour: ctx.fillStyle as string });
             else ctx.fillText(text, tx, ty);
             if (link) ctx.fillRect(tx, ty + Math.round(fontPx * 0.55), Math.min(w, cw - 2 * pad), 1);
+          }
+        }
+        const ghost = ghostsOn ? ghostAt(r, c) : undefined;
+        if (ghost) {
+          // What Replace all would make of this cell: on a tall row the old text is struck out above the
+          // new text; on a one-line row the new text takes the cell's place on a green tint (the tooltip has both).
+          const gt = tab.cache.get(r, c) ?? "";
+          const lineY = y + rh / 2 + 0.5;
+          ctx.fillStyle = colors.bg;
+          ctx.fillRect(x, y, cw - 1, rh - 1);
+          ctx.fillStyle = GHOST_COLOR;
+          ctx.globalAlpha = 0.16;
+          ctx.fillRect(x, y, cw - 1, rh - 1);
+          ctx.globalAlpha = 1;
+          const fit = (s: string): string => {
+            let text = displayText(s);
+            if (measure(text) <= cw - 2 * pad) return text;
+            while (text.length > 1 && measure(text + "…") > cw - 2 * pad) text = text.slice(0, -1);
+            return text + "…";
+          };
+          if (rl > 1 && rh >= 2 * textLineH) {
+            const oldLine = fit(gt);
+            const oy = y + textLineH / 2 + 2;
+            ctx.fillStyle = colors.muted;
+            ctx.fillText(oldLine, x + pad, oy);
+            ctx.fillRect(x + pad, oy, Math.min(measure(oldLine), cw - 2 * pad), 1);
+            ctx.fillStyle = GHOST_COLOR;
+            ctx.fillText(fit(ghost.after), x + pad, oy + textLineH);
+          } else {
+            ctx.fillStyle = GHOST_COLOR;
+            ctx.fillText(fit(ghost.after), x + pad, lineY);
           }
         }
         if (prefs.data.gridLines) {
@@ -2149,13 +2219,15 @@
       // A link's address shows when pointed at (Ctrl+click opens it).
       const link = h.area === "cell" ? linkAt(h.row, h.col) : null;
       let rule = "";
-      if (!link && h.area === "cell" && tab.problems.size) {
+      const cellHit = h.area === "cell" ? h : null;
+      const gh = !link && cellHit ? ghostAt(cellHit.row, cellHit.col) : undefined;
+      if (!gh && !link && h.area === "cell" && tab.problems.size) {
         const own = tab.problems.get(`${h.row}:${h.col}`);
         const i = own ?? tab.problems.get(`${h.row}:*`);
         const c = i === undefined ? undefined : tab.checks[i];
         if (c) rule = `Problem: ${describeCheck(c)}${own === undefined ? " (row rule)" : ""}`;
       }
-      tip = link ? `${link}\nCtrl+click to open` : rule;
+      tip = link ? `${link}\nCtrl+click to open` : gh ? `Replace all would change this cell:\n${tab.cache.get(cellHit!.row, cellHit!.col) ?? ""}\n\u2192 ${gh.after}${gh.cut ? "\u2026" : ""}` : rule;
       const pointer = h.area === "cell" && ((e.ctrlKey && !!linkAt(h.row, h.col)) || onTickBox(x, y, h.row, h.col) || onPickButton(x, y, h.row, h.col));
       const r = tab.drawRect;
       const grab =

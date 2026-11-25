@@ -160,6 +160,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "find and replace with plain": ["find.find", "find.replace", "tools.nextChange", "tools.largest", "tools.smallest"],
   "whole word ignore accents and special characters": ["find.find", "find.replace"],
   "match count and matches lit up": ["find.find"],
+  "ghost diff see the replacement before you press replace all": ["find.replace", "find.ghosts"],
   "find all list": ["find.find"],
   "replace all preview of every change": ["find.replace"],
   "right click a cell to find its value": ["find.thisValue", "find.replaceValue", "find.allInColumn"],

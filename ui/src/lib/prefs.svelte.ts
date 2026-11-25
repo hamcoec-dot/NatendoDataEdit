@@ -18,6 +18,8 @@ export interface PrefsData {
   showInvisible: boolean;
   /** How a cell that breaks a rule shows: a red fill, a wavy underline, or both. */
   problemStyle: "fill" | "underline" | "both";
+  /** Find and Replace: show what Replace all would change in the cells on screen (display only). */
+  showGhosts: boolean;
   /** Numbers and dates line up on the right (as in Excel), unless a column
    *  has its own alignment. */
   alignNumbers: boolean;
@@ -136,6 +138,7 @@ const DEFAULTS: PrefsData = {
   gridLines: true,
   showInvisible: false,
   problemStyle: "fill",
+  showGhosts: true,
   alignNumbers: true,
   colLetters: false,
   insights: false,
@@ -183,6 +186,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       gridLines: p.gridLines !== false,
       showInvisible: p.showInvisible === true,
       problemStyle: p.problemStyle === "underline" || p.problemStyle === "both" ? p.problemStyle : "fill",
+      showGhosts: p.showGhosts !== false,
       alignNumbers: p.alignNumbers !== false,
       colLetters: p.colLetters === true,
       insights: p.insights === true,

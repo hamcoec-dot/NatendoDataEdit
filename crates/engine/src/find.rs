@@ -1067,6 +1067,8 @@ const GHOST_BUDGET: Duration = Duration::from_millis(50);
 pub struct Ghost {
     /// Shown row.
     pub row: u64,
+    /// The row's number in the whole document (what the preview's unticked changes are kept by).
+    pub number: u64,
     pub col: u32,
     /// The new text (cut at `MAX_GHOST_CHARS`, then `cut` is set).
     pub after: String,
@@ -2135,7 +2137,14 @@ impl Document {
                 match replacement_for(&m, t, replacement) {
                     Ok(Some((new, _))) if new != t => {
                         let (after, cut) = cut_ghost(new);
-                        out.ghosts.push(Ghost { row: r, col: c, after, cut });
+                        let number = self.row_number(r).unwrap_or(r);
+                        out.ghosts.push(Ghost {
+                            row: r,
+                            number,
+                            col: c,
+                            after,
+                            cut,
+                        });
                     }
                     Ok(_) => {}
                     Err(e) => err = Some(e),
