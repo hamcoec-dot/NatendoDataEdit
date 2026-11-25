@@ -30,6 +30,7 @@ pub mod diff;
 pub mod document;
 pub mod editing;
 pub mod encoding;
+pub mod encscan;
 pub mod example;
 pub mod export;
 pub mod expr;

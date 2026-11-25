@@ -444,6 +444,54 @@ fn encode_utf7(text: &str, out: &mut Vec<u8>) {
     }
 }
 
+/// The byte a character stands for when UTF-8 text was read as Windows-1252: its Windows-1252 byte, and for the five
+/// bytes Windows-1252 leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) the Latin-1 control character, as most programs
+/// read them.
+fn cp1252_byte(c: char) -> Option<u8> {
+    if (c as u32) < 0x80 {
+        return Some(c as u8);
+    }
+    if matches!(c, '\u{81}' | '\u{8d}' | '\u{8f}' | '\u{90}' | '\u{9d}') {
+        return Some(c as u8);
+    }
+    let mut buf = [0u8; 4];
+    let (bytes, _, bad) = encoding_rs::WINDOWS_1252.encode(c.encode_utf8(&mut buf));
+    (!bad && bytes.len() == 1).then(|| bytes[0])
+}
+
+/// How many characters of `s` look like leftovers of a wrong reading: Latin-1 supplement letters and symbols, the
+/// Windows-1252 punctuation block, and the replacement character.
+fn odd_chars(s: &str) -> usize {
+    s.chars()
+        .filter(|&c| {
+            matches!(c as u32, 0x80..=0xFF | 0x152 | 0x153 | 0x160 | 0x161 | 0x178 | 0x17D | 0x17E | 0x192 | 0x2C6 | 0x2DC | 0x2013..=0x203A | 0x20AC | 0x2122 | 0xFFFD)
+        })
+        .count()
+}
+
+/// Undo "mojibake": text that was UTF-8, read as Windows-1252 and written out as UTF-8 again (`cafÃ©` for `café`,
+/// `â€™` for a curly quote). `Some(fixed)` only when every character maps back to one Windows-1252 byte, those bytes
+/// are valid UTF-8, the result differs, and it has fewer odd characters than the text had; `None` (leave it alone)
+/// otherwise, so real text such as `café` is never touched.
+pub fn fix_mojibake(text: &str) -> Option<String> {
+    if text.is_ascii() {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(text.len());
+    for c in text.chars() {
+        bytes.push(cp1252_byte(c)?);
+    }
+    let fixed = String::from_utf8(bytes).ok()?;
+    if fixed == text
+        || fixed
+            .chars()
+            .any(|c| c.is_control() && c != '\t' && c != '\n' && c != '\r')
+    {
+        return None;
+    }
+    (odd_chars(&fixed) < odd_chars(text)).then_some(fixed)
+}
+
 /// A character the target encoding cannot store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unmappable(pub char);
@@ -492,6 +540,39 @@ pub fn encode(text: &str, enc: Encoding, out: &mut Vec<u8>) -> Result<(), Unmapp
 
 #[cfg(test)]
 mod tests {
+    /// Shared with the screen (ui/src/lib/mojibake.ts runs the same file), so the two copies cannot drift.
+    #[test]
+    fn fix_mojibake_corpus() {
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/mojibake.json")).unwrap();
+        let cases = v["cases"].as_array().unwrap();
+        assert!(cases.len() > 10);
+        for c in cases {
+            let text = c[0].as_str().unwrap();
+            let want = c[1].as_str();
+            assert_eq!(super::fix_mojibake(text).as_deref(), want, "{text:?}");
+            // Idempotent: the fixed text is real text and is left alone.
+            if let Some(w) = want {
+                assert_eq!(super::fix_mojibake(w), None, "{w:?} twice");
+            }
+        }
+    }
+
+    /// The round trip the fix undoes: any text, written as UTF-8 and read as Windows-1252, comes back.
+    #[test]
+    fn fix_mojibake_undoes_a_real_wrong_reading() {
+        for text in [
+            "caf\u{e9} cr\u{e8}me",
+            "Z\u{fc}rich \u{20ac}5",
+            "O\u{2019}Neil \u{201c}x\u{201d}",
+            "\u{c1}lvaro \u{cd}\u{f1}ez",
+        ] {
+            let (wrong, _, _) = encoding_rs::WINDOWS_1252.decode(text.as_bytes());
+            let fixed =
+                super::fix_mojibake(&wrong).unwrap_or_else(|| panic!("{text:?} read as {wrong:?}"));
+            assert_eq!(fixed, text);
+        }
+    }
     use super::*;
 
     fn round_trip(text: &str, enc: Encoding) {

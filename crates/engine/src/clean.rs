@@ -280,6 +280,10 @@ pub enum Step {
         #[serde(flatten)]
         options: crate::xray::SanitizeOptions,
     },
+    /// Undo mojibake: UTF-8 text that was read as Windows-1252 and saved again (`cafÃ©` becomes `café`). A cell is
+    /// changed only when every character maps back to a Windows-1252 byte, those bytes are valid UTF-8, and the
+    /// result has fewer odd characters; real text is left alone (see [`crate::encoding::fix_mojibake`]).
+    FixMojibake,
     /// Number the cells: `start`, `start + step`, ... with at least `digits`
     /// digits, added at the start or end with `separator`.
     Number {
@@ -716,6 +720,7 @@ impl Step {
             Step::Reverse => "Reverse text".into(),
             Step::Spaces { .. } => "Spaces".into(),
             Step::Sanitize { .. } => "Sanitize look-alike characters".into(),
+            Step::FixMojibake => "Fix mojibake (cafÃ© to café)".into(),
             Step::Number { .. } => "Number the cells".into(),
             Step::Digits { keep: true } => "Keep only digits".into(),
             Step::Digits { keep: false } => "Remove digits".into(),
@@ -1074,6 +1079,7 @@ fn plain(
         Step::Reverse => Some(t.chars().rev().collect()),
         Step::Spaces { how } => Some(spaces(*how, t)),
         Step::Sanitize { options } => crate::xray::sanitize(t, options),
+        Step::FixMojibake => crate::encoding::fix_mojibake(t),
         Step::Number {
             start,
             step,

@@ -1,0 +1,22 @@
+{
+  "_about": "Shared by encoding.rs and ui/src/lib/mojibake.ts: [text as read, text after Fix mojibake or null when it must be left alone]. Made-up words. The five bytes Windows-1252 leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) read as Latin-1 controls.",
+  "cases": [
+    ["caf\u00c3\u00a9", "caf\u00e9"],
+    ["Ren\u00c3\u00a9e O\u00e2\u20ac\u2122Neil", "Ren\u00e9e O\u2019Neil"],
+    ["\u00e2\u20ac\u0153quoted\u00e2\u20ac\u009d", "\u201cquoted\u201d"],
+    ["\u00c3\u0081lvaro", "\u00c1lvaro"],
+    ["\u00c3\u008dnez", "\u00cdnez"],
+    ["Z\u00c3\u00bcrich \u00e2\u201a\u00ac5", "Z\u00fcrich \u20ac5"],
+    ["\u00e6\u2014\u00a5\u00e6\u0153\u00ac", "\u65e5\u672c"],
+    ["caf\u00e9", null],
+    ["Z\u00fcrich", null],
+    ["plain ascii", null],
+    ["", null],
+    ["\u00c3", null],
+    ["\u00e2\u20ac", null],
+    ["\u00c3\u00a9\u00c3", null],
+    ["na\u00efve \u201csmart\u201d", null],
+    ["\u4e2d\u6587", null],
+    ["\u00c3\u0085", null]
+  ]
+}
