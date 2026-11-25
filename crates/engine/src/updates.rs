@@ -121,7 +121,7 @@ fn pair_columns(here: &[String], there: &[String], by_title: bool) -> Vec<Option
 
 /// A 128-bit key hash (two keyed SipHashes): different keys pairing by
 /// accident is not a practical risk.
-fn key_hash(v: &[&str], match_case: bool, trim: bool) -> u128 {
+pub(crate) fn key_hash(v: &[&str], match_case: bool, trim: bool) -> u128 {
     let mut a = std::collections::hash_map::DefaultHasher::new();
     let mut b = std::collections::hash_map::DefaultHasher::new();
     0x5a_u8.hash(&mut b);
@@ -144,15 +144,15 @@ fn key_hash(v: &[&str], match_case: bool, trim: bool) -> u128 {
 /// The newer file indexed by hashes: for each data row, its key, a hash of
 /// its compared cells, and its row id.
 pub struct NewerIndex {
-    revision: u64,
+    pub(crate) revision: u64,
     /// Here column -> newer column (`None`: not in the newer file).
-    map: Vec<Option<u32>>,
-    newer_cols: u32,
-    here_only: Vec<String>,
-    newer_only: Vec<String>,
-    moved: u32,
+    pub(crate) map: Vec<Option<u32>>,
+    pub(crate) newer_cols: u32,
+    pub(crate) here_only: Vec<String>,
+    pub(crate) newer_only: Vec<String>,
+    pub(crate) moved: u32,
     /// (key, row hash, newer row id), in the newer file's order.
-    rows: Vec<(u128, u64, u32)>,
+    pub(crate) rows: Vec<(u128, u64, u32)>,
 }
 
 impl NewerIndex {
@@ -256,15 +256,28 @@ impl NewerIndex {
 
 /// Rows paired by key: which differ, which are new, which are gone.
 pub struct Pairing {
-    revision: u64,
+    pub(crate) revision: u64,
     /// (row id here, shown row here, newer row id) of paired rows whose
     /// compared cells differ.
-    changed: Vec<(u32, u64, u32)>,
+    pub(crate) changed: Vec<(u32, u64, u32)>,
     /// (row id, shown row) here with no newer row.
-    removed: Vec<(u32, u64)>,
+    pub(crate) removed: Vec<(u32, u64)>,
     /// Newer row ids not paired, in the newer file's order.
-    added: Vec<u32>,
-    repeated: u64,
+    pub(crate) added: Vec<u32>,
+    pub(crate) repeated: u64,
+}
+
+impl Pairing {
+    /// The same pairing keeping at most `n` of each kind (for listing; the full counts are read before).
+    pub(crate) fn capped(&self, n: usize) -> Pairing {
+        Pairing {
+            revision: self.revision,
+            changed: self.changed.iter().take(n).copied().collect(),
+            removed: self.removed.iter().take(n).copied().collect(),
+            added: self.added.iter().take(n).copied().collect(),
+            repeated: self.repeated,
+        }
+    }
 }
 
 /// The newer values of changed and new rows, in this table's columns
@@ -278,12 +291,12 @@ pub struct NewerValues {
 }
 
 impl NewerValues {
-    fn cell(&self, row: usize, c: usize) -> &str {
+    pub(crate) fn cell(&self, row: usize, c: usize) -> &str {
         let k = row * self.width + c;
         &self.text[self.offs[k] as usize..self.offs[k + 1] as usize]
     }
 
-    fn row(&self, row: usize) -> Vec<String> {
+    pub(crate) fn row(&self, row: usize) -> Vec<String> {
         (0..self.width)
             .map(|c| self.cell(row, c).to_string())
             .collect()
