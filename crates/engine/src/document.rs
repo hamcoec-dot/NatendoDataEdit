@@ -22,6 +22,7 @@ use crate::scan::{self, Mode};
 use crate::source::Source;
 use crate::Error;
 
+pub mod ragged;
 pub mod since;
 
 /// Highest column index an edit may write (keeps a typo from allocating
