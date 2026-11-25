@@ -8251,6 +8251,28 @@ Cy
     }
 
     #[test]
+    #[ignore]
+    fn info_cost_on_a_million_rows() {
+        let mut csv = String::from("a,b,c\r\n");
+        for i in 0..1_000_000 {
+            csv.push_str(&format!("{i},x{},y\r\n", i % 97));
+        }
+        let a = tmp("infocost.csv", csv.as_bytes());
+        let docs = Docs::default();
+        let ia = docs.open_path(&a, false).unwrap().id;
+        wait(&docs, ia);
+        let mut best = f64::MAX;
+        for _ in 0..7 {
+            let t = std::time::Instant::now();
+            for _ in 0..20_000 {
+                std::hint::black_box(docs.info(ia).unwrap());
+            }
+            best = best.min(t.elapsed().as_secs_f64() * 1e6 / 20_000.0);
+        }
+        println!("INFOCOST {best:.2} microseconds per info() call (best of 7 x 20,000)");
+    }
+
+    #[test]
     fn privacy_tools() {
         use natendo_engine::clean::{Cleaner, Step};
         use natendo_engine::privacy::{ColumnAction, PrivateKind, SafeCopy, Secret};
