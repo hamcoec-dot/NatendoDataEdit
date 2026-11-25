@@ -1296,6 +1296,9 @@ enum Planned {
     Sort(natendo_engine::sort::SortPlan),
 }
 
+/// The reading counter behind `DocInfo::seq`.
+static INFO_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// What the UI shows about a document.
 #[derive(Debug, Serialize, Clone, PartialEq)]
 pub struct DocInfo {
@@ -1342,6 +1345,9 @@ pub struct DocInfo {
     /// could be read (the live parts are current). The UI never takes a stale answer as the tab's
     /// state and asks again; see `ui/src/lib/infoguard.ts`.
     pub stale: bool,
+    /// Rises with every reading made (every reply and every answer): a reply older than what the tab
+    /// holds was built before it and is dropped. A stale answer keeps the number of its reading.
+    pub seq: u64,
     /// Rows the user hid (still saved).
     pub hidden_rows: u64,
     /// Protected columns (changes pass them over).
@@ -1602,7 +1608,8 @@ impl Docs {
     }
 
     pub fn close(&self, id: u32) {
-        if let Some(e) = self.map().remove(&id) {
+        let gone = self.map().remove(&id);
+        if let Some(e) = &gone {
             e.cancel.store(true, Ordering::Relaxed);
             e.closed.store(true, Ordering::SeqCst);
         }
@@ -1626,6 +1633,11 @@ impl Docs {
             .unwrap_or_else(|p| p.into_inner())
             .retain(|(k, _)| !k.starts_with(&mine));
         crate::recovery::forget(id);
+        // Freeing a big document (millions of rows of index and edits) takes a while: it is done on its own
+        // thread, never on the window's.
+        if let Some(e) = gone {
+            std::thread::spawn(move || drop(e));
+        }
     }
 
     /// How to tell whether a path is in private file mode.
@@ -2100,7 +2112,28 @@ impl Docs {
         Ok(self.get(id)?.current_path())
     }
 
+    /// The document's info as it is now: waits for a change to finish. This is the reply of every
+    /// operation (save, move, recipe, find, ...), which already runs on the blocking pool, so what the
+    /// tab takes from it is never behind the change it just made.
     pub fn info(&self, id: u32) -> CmdResult<DocInfo> {
+        let entry = self.get(id)?;
+        let error = entry
+            .error
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let title = entry
+            .title
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        Ok(self.info_waiting(&entry, id, error, title))
+    }
+
+    /// The document's info for a QUESTION (the `doc_info` command, read-only, the agent): never waits.
+    /// While a change holds the document (or is waiting to take it) it answers from the last reading,
+    /// marked stale, with the live parts current. Never use it as the reply of an operation.
+    pub fn info_now(&self, id: u32) -> CmdResult<DocInfo> {
         let entry = self.get(id)?;
         let error = entry
             .error
@@ -6569,6 +6602,8 @@ impl Docs {
         let mut info = describe(id, &d, entry.line_by_line.load(Ordering::Relaxed), error);
         info.read_only = locked;
         info.peeking = entry.peeking.load(Ordering::Relaxed);
+        // Every fresh reading is kept, so the stale answer of a later question is never older than this edit.
+        *entry.last_info.lock().unwrap_or_else(|p| p.into_inner()) = Some(info.clone());
         Ok(info)
     }
 
@@ -6598,7 +6633,7 @@ impl Docs {
     /// Lock or unlock a document (read-only).
     pub fn set_read_only(&self, id: u32, on: bool) -> CmdResult<DocInfo> {
         self.get(id)?.locked.store(on, Ordering::Relaxed);
-        self.info(id)
+        self.info_now(id)
     }
 
     /// Guessed column types (from a sample of shown rows).
@@ -6928,6 +6963,7 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         read_only: false,
         peeking: false,
         stale: false,
+        seq: INFO_SEQ.fetch_add(1, Ordering::SeqCst) + 1,
         hidden_rows: d.hidden_rows(),
         protected: d.protected_cols(),
         protected_skipped: d.protected_skipped(),
@@ -8077,6 +8113,86 @@ mod tests {
     }
 
     #[test]
+    fn an_operations_reply_is_fresh_even_while_another_thread_waits_to_write() {
+        let a = tmp(
+            "lock_c.csv",
+            b"a,b
+1,2
+",
+        );
+        let docs = Docs::default();
+        let ia = docs.open_path(&a, false).unwrap().id;
+        let before = wait(&docs, ia);
+        let entry = docs.get(ia).unwrap();
+        // One reader holds the document, a writer queues behind it (an agent or second window making a
+        // change): a plain try_read would now fail, so a question is answered stale, but the reply of an
+        // operation must still be the real, current figures.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let e1 = entry.clone();
+        let reader = std::thread::spawn(move || {
+            let _r = e1.doc.read().unwrap();
+            tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        });
+        rx.recv().unwrap();
+        let e2 = entry.clone();
+        let writer = std::thread::spawn(move || {
+            let mut d = e2.doc.write().unwrap();
+            d.set_cell(1, 0, "changed".to_string()).unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let question = docs.info_now(ia).unwrap();
+        assert!(
+            question.stale,
+            "a question is answered at once, from the last reading"
+        );
+        let t0 = std::time::Instant::now();
+        let reply = docs.info(ia).unwrap();
+        assert!(!reply.stale, "an operation's reply is never stale");
+        assert!(
+            reply.data_revision > before.data_revision,
+            "and it shows the change that was waiting"
+        );
+        assert!(
+            reply.seq > question.seq,
+            "the reply is a newer reading than the stale answer"
+        );
+        assert!(
+            t0.elapsed() >= std::time::Duration::from_millis(150),
+            "it waited for the change"
+        );
+        reader.join().unwrap();
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn every_fresh_reading_is_kept_and_readings_only_count_up() {
+        let a = tmp(
+            "lock_d.csv",
+            b"a
+1
+",
+        );
+        let docs = Docs::default();
+        let ia = docs.open_path(&a, false).unwrap().id;
+        let first = wait(&docs, ia);
+        // An edit's own reply (built without info()) is what a stale answer falls back to afterwards.
+        let edited = docs.set_cells(ia, vec![(1, 0, "x".into())]).unwrap();
+        assert!(edited.seq > first.seq);
+        let h = hold_write(&docs, ia, 300);
+        let stale = docs.info_now(ia).unwrap();
+        assert!(stale.stale);
+        assert_eq!(
+            (stale.seq, stale.history_pos),
+            (edited.seq, edited.history_pos),
+            "not older than the last edit"
+        );
+        h.join().unwrap();
+        let later = docs.info(ia).unwrap();
+        assert!(later.seq > stale.seq);
+    }
+
+    #[test]
     fn commands_that_ask_about_a_document_never_wait_for_a_change_to_finish() {
         let a = tmp(
             "lock_a.csv",
@@ -8094,7 +8210,7 @@ mod tests {
         // info: at once, stale, same figures; the live parts (read-only) are current.
         docs.set_read_only(ia, true)
             .unwrap_or_else(|_| fresh.clone());
-        let got = docs.info(ia).unwrap();
+        let got = docs.info_now(ia).unwrap();
         assert!(got.stale, "answered from the last reading");
         assert_eq!(
             (got.rows, got.cols, got.data_revision),
@@ -8113,7 +8229,7 @@ mod tests {
         );
         h.join().unwrap();
         // After the change let go: a fresh answer follows.
-        let after = docs.info(ia).unwrap();
+        let after = docs.info_now(ia).unwrap();
         assert!(!after.stale);
     }
 
@@ -8132,7 +8248,7 @@ mod tests {
         *docs.get(ia).unwrap().last_info.lock().unwrap() = None;
         let h = hold_write(&docs, ia, 300);
         let t0 = std::time::Instant::now();
-        let got = docs.info(ia).unwrap();
+        let got = docs.info_now(ia).unwrap();
         assert!(!got.stale, "with nothing stored it waits for a real answer");
         assert!(t0.elapsed() >= std::time::Duration::from_millis(200));
         h.join().unwrap();

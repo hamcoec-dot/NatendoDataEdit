@@ -2463,7 +2463,7 @@ async fn doc_info(docs: DocsState<'_>, doc: u32) -> CmdResult<DocInfo> {
     // Never on the window's thread: while a change holds the document this answers at once from the
     // last reading (marked stale); only the very first question can wait, on the blocking pool.
     let docs = docs.inner().clone();
-    blocking(move || docs.info(doc)).await
+    blocking(move || docs.info_now(doc)).await
 }
 
 /// A window of cells in the engine's binary form (no JSON on the hot path).

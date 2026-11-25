@@ -31,6 +31,8 @@ export interface DocInfo {
   peeking?: boolean;
   /** Answered from the last reading while a change held the document (see infoguard.ts); never kept as a tab's state. */
   stale?: boolean;
+  /** Rises with every reading the engine makes; a reply older than what the tab holds is dropped (see Tab.update). */
+  seq?: number;
   /** Moves when what the rows hold changes (not with filters). */
   data_revision?: number;
   /** A filter rule sits on a deleted column: rows stay hidden without a funnel. */

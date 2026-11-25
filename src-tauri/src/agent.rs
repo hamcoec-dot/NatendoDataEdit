@@ -242,7 +242,7 @@ fn client(s: TcpStream, key: &str, app: &AppHandle, stop: &AtomicBool) -> std::i
 fn handle(req: Request, app: &AppHandle) -> CmdResult<Value> {
     let docs = app.state::<Arc<Docs>>().inner().clone();
     let tab_info = |id: u32| -> CmdResult<Value> {
-        let i = docs.info(id)?;
+        let i = docs.info_now(id)?;
         // Private file mode: the tab is listed, but not its name.
         if docs.is_private(id)? {
             return Ok(json!({ "tab": id, "name": "(private file)", "private": true }));

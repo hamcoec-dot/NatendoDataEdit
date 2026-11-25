@@ -297,6 +297,7 @@ export class Tab {
   cache: CellCache;
 
   constructor(info: DocInfo, defaultWidth: number) {
+    this.infoSeq = info.seq ?? 0;
     this.info = info;
     this.columns = new Columns(info.cols, defaultWidth);
     this.cache = new CellCache(
@@ -611,8 +612,23 @@ export class Tab {
     return this.lookRedo.at(-1)?.pos === this.info.history_pos || (this.info.can_redo && this.redoCut !== this.info.history_pos);
   }
 
+  /** The reading number of the info the tab holds (see `DocInfo.seq`). */
+  private infoSeq = 0;
+
   /** Take new engine info; refetch cells when the data may have changed. */
   update(info: DocInfo, dataChanged: boolean): void {
+    // A stale answer (made while a change held the document), or a reply built before the info the tab
+    // already holds (a late retry, a slow poll), is never taken as the tab's state: it could read as an
+    // Undo and rewind column moves, blocks and a pending cut. The cells are still read again when the
+    // caller says the data changed.
+    if (info.stale || (info.seq !== undefined && info.seq < this.infoSeq)) {
+      if (dataChanged) {
+        this.cache.invalidate();
+        this.bump();
+      }
+      return;
+    }
+    if (info.seq !== undefined) this.infoSeq = info.seq;
     // A look change made just before this engine change is a step of its own
     // (while a saved view is applied, its look joins its first engine step).
     if (!this.grouping) this.recordView();

@@ -336,6 +336,22 @@ const monitorOff = (m) =>
   });
 
 const scenarios = {
+  // Closing the ten-million-row tab: the command comes back at once (the document is freed on its own thread).
+  async close() {
+    await freshBig();
+    const m = await start([BIG, SMALL]);
+    await waitFor(async () => (await invoke(m, "doc_info", { doc: 1 })).indexed === true, 600000, 500);
+    await dismissAsk(m);
+    await sleep(1000);
+    await monitorOn(m, 0);
+    const t0 = Date.now();
+    await invoke(m, "close_document", { doc: 1 });
+    const ms = Date.now() - t0;
+    const r = await monitorOff(m);
+    info(`closing the 10,000,000-row tab: the command took ${ms} ms; longest gap between frames ${r.maxGap.toFixed(0)} ms`);
+    ok(ms < 50, `closing the big tab came back within 50 ms (${ms} ms)`);
+  },
+
   // doc_info polled every 20 ms from the page during a 10,000,000-row save: the window keeps redrawing.
   async poll() {
     await freshBig();
