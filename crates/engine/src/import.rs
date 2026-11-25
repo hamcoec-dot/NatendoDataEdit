@@ -613,6 +613,19 @@ fn json_cell(v: &Value) -> String {
     }
 }
 
+/// [`json_cell`] written into a buffer that is reused from row to row (no new string per cell).
+fn json_cell_into(v: &Value, out: &mut String) {
+    use std::fmt::Write;
+    match v {
+        Value::Null => {}
+        Value::String(s) => out.push_str(s),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        other => {
+            let _ = write!(out, "{other}");
+        }
+    }
+}
+
 const STOP: &str = "natendo: stop";
 
 /// Hands each element of a top-level array to a callback as it is parsed,
@@ -809,7 +822,9 @@ fn json(text: &str, limit: Option<u64>, sink: &mut Sink) -> Result<(), Error> {
                     for (k, v) in o {
                         // A name past a preview's first rows is left out.
                         if let Some(&i) = index.get(k) {
-                            line[i] = json_cell(v);
+                            let cell = &mut line[i];
+                            cell.clear();
+                            json_cell_into(v, cell);
                         }
                     }
                 }
