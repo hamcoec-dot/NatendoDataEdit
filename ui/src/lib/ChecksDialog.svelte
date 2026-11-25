@@ -4,7 +4,7 @@
   // the grid and the table can show only rows with problems. Checks are
   // kept with views and can be saved to a file the command line reads.
   import { untrack } from "svelte";
-  import { backend, errorText, type Check, type CheckKind, type CheckReport, type CheckSpec } from "./backend";
+  import { backend, errorText, type Check, type CheckKind, type CheckReport, type CheckSpec, type RuleSuggestion } from "./backend";
   import FormShell from "./FormShell.svelte";
   import { CHECK_KINDS, CHECK_PATTERNS, describeCheck, localDays, newCheck } from "./m8";
 
@@ -20,14 +20,75 @@
     onGoto: (row: number, col: number | null) => void;
     onShowProblems: (spec: CheckSpec) => void;
     onClose: () => void;
+    /** Set when the rules came from a file beside the table (its name shows, and the file can be removed). */
+    rulesFile?: string;
   }
-  let { doc, titles, col, header, checks, marked, onApply, onGoto, onShowProblems, onClose }: Props = $props();
+  let { doc, titles, col, header, checks, marked, onApply, onGoto, onShowProblems, onClose, rulesFile = "" }: Props = $props();
 
   let list = $state<Check[]>(untrack(() => structuredClone($state.snapshot(checks))));
   let mark = $state(untrack(() => marked || checks.length === 0));
   let report = $state<CheckReport | null>(null);
   let problem = $state("");
   let running = $state(false);
+  let kept = $state("");
+  let suggestions = $state<(RuleSuggestion & { on: boolean })[] | null>(null);
+  let suggesting = $state(false);
+
+  /** Ready-made rules for the column this dialog was opened on. */
+  const PRESETS: { id: string; label: string; make: () => Check | null }[] = [
+    { id: "digits5", label: "5 digits (like a ZIP code)", make: () => ({ col, name: "5 digits", kind: { type: "pattern", pattern: { text: "[0-9]{5}", kind: "regex", match_case: false, whole_cell: true } } }) },
+    { id: "trim", label: "No spaces at the start or end", make: () => (titles[col] ? { col: null, name: "No spaces at the start or end", kind: { type: "expression", expr: `TRIM([${titles[col]}]) = [${titles[col]}]` } } : null) },
+    { id: "iso", label: "A real date written YYYY-MM-DD", make: () => ({ col, kind: { type: "date_iso" } }) },
+    { id: "whole", label: "A whole number", make: () => ({ col, kind: { type: "number", min: null, max: null, whole: true } }) },
+    { id: "list", label: "One of a list of values", make: () => ({ col, kind: { type: "list", values: [], match_case: false } }) },
+    { id: "unique", label: "No repeats", make: () => ({ col, kind: { type: "unique", match_case: false } }) },
+    { id: "required", label: "Must not be blank", make: () => ({ col, kind: { type: "required" } }) },
+  ];
+  function addPreset(id: string): void {
+    const c = PRESETS.find((p) => p.id === id)?.make();
+    if (!c) {
+      problem = "That rule needs the column to have a title.";
+      return;
+    }
+    if (list.length < MAX) list = [...list, c];
+  }
+
+  async function suggest(): Promise<void> {
+    suggesting = true;
+    problem = "";
+    try {
+      const s = await backend().suggestRules(doc, col, header);
+      suggestions = s.map((x) => ({ ...x, on: true }));
+      if (!s.length) problem = "Nothing to suggest: this column's values do not share one clear form.";
+    } catch (e) {
+      problem = errorText(e);
+    } finally {
+      suggesting = false;
+    }
+  }
+  function addSuggested(): void {
+    const on = (suggestions ?? []).filter((s) => s.on).map((s) => s.check);
+    list = [...list, ...on].slice(0, MAX);
+    suggestions = null;
+    report = null;
+  }
+
+  async function keep(): Promise<void> {
+    try {
+      const name = await backend().checksSidecarKeep(doc, spec().checks, header);
+      kept = list.length ? `Kept in ${name}.` : "No rules, so the file beside the table was removed.";
+      problem = "";
+    } catch (e) {
+      problem = errorText(e);
+    }
+  }
+  function forget(): void {
+    list = [];
+    report = null;
+    suggestions = null;
+    onApply([], false);
+    kept = "Rules forgotten. A rules file beside the table is untouched: Keep with no rules removes it.";
+  }
 
   const MAX = 200;
   function add(): void {
@@ -95,6 +156,7 @@
             {#each titles as t, k (k)}<option value={k}>{t || `Column ${k + 1}`}</option>{/each}
           </select>
         {/if}
+        <input type="text" class="name" aria-label="Rule name" placeholder="name (optional)" maxlength="100" value={c.name ?? ""} oninput={(e) => (c.name = e.currentTarget.value.trim() ? e.currentTarget.value : null)} />
         <select aria-label="Check" value={c.kind.type} onchange={(e) => setKind(i, (e.currentTarget as HTMLSelectElement).value as CheckKind["type"])}>
           {#each CHECK_KINDS as k (k.type)}<option value={k.type}>{k.label}</option>{/each}
         </select>
@@ -134,8 +196,24 @@
         <button type="button" class="x" aria-label="Remove this check" onclick={() => remove(i)}>×</button>
       </div>
     {/each}
-    <button type="button" onclick={add} disabled={list.length >= MAX}>Add a check</button>
+    <div class="check">
+      <button type="button" onclick={add} disabled={list.length >= MAX}>Add a check</button>
+      <select aria-label="Ready-made rule" value="" onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) addPreset(v); (e.currentTarget as HTMLSelectElement).value = ""; }}>
+        <option value="">Ready-made rule for “{titles[col] || `Column ${col + 1}`}”…</option>
+        {#each PRESETS as p (p.id)}<option value={p.id}>{p.label}</option>{/each}
+      </select>
+      <button type="button" onclick={() => void suggest()} disabled={suggesting}>{suggesting ? "Looking…" : "Suggest rules from this data"}</button>
+    </div>
   </div>
+  {#if suggestions?.length}
+    <div class="suggest" aria-label="Suggested rules">
+      {#each suggestions as s, i (i)}
+        <label class="row"><input type="checkbox" bind:checked={s.on} /> <strong>{s.check.name ?? describeCheck(s.check, titles)}</strong> <span class="sub">{s.why}</span></label>
+      {/each}
+      <div class="check"><button type="button" onclick={addSuggested}>Add the ticked rules</button><button type="button" onclick={() => (suggestions = null)}>Not now</button></div>
+    </div>
+  {/if}
+  {#if rulesFile}<p class="note">These rules were read from {rulesFile} beside the table.</p>{/if}
   <p class="note">Blank cells pass every check except "Must not be blank". Checks are kept with saved views.</p>
   <label class="row"><input type="checkbox" bind:checked={mark} /> Mark problem cells on the grid</label>
   {#if report}
@@ -157,6 +235,7 @@
       <p class="note">Click a problem to go to it.{report.listed.length < report.problems ? ` Listing the first ${report.listed.length.toLocaleString()}.` : ""}</p>
     {/if}
   {/if}
+  {#if kept}<p class="good">{kept}</p>{/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#snippet buttons()}
     <button type="button" class="primary" onclick={() => void run()} disabled={!list.length || running}>{running ? "Checking…" : "Run checks"}</button>
@@ -164,6 +243,8 @@
     <button type="button" onclick={() => { onApply(spec().checks, mark); onClose(); }}>Keep and close</button>
     <button type="button" onclick={() => void open()}>Open…</button>
     <button type="button" onclick={() => void save()} disabled={!list.length}>Save…</button>
+    <button type="button" title="Writes the rules to a small file beside this file (never the table's cells: only the names, patterns and lists you typed). Not for private or encrypted files." onclick={() => void keep()}>Keep these rules with the file</button>
+    <button type="button" onclick={forget} disabled={!list.length}>Forget these rules</button>
     <button type="button" onclick={onClose}>Cancel</button>
   {/snippet}
 </FormShell>
@@ -184,6 +265,20 @@
   }
   .check input[type="text"] {
     width: 9em;
+  }
+  .check input.name {
+    width: 11em;
+  }
+  .suggest {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  .sub {
+    color: var(--muted);
   }
   .check input.grow {
     flex: 1;

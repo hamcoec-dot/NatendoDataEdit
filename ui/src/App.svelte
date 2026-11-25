@@ -8116,6 +8116,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     checks={tab.checks}
     marked={tab.checksMarked}
     onApply={keepChecks}
+    rulesFile={tab.rulesNote ? tab.rulesNote.replace(/^Loaded .* from /, "").replace(/ \(.*$/, "") : ""}
     onGoto={(row, col) => { const t = tab; if (t) grid?.select({ row, col: col ?? t.cell.col }); }}
     onShowProblems={(s) => void showProblems(s)}
     onClose={() => { checksOpen = false; grid?.focus(); }}

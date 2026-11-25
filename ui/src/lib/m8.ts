@@ -86,6 +86,7 @@ export const CHECK_KINDS: { type: CheckKind["type"]; label: string }[] = [
   { type: "required", label: "Must not be blank" },
   { type: "number", label: "Number" },
   { type: "date", label: "Date" },
+  { type: "date_iso", label: "Date written YYYY-MM-DD" },
   { type: "length", label: "Length (characters)" },
   { type: "list", label: "One of a list" },
   { type: "pattern", label: "Matches a pattern" },
@@ -99,6 +100,7 @@ export function newCheck(type: CheckKind["type"], col: number): Check {
     type === "required" ? { type }
     : type === "number" ? { type, min: null, max: null, whole: false }
     : type === "date" ? { type, min: null, max: null }
+    : type === "date_iso" ? { type }
     : type === "length" ? { type, min: null, max: null }
     : type === "list" ? { type, values: [], match_case: false }
     : type === "pattern" ? { type, pattern: { text: "", kind: "regex", match_case: false, whole_cell: true } }
@@ -122,6 +124,8 @@ export function describeCheck(c: Check, titles: string[]): string {
       return `${col}${k.whole ? "whole number" : "number"}${range(num(k.min), num(k.max))}`;
     case "date":
       return `${col}date${range(k.min ?? "", k.max ?? "")}`;
+    case "date_iso":
+      return `${col}date written YYYY-MM-DD`;
     case "length":
       return `${col}length${range(num(k.min), num(k.max), " characters")}`;
     case "list":
