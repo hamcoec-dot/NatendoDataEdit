@@ -765,6 +765,12 @@ pub enum DataOp {
         #[serde(default)]
         passing: bool,
     },
+    /// Show only the rows with a different number of fields than most.
+    ShowRagged {
+        #[serde(default)]
+        pick: natendo_engine::document::ragged::RaggedPick,
+        keep_first: bool,
+    },
     /// Show only the rows whose value in a column has (or has not) a shape: the
     /// pattern pill's click. Reads the rows shown now; refused if the document
     /// changed since the pill was worked out.
@@ -1320,6 +1326,9 @@ fn recipe_step(op: &DataOp) -> Logged {
                 "showing duplicates, problems or a pattern (a view, not a change)".into(),
             )
         }
+        DataOp::ShowRagged { .. } => {
+            return Logged::LeftOut("showing ragged rows (a view, not a change)".into())
+        }
         DataOp::CompareShow { .. } => {
             return Logged::LeftOut(
                 "showing rows where two columns differ (a view, not a change)".into(),
@@ -1623,6 +1632,12 @@ pub struct DocInfo {
     /// Decoding replaced bytes: saving needs consent.
     pub lossy: bool,
     pub invalid_bytes: bool,
+    /// The number of fields most rows of the file have (0 until indexed),
+    /// the rows of the file with another number, and whether the first row is
+    /// one of them. From counts kept while reading the file.
+    pub usual_fields: u32,
+    pub ragged_rows: u64,
+    pub first_row_ragged: bool,
     pub line_by_line: bool,
     pub column_changes: bool,
     pub repair_count: u64,
@@ -5672,7 +5687,9 @@ impl Docs {
             DataOp::FillExample { .. } => "Filling by example",
             DataOp::Compute { .. } => "Computing",
             // Showing rows changes no data, so a locked file allows it.
-            DataOp::ShowProblems { .. } | DataOp::ShowShape { .. } => "Filtering",
+            DataOp::ShowProblems { .. } | DataOp::ShowRagged { .. } | DataOp::ShowShape { .. } => {
+                "Filtering"
+            }
             DataOp::CompareShow { .. } | DataOp::CompareColumn { .. } => "Comparing",
             DataOp::FormulaFilter { .. } => "Filtering",
             DataOp::SortProblems { .. } | DataOp::CheckColumn { .. } => "Checking",
@@ -5829,6 +5846,11 @@ impl Docs {
                     Planned::Rows(d.plan_show_problems(&rep, spec.keep_first, *passing)?)
                 }
                 DataOp::ShowShape { spec } => Planned::Rows(d.plan_shape_filter(spec, p)?),
+                DataOp::ShowRagged { pick, keep_first } => {
+                    let found = d.ragged_rows(*keep_first, p)?;
+                    groups.set(found.short);
+                    Planned::Rows(d.plan_show_ragged(&found, *keep_first, *pick)?)
+                }
                 DataOp::SortProblems { spec } => {
                     let rep = d.run_checks(spec, p)?;
                     groups.set(rep.rows);
@@ -8086,6 +8108,9 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         mixed_line_breaks: stats.mixed_line_breaks(),
         lossy: d.is_lossy(),
         invalid_bytes: d.has_invalid_bytes(),
+        usual_fields: d.ragged_at_open(false).map_or(0, |r| r.0),
+        ragged_rows: d.ragged_at_open(false).map_or(0, |r| r.1),
+        first_row_ragged: d.first_row_ragged(),
         line_by_line,
         column_changes: d.has_column_changes(),
         repair_count: stats.repair_count,
@@ -10804,6 +10829,45 @@ ca,California
             "{saved}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// C1a: the open notice's counts come with the file's facts, and the filter shows the short and long rows; after
+    /// a column change it is refused with the reason.
+    #[test]
+    fn ragged_rows_are_counted_at_open_and_shown() {
+        let docs = Docs::default();
+        let p = tmp(
+            "ragged.csv",
+            b"a,b,c
+1,2,3
+4,Smith, John,6
+7
+8,9,10
+",
+        );
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let i = docs.info(id).unwrap();
+        assert_eq!(
+            (i.usual_fields, i.ragged_rows, i.first_row_ragged),
+            (3, 2, false)
+        );
+        let show = |pick| DataOp::ShowRagged {
+            pick,
+            keep_first: true,
+        };
+        use natendo_engine::document::ragged::RaggedPick;
+        let r = docs.data_op(id, show(RaggedPick::All)).unwrap();
+        assert_eq!((r.rows, r.groups, docs.info(id).unwrap().rows), (2, 1, 3));
+        let r = docs.data_op(id, show(RaggedPick::Long)).unwrap();
+        assert_eq!((r.rows, docs.info(id).unwrap().rows), (1, 2));
+        docs.insert_cols(id, 0, 1).unwrap();
+        let e = docs.data_op(id, show(RaggedPick::All)).unwrap_err();
+        assert!(
+            e.message.contains("added, removed or moved"),
+            "{}",
+            e.message
+        );
     }
 
     /// B4: risky bulk changes name a moment first; cheap ones do not; the automatic ones are capped at 20 and

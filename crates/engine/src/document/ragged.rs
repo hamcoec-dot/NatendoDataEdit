@@ -69,6 +69,13 @@ impl Document {
         Some((usual, n))
     }
 
+    /// True when the file's first row had another number of fields than most.
+    pub fn first_row_ragged(&self) -> bool {
+        self.ragged_at_open(false).is_some_and(|(usual, _)| {
+            self.index.rows() > 0 && self.file_fields(0) != u64::from(usual)
+        })
+    }
+
     /// Find every ragged row, hidden ones too. With `header`, the first row
     /// is never one.
     pub fn ragged_rows(&self, header: bool, progress: &Progress) -> Result<Ragged, Error> {
