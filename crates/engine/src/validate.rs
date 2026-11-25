@@ -48,6 +48,9 @@ pub enum CheckKind {
         #[serde(default)]
         max: Option<String>,
     },
+    /// Only a real calendar date written `YYYY-MM-DD` (`2024-02-29` yes, `2023-02-29`,
+    /// `02/03/2024` and `2024-2-3` no); blank cells pass (use Required for those).
+    DateIso,
     Length {
         #[serde(default)]
         min: Option<u32>,
@@ -78,7 +81,14 @@ pub struct Check {
     #[serde(default)]
     pub col: Option<u32>,
     pub kind: CheckKind,
+    /// What the rule is called ("5-digit ZIP"), for tooltips and reports; a name made
+    /// from the kind when none is given. Files and views from before names read as None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
+
+/// Longest rule name, in characters.
+pub const MAX_NAME_CHARS: usize = 100;
 
 /// Checks to run.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -142,6 +152,7 @@ enum Test {
         min: f64,
         max: f64,
     },
+    DateIso,
     Length {
         min: usize,
         max: usize,
@@ -210,6 +221,7 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
                 min: bound_date(min, spec.read, "earliest")?.unwrap_or(f64::NEG_INFINITY),
                 max: bound_date(max, spec.read, "latest")?.unwrap_or(f64::INFINITY),
             },
+            CheckKind::DateIso => Test::DateIso,
             CheckKind::Length { min, max } => Test::Length {
                 min: min.unwrap_or(0) as usize,
                 max: max.map_or(usize::MAX, |m| m as usize),
@@ -291,6 +303,7 @@ impl Compiled {
         }
         match t {
             Test::Required | Test::Unique | Test::Expr(_) => true,
+            Test::DateIso => is_iso_date(v),
             Test::Number { min, max, whole } => match parse_number(v, read) {
                 Some(n) => n >= *min && n <= *max && (!whole || n.fract() == 0.0),
                 None => false,
@@ -314,6 +327,74 @@ impl Compiled {
                 }
             }
             Test::Pattern(m) => m.is_match(v),
+        }
+    }
+}
+
+/// A real calendar date written `YYYY-MM-DD` (four digits, two, two; leap years right).
+pub fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return false;
+    }
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    if !(digits(0..4) && digits(5..7) && digits(8..10)) {
+        return false;
+    }
+    let year: u32 = s[0..4].parse().unwrap_or(0);
+    let month: u32 = s[5..7].parse().unwrap_or(0);
+    let day: u32 = s[8..10].parse().unwrap_or(0);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => 28 + u32::from(leap),
+        _ => return false,
+    };
+    (1..=days).contains(&day)
+}
+
+impl Check {
+    /// A check on a column (or, for an expression, on rows) with no name.
+    pub fn new(col: Option<u32>, kind: CheckKind) -> Check {
+        Check {
+            col,
+            kind,
+            name: None,
+        }
+    }
+
+    /// What to say about this rule: its name, else a sentence made from its kind
+    /// ("Number from 1 to 9", "One of 12 values", "Matches ^\\d{5}$").
+    pub fn describe(&self) -> String {
+        if let Some(n) = self.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            return n.to_string();
+        }
+        fn range<T: std::fmt::Display>(what: &str, min: &Option<T>, max: &Option<T>) -> String {
+            match (min, max) {
+                (Some(a), Some(b)) => format!("{what} from {a} to {b}"),
+                (Some(a), None) => format!("{what} of at least {a}"),
+                (None, Some(b)) => format!("{what} of at most {b}"),
+                (None, None) => what.to_string(),
+            }
+        }
+        match &self.kind {
+            CheckKind::Required => "Required (not blank)".into(),
+            CheckKind::Number { min, max, whole } => {
+                let r = range("Number", min, max);
+                if *whole {
+                    format!("Whole {}", r.to_lowercase())
+                } else {
+                    r
+                }
+            }
+            CheckKind::Date { min, max } => range("Date", min, max),
+            CheckKind::DateIso => "Date written YYYY-MM-DD".into(),
+            CheckKind::Length { min, max } => range("Length", min, max),
+            CheckKind::List { values, .. } => format!("One of {} values", values.len()),
+            CheckKind::Pattern { pattern } => format!("Matches {}", pattern.text),
+            CheckKind::Unique { .. } => "Unique (no repeats)".into(),
+            CheckKind::Expression { expr } => format!("Row rule: {expr}"),
         }
     }
 }
@@ -758,6 +839,11 @@ pub fn check_spec(spec: &CheckSpec) -> Result<(), Error> {
         return Err(Error::Invalid(format!("at most {MAX_CHECKS} checks")));
     }
     for c in &spec.checks {
+        if c.name.as_deref().is_some_and(|n| n.chars().count() > MAX_NAME_CHARS) {
+            return Err(Error::Invalid(format!(
+                "a rule name can be at most {MAX_NAME_CHARS} characters"
+            )));
+        }
         match &c.kind {
             CheckKind::List { values, .. } if values.len() > MAX_LIST => {
                 return Err(Error::Invalid(format!(
