@@ -417,6 +417,8 @@ pub struct Entry {
     /// The find bar's match count being worked out, if any: a newer count
     /// or any change cancels it.
     find_count: Mutex<Option<Arc<Progress>>>,
+    /// The "Replace all would change N cells" count behind the ghost diff (one at a time per tab).
+    ghost_count: Mutex<Option<Arc<Progress>>>,
     /// The last count's matches per block of rows: (search, revision,
     /// counts), so moving to the next match re-reads one block only.
     #[allow(clippy::type_complexity)]
@@ -561,6 +563,14 @@ impl Entry {
         }
         if let Some(p) = self
             .find_count
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            p.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(p) = self
+            .ghost_count
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take()
@@ -1513,6 +1523,7 @@ impl Docs {
             checks: Mutex::new(None),
             totals: Mutex::new(None),
             find_count: Mutex::new(None),
+            ghost_count: Mutex::new(None),
             find_blocks: Mutex::new(None),
             typeahead: Mutex::new(None),
             writers: AtomicU32::new(0),
@@ -3125,6 +3136,75 @@ impl Docs {
             }
         };
         Ok(d.find_marks(&spec, row, rows, col, cols)?)
+    }
+
+    /// What Replace all would make of the cells on screen (the ghost diff). Read-only and quick; while
+    /// a change holds the document it answers "busy" like the lit-up matches do, so nothing is drawn
+    /// from a document that is about to change. Nothing about it is logged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace_ghosts(
+        &self,
+        id: u32,
+        spec: FindSpec,
+        replacement: &str,
+        row: u64,
+        rows: u64,
+        col: u32,
+        cols: u32,
+    ) -> CmdResult<natendo_engine::find::GhostWindow> {
+        let entry = self.get(id)?;
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(CmdError::new("busy", "the file is being changed"))
+            }
+        };
+        Ok(d.replace_ghosts(&spec, replacement, row, rows, col, cols)?)
+    }
+
+    /// How many cells Replace all would change (cancelled by a newer count, a change, or
+    /// `replace_count_cancel`; never waits behind a change).
+    pub fn replace_count(&self, id: u32, spec: FindSpec, replacement: &str) -> CmdResult<u64> {
+        let entry = self.get(id)?;
+        let progress = Arc::new(Progress::new());
+        {
+            let mut slot = entry.ghost_count.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(old) = slot.replace(progress.clone()) {
+                old.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(CmdError::new("busy", "the file is being changed"))
+            }
+        };
+        if entry.change_waiting() {
+            return Err(CmdError::new("busy", "the file is being changed"));
+        }
+        let r = d.replace_count(&spec, replacement, &progress);
+        drop(d);
+        let mut slot = entry.ghost_count.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.as_ref().is_some_and(|p| Arc::ptr_eq(p, &progress)) {
+            *slot = None;
+        }
+        Ok(r?)
+    }
+
+    /// Stop the count behind the ghost diff (typing went on, Esc, the panel closed).
+    pub fn replace_count_cancel(&self, id: u32) -> CmdResult<()> {
+        let entry = self.get(id)?;
+        if let Some(p) = entry
+            .ghost_count
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            p.cancel.store(true, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     /// What "Replace all" would change; the plan is kept for it.

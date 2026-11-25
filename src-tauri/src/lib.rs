@@ -2911,6 +2911,41 @@ async fn find_marks(
     blocking(move || docs.find_marks(doc, spec, row, rows, col, cols)).await
 }
 
+/// What Replace all would make of the cells on screen (the ghost diff).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn replace_ghosts(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: FindSpec,
+    replacement: String,
+    row: u64,
+    rows: u64,
+    col: u32,
+    cols: u32,
+) -> CmdResult<natendo_engine::find::GhostWindow> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.replace_ghosts(doc, spec, &replacement, row, rows, col, cols)).await
+}
+
+/// How many cells Replace all would change.
+#[tauri::command]
+async fn replace_count(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: FindSpec,
+    replacement: String,
+) -> CmdResult<u64> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.replace_count(doc, spec, &replacement)).await
+}
+
+/// Stop the count behind the ghost diff.
+#[tauri::command]
+fn replace_count_cancel(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
+    docs.replace_count_cancel(doc)
+}
+
 #[tauri::command]
 async fn find_all(docs: DocsState<'_>, doc: u32, spec: FindSpec) -> CmdResult<FindAll> {
     let docs = docs.inner().clone();
@@ -3819,6 +3854,9 @@ pub fn run() {
             find_all,
             find_count,
             find_marks,
+            replace_ghosts,
+            replace_count,
+            replace_count_cancel,
             set_doc_title,
             find_count_cancel,
             replace_confirm,
