@@ -274,6 +274,12 @@ pub enum Step {
     Spaces {
         how: Spaces,
     },
+    /// Fix what looks right but is not: zero-width characters, odd spaces, smart quotes, tabs and line breaks,
+    /// and look-alike letters inside mixed-script words (see [`crate::xray`]).
+    Sanitize {
+        #[serde(flatten)]
+        options: crate::xray::SanitizeOptions,
+    },
     /// Number the cells: `start`, `start + step`, ... with at least `digits`
     /// digits, added at the start or end with `separator`.
     Number {
@@ -709,6 +715,7 @@ impl Step {
             Step::Remove { .. } => "Remove text".into(),
             Step::Reverse => "Reverse text".into(),
             Step::Spaces { .. } => "Spaces".into(),
+            Step::Sanitize { .. } => "Sanitize look-alike characters".into(),
             Step::Number { .. } => "Number the cells".into(),
             Step::Digits { keep: true } => "Keep only digits".into(),
             Step::Digits { keep: false } => "Remove digits".into(),
@@ -1066,6 +1073,7 @@ fn plain(
         Step::Remove { what } => remove(what, t),
         Step::Reverse => Some(t.chars().rev().collect()),
         Step::Spaces { how } => Some(spaces(*how, t)),
+        Step::Sanitize { options } => crate::xray::sanitize(t, options),
         Step::Number {
             start,
             step,
@@ -2833,6 +2841,9 @@ pub struct CleanPreview {
     pub other_order: u64,
     /// Rows past those looked at.
     pub more: bool,
+    /// Sanitize only: changed cells that hold a look-alike letter fixed to its Latin twin (names on voter
+    /// lists matter, so the count is shown before Apply).
+    pub homoglyph_cells: u64,
 }
 
 /// A computed run, applied with [`Document::apply_clean`].
@@ -2973,6 +2984,34 @@ impl Document {
         want: usize,
         max_rows: u64,
     ) -> Result<CleanPreview, Error> {
+        self.preview_clean_page(spec, now, seed, 0, want, max_rows, false)
+    }
+
+    /// A page of the changes a cleaner would make: `want` changes after the first `offset`. With `exact` the
+    /// whole area is looked at (up to `max_rows`) so every count is exact, however many changes there are.
+    #[allow(clippy::too_many_arguments)]
+    pub fn preview_clean_page(
+        &self,
+        spec: &CleanSpec,
+        now: f64,
+        seed: u64,
+        offset: u64,
+        want: usize,
+        max_rows: u64,
+        exact: bool,
+    ) -> Result<CleanPreview, Error> {
+        // Look-alike cells are counted only when a Sanitize step is set to fix look-alike letters.
+        let sanitizes = spec.cleaner.steps.iter().any(|s| {
+            matches!(
+                s,
+                Step::Sanitize {
+                    options: crate::xray::SanitizeOptions {
+                        homoglyphs: true,
+                        ..
+                    }
+                }
+            )
+        });
         let c = Compiled::new(&spec.cleaner, spec.read, now)?;
         let area = self.area(&FindSpec {
             pattern: Pattern::default(),
@@ -2985,7 +3024,7 @@ impl Document {
         let mut buf = Vec::new();
         let r0 = area.rows.start;
         for r in area.rows.clone() {
-            if out.changes.len() >= want || out.rows >= max_rows {
+            if (!exact && out.changes.len() >= want) || out.rows >= max_rows {
                 break;
             }
             out.rows += 1;
@@ -3003,7 +3042,18 @@ impl Document {
                         out.other_order += u64::from(o.other_order);
                         if let Some(new) = o.text {
                             out.changed += 1;
-                            if out.changes.len() < want {
+                            if sanitizes {
+                                let mut found = Vec::new();
+                                crate::xray::scan(t, &mut found);
+                                if found
+                                    .iter()
+                                    .any(|g| g.kind == crate::xray::GremlinKind::Homoglyph)
+                                    && new != t
+                                {
+                                    out.homoglyph_cells += 1;
+                                }
+                            }
+                            if out.changed > offset && out.changes.len() < want {
                                 out.changes.push(Change {
                                     row: r,
                                     number: self.row_number(r).unwrap_or(r),
@@ -3082,6 +3132,87 @@ mod tests {
     /// The ASAP Utilities clean-up check (M12): case options, invisible and
     /// odd characters, dates read in a pattern, Julian cyyddd, numbers in
     /// words.
+    /// B1: the Sanitize step, paged preview with exact counts and the homoglyph count (R8), one undo step.
+    #[test]
+    fn homoglyph_count_is_zero_when_look_alikes_are_not_fixed() {
+        let mut text = String::from("name\r\n");
+        for i in 0..10 {
+            text.push_str(&format!("P\u{430}ul\u{2019}s{i}\r\n"));
+        }
+        let d = doc(&text);
+        let mut o = crate::xray::SanitizeOptions::usual();
+        o.homoglyphs = false;
+        let spec = |options| CleanSpec {
+            cleaner: cleaner(vec![Step::Sanitize { options }]),
+            scope: Scope::Columns { cols: vec![0] },
+            skip_first: true,
+            read: Default::default(),
+        };
+        // Smart quotes are fixed in all 10 cells, but no look-alike letter is: the count says 0.
+        let p = d
+            .preview_clean_page(&spec(o), 0.0, 1, 0, 5, 1_000_000, true)
+            .unwrap();
+        assert_eq!((p.changed, p.homoglyph_cells), (10, 0));
+        let on = d
+            .preview_clean_page(
+                &spec(crate::xray::SanitizeOptions::usual()),
+                0.0,
+                1,
+                0,
+                5,
+                1_000_000,
+                true,
+            )
+            .unwrap();
+        assert_eq!((on.changed, on.homoglyph_cells), (10, 10));
+    }
+
+    #[test]
+    fn sanitize_preview_pages_with_exact_counts() {
+        let mut text = String::from("name\r\n");
+        for i in 0..50 {
+            match i % 3 {
+                0 => text.push_str(&format!("P\u{430}ul{i}\r\n")),
+                1 => text.push_str(&format!("O\u{2019}Brien{i}\r\n")),
+                _ => text.push_str(&format!("plain{i}\r\n")),
+            }
+        }
+        let mut d = doc(&text);
+        let spec = CleanSpec {
+            cleaner: cleaner(vec![Step::Sanitize {
+                options: crate::xray::SanitizeOptions::usual(),
+            }]),
+            scope: Scope::Columns { cols: vec![0] },
+            skip_first: true,
+            read: Default::default(),
+        };
+        // 17 cells have a Cyrillic а, 17 a curly quote, 16 are plain.
+        let p = d
+            .preview_clean_page(&spec, 0.0, 1, 0, 10, 1_000_000, true)
+            .unwrap();
+        assert_eq!((p.changed, p.homoglyph_cells), (34, 17));
+        assert_eq!(p.changes.len(), 10);
+        let second = d
+            .preview_clean_page(&spec, 0.0, 1, 10, 10, 1_000_000, true)
+            .unwrap();
+        assert_eq!(second.changed, 34, "the counts are exact on every page");
+        assert_ne!(p.changes[0].row, second.changes[0].row);
+        assert!(second.changes[0].row > p.changes.last().unwrap().row);
+        // Apply: one undo step; a second run changes nothing.
+        let plan = d
+            .plan_clean(&spec, 0.0, 1, 0, &crate::Progress::new())
+            .unwrap();
+        d.apply_clean(plan).unwrap();
+        assert_eq!(d.cell(1, 0).unwrap(), "Paul0");
+        assert_eq!(d.cell(2, 0).unwrap(), "O'Brien1");
+        let again = d
+            .preview_clean_page(&spec, 0.0, 1, 0, 10, 1_000_000, true)
+            .unwrap();
+        assert_eq!(again.changed, 0);
+        assert!(d.undo());
+        assert_eq!(d.cell(1, 0).unwrap(), "P\u{430}ul0");
+    }
+
     #[test]
     fn m12_clean_up_steps() {
         let case = |to| Step::Case { to };

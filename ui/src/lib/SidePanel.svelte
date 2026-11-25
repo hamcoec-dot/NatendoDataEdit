@@ -31,6 +31,7 @@
       confirmLoss: (what: string) => Promise<boolean>;
       onSave: () => void;
       now: () => number;
+      restoreCheckpoint: (c: import("./backend").Checkpoint) => Promise<void>;
     };
     /** The Record panel's hooks: move the active cell, and take in a changed document. */
     record: { onGo: (row: number, col: number) => void };

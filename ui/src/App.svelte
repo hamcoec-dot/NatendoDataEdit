@@ -5,11 +5,11 @@ import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type 
   import { namesFromText } from "./lib/columnNames";
   import { onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
-  import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout } from "./lib/backend";
+  import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout, type Checkpoint } from "./lib/backend";
   import { Tab, exportHandTab, importHandTab, type HandTab, type RowMap } from "./lib/tab.svelte";
 import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowheights";
   import { SECOND_WINDOW } from "./lib/windowRole";
-  import { invisibleNote } from "./lib/invisible";
+  import { invisibleNote, xrayNote } from "./lib/invisible";
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu, SELECTION_FREE } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
@@ -46,6 +46,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { copyTouches, findingsText, LARGE_COPY } from "./lib/privacy";
   import EditTools, { type ToolKind as EditKind } from "./lib/EditTools.svelte";
   import CleanDialog from "./lib/CleanDialog.svelte";
+  import XrayDialog from "./lib/XrayDialog.svelte";
   import SplitNameDialog from "./lib/SplitNameDialog.svelte";
   import InsertDialog from "./lib/InsertDialog.svelte";
   import RenameColumn from "./lib/RenameColumn.svelte";
@@ -256,6 +257,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** What the expression screen is for while open. */
   let computeMode = $state<"compute" | "change" | "filter">("compute");
   let checksOpen = $state(false);
+  /** X-ray: what this screen shows (cells and columns with a gremlin), and the report dialog. */
+  let xrayNow = $state<{ cells: number; cols: number } | null>(null);
+  let xrayOpen = $state(false);
   let fieldCheckOpen = $state(false);
   let matchOpen = $state(false);
   let streetOpen = $state(false);
@@ -874,6 +878,33 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (!t) return;
     const to = Math.max(t.firstRow, Math.min(t.info.rows - 1, t.cell.row + d));
     grid?.select({ row: to, col: t.cell.col });
+  }
+
+  /** Name this moment: a checkpoint in the undo history (a few bytes; the Steps panel lists it). */
+  function nameMoment(): void {
+    const t = tab;
+    if (!t) return;
+    prompt = {
+      title: "Name this moment",
+      label: "Name",
+      value: "",
+      note: "A checkpoint remembers exactly how the table looks now, so you can come back to it from the Steps panel. It costs almost nothing. It is lost when the undo history is trimmed past it, when a new change replaces what you undid, when you save the file, and when the tab closes.",
+      check: (v) => (!v.trim() ? "Give the checkpoint a name." : v.trim().length > 100 ? "Use 100 characters or fewer." : ""),
+      done: (name) => {
+        t.recordView();
+        const looks = t.lookSteps.length;
+        void backend()
+          .checkpointList(t.id)
+          .then(async (before) => {
+            const known = new Set(before.map((c) => c.id));
+            for (const c of await backend().checkpointAdd(t.id, name)) if (!known.has(c.id)) t.checkpointLooks.set(c.id, looks);
+            t.checkpointTick++;
+            showPanel("steps");
+            say(`Named this moment “${name.trim()}”. It is at the top of the Steps panel.`);
+          })
+          .catch((e: unknown) => say(errorText(e)));
+      },
+    };
   }
 
   function shownTitles(t: Tab): string[] {
@@ -5303,7 +5334,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (note) say(note);
   }
 
-  async function undoRedo(op: "undo" | "redo"): Promise<void> {
+  /** Undo or redo, or with `jump` go to another place in the history in ONE engine call (a checkpoint) while doing
+   *  for every step crossed what a Ctrl+Z press does for it: look changes, saved-view groups, rename follow-ups,
+   *  the header switch, the filter, row heights. */
+  async function undoRedo(op: "undo" | "redo", jump?: { target: number; looks?: number; run: (t: Tab) => Promise<DocInfo> }): Promise<void> {
     if (grid?.isEditing()) return;
     const t = tab;
     if (!t) return;
@@ -5315,27 +5349,52 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     t.recordView();
     const pos = t.info.history_pos;
     const look = op === "undo" ? t.lookSteps.at(-1) : t.lookRedo.at(-1);
-    if (look && look.pos === pos) {
+    if (jump) {
+      // Every look change crossed goes back (or forward) too, the earliest one deciding what the look ends as.
+      let ends: NonNullable<typeof look>["before"] | undefined;
+      // A checkpoint named by the person remembers how many look changes there were then: the ones made after it go
+      // too (even one made at the same place in the history). One made by the app has only the place to go by.
+      const keep = jump.looks;
+      if (op === "undo") {
+        for (let l = t.lookSteps.at(-1); l && (keep !== undefined ? t.lookSteps.length > keep : l.pos > jump.target); l = t.lookSteps.at(-1)) {
+          t.lookRedo.push(t.lookSteps.pop()!);
+          ends = l.before;
+        }
+      } else {
+        for (let l = t.lookRedo.at(-1); l && (keep !== undefined ? t.lookSteps.length < keep : l.pos < jump.target); l = t.lookRedo.at(-1)) {
+          t.lookSteps.push(t.lookRedo.pop()!);
+          ends = l.after;
+        }
+      }
+      if (ends) t.restoreView({ look: ends, sort: null }, false);
+    } else if (look && look.pos === pos) {
       if (op === "undo") t.lookRedo.push(t.lookSteps.pop()!);
       else t.lookSteps.push(t.lookRedo.pop()!);
       t.restoreView({ look: op === "undo" ? look.before : look.after, sort: null }, false);
       say(`${op === "undo" ? "Undid" : "Redid"} a change to how the table looks (widths, formats, hiding and so on).`);
       return;
     }
-    if (op === "redo" && t.redoCut === pos) return;
+    if (!jump && op === "redo" && t.redoCut === pos) return;
     // A saved view's sort, filter and look go back (or forward) together.
-    const group = op === "undo" ? t.groups.find((g) => g.end === pos) : t.groups.find((g) => g.start === pos);
-    const target = group ? (op === "undo" ? group.start : group.end) : op === "undo" ? pos - 1 : pos + 1;
+    const group = jump ? undefined : op === "undo" ? t.groups.find((g) => g.end === pos) : t.groups.find((g) => g.start === pos);
+    const target = jump ? jump.target : group ? (op === "undo" ? group.start : group.end) : op === "undo" ? pos - 1 : pos + 1;
     undoBusy.add(t);
     if (op === "redo") t.redoing++;
     const posBefore = t.info.history_pos;
     try {
-      for (;;) {
-        const at = t.info.history_pos;
-        await change({ op });
-        // Data-check rules a rename rewrote follow each step.
+      if (jump) {
+        // One call for the whole way; the rename follow-ups cover every step crossed at once (they compare
+        // positions, not presses).
+        if (!(await apply(jump.run, true, t))) return;
         followRefEdits(t, op);
-        if (t.info.history_pos === at || t.info.history_pos === target) break;
+      } else {
+        for (;;) {
+          const at = t.info.history_pos;
+          await change({ op });
+          // Data-check rules a rename rewrote follow each step.
+          followRefEdits(t, op);
+          if (t.info.history_pos === at || t.info.history_pos === target) break;
+        }
       }
       // The widths, formats and so on as they were before the step undone,
       // or after the step redone; the filter rules as the engine has them.
@@ -5396,6 +5455,23 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
   const undoBusy = new Set<Tab>();
+
+  /** Go to a checkpoint: the engine moves in one call, the screen does for each step crossed what Ctrl+Z does. */
+  async function restoreCheckpoint(c: Checkpoint): Promise<void> {
+    const t = tab;
+    if (!t || t.busy) return;
+    // The steps away are asked again now: the list on screen may be older than the last change.
+    const fresh = (await backend().checkpointList(t.id).catch(() => [])).find((x) => x.id === c.id);
+    if (!fresh || !fresh.reachable) {
+      say("That checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or the file was saved.");
+      return;
+    }
+    if (fresh.current || fresh.steps === 0) return;
+    const target = t.info.history_pos + fresh.steps;
+    await undoRedo(fresh.steps < 0 ? "undo" : "redo", { target, looks: t.checkpointLooks.get(c.id), run: (x) => backend().checkpointRestore(x.id, c.id) });
+    t.checkpointTick++;
+    say(`Went to the checkpoint “${c.name}”. Ctrl+Z steps back through what was undone.`);
+  }
 
   /** Undo/redo of a rename: the data-check rules it rewrote go back, or
    *  are rewritten again. Rules changed by hand since are left as they are. */
@@ -5834,6 +5910,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "file.mail", label: "&Mailing labels and letters…", run: () => void openMail(), enabled: ready },
     { id: "edit.note", label: "&Note and flag on this row…", keys: ["Shift+F2"], run: () => { const t = tab; if (t) notesRow = t.cell.row; }, enabled: ready },
     { id: "edit.changes", label: "List of &my changes…", run: () => void openChanges(), enabled: ready },
+    { id: "edit.checkpoint", label: "&Name this moment (checkpoint)…", keys: ["Ctrl+Alt+K"], run: () => nameMoment(), enabled: hasTab },
     { id: "tools.recipe", label: "&Recipe (save or run steps)…", run: () => void openRecipes(), enabled: ready },
     { id: "tools.searchFolder", label: "Search a &folder of files…", keys: ["Ctrl+Shift+F"], run: () => { folderSearchOpen = true; } },
     { id: "view.showEdits", label: "Show my &edits", run: () => setShowEdits(!tab?.showEdits), enabled: hasTab, checked: () => !!tab?.showEdits },
@@ -6030,6 +6107,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "view.problemsFill", label: "Show problems as a red &fill", run: () => { prefs.data.problemStyle = "fill"; prefs.save(); }, checked: () => prefs.data.problemStyle === "fill" },
     { id: "view.problemsUnderline", label: "Show problems as a wavy &underline", run: () => { prefs.data.problemStyle = "underline"; prefs.save(); }, checked: () => prefs.data.problemStyle === "underline" },
     { id: "view.problemsBoth", label: "Show problems as fill and underline", run: () => { prefs.data.problemStyle = "both"; prefs.save(); }, checked: () => prefs.data.problemStyle === "both" },
+    { id: "view.xray", label: "&X-ray gremlins (look-alike letters, odd spaces, smart quotes)", keys: ["Ctrl+Shift+X"], run: () => { prefs.data.xray = !prefs.data.xray; prefs.save(); if (!prefs.data.xray) xrayNow = null; }, checked: () => prefs.data.xray },
+    { id: "view.xrayReport", label: "X-ray report for the selected columns or the file…", run: () => { xrayOpen = true; }, enabled: ready },
+    { id: "edit.sanitize", label: "Sanitize selection (look-alike letters, odd spaces, smart quotes)…", run: () => { cleanTool = "sanitize"; }, enabled: ready },
     { id: "view.invisible", label: "Show &invisible characters", keys: ["Ctrl+Shift+H"], run: () => { prefs.data.showInvisible = !prefs.data.showInvisible; prefs.save(); }, checked: () => prefs.data.showInvisible },
     { id: "view.fontBigger", label: "Larger te&xt", run: () => { prefs.data.fontSize = Math.min(28, prefs.data.fontSize + 1); prefs.save(); } },
     { id: "view.fontSmaller", label: "Smaller tex&t", run: () => { prefs.data.fontSize = Math.max(9, prefs.data.fontSize - 1); prefs.save(); } },
@@ -6224,9 +6304,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     {
       label: "&Edit",
       items: [
-        "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-",
+        "edit.undo", "edit.redo", "edit.repeat", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "edit.sanitize", "-",
         "edit.copyNames", "edit.copyNamesText", "edit.copyWithNames", "edit.pasteNames", "-",
-        "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "edit.gotoSpecial", "-", "edit.note", "edit.changes", "-",
+        "edit.fillDown", "edit.fillRight", "edit.fillUp", "edit.fillLeft", "edit.fillSeries", "-", "edit.cell", "edit.today", "edit.pickDate", "edit.now", "-", "edit.selectAll", "edit.goto", "edit.gotoSpecial", "-", "edit.note", "edit.changes", "edit.checkpoint", "-",
         "edit.deleteRows", "edit.deleteCols", "edit.moveRowsUp", "edit.moveRowsDown", "edit.moveColsLeft", "edit.moveColsRight",
       ],
     },
@@ -6237,7 +6317,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelRecord", "view.recordPrev", "view.recordNext", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
@@ -6286,8 +6366,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
-    tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    tab: ["file.save", "file.saveAs", "-", "edit.checkpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "edit.checkpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
@@ -7540,7 +7620,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         >{cellBarExpanded ? "▴" : "▾"}</button
       >
     </div>
-    {#if prefs.data.showInvisible && invisibleNote(cellBarText)}
+    {#if prefs.data.xray && xrayNote(cellBarText)}
+      <div class="invnote" role="status">X-ray: {xrayNote(cellBarText)}</div>
+    {:else if prefs.data.showInvisible && invisibleNote(cellBarText)}
       <div class="invnote" role="status">Can't be seen in this cell: {invisibleNote(cellBarText)}</div>
     {/if}
     {#if cellFind && cellBarExpanded}
@@ -7676,6 +7758,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
                   onContext={openContext}
                   onRenameCol={(c) => void askRename(c)}
                   onInsight={(c) => (profileCol = c)}
+                  onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
                   onPill={(c, part, px, py) => {
                     // The leftover part filters at once; the shape part opens the pill's menu.
                     if (part === "rest") void showShape(c, true, false);
@@ -7712,6 +7795,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
                   onContext={openContext}
                   onRenameCol={(c) => void askRename(c)}
                   onInsight={(c) => (profileCol = c)}
+                  onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
                   onPill={(c, part, px, py) => {
                     // The leftover part filters at once; the shape part opens the pill's menu.
                     if (part === "rest") void showShape(c, true, false);
@@ -7748,6 +7832,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           onContext={openContext}
           onRenameCol={(c) => void askRename(c)}
           onInsight={(c) => (profileCol = c)}
+                  onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
                   onPill={(c, part, px, py) => {
                     // The leftover part filters at once; the shape part opens the pill's menu.
                     if (part === "rest") void showShape(c, true, false);
@@ -7819,6 +7904,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
             ], "cancel")) === "go",
           onSave: () => void openRecipes(),
           now: localNow,
+          restoreCheckpoint,
         }}
         onFilterValue={(col, value, cut) => void setRule(col, cut ? { type: "conditions", first: { type: "text", op: "begins_with", text: value.replace(/…$/, ""), match_case: true } } : value === "" ? { type: "values", values: [], blanks: true } : { type: "values", values: [value], blanks: false })}
         onClose={() => showPanel(null)}
@@ -7864,6 +7950,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       {#if !tab.lastRun || tab.lastRun.revision !== tab.info.data_revision}<button type="button" class="small" title="Run the rules over the whole table" onclick={() => { const t = tab; if (t) void checkNow(t); }}>Check now</button>{/if}
     {/if}
     {#if status}
+      {#if prefs.data.xray}<button type="button" class="small" data-testid="xray-status" title="X-ray: what looks right but is not, on this screen. Click for a report of the selected columns or the whole file." onclick={() => (xrayOpen = true)}>X-ray: {xrayNow ? `${plural(xrayNow.cells, "cell")}, ${plural(xrayNow.cols, "column")}` : "nothing on this screen"}</button>{/if}
       {#if tab}<QuickTotals {tab} />{/if}
       {#if status.sel}<span>{status.sel}</span>{/if}
       {#if status.heightsHidden}<span title="The rows you gave a height keep it and get it back when the filter or the hidden rows are cleared.">Custom row heights hidden while filtered</span>{/if}
@@ -8025,6 +8112,18 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     onOpen={openOther}
     onRun={(op, header) => { joinKind = null; void runDialog({ data: op }, header); grid?.focus(); }}
     onClose={() => { joinKind = null; grid?.focus(); }}
+  />
+{/if}
+
+{#if xrayOpen && tab}
+  <XrayDialog
+    doc={tab.id}
+    titles={Array.from({ length: Math.min(tab.info.cols, 2000) }, (_, c) => columnTitle(tab!, c))}
+    cols={tab.areas.length && cellCountAreas(tab.areas) > 1 ? selectedCols(tab) : []}
+    header={tab.header}
+    onShow={(info) => { xrayOpen = false; tab?.update(info, true); say("Showing only the rows with look-alike or invisible characters. Data > Show all rows brings the rest back."); grid?.focus(); }}
+    onSanitize={() => { xrayOpen = false; cleanTool = "sanitize"; }}
+    onClose={() => { xrayOpen = false; grid?.focus(); }}
   />
 {/if}
 

@@ -1156,6 +1156,20 @@ fn import_close(imports: ImportsState<'_>, id: u32) {
     imports.close(id)
 }
 
+/// A page of the changes a cleaner would make, with exact counts over everything it would look at.
+#[tauri::command]
+async fn clean_preview_page(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::clean::CleanSpec,
+    now: f64,
+    offset: u64,
+    want: usize,
+) -> CmdResult<natendo_engine::clean::CleanPreview> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.clean_preview_page(doc, &spec, now, offset, want)).await
+}
+
 /// The first changes a cleaner would make.
 #[tauri::command]
 async fn clean_preview(
@@ -2201,6 +2215,42 @@ async fn steps_view(docs: DocsState<'_>, doc: u32) -> CmdResult<docs::StepsView>
 async fn steps_goto(docs: DocsState<'_>, doc: u32, k: Option<usize>) -> CmdResult<DocInfo> {
     let docs = docs.inner().clone();
     blocking(move || docs.steps_goto(doc, k)).await
+}
+
+/// The tab's checkpoints, each with whether the undo history still reaches it.
+#[tauri::command]
+async fn checkpoint_list(docs: DocsState<'_>, doc: u32) -> CmdResult<Vec<docs::CheckpointInfo>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.checkpoint_list(doc)).await
+}
+
+/// Name this moment.
+#[tauri::command]
+async fn checkpoint_add(
+    docs: DocsState<'_>,
+    doc: u32,
+    name: String,
+) -> CmdResult<Vec<docs::CheckpointInfo>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.checkpoint_add(doc, &name)).await
+}
+
+/// Forget a checkpoint (the table does not change).
+#[tauri::command]
+async fn checkpoint_remove(
+    docs: DocsState<'_>,
+    doc: u32,
+    checkpoint: u32,
+) -> CmdResult<Vec<docs::CheckpointInfo>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.checkpoint_remove(doc, checkpoint)).await
+}
+
+/// Go to the state a checkpoint names.
+#[tauri::command]
+async fn checkpoint_restore(docs: DocsState<'_>, doc: u32, checkpoint: u32) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.checkpoint_restore(doc, checkpoint)).await
 }
 
 /// Change a step; the steps after it run again.
@@ -3353,6 +3403,30 @@ async fn run_checks(
     blocking(move || docs.run_checks(doc, &spec)).await
 }
 
+/// X-ray the shown rows for look-alike characters (counts only).
+#[tauri::command]
+async fn xray_report(
+    docs: DocsState<'_>,
+    doc: u32,
+    cols: Vec<u32>,
+    keep_first: bool,
+) -> CmdResult<natendo_engine::xray::XrayReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.xray_report(doc, &cols, keep_first)).await
+}
+
+/// Show only the rows an X-ray finds gremlins in.
+#[tauri::command]
+async fn xray_show(
+    docs: DocsState<'_>,
+    doc: u32,
+    cols: Vec<u32>,
+    keep_first: bool,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.xray_show(doc, &cols, keep_first)).await
+}
+
 /// Problem marks for an area of the screen.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -4051,6 +4125,7 @@ pub fn run() {
             chart_data,
             highlights,
             clean_preview,
+            clean_preview_page,
             cleaner_save,
             cleaner_open,
             export_book,
@@ -4097,6 +4172,10 @@ pub fn run() {
             watch_stop,
             steps_view,
             steps_goto,
+            checkpoint_list,
+            checkpoint_add,
+            checkpoint_remove,
+            checkpoint_restore,
             steps_change,
             steps_ask,
             batch_pick,
@@ -4125,6 +4204,8 @@ pub fn run() {
             mail_preview,
             save_mail,
             run_checks,
+            xray_report,
+            xray_show,
             check_marks,
             next_problem,
             suggest_rules,

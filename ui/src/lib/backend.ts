@@ -45,6 +45,8 @@ export interface DocInfo {
   can_undo: boolean;
   can_redo: boolean;
   history_pos: number;
+  /** A mark of the state the table is in (see the engine's step_mark). */
+  step_mark?: number;
   /** What the columns hold, by physical column (for Undo, saved views and the session). */
   column_types: ColumnTypes;
   /** The typed columns as shown: [column, type]; Auto columns are left out. */
@@ -104,6 +106,20 @@ export interface LayoutChoices {
   choices: LayoutChoice[];
   /** The lines above the table now set aside. */
   preamble: string;
+}
+
+/** A named moment in the undo history (a few bytes, no copy of the table). */
+export interface Checkpoint {
+  id: number;
+  name: string;
+  /** Made by the app before a risky change. */
+  auto: boolean;
+  /** The undo history still reaches it. */
+  reachable: boolean;
+  /** Undos (negative) or redos (positive) to get there; 0 when it is the state now or cannot be reached. */
+  steps: number;
+  /** The table is in exactly this state now. */
+  current: boolean;
 }
 
 /** Error from a command; `kind` decides which prompt the UI shows. */
@@ -1163,6 +1179,15 @@ export interface SaveFlags {
   options?: SaveAsOptions | null;
 }
 
+/** What an X-ray run found over the shown rows (counts and columns; never a value). */
+export interface XrayReport {
+  looked: number;
+  cells: number;
+  rows: number;
+  kinds: [string, number][];
+  columns: { col: number; cells: number; kinds: [string, number][] }[];
+}
+
 export type ImportFormat = "spreadsheet" | "json" | "xml" | "html" | "markdown" | "delimited" | "fixed_width" | "pattern";
 export type Unmatched = "join" | "row" | "skip";
 export interface ImportOptions {
@@ -1407,6 +1432,12 @@ export interface Backend {
   showInFolder(doc: number): Promise<void>;
   /** The first changes a cleaner would make. */
   cleanPreview(doc: number, spec: CleanSpec, now: number): Promise<CleanPreview>;
+  /** A page of what a cleaner would change, with exact counts over everything it looks at (Sanitize). */
+  cleanPreviewPage(doc: number, spec: CleanSpec, now: number, offset: number, want: number): Promise<CleanPreview>;
+  /** Look for look-alike characters in the shown rows (counts and row numbers only). */
+  xrayReport(doc: number, cols: number[], keepFirst: boolean): Promise<XrayReport>;
+  /** Show only the rows an X-ray finds gremlins in. */
+  xrayShow(doc: number, cols: number[], keepFirst: boolean): Promise<DocInfo>;
   /** Shows the Save dialog; the file's name, or null when cancelled. */
   cleanerSave(cleaner: Cleaner): Promise<string | null>;
   /** Shows the Open dialog; null when cancelled. */
@@ -1593,6 +1624,13 @@ export interface Backend {
   stepsView(doc: number): Promise<import("./recipe").StepsView>;
   /** Show the table as it was after step `k` (null: before the first). */
   stepsGoto(doc: number, k: number | null): Promise<DocInfo>;
+  /** The tab's checkpoints (named moments in the undo history), each with whether the history still reaches it. */
+  checkpointList(doc: number): Promise<Checkpoint[]>;
+  /** Name this moment: nothing is copied. */
+  checkpointAdd(doc: number, name: string): Promise<Checkpoint[]>;
+  checkpointRemove(doc: number, checkpoint: number): Promise<Checkpoint[]>;
+  /** Go to the state a checkpoint names (one jump, by undo or redo). */
+  checkpointRestore(doc: number, checkpoint: number): Promise<DocInfo>;
   /** Change step `k`; the steps after it run again. */
   stepsChange(doc: number, k: number, change: import("./recipe").StepChange, now: number, force: boolean): Promise<DocInfo>;
   /** Make a text in step `k` a question asked each time the recipe runs. */
@@ -1933,6 +1971,15 @@ class TauriBackend implements Backend {
   showInFolder(doc: number) {
     return call<void>("show_in_folder", { doc });
   }
+  cleanPreviewPage(doc: number, spec: CleanSpec, now: number, offset: number, want: number) {
+    return call<CleanPreview>("clean_preview_page", { doc, spec, now, offset, want });
+  }
+  xrayReport(doc: number, cols: number[], keepFirst: boolean) {
+    return call<XrayReport>("xray_report", { doc, cols, keepFirst });
+  }
+  xrayShow(doc: number, cols: number[], keepFirst: boolean) {
+    return call<DocInfo>("xray_show", { doc, cols, keepFirst });
+  }
   cleanPreview(doc: number, spec: CleanSpec, now: number) {
     return call<CleanPreview>("clean_preview", { doc, spec, now });
   }
@@ -2251,6 +2298,18 @@ class TauriBackend implements Backend {
   stepsGoto(doc: number, k: number | null) {
     return call<DocInfo>("steps_goto", { doc, k });
   }
+  checkpointList(doc: number) {
+    return call<Checkpoint[]>("checkpoint_list", { doc });
+  }
+  checkpointAdd(doc: number, name: string) {
+    return call<Checkpoint[]>("checkpoint_add", { doc, name });
+  }
+  checkpointRemove(doc: number, checkpoint: number) {
+    return call<Checkpoint[]>("checkpoint_remove", { doc, checkpoint });
+  }
+  checkpointRestore(doc: number, checkpoint: number) {
+    return call<DocInfo>("checkpoint_restore", { doc, checkpoint });
+  }
   stepsChange(doc: number, k: number, change: import("./recipe").StepChange, now: number, force: boolean) {
     return call<DocInfo>("steps_change", { doc, k, change, now, force });
   }
@@ -2400,6 +2459,7 @@ export const WRITE_METHODS: readonly string[] = [
   "matchAccept",
   "recipeRun",
   "stepsGoto",
+  "checkpointRestore",
   "stepsChange",
   "streetLookup",
 ];

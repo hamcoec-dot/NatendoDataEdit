@@ -382,6 +382,22 @@ everything is also in command search.
 - **Display formats** per column (numbers, percent, currency, dates, tick
   boxes) that change only how cells look, never the file.
 - Value types shown in colour (Ctrl+F8), colour scales and data bars.
+- **X-ray gremlins** (View > X-ray gremlins, Ctrl+Shift+X): everything "Show
+  invisible characters" shows, plus smart quotes, tabs and line breaks inside
+  a cell, and **look-alike letters** (a Cyrillic or Greek letter hiding in a
+  Latin word, like the Cyrillic "а" in "Smаrt"). Flagged characters glow; the
+  cell bar names them ("Cyrillic а (U+0430) inside a Latin word") and the
+  status bar says how many cells and columns on the screen have one. A word
+  that is all Cyrillic or all Greek, and a hyphenated name like
+  "Smith-Иванова", are never flagged: the look-alike check works on one
+  unbroken run of letters at a time. Click the status text (or View > X-ray
+  report) for the whole file or the selected columns: counts per kind and per
+  column, and "Show only these rows". **Sanitize selection** (Edit menu, the cell right-click menu, or
+  Clean > Sanitize look-alike characters) fixes the ticked kinds, and its
+  preview lists every changed cell, a page at a time, with exact counts and
+  how many cells have a look-alike letter fixed; one undo step, and it is
+  recorded in recipes. The character table follows the idea of Unicode TR39
+  (confusables) and is built in; nothing is logged.
 - **What a column holds** (Format > Treat this column as, or right-click a
   heading, or click the small badge in its title): Text, Number, Date (the
   file's date order, day first or month first) or Id. An Id is a code such as
@@ -1127,6 +1143,24 @@ selection, a column or the whole table:
   the screen round on Ctrl+Alt+arrows, so use those instead.
 
 ![The Record panel beside a table of made-up names](docs/screenshots/record-panel.png)
+- **Checkpoints** (Edit > Name this moment, Ctrl+Alt+K; the list is at the top of
+  the Steps panel): name how the table looks now and come back to it later in
+  one jump, forward or back. A checkpoint is a name and a mark in the undo
+  history, a few bytes: nothing of the table is copied, so it costs nothing on a
+  10,000,000-row file. The app also names a moment before risky changes (Replace
+  all, batch replace, remove duplicates, blank rows or columns, Split into rows,
+  Merge rows, a clean-up, Delete hidden rows, deleting several rows, a paste of
+  1,000 cells or more, a join, an append, matching people, taking changes from a
+  newer file) as "Before ...": 20 at most per tab, the oldest goes first, yours
+  stay. Going to a checkpoint keeps the moment you left as "Before restoring ...",
+  so the way back is one click. **Limits:** a checkpoint is greyed ("no longer
+  reachable") when the undo history is trimmed past it (10,000 steps or 512 MB),
+  when a new change replaces what you had undone, and when you save the file,
+  because saving starts the undo history again. Checkpoints are not saved to disk
+  and go when the tab closes.
+
+![Checkpoints at the top of the Steps panel](docs/screenshots/checkpoints.png)
+
 - **Recipe questions:** in the steps panel, press ? on a step to have the
   recipe ask for one of its values each time it runs ("Which county?",
   "Election date?"), with the last answer filled in. One recipe then serves

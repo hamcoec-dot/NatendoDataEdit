@@ -230,6 +230,29 @@ impl Op {
     }
 }
 
+thread_local! {
+    /// While a bulk change runs on this thread: the document it edits and the mark of that document just before its
+    /// first undo step was made (see `capture_mark_start`).
+    static CAPTURE: std::cell::RefCell<Option<(u64, Option<u64>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Start noting, on this thread, the mark of document `uid` just before the next change made to it, read under the
+/// same write lock as the change itself (so another window's change cannot slip in between).
+pub fn capture_mark_start(uid: u64) {
+    CAPTURE.with(|c| *c.borrow_mut() = Some((uid, None)));
+}
+
+/// Stop noting, and the mark noted: `None` when no change was made to the document meanwhile.
+pub fn capture_mark_take() -> Option<u64> {
+    CAPTURE.with(|c| c.borrow_mut().take().and_then(|(_, m)| m))
+}
+
+/// The next unique step id, across every document of the process (a document opened again never repeats one).
+fn next_step_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Parts of one undo step built by a bulk operation (see
 /// [`Document::push_step`]).
 #[derive(Default)]
@@ -431,6 +454,16 @@ pub struct Document {
     pub(crate) undo_budget: usize,
     undo: Vec<Op>,
     redo: Vec<Op>,
+    /// A unique, rising id for each undo step (same length and order as `undo`) and each redo step (as `redo`):
+    /// `history_pos` repeats after an undo and a new edit, a step id never does. Checkpoints are marks made of
+    /// these ids (see `step_mark`).
+    undo_ids: std::collections::VecDeque<u64>,
+    redo_ids: Vec<u64>,
+    /// Unique for the life of the process: names this document (see `capture_mark_start`).
+    uid: u64,
+    /// The mark of the state before the oldest undo step: new when the document is made, and new again whenever
+    /// that state can no longer be reached (history trimmed, saved over).
+    base_mark: u64,
     clean_depth: Option<usize>,
     /// Changes done minus changes undone (never lowered by trimming the
     /// history or saving), so a step's place in the history can be told.
@@ -583,6 +616,10 @@ impl Document {
             undo_budget: MAX_UNDO_BYTES,
             undo: Vec::new(),
             redo: Vec::new(),
+            undo_ids: Default::default(),
+            redo_ids: Vec::new(),
+            uid: next_step_id(),
+            base_mark: next_step_id(),
             clean_depth: Some(0),
             history_pos: 0,
             protected: Vec::new(),
@@ -1119,7 +1156,53 @@ impl Document {
             self.clean_depth = None;
         }
         self.redo.clear();
+        self.redo_ids.clear();
         self.redo_bytes = 0;
+    }
+
+    /// This document's id for `capture_mark_start`.
+    pub fn uid(&self) -> u64 {
+        self.uid
+    }
+
+    /// A mark of the state the table is in now: the id of the last change done (or of the start of the history).
+    /// It is stable and never reused, so it names this exact state for as long as the history reaches it.
+    pub fn step_mark(&self) -> u64 {
+        self.undo_ids.back().copied().unwrap_or(self.base_mark)
+    }
+
+    /// How to get to the state `mark` names: negative is that many undos, positive that many redos, `None` when
+    /// the history no longer reaches it (trimmed, saved over, or replaced by a newer change).
+    pub fn step_reach(&self, mark: u64) -> Option<i64> {
+        let n = self.undo_ids.len();
+        if let Some(i) = self.undo_ids.iter().rposition(|&m| m == mark) {
+            return Some(-((n - 1 - i) as i64));
+        }
+        if mark == self.base_mark {
+            return Some(-(n as i64));
+        }
+        // The last redo entry is the next one to redo.
+        self.redo_ids
+            .iter()
+            .rev()
+            .position(|&m| m == mark)
+            .map(|k| k as i64 + 1)
+    }
+
+    /// Undo or redo until the table is in the state `mark` names; `false` (nothing changed) when the history no
+    /// longer reaches it.
+    pub fn go_to_mark(&mut self, mark: u64) -> bool {
+        let Some(d) = self.step_reach(mark) else {
+            return false;
+        };
+        for _ in 0..d.unsigned_abs() {
+            let moved = if d < 0 { self.undo() } else { self.redo() };
+            debug_assert!(moved, "a reachable mark can always be reached");
+            if !moved {
+                break;
+            }
+        }
+        true
     }
 
     /// Changes that can be redone.
@@ -1873,6 +1956,9 @@ impl Document {
         let inv = self.apply(op);
         self.redo_bytes += inv.cost();
         self.redo.push(inv);
+        if let Some(m) = self.undo_ids.pop_back() {
+            self.redo_ids.push(m);
+        }
         self.history_pos -= 1;
         true
     }
@@ -1886,21 +1972,33 @@ impl Document {
         let inv = self.apply(op);
         self.undo_bytes += inv.cost();
         self.undo.push(inv);
+        if let Some(m) = self.redo_ids.pop() {
+            self.undo_ids.push_back(m);
+        }
         self.trim_undo();
         self.history_pos += 1;
         true
     }
 
     fn push(&mut self, op: Op) {
+        CAPTURE.with(|c| {
+            if let Some((uid, mark)) = c.borrow_mut().as_mut() {
+                if *uid == self.uid && mark.is_none() {
+                    *mark = Some(self.step_mark());
+                }
+            }
+        });
         self.history_pos += 1;
         let inv = self.apply(op);
         self.undo_bytes += inv.cost();
         self.undo.push(inv);
+        self.undo_ids.push_back(next_step_id());
         if self.clean_depth.is_some_and(|d| d > self.undo.len() - 1) {
             // The saved state was on the redo branch we are discarding.
             self.clean_depth = None;
         }
         self.redo.clear();
+        self.redo_ids.clear();
         self.redo_bytes = 0;
         self.trim_undo();
     }
@@ -1919,6 +2017,9 @@ impl Document {
         }
         if drop > 0 {
             self.undo.drain(..drop);
+            self.undo_ids.drain(..drop);
+            // The state before the oldest kept step is gone.
+            self.base_mark = next_step_id();
             self.clean_depth = self.clean_depth.and_then(|d| d.checked_sub(drop));
         }
     }
@@ -2323,6 +2424,10 @@ impl Document {
             std::mem::take(&mut self.undo),
             std::mem::take(&mut self.redo),
         );
+        // No state of the old history can be reached again.
+        self.undo_ids.clear();
+        self.redo_ids.clear();
+        self.base_mark = next_step_id();
         if self.undo_bytes + self.redo_bytes > 64 << 20 || old.0.len() > 100_000 {
             // (If no thread can be made, the closure and the edits are
             // dropped here instead.)
@@ -2561,6 +2666,144 @@ mod tests {
             steps += 1;
         }
         assert!((1..8).contains(&steps), "{steps}");
+    }
+
+    /// B4: a mark names one exact state. Property test over random edit, undo, redo, structural-change sequences:
+    /// every mark the history still reaches brings back the table as it was when the mark was made; none that was
+    /// replaced by a newer change claims to be reachable.
+    #[test]
+    fn marks_name_exact_states_over_random_histories() {
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut rnd = move |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        for round in 0..40 {
+            let mut d = doc(b"a,b,c\n1,2,3\n4,5,6\n7,8,9\n");
+            if round % 4 == 0 {
+                d.undo_budget = 3_000;
+            }
+            let mut marks: Vec<(u64, Vec<Vec<String>>)> = vec![(d.step_mark(), all(&d))];
+            for step in 0..60 {
+                match rnd(9) {
+                    0..=2 => {
+                        let r = rnd(d.row_count().max(1));
+                        let big = "y".repeat(rnd(800) as usize);
+                        let _ = d.set_cell(r, rnd(3) as u32, format!("v{step}{big}"));
+                    }
+                    3 => {
+                        let at = rnd(d.row_count() + 1);
+                        let _ =
+                            d.insert_rows(at, vec![vec![format!("n{step}"), "".into(), "".into()]]);
+                    }
+                    4 if d.row_count() > 2 => {
+                        let _ = d.delete_rows(rnd(d.row_count()), 1);
+                    }
+                    5 if d.row_count() > 2 => {
+                        let _ = d.move_rows(0, 1, d.row_count() - 1);
+                    }
+                    6 => {
+                        d.undo();
+                    }
+                    7 => {
+                        d.redo();
+                    }
+                    _ => {}
+                }
+                marks.push((d.step_mark(), all(&d)));
+            }
+            // Walk the marks in a shuffled order: reachable ones restore exactly; a state can be reached from
+            // anywhere, so the order does not matter.
+            let mut order: Vec<usize> = (0..marks.len()).collect();
+            for i in (1..order.len()).rev() {
+                order.swap(i, rnd(i as u64 + 1) as usize);
+            }
+            for i in order {
+                let (mark, want) = &marks[i];
+                if d.step_reach(*mark).is_some() {
+                    assert!(d.go_to_mark(*mark));
+                    assert_eq!(&all(&d), want, "round {round}, mark {i}");
+                    assert_eq!(d.step_mark(), *mark);
+                } else {
+                    assert!(!d.go_to_mark(*mark), "an unreachable mark changes nothing");
+                }
+            }
+        }
+    }
+
+    /// B4: the same step count is not the same state. After undo and a new edit the old mark is gone, even
+    /// though `history_pos` is back to the number it had.
+    #[test]
+    fn a_new_edit_after_undo_ends_the_old_marks_on_that_branch() {
+        let mut d = doc(b"a\n1\n");
+        d.set_cell(1, 0, "x".into()).unwrap();
+        let on_branch = d.step_mark();
+        let pos = d.history_pos();
+        assert!(d.undo());
+        d.set_cell(1, 0, "y".into()).unwrap();
+        assert_eq!(d.history_pos(), pos, "the counter repeats");
+        assert_ne!(d.step_mark(), on_branch, "the mark never does");
+        assert_eq!(d.step_reach(on_branch), None);
+        assert!(!d.go_to_mark(on_branch));
+        assert_eq!(d.cell(1, 0).unwrap(), "y");
+    }
+
+    /// B4: trimming the history ends the marks it cuts off, and a mark of the start is one of them.
+    #[test]
+    fn trimmed_and_saved_over_marks_are_gone() {
+        let mut d = doc(b"a\n");
+        d.undo_budget = 4_000;
+        let start = d.step_mark();
+        let big = "x".repeat(1_000);
+        let first = {
+            d.set_cell(0, 0, format!("0{big}")).unwrap();
+            d.step_mark()
+        };
+        assert!(d.step_reach(start).is_some());
+        for i in 1..10 {
+            d.set_cell(0, 0, format!("{i}{big}")).unwrap();
+        }
+        assert_eq!(
+            d.step_reach(start),
+            None,
+            "the start fell out of the history"
+        );
+        assert_eq!(d.step_reach(first), None);
+        let last = d.step_mark();
+        assert_eq!(d.step_reach(last), Some(0));
+    }
+
+    /// B4: the mark just before a change is noted by the document under the change's own lock: the first change made
+    /// to THIS document on this thread, nothing when none is made, nothing for another document's changes.
+    #[test]
+    fn the_mark_before_a_change_is_noted_inside_the_change() {
+        let mut d = doc(b"a
+1
+");
+        let mut other = doc(b"a
+1
+");
+        let before = d.step_mark();
+        capture_mark_start(d.uid());
+        other.set_cell(1, 0, "o".into()).unwrap();
+        assert_eq!(
+            capture_mark_take(),
+            None,
+            "another document's change is not ours"
+        );
+        capture_mark_start(d.uid());
+        d.set_cell(1, 0, "x".into()).unwrap();
+        d.set_cell(1, 0, "y".into()).unwrap();
+        assert_eq!(
+            capture_mark_take(),
+            Some(before),
+            "the first change's mark, not the last"
+        );
+        capture_mark_start(d.uid());
+        assert_eq!(capture_mark_take(), None, "no change, no mark");
+        assert_eq!(d.step_reach(before), Some(-2));
     }
 
     #[test]

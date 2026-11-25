@@ -15,6 +15,9 @@ const read = (f: string): string => {
  *  WRITE_METHODS (a new one fails the test until someone decides which), and
  *  WRITE_METHODS are refused at the backend while several blocks are selected. */
 const NOT_WRITES = [
+  "checkpointList",
+  "checkpointAdd",
+  "checkpointRemove",
   "appInfo",
   "openFile",
   "importFile",
@@ -23,6 +26,9 @@ const NOT_WRITES = [
   "importPreview",
   "importNotes",
   "importFinish",
+  "cleanPreviewPage",
+  "xrayReport",
+  "xrayShow",
   "setColumnType",
   "setColumnTypes",
   "importProgress",

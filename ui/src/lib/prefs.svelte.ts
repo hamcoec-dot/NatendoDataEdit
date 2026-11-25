@@ -16,6 +16,8 @@ export interface PrefsData {
   gridLines: boolean;
   /** View › Show invisible characters (display only). */
   showInvisible: boolean;
+  /** X-ray gremlins: Show invisible plus smart quotes, tabs, breaks and look-alike letters. */
+  xray: boolean;
   /** How a cell that breaks a rule shows: a red fill, a wavy underline, or both. */
   problemStyle: "fill" | "underline" | "both";
   /** Find and Replace: show what Replace all would change in the cells on screen (display only). */
@@ -139,6 +141,7 @@ const DEFAULTS: PrefsData = {
   editPanel: false,
   gridLines: true,
   showInvisible: false,
+  xray: false,
   problemStyle: "fill",
   showGhosts: true,
   alignNumbers: true,
@@ -188,6 +191,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       editPanel: p.editPanel === true,
       gridLines: p.gridLines !== false,
       showInvisible: p.showInvisible === true,
+      xray: p.xray === true,
       problemStyle: p.problemStyle === "underline" || p.problemStyle === "both" ? p.problemStyle : "fill",
       showGhosts: p.showGhosts !== false,
       alignNumbers: p.alignNumbers !== false,

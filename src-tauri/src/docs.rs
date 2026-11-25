@@ -462,6 +462,8 @@ pub struct Entry {
     encrypted_from: Mutex<Option<PathBuf>>,
     /// The steps done, for a recipe (see `Docs::recorded`).
     recipe: Mutex<RecipeLog>,
+    /// Named moments in the undo history (see `Checkpoints`).
+    checkpoints: Mutex<Checkpoints>,
     /// The filter panel's column codes (see `FacetCache`).
     facets: Mutex<natendo_engine::filter::FacetCache>,
     /// The other list of the last "match people" run (for accepting).
@@ -1003,6 +1005,136 @@ enum Logged {
     Off(RecipeOp),
 }
 
+/// A paste of this many cells or more gets an automatic checkpoint.
+const BIG_PASTE_CELLS: usize = 1_000;
+
+/// Most automatic checkpoints a tab keeps (the oldest goes first) and most named ones.
+const MAX_AUTO_CHECKPOINTS: usize = 20;
+const MAX_NAMED_CHECKPOINTS: usize = 200;
+
+/// A named moment in the undo history: a mark (a few bytes, see `Document::step_mark`), no copy of the table.
+#[derive(Clone)]
+struct Checkpoint {
+    id: u32,
+    name: String,
+    mark: u64,
+    /// Made by the app before a risky change, not by the person.
+    auto: bool,
+}
+
+/// A tab's checkpoints, in the order they were made. They are not saved to disk and go with the tab.
+#[derive(Default)]
+struct Checkpoints {
+    next: u32,
+    list: Vec<Checkpoint>,
+}
+
+impl Checkpoints {
+    fn add(&mut self, name: String, mark: u64, auto: bool) -> u32 {
+        self.next += 1;
+        let id = self.next;
+        self.list.push(Checkpoint {
+            id,
+            name,
+            mark,
+            auto,
+        });
+        let cap = if auto {
+            MAX_AUTO_CHECKPOINTS
+        } else {
+            MAX_NAMED_CHECKPOINTS
+        };
+        while self.list.iter().filter(|c| c.auto == auto).count() > cap {
+            if let Some(i) = self.list.iter().position(|c| c.auto == auto) {
+                self.list.remove(i);
+            }
+        }
+        id
+    }
+}
+
+/// One checkpoint as the panel shows it.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckpointInfo {
+    pub id: u32,
+    pub name: String,
+    pub auto: bool,
+    /// The undo history still reaches it (the engine's answer).
+    pub reachable: bool,
+    /// How many undos (negative) or redos (positive) get there; 0 when it is the state now or not reachable.
+    pub steps: i64,
+    /// The table is in exactly this state now.
+    pub current: bool,
+}
+
+/// What a bulk change is called in "Before ..." and whether it gets an automatic checkpoint. No wildcard: a new
+/// kind of recipe step cannot be added without deciding here.
+fn auto_label_op(op: &RecipeOp) -> Option<&'static str> {
+    match op {
+        RecipeOp::ReplaceAll { .. } => Some("Replace all"),
+        RecipeOp::BatchReplace { .. } => Some("Batch replace"),
+        RecipeOp::RemoveDuplicates { .. } => Some("Remove duplicates"),
+        RecipeOp::RemoveBlankRows { .. } => Some("Remove blank rows"),
+        RecipeOp::RemoveBlankCols { .. } => Some("Remove blank columns"),
+        RecipeOp::SplitRows { .. } => Some("Split into rows"),
+        RecipeOp::MergeRows { .. } => Some("Merge rows"),
+        RecipeOp::Clean { .. } => Some("Clean-up"),
+        RecipeOp::DeleteHidden => Some("Delete hidden rows"),
+        RecipeOp::MapValues { .. } => Some("Change values from a list"),
+        // Cheap to undo, or they change only the view: no checkpoint (and no crowding of the 20).
+        RecipeOp::Sort { .. }
+        | RecipeOp::Filter { .. }
+        | RecipeOp::ClearFilter
+        | RecipeOp::InsertCols { .. }
+        | RecipeOp::DeleteCols { .. }
+        | RecipeOp::MoveCols { .. }
+        | RecipeOp::SplitColumn { .. }
+        | RecipeOp::MergeColumns { .. }
+        | RecipeOp::SortColumns { .. }
+        | RecipeOp::SplitName { .. }
+        | RecipeOp::FillExample { .. }
+        | RecipeOp::Compute { .. }
+        | RecipeOp::FillBlanks { .. }
+        | RecipeOp::CountRepeats { .. }
+        | RecipeOp::BlankRepeats { .. }
+        | RecipeOp::Breaks { .. }
+        | RecipeOp::GroupCalc { .. }
+        | RecipeOp::Arrange { .. }
+        | RecipeOp::Extract { .. }
+        | RecipeOp::SortProblems { .. }
+        | RecipeOp::CheckColumn { .. }
+        | RecipeOp::RenameColumn { .. }
+        | RecipeOp::TidyTitles { .. }
+        | RecipeOp::CompareColumn { .. }
+        | RecipeOp::ColumnTypes { .. } => None,
+    }
+}
+
+/// The label of a change that is done but not repeatable by a recipe (it is named in words).
+fn auto_label_left_out(words: &str) -> Option<&'static str> {
+    const KINDS: [(&str, &str); 5] = [
+        ("a join", "Join"),
+        ("appending", "Append"),
+        ("matching people", "Match people"),
+        (
+            "changes taken from a newer file",
+            "Update from a newer file",
+        ),
+        ("changing values from a list", "Change values from a list"),
+    ];
+    KINDS
+        .iter()
+        .find(|(start, _)| words.starts_with(start))
+        .map(|(_, label)| *label)
+}
+
+fn auto_label(logged: &Logged) -> Option<&'static str> {
+    match logged {
+        Logged::Step(op) | Logged::Off(op) => auto_label_op(op),
+        Logged::LeftOut(words) => auto_label_left_out(words),
+    }
+}
+
 /// One noted step: the history position before and after it.
 #[derive(Clone)]
 struct LogEntry {
@@ -1354,6 +1486,8 @@ pub struct OpReport {
 /// Changes listed, and rows looked at, by a cleaner preview.
 const CLEAN_PREVIEW_CHANGES: usize = 50;
 const CLEAN_PREVIEW_ROWS: u64 = 20_000;
+/// Rows the paged preview of a cleaner looks at (every count is exact within them).
+const CLEAN_PAGE_ROWS: u64 = 5_000_000;
 
 /// The other table of a join or append, copied out of its document.
 enum Source {
@@ -1401,6 +1535,8 @@ pub struct DocInfo {
     /// Changes done minus changes undone: tells an undo of a column move
     /// from an undo of something else, so the view can follow.
     pub history_pos: u64,
+    /// A mark of the state the table is in (see `Document::step_mark`): a checkpoint keeps it, a few bytes.
+    pub step_mark: u64,
     /// What the person says the columns hold (by physical column, for views and Undo).
     pub column_types: natendo_engine::coltype::ColumnTypes,
     /// The typed columns as shown (logical column, type); Auto columns are left out.
@@ -1629,6 +1765,7 @@ impl Docs {
             private_origin: AtomicBool::new(false),
             encrypted_from: Mutex::new(None),
             recipe: Mutex::new(RecipeLog::default()),
+            checkpoints: Mutex::new(Checkpoints::default()),
             facets: Mutex::new(natendo_engine::filter::FacetCache::new()),
             matched: Mutex::new(None),
             updates: Mutex::new(None),
@@ -2807,7 +2944,20 @@ impl Docs {
     }
 
     pub fn delete_rows(&self, id: u32, at: u64, count: u64) -> CmdResult<DocInfo> {
-        self.edit(id, |d| d.delete_rows(at, count))
+        let entry = self.get(id)?;
+        // Several rows at once (or any while a filter hides others) get an automatic checkpoint, its mark taken
+        // inside the change (see `recorded_auto`).
+        let auto = count > 1 || entry.read().has_filter();
+        if auto {
+            natendo_engine::document::capture_mark_start(entry.read().uid());
+        }
+        let info = self.edit(id, |d| d.delete_rows(at, count));
+        let mark = natendo_engine::document::capture_mark_take();
+        let info = info?;
+        if let (true, Some(m)) = (auto, mark) {
+            self.auto_checkpoint(&entry, m, "deleting rows");
+        }
+        Ok(info)
     }
 
     /// Hide shown rows (one undo step; hidden rows are still saved).
@@ -4093,7 +4243,14 @@ impl Docs {
     /// filter), computed under the read lock with progress and cancel.
     pub fn data_op(&self, id: u32, op: DataOp) -> CmdResult<OpReport> {
         let logged = recipe_step(&op);
-        self.recorded(id, logged, || self.data_op_now(id, op))
+        // A paste of more than 1,000 cells also gets a checkpoint (a small one is as cheap to undo as to redo).
+        let auto = match &op {
+            DataOp::Paste { text, .. } if text.matches(['\t', '\n']).count() >= BIG_PASTE_CELLS => {
+                Some("a big paste".to_string())
+            }
+            _ => auto_label(&logged).map(str::to_string),
+        };
+        self.recorded_auto(id, logged, auto, || self.data_op_now(id, op))
     }
 
     // ---- matching people (Milestone 15) ----
@@ -4618,12 +4775,34 @@ impl Docs {
         logged: Logged,
         f: impl FnOnce() -> CmdResult<T>,
     ) -> CmdResult<T> {
+        let auto = auto_label(&logged).map(str::to_string);
+        self.recorded_auto(id, logged, auto, f)
+    }
+
+    /// `recorded`, with an automatic checkpoint "Before <label>" when `auto` names one and the change made a step.
+    fn recorded_auto<T>(
+        &self,
+        id: u32,
+        logged: Logged,
+        auto: Option<String>,
+        f: impl FnOnce() -> CmdResult<T>,
+    ) -> CmdResult<T> {
         let entry = self.get(id)?;
+        // The mark just before the change is noted by the document itself, under the write lock of the change (a
+        // read here, before it, could be overtaken by another window's change).
+        if auto.is_some() {
+            natendo_engine::document::capture_mark_start(entry.read().uid());
+        }
         let (first, before) = {
             let d = entry.read();
             (d.row_values(0).ok(), d.history_pos())
         };
-        let out = f()?;
+        let out = f();
+        let mark_before = natendo_engine::document::capture_mark_take();
+        let out = out?;
+        if let (Some(label), Some(mark)) = (auto, mark_before) {
+            self.auto_checkpoint(&entry, mark, &label);
+        }
         let pos = entry.read().history_pos();
         let mut log = entry.recipe.lock().unwrap_or_else(|p| p.into_inner());
         // Steps past where this one started were undone and are now
@@ -4731,6 +4910,111 @@ impl Docs {
         entry.peeking.store(at < reach, Ordering::Relaxed);
         let mut info = r?;
         info.peeking = at < reach;
+        Ok(info)
+    }
+
+    /// The automatic checkpoint "Before <label>" at `mark`, when the change really made a step (the table is in a
+    /// different state now) and no checkpoint already names that moment.
+    fn auto_checkpoint(&self, entry: &Entry, mark: u64, label: &str) {
+        if entry.read().step_mark() == mark {
+            return;
+        }
+        let mut book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
+        if book.list.iter().any(|c| c.mark == mark) {
+            return;
+        }
+        book.add(format!("Before {label}"), mark, true);
+    }
+
+    /// Name this moment: a checkpoint at the table's state now (a few bytes; nothing is copied).
+    pub fn checkpoint_add(&self, id: u32, name: &str) -> CmdResult<Vec<CheckpointInfo>> {
+        let name: String = name.trim().chars().take(100).collect();
+        if name.is_empty() {
+            return Err(CmdError::new("invalid", "give the checkpoint a name"));
+        }
+        let entry = self.get(id)?;
+        let mark = entry.read().step_mark();
+        {
+            let mut book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
+            // Naming a moment that already has an automatic checkpoint turns that one into the person's own.
+            if let Some(c) = book.list.iter_mut().find(|c| c.mark == mark && c.auto) {
+                c.auto = false;
+                c.name = name;
+            } else {
+                book.add(name, mark, false);
+            }
+        }
+        self.checkpoint_list(id)
+    }
+
+    /// The tab's checkpoints, oldest first, each with the engine's word on whether it can still be reached.
+    pub fn checkpoint_list(&self, id: u32) -> CmdResult<Vec<CheckpointInfo>> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        let now = d.step_mark();
+        let book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
+        Ok(book
+            .list
+            .iter()
+            .map(|c| CheckpointInfo {
+                id: c.id,
+                name: c.name.clone(),
+                auto: c.auto,
+                reachable: d.step_reach(c.mark).is_some(),
+                steps: d.step_reach(c.mark).unwrap_or(0),
+                current: c.mark == now,
+            })
+            .collect())
+    }
+
+    pub fn checkpoint_remove(&self, id: u32, cp: u32) -> CmdResult<Vec<CheckpointInfo>> {
+        let entry = self.get(id)?;
+        entry
+            .checkpoints
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .list
+            .retain(|c| c.id != cp);
+        self.checkpoint_list(id)
+    }
+
+    /// Go back (or forward) to the state a checkpoint names, by undo or redo: one visible jump. The moment it
+    /// leaves gets an automatic checkpoint ("Before restoring ...") so the way back is one click. Allowed while the
+    /// steps panel looks back (it ends that look). Refused, and nothing changed, when the history no longer reaches
+    /// it, or the file is locked.
+    pub fn checkpoint_restore(&self, id: u32, cp: u32) -> CmdResult<DocInfo> {
+        let entry = self.get(id)?;
+        let (name, mark) = {
+            let book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
+            let c = book
+                .list
+                .iter()
+                .find(|c| c.id == cp)
+                .ok_or_else(|| CmdError::new("invalid", "there is no such checkpoint"))?;
+            (c.name.clone(), c.mark)
+        };
+        let leaving = entry.read().step_mark();
+        let mut info = self.edit_any(id, true, |d| {
+            if d.go_to_mark(mark) {
+                Ok(())
+            } else {
+                Err(Error::Invalid(
+                    "that checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or the file was saved".into(),
+                ))
+            }
+        })?;
+        entry.peeking.store(false, Ordering::Relaxed);
+        info.peeking = false;
+        if leaving != mark {
+            let mut book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
+            if !book.list.iter().any(|c| c.mark == leaving) {
+                book.add(
+                    format!("Before restoring \u{201c}{name}\u{201d}"),
+                    leaving,
+                    true,
+                );
+            }
+        }
         Ok(info)
     }
 
@@ -5853,6 +6137,29 @@ impl Docs {
         Ok(r)
     }
 
+    /// X-ray the shown rows of `cols` (none: every column) for gremlins: a job with progress and Cancel.
+    /// Only counts and row numbers come back, never a value.
+    pub fn xray_report(
+        &self,
+        id: u32,
+        cols: &[u32],
+        keep_first: bool,
+    ) -> CmdResult<natendo_engine::xray::XrayReport> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for look-alike characters")?;
+        let d = entry.read();
+        Ok(d.xray_report(cols, keep_first, &job.progress)?)
+    }
+
+    /// Show only the rows an X-ray finds gremlins in (a view: nothing in the data changes).
+    pub fn xray_show(&self, id: u32, cols: &[u32], keep_first: bool) -> CmdResult<DocInfo> {
+        let report = self.xray_report(id, cols, keep_first)?;
+        self.edit_as(id, false, |d| {
+            let plan = d.plan_show_xray(&report, keep_first)?;
+            d.apply_rows(plan)
+        })
+    }
+
     /// Problem marks for an area of the screen. Unique checks are marked
     /// from the last run while the document has not changed since.
     #[allow(clippy::too_many_arguments)]
@@ -6751,6 +7058,30 @@ impl Docs {
         )?)
     }
 
+    /// A page of what a cleaner would change, with exact counts over the whole selection (a read job: the
+    /// Clean-up dialog pages through every changed cell before Apply).
+    pub fn clean_preview_page(
+        &self,
+        id: u32,
+        spec: &CleanSpec,
+        now: f64,
+        offset: u64,
+        want: usize,
+    ) -> CmdResult<CleanPreview> {
+        check_clean(spec, now)?;
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.preview_clean_page(
+            spec,
+            now,
+            run_seed(),
+            offset,
+            want.min(500),
+            CLEAN_PAGE_ROWS,
+            true,
+        )?)
+    }
+
     /// The first rows of an export as text (empty for Excel).
     pub fn export_preview(&self, id: u32, opts: &ExportOptions) -> CmdResult<String> {
         check_export(opts)?;
@@ -7383,6 +7714,7 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         can_undo: d.can_undo(),
         can_redo: d.can_redo(),
         history_pos: d.history_pos(),
+        step_mark: d.step_mark(),
         column_types: d.type_overlay().clone(),
         typed: {
             let ctx = d.read_ctx(Default::default());
@@ -9788,6 +10120,153 @@ ca,California
         docs.fill_skipping(id, 1, 1, 0, 3, "x".into(), &[1])
             .unwrap();
         assert_eq!(docs.copy(id, 1, 1, 0, 3).unwrap(), "x\t2\tx\r\n");
+    }
+
+    fn names(docs: &Docs, id: u32) -> Vec<String> {
+        docs.checkpoint_list(id)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect()
+    }
+
+    /// B4: named checkpoints restore by mark; restoring leaves a way back; a newer change, a lock and a save
+    /// each end or refuse them, and say so.
+    #[test]
+    fn checkpoints_restore_and_say_when_they_are_gone() {
+        let docs = Docs::default();
+        let p = tmp("marks.csv", b"a,b\n1,2\n3,4\n");
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let at = |docs: &Docs| docs.copy(id, 0, 3, 0, 2).unwrap();
+        docs.checkpoint_add(id, "start").unwrap();
+        docs.set_cells(id, vec![(1, 0, "x".into())]).unwrap();
+        docs.checkpoint_add(id, "one").unwrap();
+        docs.set_cells(id, vec![(2, 0, "y".into())]).unwrap();
+        let list = docs.checkpoint_add(id, "two").unwrap();
+        assert_eq!(names(&docs, id), ["start", "one", "two"]);
+        assert!(list.iter().all(|c| c.reachable && !c.auto));
+        assert!(list[2].current && !list[0].current);
+        let (start, one, two) = (list[0].id, list[1].id, list[2].id);
+        // Back to "one": one jump, and the moment it left is kept so the way back is one click.
+        let info = docs.checkpoint_restore(id, one).unwrap();
+        assert_eq!(at(&docs), "a\tb\r\nx\t2\r\n3\t4\r\n");
+        assert!(!info.peeking);
+        let list = docs.checkpoint_list(id).unwrap();
+        assert!(list[1].current);
+        // "two" is where we were: it already names that moment, so no duplicate is made.
+        assert_eq!(list.len(), 3);
+        docs.checkpoint_restore(id, two).unwrap();
+        assert_eq!(at(&docs), "a\tb\r\nx\t2\r\ny\t4\r\n");
+        docs.checkpoint_restore(id, start).unwrap();
+        assert_eq!(at(&docs), "a\tb\r\n1\t2\r\n3\t4\r\n");
+        // Restoring from an unnamed moment keeps that moment as an automatic checkpoint.
+        docs.checkpoint_restore(id, two).unwrap();
+        docs.set_cells(id, vec![(1, 1, "z".into())]).unwrap();
+        docs.checkpoint_restore(id, start).unwrap();
+        let list = docs.checkpoint_list(id).unwrap();
+        assert!(
+            list.last().unwrap().auto && list.last().unwrap().name.starts_with("Before restoring")
+        );
+        assert!(list
+            .iter()
+            .all(|c| c.reachable || c.id == one || c.id == two));
+        // The change after the restore replaced what was undone: the old branch is gone, and asking says so.
+        docs.set_cells(id, vec![(1, 1, "q".into())]).unwrap();
+        let list = docs.checkpoint_list(id).unwrap();
+        let gone: Vec<&str> = list
+            .iter()
+            .filter(|c| !c.reachable)
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(gone.contains(&"one") && gone.contains(&"two"), "{gone:?}");
+        let before = at(&docs);
+        let e = docs.checkpoint_restore(id, two).unwrap_err();
+        assert!(e.message.contains("no longer be reached"), "{}", e.message);
+        assert_eq!(at(&docs), before, "a refused restore changes nothing");
+        // A lock refuses it like any change.
+        docs.set_read_only(id, true).unwrap();
+        assert_eq!(
+            docs.checkpoint_restore(id, start).unwrap_err().kind,
+            "read_only"
+        );
+        docs.set_read_only(id, false).unwrap();
+        // A save that rewrites the file starts the history again: every checkpoint is gone.
+        docs.save(id, None, false, true, None).unwrap();
+        assert!(docs
+            .checkpoint_list(id)
+            .unwrap()
+            .iter()
+            .all(|c| !c.reachable));
+        assert!(docs.checkpoint_restore(id, start).is_err());
+        // Forgetting one leaves the table alone.
+        let n = docs.checkpoint_list(id).unwrap().len();
+        assert_eq!(docs.checkpoint_remove(id, start).unwrap().len(), n - 1);
+    }
+
+    /// B4: risky bulk changes name a moment first; cheap ones do not; the automatic ones are capped at 20 and
+    /// never push out a named one; a big paste and a delete of several rows count too.
+    #[test]
+    fn risky_changes_make_automatic_checkpoints() {
+        let docs = Docs::default();
+        let mut text = String::from("a,b\n");
+        for i in 0..40 {
+            text.push_str(&format!("{},{}\n", i % 3, i));
+        }
+        let p = tmp("auto.csv", text.as_bytes());
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        docs.checkpoint_add(id, "mine").unwrap();
+        // Cheap: a cell edit and a sort make none.
+        docs.set_cells(id, vec![(1, 0, "9".into())]).unwrap();
+        assert_eq!(names(&docs, id), ["mine"]);
+        // Deleting several rows does.
+        docs.delete_rows(id, 5, 3).unwrap();
+        assert_eq!(names(&docs, id), ["mine", "Before deleting rows"]);
+        // A paste of a handful of cells does not; one of 1,000 or more does.
+        let paste = |text: String| DataOp::Paste {
+            spec: natendo_engine::ops::PasteSpec {
+                row: 1,
+                col: 0,
+                ..Default::default()
+            },
+            text,
+        };
+        docs.data_op(id, paste("x\ty\r\n".into())).unwrap();
+        assert_eq!(names(&docs, id).len(), 2);
+        let big = "p\tq\r\n".repeat(600);
+        docs.data_op(id, paste(big)).unwrap();
+        assert_eq!(names(&docs, id).last().unwrap(), "Before a big paste");
+        // Twenty-five more: only the newest 20 automatic ones stay, and "mine" is kept.
+        for i in 0..25 {
+            docs.delete_rows(id, 1, 2).unwrap();
+            let _ = i;
+        }
+        let list = docs.checkpoint_list(id).unwrap();
+        assert_eq!(list.iter().filter(|c| c.auto).count(), 20);
+        assert_eq!(list.iter().filter(|c| !c.auto).count(), 1);
+        assert_eq!(list[0].name, "mine");
+    }
+
+    /// B4: every kind of recipe step is classified (the match has no wildcard, so adding one without deciding
+    /// does not compile); the risky ones are the ones this lists.
+    #[test]
+    fn the_risky_steps_are_the_ones_listed() {
+        use natendo_engine::recipe::RecipeOp;
+        assert_eq!(
+            auto_label_op(&RecipeOp::DeleteHidden),
+            Some("Delete hidden rows")
+        );
+        assert_eq!(auto_label_op(&RecipeOp::ClearFilter), None);
+        assert_eq!(
+            auto_label_left_out("a join with another tab or a list"),
+            Some("Join")
+        );
+        assert_eq!(
+            auto_label_left_out("changes taken from a newer file"),
+            Some("Update from a newer file")
+        );
+        assert_eq!(auto_label_left_out("a paste"), None);
     }
 
     #[test]

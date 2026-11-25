@@ -8,6 +8,7 @@
   import { backend, errorText, type DocInfo } from "./backend";
   import { questionNameOk, type RecipeStep, type StepChange, type StepsView } from "./recipe";
   import type { Tab } from "./tab.svelte";
+  import CheckpointsPanel from "./CheckpointsPanel.svelte";
 
   interface Props {
     tab: Tab;
@@ -19,8 +20,10 @@
     confirmLoss: (what: string) => Promise<boolean>;
     onSave: () => void;
     now: () => number;
+    /** Go to a checkpoint (the screen does what Ctrl+Z does for every step crossed). */
+    restoreCheckpoint: (c: import("./backend").Checkpoint) => Promise<void>;
   }
-  let { tab, onInfo, run, confirmLoss, onSave, now }: Props = $props();
+  let { tab, onInfo, run, confirmLoss, onSave, now, restoreCheckpoint }: Props = $props();
 
   let view = $state<StepsView | null>(null);
   let problem = $state("");
@@ -137,6 +140,7 @@
 <svelte:window onpointerdown={(e) => { if (menu && !(e.target as HTMLElement | null)?.closest?.(".step-menu")) menu = null; }} onkeydown={(e) => { if (menu && e.key === "Escape") menu = null; }} />
 
 <div class="steps-panel">
+  <CheckpointsPanel {tab} onRestore={restoreCheckpoint} />
   {#if menu && view?.steps[menu.k]}
     {@const k = menu.k}
     {@const s = view.steps[k]!}
