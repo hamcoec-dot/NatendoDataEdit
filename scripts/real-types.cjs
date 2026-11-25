@@ -191,10 +191,13 @@ const proof = async () => {
   info = await invoke(m, "set_column_type", { doc: 1, col: 0, kind: "id" });
   ok(true, `Auto sorted ${autoFirst.join(" ")} (numbers), Id as codes: the overlay changes only the reading`);
   ok(fileHash() === before, "the file on disk is byte for byte the same");
+  // Said through the app as a person does (the heading, then the command): that is what is remembered.
+  await m.locator("canvas").first().click({ position: { x: 80, y: 12 } });
+  await cmd(m, "Treat this column as Id");
   // Remembered for the file after a restart (types only: a fingerprint, never values or titles).
   await sleep(8000);
   const kept = await m.evaluate(() => Object.entries(localStorage).filter(([k]) => k.startsWith("nde.coltypes")));
-  info(`stored: ${JSON.stringify(kept).slice(0, 160)}`);
+  say(`INFO stored: ${JSON.stringify(kept).slice(0, 160)}`);
   ok(kept.length === 1 && !/codes|zip|amount|joined|02134/i.test(JSON.stringify(kept)), "only a fingerprint and the types are remembered (no path, no title, no value)");
   await killApp();
   m = await start([FILE]);
@@ -203,8 +206,9 @@ const proof = async () => {
   ok(JSON.stringify(info.typed) === '[[0,"id"]]', `the file opens again with its type (${JSON.stringify(info.typed)})`);
   // Private mode: nothing is remembered.
   await invoke(m, "set_private", { doc: 1, folder: false, on: true }).catch(() => {});
-  await invoke(m, "set_column_type", { doc: 1, col: 1, kind: "number" });
-  await sleep(3000);
+  await m.locator("canvas").first().click({ position: { x: 230, y: 12 } });
+  await cmd(m, "Treat this column as Number");
+  await sleep(8000);
   const kept2 = await m.evaluate(() => Object.entries(localStorage).filter(([k]) => k.startsWith("nde.coltypes")).length);
   ok(kept2 === 0, `a file in private mode keeps no remembered types (entries: ${kept2})`);
 };
