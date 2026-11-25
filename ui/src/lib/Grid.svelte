@@ -15,7 +15,7 @@
   import { localDays } from "./m8";
   import { formatCell, linkOf, MAX_ROW_LINES, pickMatches, tickOf, toggled, wrapLines } from "./m9";
   import { barSpan, completion, scaleColour, scalePos, valueType, valueTypeFor } from "./m10";
-  import { readNumberFor, typeOf as columnTypeOf } from "./readers";
+  import { readNumberFor, typeBadge, typeName, typeOf as columnTypeOf } from "./readers";
   import { colLetters } from "./goto";
   import { invisibleRuns } from "./invisible";
   import { insightText, pillParts } from "./insights";
@@ -48,7 +48,7 @@
     /** Commit an edit of one cell (or, with `fill`, of every selected cell). */
     onCommit: (row: number, col: number, value: string, fill: boolean) => Promise<boolean>;
     /** `col`: the column under the pointer (the heading menu's Rename acts on it). */
-    onContext: (x: number, y: number, area: "cell" | "row" | "col" | "corner" | "pill", col: number) => void;
+    onContext: (x: number, y: number, area: "cell" | "row" | "col" | "corner" | "pill" | "type", col: number) => void;
     onMessage: (text: string) => void;
     /** The filter button on column `col`'s header was clicked (x, y: where
      *  to open its menu, in window coordinates). */
@@ -503,6 +503,23 @@
           ctx.fillText(letters, tx, lineH / 2);
           tx += ctx.measureText(letters).width + 6;
           ctx.fillStyle = inSel ? colors.text : colors.muted;
+        }
+        // What the person says the column holds: a small badge before the title (Text, Number, Date, Id).
+        badgeRects.delete(c);
+        const badge = tab.info.typed && tab.info.typed.length ? typeBadge(columnTypeOf(tab.info.typed, c)) : "";
+        if (badge) {
+          ctx.save();
+          ctx.font = ctx.font.replace(/[\d.]+px/, "10px");
+          const bw = ctx.measureText(badge).width + 8;
+          ctx.fillStyle = colors.border;
+          ctx.beginPath();
+          ctx.roundRect(tx, lineH / 2 - 8, bw, 16, 4);
+          ctx.fill();
+          ctx.fillStyle = colors.accent;
+          ctx.fillText(badge, tx + 4, lineH / 2);
+          ctx.restore();
+          badgeRects.set(c, [tx, tx + bw]);
+          tx += bw + 5;
         }
         ctx.fillText(colTitle(c), tx, lineH / 2);
         ctx.restore();
@@ -1179,6 +1196,13 @@
   const pillCache = new Map<number, { key: string; w1: number; w2: number }>();
   /** Where each column's pill was drawn last (canvas pixels): [start, end of the shape part = start of the rest, end]. */
   const pillRects = new Map<number, [number, number, number]>();
+  /** Where each column's type badge was drawn last (canvas pixels): [start, end]. */
+  const badgeRects = new Map<number, [number, number]>();
+  /** Which column's type badge the canvas point `x` is on (in the title row), if any. */
+  function badgeAt(c: number, x: number): boolean {
+    const r = badgeRects.get(c);
+    return !!r && x >= r[0] && x <= r[1];
+  }
   /** Which part of column `c`'s pill the canvas point `x` is on, if any. */
   function pillAt(c: number, x: number): "shape" | "rest" | null {
     const r = pillRects.get(c);
@@ -2142,6 +2166,11 @@
         break;
       }
       case "col":
+        // A click on the type badge opens the menu of types for that column.
+        if (!h.strip && e.button === 0 && !e.shiftKey && !e.ctrlKey && badgeAt(h.col, x)) {
+          onContext(e.clientX, e.clientY, "type", h.col);
+          break;
+        }
         if (h.strip && e.button === 0 && !e.shiftKey && !e.ctrlKey) {
           const part = pillAt(h.col, x);
           if (part && onPill) {

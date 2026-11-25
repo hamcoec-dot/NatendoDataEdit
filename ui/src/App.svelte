@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { forgetHeaders, recallHeader, rememberedHeaders, rememberHeader } from "./lib/headerMemory";
-import { textCols } from "./lib/readers";
+  import { forgetHeaders, recallColumnTypes, recallHeader, rememberColumnTypes, rememberedHeaders, rememberHeader, type TypeMemory } from "./lib/headerMemory";
+import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type ColumnType } from "./lib/readers";
   import { sessionToOffer } from "./lib/sessionOffer";
   import { namesFromText } from "./lib/columnNames";
   import { onMount, tick } from "svelte";
@@ -285,6 +285,16 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   let rowNote = "";
   // A change on any path (a tool, a job, a recipe, a formula fill, a refresh) that
   // clears the row heights says so at once, not at the next unrelated message.
+  // Undo, Redo and an applied view put the column types back in the engine.
+  Tab.typesSink = (t, types) => {
+    void backend()
+      .setColumnTypes(t.id, types)
+      .then((info) => {
+        t.update(info, true);
+        void rememberTypes(t);
+      })
+      .catch(() => {});
+  };
   Tab.rowNoteSink = (note) => {
     rowNote = note;
     window.setTimeout(() => {
@@ -411,7 +421,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     tabs.push(t);
     active = tabs.length - 1;
     void tick().then(() => grid?.focus());
-    if (guess) void guessHeader(t);
+    if (guess) {
+      void guessHeader(t);
+      void applyRememberedTypes(t, false);
+    }
     void loadSidecar(t);
     // A document the second window makes itself (a result tab) is its own.
     if (SECOND_WINDOW && !fromOtherWindow) void backend().windowClaim(handOverOf(t)).catch(() => {});
@@ -908,6 +921,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         clip: t.columns.clips.has(c) || undefined,
         format: t.columns.formats.get(c) ?? null,
         protect: (t.info.protected ?? []).includes(c) || undefined,
+        col_type: typeAt(t.info.typed, c) === "auto" ? undefined : typeAt(t.info.typed, c),
       })),
       banded: t.banded,
       row_lines: t.rowLines,
@@ -1035,6 +1049,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
     const to = (c: number): number | null => map[c] ?? null;
     let missing = 0;
+    const wantTypes: [number, ColumnType][] = [];
     v.columns.forEach((vc, k) => {
       const c = map[k];
       if (c === null || c === undefined) {
@@ -1051,7 +1066,16 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       const f = cleanFormat(vc.format);
       if (f) t.columns.formats.set(c, f);
       else t.columns.formats.delete(c);
+      if (vc.col_type) wantTypes.push([c, vc.col_type]);
     });
+    // What the columns hold, as the view has them (a view without types leaves them alone).
+    for (const [c, ty] of wantTypes) {
+      try {
+        t.update(await backend().setColumnType(t.id, c, ty), false);
+      } catch {
+        // Leave this column as it was.
+      }
+    }
     // Protected columns: as the view has them (by title).
     const prot = v.columns.flatMap((vc, k) => {
       const c = map[k];
@@ -5076,6 +5100,119 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (t.frozenRows === 0 && t.frozenCols === 0) say("Select the cell below and right of what should stay in view, then freeze.");
   }
 
+  /** The columns a type command acts on: the one right-clicked, else the selected ones. */
+  function typeTargets(t: Tab): number[] {
+    return contextCol !== null ? [contextCol] : selectedCols(t);
+  }
+
+  function typeIsNow(ty: ColumnType): boolean {
+    const t = tab;
+    if (!t) return false;
+    const cols = typeTargets(t);
+    return cols.length > 0 && cols.every((c) => JSON.stringify(typeAt(t.info.typed, c)) === JSON.stringify(ty));
+  }
+
+  /** Say what the selected (or right-clicked) columns hold. Nothing in the file changes: it only decides how
+   *  the cells are read as numbers and dates. One undo step. */
+  async function setTypeOfColumns(ty: ColumnType): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const cols = typeTargets(t);
+    if (!cols.length) return;
+    t.recordView();
+    try {
+      for (const c of cols) t.update(await backend().setColumnType(t.id, c, ty), true);
+    } catch (e) {
+      say(errorText(e));
+      return;
+    }
+    t.recordView();
+    void rememberTypes(t);
+    const names = cols.length === 1 ? `Column ${cols[0]! + 1}` : `${cols.length} columns`;
+    say(
+      ty === "auto"
+        ? `${names} read from the cells again (Auto).`
+        : `${names} treated as ${typeName(ty)}. The file is not changed; numbers and dates in it are read by that rule. Ctrl+Z puts it back.`,
+    );
+  }
+
+  /** Types remembered for a file that were not applied because its columns changed (the person can still apply them). */
+  const heldTypes = new WeakMap<Tab, TypeMemory>();
+
+  /** A file opened again gets the column types it had. Id and Text are always safe to put back; Number and Date
+   *  only on columns where most of the first 1,000 rows really read that way. If the number of columns is not
+   *  the same as last time nothing is applied (a note says so, and one click applies them anyway). */
+  async function applyRememberedTypes(t: Tab, anyway: boolean): Promise<void> {
+    const path = t.info.path;
+    if (!path) return;
+    try {
+      const p = await backend().privateState(t.id);
+      if (p.file || p.folder) {
+        await rememberColumnTypes(path, null, true);
+        return;
+      }
+      const mem = anyway ? (heldTypes.get(t) ?? null) : await recallColumnTypes(path);
+      if (!mem || mem.types.every((x) => x === "auto")) return;
+      let info = t.info;
+      for (let i = 0; i < 40 && !info.indexed && (info.rows < 20 || info.cols === 0); i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        info = await backend().docInfo(t.id);
+      }
+      if (!anyway && mem.cols !== info.cols) {
+        heldTypes.set(t, mem);
+        say("Column types from last time were not applied (the columns changed). Use Format > Apply last time's column types to apply them anyway.");
+        return;
+      }
+      const first = t.header ? 1 : 0;
+      const sample = anyway ? null : await fetchRows(t, first, 1000, mem.types.map((_, c) => c).filter((c) => c < info.cols));
+      const keep: ColumnType[] = [];
+      let skipped = 0;
+      mem.types.forEach((ty, c) => {
+        if (ty === "auto" || c >= info.cols) {
+          keep.push("auto");
+          return;
+        }
+        if (typeof ty === "object" || ty === "number") {
+          // Only where most of the sample really reads that way.
+          const idx = mem.types.map((_, k) => k).filter((k) => k < info.cols).indexOf(c);
+          const cells = (sample ?? []).map((r) => r[idx] ?? "").filter((v) => v.trim() !== "");
+          const fit = cells.filter((v) => (ty === "number" ? readNumberFor(undefined, c, v) !== null : readDateFor(undefined, c, v) !== null)).length;
+          if (!anyway && cells.length > 0 && fit * 2 < cells.length) {
+            keep.push("auto");
+            skipped++;
+            return;
+          }
+        }
+        keep.push(ty);
+      });
+      if (keep.every((x) => x === "auto")) return;
+      t.recordView();
+      t.update(await backend().setColumnTypes(t.id, { types: keep }), true);
+      t.recordView();
+      const n = keep.filter((x) => x !== "auto").length;
+      say(`Column types from last time were put back on ${n === 1 ? "1 column" : `${n} columns`}${skipped ? ` (${skipped} left on Auto because their cells no longer read that way)` : ""}. Ctrl+Z undoes it.`);
+    } catch {
+      // Nothing is applied.
+    }
+  }
+
+  /** Keep this file's column types for next time (a fingerprint of its path and the types, never values;
+   *  nothing for a file in private mode). */
+  async function rememberTypes(t: Tab): Promise<void> {
+    const path = t.info.path;
+    if (!path) return;
+    try {
+      const p = await backend().privateState(t.id);
+      if (p.file || p.folder) {
+        await rememberColumnTypes(path, null, true);
+        return;
+      }
+      await rememberColumnTypes(path, { cols: t.info.cols, types: t.info.column_types.types }, false);
+    } catch {
+      // Not remembered this time.
+    }
+  }
+
   function hideCols(): void {
     const t = tab;
     if (!t) return;
@@ -5831,6 +5968,14 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "format.colWidth", label: "Set column &width…", run: () => askColWidth(), enabled: hasTab },
     { id: "format.showAllCols", label: "Unhide all columns", run: () => { tab!.columns.showAll(); tab!.bump(); }, enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
     { id: "format.header", label: "First row is &header", run: toggleHeader, enabled: hasTab, checked: () => !!tab?.header },
+    { id: "col.typeAuto", label: "Treat this column as Auto (guess from the cells)", run: () => void setTypeOfColumns("auto"), enabled: hasTab, checked: () => typeIsNow("auto") },
+    { id: "col.typeText", label: "Treat this column as Text", run: () => void setTypeOfColumns("text"), enabled: hasTab, checked: () => typeIsNow("text") },
+    { id: "col.typeNumber", label: "Treat this column as Number", run: () => void setTypeOfColumns("number"), enabled: hasTab, checked: () => typeIsNow("number") },
+    { id: "col.typeDate", label: "Treat this column as Date (the file's date order)", run: () => void setTypeOfColumns({ date: null }), enabled: hasTab, checked: () => typeIsNow({ date: null }) },
+    { id: "col.typeDateDmy", label: "Treat this column as Date, day first", run: () => void setTypeOfColumns({ date: "dmy" }), enabled: hasTab, checked: () => typeIsNow({ date: "dmy" }) },
+    { id: "col.typeDateMdy", label: "Treat this column as Date, month first", run: () => void setTypeOfColumns({ date: "mdy" }), enabled: hasTab, checked: () => typeIsNow({ date: "mdy" }) },
+    { id: "col.typeId", label: "Treat this column as Id (a code: never a number)", run: () => void setTypeOfColumns("id"), enabled: hasTab, checked: () => typeIsNow("id") },
+    { id: "format.typesAnyway", label: "Apply last time's column types", run: () => { if (tab) void applyRememberedTypes(tab, true); }, enabled: () => !!tab && heldTypes.has(tab) },
     { id: "format.askHeader", label: "Ask about the title row when a file opens", run: toggleAskHeader, checked: () => prefs.data.askHeader },
     { id: "format.askHeaderAgain", label: "Ask about the title row again", run: askHeaderAgain, enabled: () => !!tab?.info.path && !tab.private.file && !tab.private.folder },
     { id: "format.headerYes", label: "Title-row question: yes, column names", keys: ["Alt+Shift+Y"], run: () => void answerHeader(true), enabled: headerAsking },
@@ -6063,7 +6208,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       ],
     },
     { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.symbol"] },
-    { label: "F&ormat", items: ["format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "format.forgetHeader", "format.forgetHeaders", "format.askHeader", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
+    { label: "F&ormat", items: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "format.typesAnyway", "-", "format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "format.forgetHeader", "format.forgetHeaders", "format.askHeader", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
     {
       label: "&Data",
       items: [
@@ -6110,7 +6255,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     tab: ["file.save", "file.saveAs", "-", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "-", "format.makeHeader", "-", "edit.clear"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
+    type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
+    col: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -7115,8 +7261,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** The column a heading's right-click menu was opened on (Rename acts
    *  on it, not on the selection's focus column). */
   let contextCol: number | null = null;
-  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner" | "tab" | "pill", col: number): void {
-    contextCol = area === "col" || area === "pill" ? col : null;
+  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner" | "tab" | "pill" | "type", col: number): void {
+    contextCol = area === "col" || area === "pill" || area === "type" ? col : null;
     openMenu = null;
     // The cut items show only while something is cut.
     const cutItems = new Set(["edit.moveCut", "edit.cancelCut"]);

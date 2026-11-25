@@ -5,6 +5,8 @@
 // The fingerprint is salted with a random value made once on this PC, so a
 // guessed path can't be checked against it.
 
+import type { ColumnType } from "./readers";
+
 const KEY = "nde.headers.v1";
 const SALT_KEY = "nde.headers.salt";
 let memSalt = "";
@@ -119,6 +121,53 @@ export async function rememberPad(path: string, pad: boolean): Promise<void> {
   }
 }
 
+// What the columns of a file hold (Text, Number, Date, Id), kept the same way: the salted fingerprint of the
+// path, the number of columns and the types by physical column. Never a value, never a title; nothing for a
+// file in private mode (an earlier entry is dropped).
+const TYPES_KEY = "nde.coltypes.v1";
+export interface TypeMemory {
+  cols: number;
+  types: ColumnType[];
+}
+type TypeStore = Record<string, [number, ColumnType[], number]>;
+
+function loadTypes(): TypeStore {
+  try {
+    const v = JSON.parse(localStorage.getItem(TYPES_KEY) ?? "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as TypeStore) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The types remembered for this file, or null. */
+export async function recallColumnTypes(path: string): Promise<TypeMemory | null> {
+  const e = loadTypes()[await pathKey(path)];
+  return Array.isArray(e) && typeof e[0] === "number" && Array.isArray(e[1]) ? { cols: e[0], types: e[1] } : null;
+}
+
+/** Remember the types (null or all Auto: forget them; a private file always forgets). */
+export async function rememberColumnTypes(path: string, mem: TypeMemory | null, isPrivate = false): Promise<void> {
+  const k = await pathKey(path);
+  const s = loadTypes();
+  if (isPrivate || !mem || mem.types.every((t) => t === "auto")) {
+    if (!(k in s)) return;
+    delete s[k];
+  } else {
+    s[k] = [mem.cols, mem.types.slice(0, 16_384), now()];
+    const keys = Object.keys(s);
+    if (keys.length > HEADER_MEMORY_MAX) {
+      keys.sort((a, b) => (s[a]?.[2] ?? 0) - (s[b]?.[2] ?? 0));
+      for (const old of keys.slice(0, keys.length - HEADER_MEMORY_MAX)) delete s[old];
+    }
+  }
+  try {
+    localStorage.setItem(TYPES_KEY, JSON.stringify(s));
+  } catch {
+    // Not remembered this time.
+  }
+}
+
 /** How many files' choices are remembered. */
 export function rememberedHeaders(): number {
   return Object.keys(load()).length;
@@ -130,6 +179,7 @@ export function forgetHeaders(): void {
   try {
     localStorage.removeItem(KEY);
     localStorage.removeItem(PAD_KEY);
+    localStorage.removeItem(TYPES_KEY);
     localStorage.removeItem(SALT_KEY);
   } catch {
     // Nothing kept.

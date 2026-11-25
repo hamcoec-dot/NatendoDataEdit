@@ -4,6 +4,7 @@
 
 import type { Check } from "./backend";
 import type { DisplayFormat } from "./m9";
+import type { ColumnType } from "./readers";
 import type { FilterSpec, ReadOptions, Rule, SortSpec } from "./backend";
 
 export type ColType = "empty" | "number" | "date" | "yes_no" | "text" | "mixed";
@@ -80,6 +81,8 @@ export interface ViewColumn {
   format?: DisplayFormat | null;
   /** Protected from changes (older views have none). */
   protect?: boolean;
+  /** What the column holds, when the person said (older views have none). */
+  col_type?: ColumnType;
 }
 export interface View {
   version: number;

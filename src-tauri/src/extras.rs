@@ -506,6 +506,9 @@ pub struct ViewColumn {
     /// Protected from changes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub protect: bool,
+    /// What the column holds (Text, Number, Date, Id); a view without it leaves the type alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col_type: Option<natendo_engine::coltype::ColumnType>,
 }
 
 /// A column's alignment in a view.
