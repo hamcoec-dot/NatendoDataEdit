@@ -915,32 +915,61 @@ impl Document {
             if a >= b {
                 continue;
             }
-            let blocks = (b - a).div_ceil(BLOCK);
-            for k in 0..blocks {
-                // Block k counted from the near end (from the start going forward, from the end going back).
+            // Blocks grow as the search goes on: a hit close by is found in a small block,
+            // a long miss is not cut into many small ones.
+            let (mut done_rows, mut size) = (0u64, BLOCK);
+            while done_rows < b - a {
+                // Counted from the near end (from the start going forward, from the end going back).
+                let take = size.min(b - a - done_rows);
                 let (s0, e0) = if backward {
-                    (b.saturating_sub((k + 1) * BLOCK).max(a), b - k * BLOCK)
+                    (b - done_rows - take, b - done_rows)
                 } else {
-                    (a + k * BLOCK, (a + (k + 1) * BLOCK).min(b))
+                    (a + done_rows, a + done_rows + take)
                 };
+                done_rows += take;
+                size = (size * 2).min(1 << 20);
                 let parts = (e0 - s0).div_ceil(PART);
                 let found: Vec<(Option<(u64, u32, u32, bool)>, u64)> = (0..parts)
                     .into_par_iter()
                     .map(|i| {
                         let (ps, pe) = (s0 + i * PART, (s0 + (i + 1) * PART).min(e0));
+                        // One pass over the part, then the row nearest the start of the search.
                         let mut hid = 0u64;
-                        let rows: Box<dyn Iterator<Item = u64>> = if backward {
-                            Box::new((ps..pe).rev())
-                        } else {
-                            Box::new(ps..pe)
-                        };
-                        for r in rows {
-                            let cells = row_cells(r, &mut hid);
-                            if let Some((kk, ch, rr)) = pick(&cells, None) {
-                                return (Some((r, kk, ch, rr)), hid);
+                        let mut best: Option<u64> = None;
+                        let ms = self.marks_in(&c, ps..pe, 0..u32::MAX, spec, repeats);
+                        for m in &ms {
+                            if m.col.is_some_and(|k| skip_cols.contains(&k)) {
+                                continue;
+                            }
+                            best = Some(match best {
+                                None => m.row,
+                                Some(b) if backward => b.max(m.row),
+                                Some(b) => b.min(m.row),
+                            });
+                        }
+                        for m in &ms {
+                            let before = best.is_none_or(|b| if backward { m.row >= b } else { m.row <= b });
+                            if before && m.col.is_some_and(|k| skip_cols.contains(&k)) {
+                                hid += 1;
                             }
                         }
-                        (None, hid)
+                        let Some(r) = best else {
+                            return (None, hid);
+                        };
+                        let mut cells: Vec<(u32, u32, bool)> = ms
+                            .iter()
+                            .filter(|m| m.row == r)
+                            .filter_map(|m| match m.col {
+                                Some(k) if skip_cols.contains(&k) => None,
+                                Some(k) => Some((k, m.check, false)),
+                                None => Some((first_col, m.check, true)),
+                            })
+                            .collect();
+                        cells.sort_by_key(|x| (x.0, x.1));
+                        match pick(&cells, None) {
+                            Some((kk, ch, rr)) => (Some((r, kk, ch, rr)), hid),
+                            None => (None, hid),
+                        }
                     })
                     .collect();
                 // Parts in the order they are met (the last part first going back).
