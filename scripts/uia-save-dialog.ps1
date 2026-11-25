@@ -2,8 +2,9 @@
 # waits for a top-level window of the app named "Export", types the file name into its
 # "File name" box and presses Save. Writes the time of the press (ms since 1970) to a file
 # so a test can time the export from there. Used by scripts/real-export-parts.cjs.
-# Usage: pwsh -File scripts/uia-save-dialog.ps1 <full path to save as> <stamp file> [seconds to wait]
-param([string]$Target, [string]$Stamp, [int]$Wait = 60)
+# Usage: pwsh -File scripts/uia-save-dialog.ps1 <full path to save as> <stamp file> [seconds to wait] [dialog title]
+# [id of its name box]. A folder picker: its "Folder:" box is 1152 and the target is the folder.
+param([string]$Target, [string]$Stamp, [int]$Wait = 60, [string]$Title = 'Export', [string]$EditId = '1001')
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $deadline = (Get-Date).AddSeconds($Wait)
 $root = [System.Windows.Automation.AutomationElement]::RootElement
@@ -21,10 +22,10 @@ while ((Get-Date) -lt $deadline) {
       foreach ($c in $top.FindAll([System.Windows.Automation.TreeScope]::Children, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)))) { $cands += $c }
     }
     foreach ($w in $cands) {
-      if ($w.Current.Name -ne 'Export') { continue }
+      if ($w.Current.Name -ne $Title) { continue }
       $edit = $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.AndCondition(
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)),
-        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '1001')))))
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $EditId)))))
       $save = $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.AndCondition(
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)),
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '1')))))
