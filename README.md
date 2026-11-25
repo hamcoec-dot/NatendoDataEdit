@@ -898,7 +898,7 @@ everything is also in command search.
   counts only, never cell values. A SQLite column declared NUMERIC or DECIMAL
   holds binary numbers, so a `1.50` was already `1.5` inside the database;
   text columns come through exactly.
-r
+
   ![The import screen: long numbers kept exactly, one question about leading zeros](docs/screenshots/import-exact.png)
 - **SQLite:** open a table or view from a SQLite database (read-only), or
   save the table into a new or existing database.
