@@ -18,7 +18,6 @@ use crate::export::{
     SHEET_PART_LIMIT, XLSX_MAX_CELL_CHARS, XLSX_MAX_COLS, XLSX_MAX_ROWS,
 };
 use crate::ops::Cols;
-use crate::value::ReadOptions;
 use crate::zipwrite::{Block, ZipWriter};
 
 /// Rows turned into XML and compressed together.
@@ -109,7 +108,8 @@ impl Stat {
         self
     }
 
-    fn add(&mut self, v: &str, read: ReadOptions) {
+    fn add(&mut self, v: &str, rd: crate::coltype::Reader) {
+        let read = rd.options();
         let t = v.trim();
         if t.is_empty() {
             return;
@@ -125,7 +125,7 @@ impl Stat {
                 self.long_digits += 1;
             }
         }
-        if crate::coltype::Reader::plain(read).number(t).is_some() {
+        if rd.number(t).is_some() {
             self.numbers += 1;
             let (dec_c, group_c) = if read.decimal_comma {
                 (',', '.')
@@ -156,7 +156,7 @@ impl Stat {
             if !excel_number(t) {
                 self.reshaped += 1;
             }
-        } else if let Some(d) = crate::coltype::Reader::plain(read).date(t) {
+        } else if let Some(d) = rd.date(t) {
             let time_only =
                 !t.contains(['-', '/', '.']) && t.contains(':') && (0.0..1.0).contains(&d);
             if time_only {
@@ -372,7 +372,8 @@ impl Document {
         let rows = first..self.row_count();
         let cols: Vec<u32> = (0..n as u32).collect();
         let reader = Cols::new(self, &cols);
-        let read = opts.read;
+        let ctx = self.read_ctx(opts.read);
+        let rds: Vec<crate::coltype::Reader> = cols.iter().map(|&c| ctx.reader(c)).collect();
         const CHUNK: u64 = 1 << 15;
         let chunks = (rows.end - rows.start).div_ceil(CHUNK);
         let stats = (0..chunks)
@@ -386,7 +387,7 @@ impl Document {
                     let id = self.id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
                     for (k, s) in st.iter_mut().enumerate() {
-                        s.add(reader.get(&buf, k), read);
+                        s.add(reader.get(&buf, k), rds[k]);
                     }
                 }
                 Ok(st)
@@ -399,7 +400,10 @@ impl Document {
             .iter()
             .enumerate()
             .map(|(k, s)| {
-                if opts.look {
+                // A column the person typed as Text or Id is always written as text: never a number.
+                if ctx.type_of(k as u32).is_text_like() {
+                    Kind::Text
+                } else if opts.look {
                     s.kind(names.get(k).map_or("", String::as_str), opts.numbers)
                 } else if opts.numbers {
                     Kind::General
@@ -628,7 +632,8 @@ pub(crate) fn write_book_on(
             part.write_block(Block::new(s.as_bytes())?)?;
         }
         let reader = Cols::new(d, &(0..n as u32).collect::<Vec<_>>());
-        let read = opts.read;
+        let ctx = d.read_ctx(opts.read);
+        let rds: Vec<crate::coltype::Reader> = (0..n as u32).map(|c| ctx.reader(c)).collect();
         // Rows to XML and compressed in parallel, a batch of blocks at a
         // time, written in order.
         // Heights as given may be unsorted, repeated or out of range: sort, the last of
@@ -693,7 +698,7 @@ pub(crate) fn write_book_on(
                                         false
                                     }
                                 }
-                                Kind::Number(_) => match crate::coltype::Reader::plain(read).number(v)
+                                Kind::Number(_) => match rds[k].number(v)
                                     .filter(|x| x.is_finite())
                                 {
                                     Some(x) => {
@@ -702,7 +707,7 @@ pub(crate) fn write_book_on(
                                     }
                                     None => false,
                                 },
-                                Kind::Date { day, .. } => match crate::coltype::Reader::plain(read).date(v) {
+                                Kind::Date { day, .. } => match rds[k].date(v) {
                                     Some(x) => {
                                         let serial = if day { x + 25_569.0 } else { x };
                                         let _ = write!(s, "><v>{serial}</v></c>");
@@ -861,7 +866,10 @@ mod tests {
     fn kind_of(title: &str, vals: &[&str]) -> Kind {
         let mut s = Stat::default();
         for v in vals {
-            s.add(v, ReadOptions::default());
+            s.add(
+                v,
+                crate::coltype::Reader::plain(crate::value::ReadOptions::default()),
+            );
         }
         s.kind(title, true)
     }

@@ -462,7 +462,6 @@ impl Document {
         let whole = Cols::new(self, &all);
         let date = spec.date_col.map(|c| Cols::new(self, &[c]));
         let id_of = |i: u32| self.id_at(rows.start + i as u64).expect("in range");
-        let read = spec.read;
         let unreadable = std::sync::atomic::AtomicU64::new(0);
         // (kept row, rows to drop, blanks filled in the kept row)
         type Pick = (u32, Vec<u32>, Vec<(u32, String)>);
