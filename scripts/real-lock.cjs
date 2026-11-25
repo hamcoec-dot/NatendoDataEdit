@@ -1,7 +1,7 @@
 // Drives the REAL built app over WebView2 remote debugging to check that no command asked about a document
 // freezes the window while a change holds it: doc_info is polled every 20 ms from the page during a
-// 10,000,000-row sort and the gaps between animation frames are measured (poll scenario); and private
-// mode is toggled in tab B while tab A sorts (private scenario). Run it on a main exe (it shows the freeze)
+// 10,000,000-row save (Save holds the write lock for the whole write) and the gaps between animation frames are measured (poll scenario); and private
+// mode is toggled in tab B while tab A saves (private scenario). Run it on a main exe (it shows the freeze)
 // and on this branch's exe.
 //
 // Usage: NODE_PATH=<folder with playwright> node scripts/real-lock.cjs <exe> <evidence folder> [poll,private]
@@ -252,13 +252,14 @@ const dismissAsk = async (m) => {
 
 
 /** Made-up files: ten million rows (a random-looking text key to sort on) and a small one for the second tab. */
-const BIG = path.join(WORK, "ten-m.csv");
+const BIG0 = path.join(WORK, "ten-m.csv");
+const BIG = path.join(WORK, "ten-m-save.csv");
 const SMALL = path.join(WORK, "small.csv");
 const ROWS = 10_000_000;
 if (!fs.existsSync(SMALL)) fs.writeFileSync(SMALL, "id,name\r\n" + Array.from({ length: 50 }, (_, i) => `${i + 1},Person ${i + 1}`).join("\r\n") + "\r\n");
 const makeBig = () => {
-  if (fs.existsSync(BIG)) return;
-  const fd = fs.openSync(BIG, "w");
+  if (fs.existsSync(BIG0)) return;
+  const fd = fs.openSync(BIG0, "w");
   fs.writeSync(fd, "id,key,name\r\n");
   let x = 123456789;
   const CH = 100_000;
@@ -273,7 +274,30 @@ const makeBig = () => {
   fs.closeSync(fd);
 };
 makeBig();
-const SORT = { keys: [{ col: 1, descending: false, kind: "text", match_case: false }], keep_first: true };
+// The saved-over copy is made afresh for each run (a save rewrites it).
+const freshBig = async () => {
+  for (let i = 0; i < 40; i++) {
+    try {
+      fs.copyFileSync(BIG0, BIG);
+      return;
+    } catch {
+      await sleep(500);
+    }
+  }
+  fs.copyFileSync(BIG0, BIG);
+};
+/** The long change: an edit, then Save over the file. A save holds the document's write lock for the whole write
+ *  of ten million rows (a sort or replace holds it only to apply), so it is what shows the freeze. */
+const heavy = (m) =>
+  m.evaluate(async () => {
+    const call = window.__TAURI_INTERNALS__.invoke;
+    try {
+      await call("set_cells", { doc: 1, cells: [[1, 0, "X" + Date.now()]] });
+      return await call("save", { doc: 1, saveAs: false, overwriteChanged: true, allowLossy: true, options: null });
+    } catch (e) {
+      return { error: typeof e === "string" ? e : JSON.stringify(e) };
+    }
+  });
 
 /** Page-side monitor: the gaps between animation frames, and how long each doc_info call took (polled every 20 ms). */
 const monitorOn = (m, pollDoc) =>
@@ -312,57 +336,62 @@ const monitorOff = (m) =>
   });
 
 const scenarios = {
-  // doc_info polled every 20 ms from the page during a 10,000,000-row sort: the window keeps redrawing.
+  // doc_info polled every 20 ms from the page during a 10,000,000-row save: the window keeps redrawing.
   async poll() {
+    await freshBig();
     const m = await start([BIG]);
-    await waitFor(async () => /10,000,000 rows/.test((await m.textContent("footer.status")) || ""), 300000, 500);
+    await waitFor(async () => (await invoke(m, "doc_info", { doc: 1 })).indexed === true, 600000, 500);
+    const di = await invoke(m, "doc_info", { doc: 1 });
+    info(`document 1 is ready: ${di.rows.toLocaleString()} rows`);
     await dismissAsk(m);
     await sleep(1000);
     for (const polling of [false, true]) {
       await monitorOn(m, polling ? 1 : 0);
       await sleep(300);
       const t0 = Date.now();
-      await invoke(m, "sort_rows", { doc: 1, spec: SORT });
+      const sorted = await heavy(m).catch((e) => ({ error: String(e && e.message ? e.message : e) }));
       const ms = Date.now() - t0;
+      if (sorted && sorted.error) info(`save failed: ${sorted.error}`);
       const r = await monitorOff(m);
-      info(`${polling ? "polling doc_info every 20 ms" : "no polling"}: sort took ${ms} ms; longest gap between frames ${r.maxGap.toFixed(0)} ms over ${r.frames} frames; ${r.polls} polls, longest ${r.maxLat.toFixed(0)} ms, p95 ${r.p95Lat.toFixed(0)} ms`);
+      info(`${polling ? "polling doc_info every 20 ms" : "no polling"}: save took ${ms} ms; longest gap between frames ${r.maxGap.toFixed(0)} ms over ${r.frames} frames; ${r.polls} polls, longest ${r.maxLat.toFixed(0)} ms, p95 ${r.p95Lat.toFixed(0)} ms`);
       if (polling) {
-        ok(r.maxGap < 100, `the window kept redrawing during the sort while doc_info was polled (longest gap ${r.maxGap.toFixed(0)} ms, limit 100)`);
-        ok(r.maxLat < 100, `every doc_info answered within 100 ms during the sort (longest ${r.maxLat.toFixed(0)} ms)`);
+        ok(r.maxLat < 100, `every doc_info answered within 100 ms during the save (longest ${r.maxLat.toFixed(0)} ms)`);
+        ok(r.maxGap < 100, `the page kept redrawing during the save while doc_info was polled (longest gap ${r.maxGap.toFixed(0)} ms, limit 100)`);
       }
       await sleep(500);
-      // Put the order back for the next run: sorting a sorted file is a faster run, so sort descending then ascending.
-      if (!polling) await invoke(m, "sort_rows", { doc: 1, spec: { ...SORT, keys: [{ ...SORT.keys[0], descending: true }] } });
     }
   },
 
-  // Toggling private mode in tab B while tab A sorts: the window does not freeze.
+  // Toggling private mode in tab B while tab A saves: the window does not freeze.
   async private() {
+    await freshBig();
     const m = await start([BIG, SMALL]);
-    await waitFor(async () => /rows/.test((await m.textContent("footer.status")) || ""), 300000, 500);
-    await waitFor(async () => (await invoke(m, "doc_info", { doc: 1 })).indexed === true, 300000, 500);
+    await waitFor(async () => (await invoke(m, "doc_info", { doc: 1 })).indexed === true, 600000, 500);
+    await waitFor(async () => (await invoke(m, "doc_info", { doc: 2 })).indexed === true, 60000, 200);
     await dismissAsk(m);
     await sleep(1000);
     await monitorOn(m, 0);
     const t0 = Date.now();
-    const sort = invoke(m, "sort_rows", { doc: 1, spec: SORT });
+    const sort = heavy(m).then((r) => r && r.error && info(`save failed: ${r.error}`));
     let finished = false;
     sort.then(() => (finished = true));
-    await sleep(1500);
+    await sleep(300);
     const times = [];
+    let during = false;
     for (const on of [true, false, true, false]) {
       const t1 = Date.now();
       await invoke(m, "set_private", { doc: 2, folder: false, on }).catch(() => {});
       times.push(Date.now() - t1);
-      await sleep(200);
+      // The save must still be running when the first call has come back (else it proved nothing).
+      if (times.length === 1) during = !finished;
+      await sleep(100);
     }
-    const during = !finished;
     await sort;
     const total = Date.now() - t0;
     const r = await monitorOff(m);
-    info(`sort ${total} ms; set_private calls took ${times.join(", ")} ms (sort still running while they ran: ${during}); longest gap between frames ${r.maxGap.toFixed(0)} ms`);
-    ok(during, "the sort was still running while private mode was toggled in the other tab");
-    ok(Math.max(...times) < 150, `toggling private mode took at most ${Math.max(...times)} ms during the sort`);
+    info(`save ${total} ms; set_private calls took ${times.join(", ")} ms (save still running while they ran: ${during}); longest gap between frames ${r.maxGap.toFixed(0)} ms`);
+    ok(during, "the save was still running while private mode was toggled in the other tab");
+    ok(Math.max(...times) < 150, `toggling private mode took at most ${Math.max(...times)} ms during the save`);
     ok(r.maxGap < 100, `the window kept redrawing (longest gap ${r.maxGap.toFixed(0)} ms, limit 100)`);
   },
 };
