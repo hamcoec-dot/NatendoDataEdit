@@ -1163,6 +1163,27 @@ export interface SaveFlags {
   options?: SaveAsOptions | null;
 }
 
+/** One encoding of the picker. */
+export interface EncodingChoice {
+  /** The label the engine knows (utf-8, windows-1252, shift_jis ...). */
+  label: string;
+  name: string;
+  /** The file can switch to it without reopening (ASCII-compatible). */
+  direct: boolean;
+}
+
+/** What a scan of the raw row bytes found (counts only; never a value). */
+export interface EncodingScan {
+  looked: number;
+  ascii: number;
+  utf8: number;
+  invalid: number;
+  double_encoded: number;
+  mixed: boolean;
+  /** Rows that are invalid or double-encoded. */
+  rows: number;
+}
+
 /** What an X-ray run found over the shown rows (counts and columns; never a value). */
 export interface XrayReport {
   looked: number;
@@ -1420,6 +1441,18 @@ export interface Backend {
   cleanPreviewPage(doc: number, spec: CleanSpec, now: number, offset: number, want: number): Promise<CleanPreview>;
   /** Look for look-alike characters in the shown rows (counts and row numbers only). */
   xrayReport(doc: number, cols: number[], keepFirst: boolean): Promise<XrayReport>;
+  /** The encodings the picker offers. */
+  encodingChoices(): Promise<EncodingChoice[]>;
+  /** The first rows of the file read as another encoding (a throwaway read; refused when the file changed on disk). */
+  encodingPreview(doc: number, encoding: string, rows: number): Promise<string[][]>;
+  /** Read the file as another ASCII-compatible encoding without reopening: one undo step. */
+  encodingApply(doc: number, encoding: string): Promise<DocInfo>;
+  /** The file opened again as another encoding: a new document (the old one stays until the caller closes it). */
+  reopenEncoding(doc: number, encoding: string, lineByLine: boolean, layout?: Layout | null): Promise<DocInfo>;
+  /** Look for rows whose bytes are in another encoding: a job with progress and Cancel. */
+  scanEncodings(doc: number, keepFirst: boolean): Promise<EncodingScan>;
+  /** Show only the rows the scan flagged. */
+  encodingShowRows(doc: number, keepFirst: boolean): Promise<DocInfo>;
   /** Show only the rows an X-ray finds gremlins in. */
   xrayShow(doc: number, cols: number[], keepFirst: boolean): Promise<DocInfo>;
   /** Shows the Save dialog; the file's name, or null when cancelled. */
@@ -1951,6 +1984,24 @@ class TauriBackend implements Backend {
   cleanPreviewPage(doc: number, spec: CleanSpec, now: number, offset: number, want: number) {
     return call<CleanPreview>("clean_preview_page", { doc, spec, now, offset, want });
   }
+  encodingChoices() {
+    return call<EncodingChoice[]>("encoding_choices", {});
+  }
+  encodingPreview(doc: number, encoding: string, rows: number) {
+    return call<string[][]>("encoding_preview", { doc, encoding, rows });
+  }
+  encodingApply(doc: number, encoding: string) {
+    return call<DocInfo>("encoding_apply", { doc, encoding });
+  }
+  reopenEncoding(doc: number, encoding: string, lineByLine: boolean, layout: Layout | null = null) {
+    return call<DocInfo>("reopen_encoding", { doc, encoding, lineByLine, layout });
+  }
+  scanEncodings(doc: number, keepFirst: boolean) {
+    return call<EncodingScan>("scan_encodings", { doc, keepFirst });
+  }
+  encodingShowRows(doc: number, keepFirst: boolean) {
+    return call<DocInfo>("encoding_show_rows", { doc, keepFirst });
+  }
   xrayReport(doc: number, cols: number[], keepFirst: boolean) {
     return call<XrayReport>("xray_report", { doc, cols, keepFirst });
   }
@@ -2403,6 +2454,7 @@ let instance: Backend | null = null;
  *  document's state and makes sure each is on this list or on the safe one. */
 export const WRITE_METHODS: readonly string[] = [
   "setCells",
+  "encodingApply",
   "fillCells",
   "fillAreas",
   "moveCells",
