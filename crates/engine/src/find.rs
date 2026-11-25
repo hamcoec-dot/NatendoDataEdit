@@ -9,6 +9,7 @@
 use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use regex::{Regex, RegexBuilder};
@@ -1056,6 +1057,46 @@ pub struct FindAll {
     pub revision: u64,
 }
 
+/// The longest new text kept for a ghost, in characters.
+pub const MAX_GHOST_CHARS: usize = 20_000;
+/// One window's time: past this the call stops and says so.
+const GHOST_BUDGET: Duration = Duration::from_millis(50);
+
+/// One cell a replace would change, as the grid shows it before the change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Ghost {
+    /// Shown row.
+    pub row: u64,
+    pub col: u32,
+    /// The new text (cut at `MAX_GHOST_CHARS`, then `cut` is set).
+    pub after: String,
+    pub cut: bool,
+}
+
+/// The ghosts of a window; `partial` when the time ran out first (more changes are not shown).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct GhostWindow {
+    pub ghosts: Vec<Ghost>,
+    pub partial: bool,
+}
+
+/// The one place a cell's replacement is made, for the plan, the count and the ghosts: they cannot
+/// drift apart because they all call this.
+pub(crate) fn replacement_for(
+    m: &Matcher,
+    text: &str,
+    replacement: &str,
+) -> Result<Option<(String, u64)>, Error> {
+    m.replace(text, replacement)
+}
+
+fn cut_ghost(s: String) -> (String, bool) {
+    match s.char_indices().nth(MAX_GHOST_CHARS) {
+        Some((at, _)) => (s[..at].to_string(), true),
+        None => (s, false),
+    }
+}
+
 /// One cell a replace would change (for the preview).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Change {
@@ -2048,6 +2089,130 @@ impl Document {
         Ok(out)
     }
 
+    /// What Replace all would make of the cells in a window of the grid (what is on screen), for
+    /// showing the changes before they are made. The same routine, the same cells and the same
+    /// protected-column rule as [`Document::plan_replace`] (`replacement_for`, `area`), only for the
+    /// shown rows and columns of the window, so the ghosts cannot differ from what Replace all does.
+    /// Each cell's new text is kept to `MAX_GHOST_CHARS`; the call stops after `GHOST_BUDGET` and
+    /// says so (`partial`) rather than hold the window up on very long cells.
+    pub fn replace_ghosts(
+        &self,
+        spec: &FindSpec,
+        replacement: &str,
+        row: u64,
+        rows: u64,
+        col: u32,
+        cols: u32,
+    ) -> Result<GhostWindow, Error> {
+        const MAX_WINDOW: u64 = 1_000;
+        if replacement.chars().count() > MAX_REPLACEMENT_CHARS {
+            return Err(Error::BadPattern(format!(
+                "the replacement can be at most {MAX_REPLACEMENT_CHARS} characters"
+            )));
+        }
+        let m = Matcher::new(&spec.pattern)?;
+        m.check_replacement(replacement)?;
+        let mut spec = spec.clone();
+        spec.skip_cols.extend(self.protected_cols());
+        let area = self.shown_area(&spec)?;
+        let r0 = row.max(area.rows.start);
+        let r1 = row.saturating_add(rows.min(MAX_WINDOW)).min(area.rows.end);
+        let c1 = col.saturating_add(cols.min(MAX_WINDOW as u32));
+        let started = Instant::now();
+        let mut out = GhostWindow::default();
+        let mut buf = Vec::new();
+        'rows: for r in r0..r1 {
+            if started.elapsed() > GHOST_BUDGET {
+                out.partial = true;
+                break;
+            }
+            let mut err = None;
+            self.each_cell(&area, r, false, &mut buf, |k, t| {
+                let c = area.cols[k];
+                if c < col || c >= c1 || self.phys(c).is_none() {
+                    return None::<()>;
+                }
+                match replacement_for(&m, t, replacement) {
+                    Ok(Some((new, _))) if new != t => {
+                        let (after, cut) = cut_ghost(new);
+                        out.ghosts.push(Ghost { row: r, col: c, after, cut });
+                    }
+                    Ok(_) => {}
+                    Err(e) => err = Some(e),
+                }
+                None
+            });
+            if let Some(e) = err {
+                return Err(e);
+            }
+            if started.elapsed() > GHOST_BUDGET && r + 1 < r1 {
+                out.partial = true;
+                break 'rows;
+            }
+        }
+        Ok(out)
+    }
+
+    /// How many cells Replace all would change, worked out the way the plan does but keeping
+    /// nothing (no memory for millions of changes); cancellable.
+    pub fn replace_count(
+        &self,
+        spec: &FindSpec,
+        replacement: &str,
+        progress: &Progress,
+    ) -> Result<u64, Error> {
+        self.ready_for_bulk()?;
+        if replacement.chars().count() > MAX_REPLACEMENT_CHARS {
+            return Err(Error::BadPattern(format!(
+                "the replacement can be at most {MAX_REPLACEMENT_CHARS} characters"
+            )));
+        }
+        let m = Matcher::new(&spec.pattern)?;
+        m.check_replacement(replacement)?;
+        let mut spec = spec.clone();
+        spec.skip_cols.extend(self.protected_cols());
+        let area = self.area(&spec)?;
+        let (r0, r1) = (area.rows.start, area.rows.end);
+        progress.start(r1.saturating_sub(r0));
+        let blocks = r1.saturating_sub(r0).div_ceil(BLOCK);
+        let parts: Vec<Result<u64, Error>> = (0..blocks)
+            .into_par_iter()
+            .map(|b| {
+                let s = r0 + b * BLOCK;
+                let e = (s + BLOCK).min(r1);
+                let mut n = 0u64;
+                let mut buf = Vec::new();
+                for r in s..e {
+                    if self.area_row(&area, r).is_none() {
+                        continue;
+                    }
+                    let mut err = None;
+                    self.each_cell(&area, r, false, &mut buf, |k, t| {
+                        if self.phys(area.cols[k]).is_none() {
+                            return None::<()>;
+                        }
+                        match replacement_for(&m, t, replacement) {
+                            Ok(Some((new, _))) if new != t => n += 1,
+                            Ok(_) => {}
+                            Err(x) => err = Some(x),
+                        }
+                        None
+                    });
+                    if let Some(x) = err {
+                        return Err(x);
+                    }
+                }
+                progress.step(e - s)?;
+                Ok(n)
+            })
+            .collect();
+        let mut total = 0;
+        for p in parts {
+            total += p?;
+        }
+        Ok(total)
+    }
+
     /// Work out a replace-all (nothing changes yet). `preview` changes are
     /// kept for showing first.
     pub fn plan_replace(
@@ -2070,7 +2235,9 @@ impl Document {
         let mut spec = spec.clone();
         spec.skip_cols.extend(self.protected_cols());
         let area = self.area(&spec)?;
-        self.plan_cells_with(&area, preview, progress, |t| m.replace(t, replacement))
+        self.plan_cells_with(&area, preview, progress, |t| {
+            replacement_for(&m, t, replacement)
+        })
     }
 
     /// Replace many pairs at once (batch replace from a list): every pair in
@@ -3305,6 +3472,142 @@ x,q
             "id,name\r\n1,Anne\r\n2,\"bob, jr\"\r\n3,Anne-marie\r\n"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- Ghost diff: the preview in the grid and the real Replace all are the same routine ----
+
+    /// A random grid of short texts as CSV (some cells have case differences and groups to capture).
+    fn ghost_table(r: &mut impl FnMut() -> u64, rows: usize, cols: usize) -> String {
+        const BITS: [&str; 8] = ["ab", "a", "b", "", "Ab-1", "xab xab", "12", "AB"];
+        let mut csv = String::new();
+        for _ in 0..rows {
+            let line: Vec<&str> = (0..cols).map(|_| BITS[(r() % 8) as usize]).collect();
+            csv.push_str(&line.join(","));
+            csv.push_str("\r\n");
+        }
+        csv
+    }
+
+    #[test]
+    fn ghosts_and_the_count_equal_what_replace_all_plans_for_every_cell_of_the_window() {
+        let mut r = lcg(2026);
+        let p = Progress::new();
+        let cases: Vec<(Pattern, &str)> = vec![
+            (pat("a", PatternKind::Plain), "XY"),
+            (Pattern { match_case: true, ..pat("a", PatternKind::Plain) }, "Q"),
+            (Pattern { whole_cell: true, ..pat("ab", PatternKind::Plain) }, "zz"),
+            (pat("(a)(b)", PatternKind::Regex), "$2$1"),
+            (pat("^$", PatternKind::Regex), "filled"),
+            (pat("a?", PatternKind::Wildcard), "-"),
+            (pat("b", PatternKind::Plain), "b"),
+            (pat("[0-9]+", PatternKind::Regex), ""),
+        ];
+        for round in 0..40 {
+            let (pattern, rep) = cases[round % cases.len()].clone();
+            let rows = 6 + (r() % 30) as usize;
+            let mut d = doc(&ghost_table(&mut r, rows, 5));
+            // hidden rows, a protected column and skipped columns
+            if round % 3 == 1 {
+                d.hide_rows(2 + r() % 3, 2 + r() % 4).unwrap();
+            }
+            if round % 4 == 2 {
+                d.set_protected(&[4]);
+            }
+            let mut s = spec(pattern);
+            s.skip_first = round % 2 == 0;
+            if round % 5 == 3 {
+                s.skip_cols = vec![1];
+            }
+            match round % 3 {
+                0 => {}
+                1 => s.scope = Scope::Columns { cols: vec![0, 2, 3] },
+                _ => {
+                    s.scope = Scope::Areas {
+                        areas: vec![
+                            Block { row: 1, rows: 7, col: 0, cols: 2 },
+                            Block { row: 4, rows: 9, col: 2, cols: 3 },
+                        ],
+                    }
+                }
+            }
+            let plan = d.plan_replace(&s, rep, 100_000, &p).unwrap();
+            let mut want: Vec<(u64, u32, String)> = plan
+                .preview
+                .iter()
+                .filter(|c| !c.hidden)
+                .map(|c| (c.row, c.col, c.after.clone()))
+                .collect();
+            want.sort();
+            let g = d
+                .replace_ghosts(&s, rep, 0, d.row_count(), 0, d.col_count())
+                .unwrap();
+            assert!(!g.partial);
+            let mut got: Vec<(u64, u32, String)> = g
+                .ghosts
+                .iter()
+                .map(|x| (x.row, x.col, visible(&x.after)))
+                .collect();
+            got.sort();
+            assert_eq!(got, want, "round {round}: ghosts are the plan's changes in shown cells");
+            // the count is the whole plan, hidden cells included
+            assert_eq!(d.replace_count(&s, rep, &p).unwrap(), plan.cells, "round {round}: count");
+            // a smaller window gives exactly the cells inside it
+            let (r0, nr, c0, nc) = (1, 4, 1, 3);
+            let part = d.replace_ghosts(&s, rep, r0, nr, c0, nc).unwrap();
+            let inside: Vec<(u64, u32)> = got
+                .iter()
+                .filter(|x| x.0 >= r0 && x.0 < r0 + nr && x.1 >= c0 && x.1 < c0 + nc)
+                .map(|x| (x.0, x.1))
+                .collect();
+            let mut win: Vec<(u64, u32)> = part.ghosts.iter().map(|x| (x.row, x.col)).collect();
+            win.sort();
+            assert_eq!(win, inside, "round {round}: window");
+        }
+    }
+
+    #[test]
+    fn a_ghost_keeps_the_whole_new_text_up_to_a_cap_and_says_so() {
+        let long = "a".repeat(30_000);
+        let d = doc(&format!("x\r\n{long}\r\nab\r\n"));
+        let s = spec(pat("a", PatternKind::Plain));
+        let g = d.replace_ghosts(&s, "bb", 0, 3, 0, 1).unwrap();
+        let big = g.ghosts.iter().find(|x| x.row == 1).unwrap();
+        assert!(big.cut);
+        assert_eq!(big.after.chars().count(), MAX_GHOST_CHARS);
+        let small = g.ghosts.iter().find(|x| x.row == 2).unwrap();
+        assert_eq!((small.after.as_str(), small.cut), ("bbb", false));
+    }
+
+    #[test]
+    fn a_window_of_very_long_cells_stops_at_its_time_and_the_count_can_be_cancelled() {
+        let long = "ab ".repeat(33_000); // about 100 KB a cell
+        let mut csv = String::new();
+        for _ in 0..30 {
+            csv.push_str(&format!("{long},{long},{long},{long},{long}\r\n"));
+        }
+        let d = doc(&csv);
+        let s = spec(pat("(a)b", PatternKind::Regex));
+        let t = std::time::Instant::now();
+        let g = d.replace_ghosts(&s, "$1-", 0, 30, 0, 5).unwrap();
+        let took = t.elapsed();
+        assert!(
+            took < Duration::from_millis(400),
+            "a window of 150 cells of 100 KB took {took:?} (the 1,200-cell window is timed in ghost_bench)"
+        );
+        assert!(g.partial || g.ghosts.len() == 150);
+        // a window that stopped early still gives whole rows of ghosts
+        assert!(g.ghosts.len() % 5 == 0 || !g.partial);
+        let p = Progress::new();
+        p.cancel.store(true, Ordering::Relaxed);
+        assert!(matches!(d.replace_count(&s, "x", &p), Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn ghosts_refuse_a_bad_pattern_or_replacement_as_replace_all_does() {
+        let d = doc("a\r\nb\r\n");
+        assert!(d.replace_ghosts(&spec(pat("(", PatternKind::Regex)), "x", 0, 2, 0, 1).is_err());
+        assert!(d.replace_ghosts(&spec(pat("(a)", PatternKind::Regex)), "$9", 0, 2, 0, 1).is_err());
+        assert!(d.replace_count(&spec(pat("(", PatternKind::Regex)), "x", &Progress::new()).is_err());
     }
 
     // ---- Find in several blocks (Scope::Areas) ----
