@@ -2197,9 +2197,7 @@ impl Document {
                     }
                     let mut err = None;
                     self.each_cell(&area, r, false, &mut buf, |k, t| {
-                        if self.phys(area.cols[k]).is_none() {
-                            return None::<()>;
-                        }
+                        self.phys(area.cols[k])?;
                         match replacement_for(&m, t, replacement) {
                             Ok(Some((new, _))) if new != t => n += 1,
                             Ok(_) => {}
