@@ -530,7 +530,9 @@ impl Document {
         let (r0, r1) = (rows.start, rows.end);
         let total = r1 - r0;
         progress.start(total);
-        let num = |s: &str| Reader::plain(spec.read).number(s.trim());
+        let ctx = self.read_ctx(spec.read);
+        let vrds: Vec<Reader> = spec.values.iter().map(|&c| ctx.reader(c)).collect();
+        let num = |k: usize, s: &str| vrds.get(k).and_then(|r| r.number(s.trim()));
         match spec.kind {
             ChartKind::Line | ChartKind::Bar => {
                 let per = total.div_ceil(MAX_POINTS as u64).max(1);
@@ -557,7 +559,7 @@ impl Document {
                                 };
                             }
                             for k in 0..ns {
-                                if let Some(x) = num(reader.get(&buf, lab + k)) {
+                                if let Some(x) = num(k, reader.get(&buf, lab + k)) {
                                     sums[k] += x;
                                     cnt[k] += 1;
                                 }
@@ -618,7 +620,7 @@ impl Document {
                             reader.read(self, id, &mut buf);
                             let key = reader.get(&buf, 0);
                             let v = if pie {
-                                match num(reader.get(&buf, 1)) {
+                                match num(0, reader.get(&buf, 1)) {
                                     Some(x) => x,
                                     None => continue,
                                 }

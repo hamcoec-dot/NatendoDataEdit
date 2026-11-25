@@ -329,17 +329,10 @@ enum RangeKind {
     Date,
 }
 
-fn range_kind_of(s: &str) -> Option<RangeKind> {
-    let o = ReadOptions::default();
-    if crate::coltype::Reader::plain(o)
-        .number(s)
-        .is_some_and(f64::is_finite)
-    {
+fn range_kind_of(s: &str, rd: crate::coltype::Reader) -> Option<RangeKind> {
+    if rd.number(s).is_some_and(f64::is_finite) {
         Some(RangeKind::Number)
-    } else if crate::coltype::Reader::plain(o)
-        .date(s)
-        .is_some_and(f64::is_finite)
-    {
+    } else if rd.date(s).is_some_and(f64::is_finite) {
         Some(RangeKind::Date)
     } else {
         None
@@ -347,14 +340,11 @@ fn range_kind_of(s: &str) -> Option<RangeKind> {
 }
 
 /// A range key of the given kind (a date as a day number).
-fn range_value(s: &str, kind: RangeKind) -> Option<f64> {
-    let o = ReadOptions::default();
+fn range_value(s: &str, kind: RangeKind, rd: crate::coltype::Reader) -> Option<f64> {
     let v = match kind {
-        RangeKind::Number => crate::coltype::Reader::plain(o).number(s),
+        RangeKind::Number => rd.number(s),
         // A plain number is not a date here, even if it could be read as one.
-        RangeKind::Date => crate::coltype::Reader::plain(o)
-            .date(s)
-            .filter(|_| crate::coltype::Reader::plain(o).number(s).is_none()),
+        RangeKind::Date => rd.date(s).filter(|_| rd.number(s).is_none()),
     };
     v.filter(|v| v.is_finite())
         .map(|v| if v == 0.0 { 0.0 } else { v })
@@ -379,6 +369,9 @@ pub struct JoinSource {
     nkeys: usize,
     /// The options the keys were indexed with.
     spec: JoinSpec,
+    /// How the key column (for a nearest-value match) and each added column are read.
+    key_rd: crate::coltype::Reader,
+    rds: Vec<crate::coltype::Reader>,
     lookup: HashMap<String, u32>,
     /// Groups of rows with the same key, in first-seen order:
     /// `members[starts[g]..starts[g + 1]]`.
@@ -515,8 +508,19 @@ impl JoinSource {
             flat.extend(p);
         }
         let n = (r1 - r0) as usize;
-        JoinSource::index(other.titles(&cols, spec.other_header), flat, width, n, spec)
-            .map(Arc::new)
+        let ctx = other.read_ctx(ReadOptions::default());
+        let key_rd = ctx.reader(spec.other_keys.first().copied().unwrap_or(0));
+        let rds: Vec<crate::coltype::Reader> = cols.iter().map(|&c| ctx.reader(c)).collect();
+        JoinSource::index(
+            other.titles(&cols, spec.other_header),
+            flat,
+            width,
+            n,
+            spec,
+            key_rd,
+            rds,
+        )
+        .map(Arc::new)
     }
 
     /// A list of keys (one per line, parts split by tabs), for keeping or
@@ -550,7 +554,15 @@ impl JoinSource {
         spec.other_keys = (0..nk as u32).collect();
         spec.columns = Vec::new();
         spec.other_header = false;
-        let mut src = JoinSource::index(Vec::new(), flat, nk, rows, &spec)?;
+        let mut src = JoinSource::index(
+            Vec::new(),
+            flat,
+            nk,
+            rows,
+            &spec,
+            crate::coltype::Reader::plain(ReadOptions::default()),
+            Vec::new(),
+        )?;
         src.list = true;
         Ok(Arc::new(src))
     }
@@ -561,6 +573,8 @@ impl JoinSource {
         width: usize,
         rows: usize,
         spec: &JoinSpec,
+        key_rd: crate::coltype::Reader,
+        rds: Vec<crate::coltype::Reader>,
     ) -> Result<JoinSource, Error> {
         let nkeys = spec.other_keys.len();
         let range = spec.key_match != KeyMatch::Exact;
@@ -577,6 +591,8 @@ impl JoinSource {
             width,
             nkeys,
             spec: spec.clone(),
+            key_rd,
+            rds,
             lookup: HashMap::new(),
             starts: Vec::new(),
             members: Vec::new(),
@@ -592,7 +608,7 @@ impl JoinSource {
             // kind are not used (a date is never compared with a number).
             let (mut nums, mut dates) = (0u64, 0u64);
             for i in 0..rows {
-                match range_kind_of(src.cell(i, 0)) {
+                match range_kind_of(src.cell(i, 0), src.key_rd) {
                     Some(RangeKind::Number) => nums += 1,
                     Some(RangeKind::Date) => dates += 1,
                     None => {}
@@ -616,7 +632,7 @@ impl JoinSource {
                 continue;
             }
             if range {
-                let Some(v) = range_value(parts[0], src.range_kind) else {
+                let Some(v) = range_value(parts[0], src.range_kind, src.key_rd) else {
                     bad_keys += 1;
                     continue;
                 };
@@ -729,9 +745,8 @@ impl JoinSource {
                             s
                         }
                         _ => {
-                            let nums = vals.filter_map(|v| {
-                                crate::coltype::Reader::plain(ReadOptions::default()).number(v)
-                            });
+                            let rd = self.rds.get(k).copied().unwrap_or(self.key_rd);
+                            let nums = vals.filter_map(|v| rd.number(v));
                             let r = match rule {
                                 Repeats::Sum => {
                                     let mut sum = crate::stats::Kahan::default();
@@ -776,11 +791,11 @@ impl JoinSource {
                 }
                 self.lookup.get(key.as_str()).copied()
             }
-            KeyMatch::Below => range_value(parts[0], self.range_kind).and_then(|v| {
+            KeyMatch::Below => range_value(parts[0], self.range_kind, self.key_rd).and_then(|v| {
                 let i = self.sorted.partition_point(|x| x.0 <= v);
                 i.checked_sub(1).map(|i| self.sorted[i].1)
             }),
-            KeyMatch::Above => range_value(parts[0], self.range_kind).and_then(|v| {
+            KeyMatch::Above => range_value(parts[0], self.range_kind, self.key_rd).and_then(|v| {
                 let i = self.sorted.partition_point(|x| x.0 < v);
                 self.sorted.get(i).map(|x| x.1)
             }),
