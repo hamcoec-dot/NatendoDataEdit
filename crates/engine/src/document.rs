@@ -394,6 +394,8 @@ pub struct Document {
     /// Column map: logical column -> physical column. `None` is the identity.
     /// Physical columns past the widest row are new (inserted) ones.
     cols: Option<Vec<u32>>,
+    /// What the person says each column holds (by physical column); read with [`Document::read_ctx`].
+    column_types: crate::coltype::ColumnTypes,
     /// Next physical id for an inserted column (never reused until a save).
     next_col: u32,
     /// Columns cleared by swapping in a new empty column (a quick clear of
@@ -566,6 +568,7 @@ impl Document {
             overlay: Overlay::default(),
             next_id: 0,
             cols: None,
+            column_types: Default::default(),
             next_col: 0,
             swapped: HashMap::new(),
             map_identity: AtomicU8::new(0),
@@ -1023,6 +1026,34 @@ impl Document {
     /// rewrites every row). False again once those changes are undone.
     pub fn has_column_changes(&self) -> bool {
         self.col_map().is_some()
+    }
+
+    /// How this document's cells are read as numbers and dates: `opts` plus the column types. The one way
+    /// to read a cell as a number or a date (see [`crate::coltype`]).
+    pub fn read_ctx(&self, opts: crate::value::ReadOptions) -> crate::coltype::ReadCtx<'_> {
+        crate::coltype::ReadCtx {
+            opts,
+            types: &self.column_types,
+            map: self.cols.as_deref(),
+        }
+    }
+
+    /// The column types (by physical column).
+    pub fn type_overlay(&self) -> &crate::coltype::ColumnTypes {
+        &self.column_types
+    }
+
+    /// Set the column types. Nothing in the file or the edits changes (the bytes saved are the same), but
+    /// every result computed from the numbers is out of date, so the data revision moves on. Not a data
+    /// edit: the document is not marked changed; the caller keeps the previous value for Undo.
+    pub fn set_column_types(&mut self, types: crate::coltype::ColumnTypes) {
+        if types == self.column_types {
+            return;
+        }
+        self.column_types = types;
+        self.revision += 1;
+        self.data_revision += 1;
+        self.rows_changed();
     }
 
     /// Physical column of logical column `col` (`None` past the map's end).
