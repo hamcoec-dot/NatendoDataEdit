@@ -5678,9 +5678,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.nextProblem", label: "Jump to &next problem", keys: ["F7"], run: () => void jumpProblem(false), enabled: ready },
     { id: "data.prevProblem", label: "Jump to &previous problem", keys: ["Shift+F7"], run: () => void jumpProblem(true), enabled: ready },
     { id: "data.checkNow", label: "Check the whole table &now", run: () => { const t = tab; if (t) void checkNow(t); }, enabled: () => ready() && !!tab?.checks.length },
-    { id: "data.diffNext", label: "Next &difference (compared files)", keys: ["Alt+F7"], run: () => void jumpDiff(false), enabled: () => !!tab?.diffOn },
-    { id: "data.diffPrev", label: "Previous differen&ce (compared files)", keys: ["Alt+Shift+F7"], run: () => void jumpDiff(true), enabled: () => !!tab?.diffOn },
-    { id: "data.diffClear", label: "Clear the &differences (compared files)", run: () => void clearDiff(), enabled: () => !!tab?.diffOn },
+    { id: "data.diffNext", label: "Compared files: &next change", keys: ["Alt+F7"], run: () => void jumpDiff(false), enabled: () => !!tab?.diffOn },
+    { id: "data.diffPrev", label: "Compared files: &previous change", keys: ["Alt+Shift+F7"], run: () => void jumpDiff(true), enabled: () => !!tab?.diffOn },
+    { id: "data.diffClear", label: "Compared files: &clear the colours", run: () => void clearDiff(), enabled: () => !!tab?.diffOn },
     { id: "data.unmarkChecks", label: "Hide problem marks", run: () => { if (tab) keepChecks(tab.checks, false); }, enabled: () => !!tab?.checksMarked },
     { id: "help.logs", label: "Open the &log folder", run: () => void backend().openLogFolder().catch((e: unknown) => say(errorText(e))) },
     {
