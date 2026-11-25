@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Progress};
 use crate::ops::{ColPlan, Cols};
-use crate::value::{parse_date, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Most fields compared.
@@ -825,7 +825,9 @@ fn normalize(v: &str, kind: FieldKind, read: ReadOptions, out: &mut String) {
     }
     match kind {
         FieldKind::Exact => {
-            if let Some(d) = parse_date(v, read).filter(|_| v.chars().any(|c| !c.is_ascii_digit()))
+            if let Some(d) = crate::coltype::Reader::plain(read)
+                .date(v)
+                .filter(|_| v.chars().any(|c| !c.is_ascii_digit()))
             {
                 let (y, m, dd) = crate::fill::civil_from_days(d.floor() as i64);
                 if (1..=9999).contains(&y) {

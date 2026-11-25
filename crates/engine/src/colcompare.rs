@@ -11,7 +11,7 @@ use crate::document::{Document, Progress, View};
 use crate::filter::FilterSpec;
 use crate::ops::{ColPlan, Cols, CHUNK};
 use crate::reshape::RowPlan;
-use crate::value::{self, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Most rows listed for marking.
@@ -121,8 +121,8 @@ pub fn compare_cells(a: &str, b: &str, spec: &CompareCols) -> Cmp {
     }
     if spec.numbers && plain_number(a) && plain_number(b) {
         if let (Some(x), Some(y)) = (
-            value::parse_number(a, spec.read),
-            value::parse_number(b, spec.read),
+            crate::coltype::Reader::plain(spec.read).number(a),
+            crate::coltype::Reader::plain(spec.read).number(b),
         ) {
             return if x == y { Cmp::Same } else { Cmp::Different };
         }

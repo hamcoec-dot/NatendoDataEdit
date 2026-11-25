@@ -10,7 +10,7 @@ use crate::document::{Document, Progress};
 use crate::find::{Pattern, PatternKind};
 use crate::profile::{shape_of, shape_regex};
 use crate::validate::{is_iso_date, Check, CheckKind};
-use crate::value::{parse_number, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Rows looked at per column (spread evenly over the table).
@@ -103,7 +103,7 @@ impl Document {
             if is_iso_date(&v) {
                 iso += 1;
             }
-            if let Some(x) = parse_number(&v, read) {
+            if let Some(x) = crate::coltype::Reader::plain(read).number(&v) {
                 numbers += 1;
                 if x.fract() == 0.0 {
                     whole += 1;

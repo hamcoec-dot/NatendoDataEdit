@@ -21,7 +21,7 @@ use crate::document::{Document, Progress};
 use crate::ops::{check_cols, CellPlan, ColPlan, Cols, CHUNK};
 use crate::reshape::MAX_TABLE_BYTES;
 use crate::stats::Kahan;
-use crate::value::{fold_char, natural_cmp, parse_number, ReadOptions};
+use crate::value::{fold_char, natural_cmp, ReadOptions};
 use crate::Error;
 
 /// Most distinct values the value editor lists.
@@ -732,7 +732,9 @@ impl Document {
                 Some(rd) => {
                     rd.read(self, id, buf);
                     let v = rd.get(buf, 0);
-                    parse_number(v, read).unwrap_or(f64::NAN)
+                    crate::coltype::Reader::plain(read)
+                        .number(v)
+                        .unwrap_or(f64::NAN)
                 }
                 None => f64::NAN,
             };

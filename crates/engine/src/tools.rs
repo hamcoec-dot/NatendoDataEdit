@@ -20,7 +20,7 @@ use crate::ops::{check_cols, ColPlan, Cols, CHUNK, MAX_CELL_BYTES};
 use crate::reshape::{
     push_line, too_big, Duplicates, RowPlan, Table, MAX_TABLE_BYTES, MAX_TABLE_CELLS,
 };
-use crate::value::{self, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Most columns one of these tools reads at once.
@@ -1165,7 +1165,8 @@ impl Document {
                 for r in s..e {
                     let id = self.id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
-                    if let Some(v) = value::parse_number(reader.get(&buf, 0), read) {
+                    if let Some(v) = crate::coltype::Reader::plain(read).number(reader.get(&buf, 0))
+                    {
                         let better = match best {
                             None => true,
                             Some((b, _)) => (largest && v > b) || (!largest && v < b),
@@ -1305,7 +1306,8 @@ impl Document {
                 for r in s..e {
                     let id = self.id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
-                    if let Some(v) = value::parse_number(reader.get(&buf, 0), read) {
+                    if let Some(v) = crate::coltype::Reader::plain(read).number(reader.get(&buf, 0))
+                    {
                         best = Some(best.map_or((v, v), |(a, b)| (a.min(v), b.max(v))));
                     }
                 }

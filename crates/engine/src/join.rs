@@ -27,7 +27,7 @@ use crate::clean::exact_number;
 use crate::document::{Document, Edit, Progress, Step};
 use crate::ops::{CellPlan, Cols, CHUNK};
 use crate::reshape::{MAX_TABLE_BYTES, MAX_TABLE_CELLS};
-use crate::value::{parse_date, parse_number, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Most columns a join or append adds.
@@ -331,9 +331,15 @@ enum RangeKind {
 
 fn range_kind_of(s: &str) -> Option<RangeKind> {
     let o = ReadOptions::default();
-    if parse_number(s, o).is_some_and(f64::is_finite) {
+    if crate::coltype::Reader::plain(o)
+        .number(s)
+        .is_some_and(f64::is_finite)
+    {
         Some(RangeKind::Number)
-    } else if parse_date(s, o).is_some_and(f64::is_finite) {
+    } else if crate::coltype::Reader::plain(o)
+        .date(s)
+        .is_some_and(f64::is_finite)
+    {
         Some(RangeKind::Date)
     } else {
         None
@@ -344,9 +350,11 @@ fn range_kind_of(s: &str) -> Option<RangeKind> {
 fn range_value(s: &str, kind: RangeKind) -> Option<f64> {
     let o = ReadOptions::default();
     let v = match kind {
-        RangeKind::Number => parse_number(s, o),
+        RangeKind::Number => crate::coltype::Reader::plain(o).number(s),
         // A plain number is not a date here, even if it could be read as one.
-        RangeKind::Date => parse_date(s, o).filter(|_| parse_number(s, o).is_none()),
+        RangeKind::Date => crate::coltype::Reader::plain(o)
+            .date(s)
+            .filter(|_| crate::coltype::Reader::plain(o).number(s).is_none()),
     };
     v.filter(|v| v.is_finite())
         .map(|v| if v == 0.0 { 0.0 } else { v })
@@ -721,7 +729,9 @@ impl JoinSource {
                             s
                         }
                         _ => {
-                            let nums = vals.filter_map(|v| parse_number(v, ReadOptions::default()));
+                            let nums = vals.filter_map(|v| {
+                                crate::coltype::Reader::plain(ReadOptions::default()).number(v)
+                            });
                             let r = match rule {
                                 Repeats::Sum => {
                                     let mut sum = crate::stats::Kahan::default();

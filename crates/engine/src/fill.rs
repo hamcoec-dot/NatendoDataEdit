@@ -336,7 +336,7 @@ pub struct DateShape {
     tail: String,
 }
 
-fn parse_date(s: &str, read: ReadOptions) -> Option<(i64, DateShape)> {
+fn parse_date_shape(s: &str, read: ReadOptions) -> Option<(i64, DateShape)> {
     let s = s.trim();
     let end = s.find([' ', 'T']).unwrap_or(s.len());
     let (date, tail) = s.split_at(end);
@@ -489,7 +489,7 @@ impl Series {
                 .and_then(|s| {
                     plain_number(s, comma)
                         .map(|v| v.0)
-                        .or_else(|| crate::value::parse_number(s, read))
+                        .or_else(|| crate::coltype::Reader::plain(read).number(s))
                 })
                 .ok_or_else(|| Error::Invalid(format!("{what} needs a number in the first cell")))
         };
@@ -515,13 +515,12 @@ impl Series {
                 })
             }
             FillMode::Date { unit, step } => {
-                let (base, shape) =
-                    start
-                        .first()
-                        .and_then(|s| parse_date(s, read))
-                        .ok_or_else(|| {
-                            Error::Invalid("a date series needs a date in the first cell".into())
-                        })?;
+                let (base, shape) = start
+                    .first()
+                    .and_then(|s| parse_date_shape(s, read))
+                    .ok_or_else(|| {
+                        Error::Invalid("a date series needs a date in the first cell".into())
+                    })?;
                 Ok(Series::Date {
                     base,
                     shape,
@@ -614,7 +613,7 @@ impl Series {
         // Dates written the same way.
         if let Some(dates) = start
             .iter()
-            .map(|s| parse_date(s, read))
+            .map(|s| parse_date_shape(s, read))
             .collect::<Option<Vec<_>>>()
         {
             if dates.iter().all(|d| d.1 == dates[0].1) {

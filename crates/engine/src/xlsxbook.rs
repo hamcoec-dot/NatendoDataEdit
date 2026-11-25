@@ -18,7 +18,7 @@ use crate::export::{
     SHEET_PART_LIMIT, XLSX_MAX_CELL_CHARS, XLSX_MAX_COLS, XLSX_MAX_ROWS,
 };
 use crate::ops::Cols;
-use crate::value::{self, ReadOptions};
+use crate::value::ReadOptions;
 use crate::zipwrite::{Block, ZipWriter};
 
 /// Rows turned into XML and compressed together.
@@ -125,7 +125,7 @@ impl Stat {
                 self.long_digits += 1;
             }
         }
-        if value::parse_number(t, read).is_some() {
+        if crate::coltype::Reader::plain(read).number(t).is_some() {
             self.numbers += 1;
             let (dec_c, group_c) = if read.decimal_comma {
                 (',', '.')
@@ -156,7 +156,7 @@ impl Stat {
             if !excel_number(t) {
                 self.reshaped += 1;
             }
-        } else if let Some(d) = value::parse_date(t, read) {
+        } else if let Some(d) = crate::coltype::Reader::plain(read).date(t) {
             let time_only =
                 !t.contains(['-', '/', '.']) && t.contains(':') && (0.0..1.0).contains(&d);
             if time_only {
@@ -693,7 +693,7 @@ pub(crate) fn write_book_on(
                                         false
                                     }
                                 }
-                                Kind::Number(_) => match value::parse_number(v, read)
+                                Kind::Number(_) => match crate::coltype::Reader::plain(read).number(v)
                                     .filter(|x| x.is_finite())
                                 {
                                     Some(x) => {
@@ -702,7 +702,7 @@ pub(crate) fn write_book_on(
                                     }
                                     None => false,
                                 },
-                                Kind::Date { day, .. } => match value::parse_date(v, read) {
+                                Kind::Date { day, .. } => match crate::coltype::Reader::plain(read).date(v) {
                                     Some(x) => {
                                         let serial = if day { x + 25_569.0 } else { x };
                                         let _ = write!(s, "><v>{serial}</v></c>");

@@ -19,7 +19,7 @@ use crate::areas::Area;
 use crate::document::{Document, Progress};
 use crate::ops::Cols;
 use crate::stats::Kahan;
-use crate::value::{parse_number, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Rows per parallel task (and between cancel checks).
@@ -258,7 +258,7 @@ impl Document {
                             continue;
                         }
                         a.filled += 1;
-                        if let Some(x) = parse_number(v, read) {
+                        if let Some(x) = crate::coltype::Reader::plain(read).number(v) {
                             a.numbers += 1;
                             a.sum.add(x);
                             a.min = a.min.min(x);

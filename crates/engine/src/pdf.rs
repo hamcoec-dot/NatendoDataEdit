@@ -17,7 +17,7 @@ use crate::document::{Document, Progress};
 use crate::export::{ExportOptions, ExportReport};
 use crate::ops::{check_cols, Cols};
 use crate::ttf::{Font, MAX_FONT_BYTES};
-use crate::value::{parse_number, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Most pages in one PDF.
@@ -640,7 +640,8 @@ impl Document {
                     let mut x = x0;
                     for k in g.clone() {
                         let v = reader.get(&buf, k);
-                        let right = !v.is_empty() && parse_number(v, read).is_some();
+                        let right = !v.is_empty()
+                            && crate::coltype::Reader::plain(read).number(v).is_some();
                         cell(&mut c, v, k, x, y, right);
                         x += l.widths[k];
                     }

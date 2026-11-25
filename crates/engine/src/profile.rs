@@ -14,7 +14,7 @@ use crate::document::{Document, Progress, View};
 use crate::filter::FilterSpec;
 use crate::ops::{check_cols, Cols, CHUNK};
 use crate::reshape::RowPlan;
-use crate::value::{parse_date, parse_number, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Different shapes kept per chunk and in all.
@@ -324,7 +324,7 @@ impl Acc {
         if self.longest.as_ref().is_none_or(|s| len > s.0) {
             self.longest = Some((len, v.chars().take(200).collect()));
         }
-        if let Some(x) = parse_number(v, read) {
+        if let Some(x) = crate::coltype::Reader::plain(read).number(v) {
             self.numbers += 1;
             let delta = x - self.mean;
             self.mean += delta / self.numbers as f64;
@@ -334,7 +334,7 @@ impl Acc {
             if self.sample.len() < SAMPLE_CHUNK {
                 self.sample.push(x);
             }
-        } else if let Some(d) = parse_date(v, read) {
+        } else if let Some(d) = crate::coltype::Reader::plain(read).date(v) {
             self.dates += 1;
             self.dmin = self.dmin.min(d);
             self.dmax = self.dmax.max(d);
@@ -517,8 +517,10 @@ impl Document {
                         continue;
                     }
                     let x = match kind {
-                        HistKind::Numbers => parse_number(v, read),
-                        HistKind::Dates => parse_date(v, read).map(f64::floor),
+                        HistKind::Numbers => crate::coltype::Reader::plain(read).number(v),
+                        HistKind::Dates => {
+                            crate::coltype::Reader::plain(read).date(v).map(f64::floor)
+                        }
                         HistKind::Lengths => Some(v.chars().count() as f64),
                     };
                     if let Some(x) = x {

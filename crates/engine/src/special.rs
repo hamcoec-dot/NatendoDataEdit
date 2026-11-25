@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::document::{Document, Progress};
 use crate::ops::{CellPlan, Cols, CHUNK, MAX_BLOCK_BYTES, MAX_BLOCK_CELLS, MAX_CELL_BYTES};
 use crate::validate::CheckSpec;
-use crate::value::{self, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Most cells one Go To Special pick lists (as many as the window lights
@@ -155,9 +155,12 @@ impl Document {
                             let v = reader.get(&buf, k);
                             let hit = match kind {
                                 SpecialKind::Blanks => blank(v),
-                                SpecialKind::Numbers => value::parse_number(v, read).is_some(),
+                                SpecialKind::Numbers => {
+                                    crate::coltype::Reader::plain(read).number(v).is_some()
+                                }
                                 SpecialKind::Text => {
-                                    !blank(v) && value::parse_number(v, read).is_none()
+                                    !blank(v)
+                                        && crate::coltype::Reader::plain(read).number(v).is_none()
                                 }
                                 SpecialKind::RowDiff { exact, .. } => {
                                     let o = other.unwrap_or("");

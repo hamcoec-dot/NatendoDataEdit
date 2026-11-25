@@ -23,7 +23,7 @@ use crate::find::{
     MAX_RESULT_CELL_BYTES,
 };
 use crate::ops::CellPlan;
-use crate::value::{parse_date, parse_number, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Largest cleaner file, in bytes.
@@ -881,7 +881,9 @@ impl Compiled {
                 }
                 let read = match from {
                     Some(p) => read_date(t, p),
-                    None => parse_date(t, self.read).filter(|v| !time_only(t, *v)),
+                    None => crate::coltype::Reader::plain(self.read)
+                        .date(t)
+                        .filter(|v| !time_only(t, *v)),
                 };
                 // A two-digit year that lands after today goes back a century.
                 let two_digit = match from {
@@ -934,7 +936,8 @@ impl Compiled {
                 if t.trim().is_empty() {
                     return Ok(None);
                 }
-                let r = parse_date(t, self.read)
+                let r = crate::coltype::Reader::plain(self.read)
+                    .date(t)
                     .filter(|v| !time_only(t, *v))
                     .or_else(|| compact_date(t))
                     .and_then(|v| date_band(v, *to, self.now))
@@ -1693,7 +1696,7 @@ fn number_value(s: &str, read: ReadOptions) -> Option<f64> {
     if !groups_ok(s, read.decimal_comma) {
         return None;
     }
-    parse_number(s, read)
+    crate::coltype::Reader::plain(read).number(s)
 }
 
 /// Thousands separators, if any, sit between groups of three digits after a

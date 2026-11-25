@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::document::Document;
 use crate::ops::{check_cols, Cols};
 use crate::profile::{shape_hash, shape_of};
-use crate::value::{parse_number, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Rows sampled at most.
@@ -170,7 +170,7 @@ fn one(col: u32, vals: &[String], read: ReadOptions) -> Insight {
         filled += 1;
         *counts.entry(v.as_str()).or_insert(0) += 1;
         shapes.add(shape_hash(v), i);
-        if let Some(x) = parse_number(v, read) {
+        if let Some(x) = crate::coltype::Reader::plain(read).number(v) {
             if x.is_finite() {
                 nums.push(x);
             }

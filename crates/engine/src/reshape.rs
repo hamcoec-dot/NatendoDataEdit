@@ -19,7 +19,7 @@ use crate::encoding::Encoding;
 use crate::fill::format_number;
 use crate::filter::FilterSpec;
 use crate::ops::{check_cols, check_separator, ColPlan, Cols, CHUNK, MAX_CELL_BYTES};
-use crate::value::{self, ReadOptions};
+use crate::value::ReadOptions;
 use crate::{Error, OpenOptions};
 
 /// Most parts one cell may split into (split rows).
@@ -503,7 +503,8 @@ impl Document {
                         let dates: Vec<Option<f64>> = values
                             .iter()
                             .map(|v| {
-                                crate::value::parse_date(v, read)
+                                crate::coltype::Reader::plain(read)
+                                    .date(v)
                                     .filter(|d| d.floor() != 0.0 || v.contains(['-', '/', '.']))
                             })
                             .collect();
@@ -512,7 +513,7 @@ impl Document {
                         } else {
                             values
                                 .iter()
-                                .map(|v| crate::value::parse_number(v, read))
+                                .map(|v| crate::coltype::Reader::plain(read).number(v))
                                 .collect()
                         };
                         let mut best: Option<(usize, f64)> = None;
@@ -942,7 +943,7 @@ impl Document {
                     i
                 }
             };
-            let num = || value::parse_number(v, spec.read);
+            let num = || crate::coltype::Reader::plain(spec.read).number(v);
             match cells.get_mut(&(ri, ci)) {
                 None => {
                     let acc = match spec.aggregate {

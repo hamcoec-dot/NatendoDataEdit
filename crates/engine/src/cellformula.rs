@@ -857,7 +857,7 @@ impl Document {
                             o.text.push(t.to_string());
                         }
                         if nd.totals {
-                            let x = crate::value::parse_number(t, read);
+                            let x = crate::coltype::Reader::plain(read).number(t);
                             if nd.numbers {
                                 o.num.push(x.unwrap_or(f64::NAN));
                             }

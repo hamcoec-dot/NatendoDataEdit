@@ -201,13 +201,13 @@ fn combine(dest: &str, src: &str, op: PasteOp, read: ReadOptions) -> Outcome {
     }
     // Arithmetic leaves the cell alone when the pasted cell is not a number
     // (review note M4b-4: text must not replace the number underneath).
-    let Some(s) = value::parse_number(src, read) else {
+    let Some(s) = crate::coltype::Reader::plain(read).number(src) else {
         return Outcome::Skip;
     };
     let d = if dest.trim().is_empty() {
         0.0
     } else {
-        match value::parse_number(dest, read) {
+        match crate::coltype::Reader::plain(read).number(dest) {
             Some(d) => d,
             None => return Outcome::Skip,
         }

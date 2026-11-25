@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::clean::{Cleaner, Compiled, Ctx};
 use crate::document::{Document, Progress};
 use crate::ops::Cols;
-use crate::value::{parse_date, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// A secret phrase. Never written to a file (cleaners and recipes save the
@@ -388,7 +388,7 @@ fn kind_of_value(v: &str, read: ReadOptions, today: f64) -> Option<PrivateKind> 
         return Some(PrivateKind::Licence);
     }
     if t.len() >= 6 && t.len() <= 40 {
-        if let Some(d) = parse_date(t, read) {
+        if let Some(d) = crate::coltype::Reader::plain(read).date(t) {
             let age = (today - d) / 365.25;
             if d.floor() != 0.0 && (0.0..=120.0).contains(&age) {
                 return Some(PrivateKind::BirthDate);

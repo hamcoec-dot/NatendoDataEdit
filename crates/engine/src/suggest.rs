@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::clean::{Spaces, Step};
 use crate::document::{Document, Progress};
 use crate::ops::Cols;
-use crate::value::{parse_date, parse_number, ReadOptions};
+use crate::value::ReadOptions;
 use crate::Error;
 
 /// Rows looked at by one scan.
@@ -163,13 +163,13 @@ impl ColAcc {
             self.double += double as u64;
             example(&mut self.spaces_ex, v);
         }
-        if parse_number(t, read).is_some() {
+        if crate::coltype::Reader::plain(read).number(t).is_some() {
             self.numbers += 1;
             if !plain_number(t) && !t.ends_with('%') && !t.to_ascii_lowercase().contains('e') {
                 self.number_text += 1;
                 example(&mut self.number_ex, t);
             }
-        } else if parse_date(t, read).is_some() {
+        } else if crate::coltype::Reader::plain(read).date(t).is_some() {
             self.dates += 1;
             self.times |= t.contains(':');
             let s = shape(t);
