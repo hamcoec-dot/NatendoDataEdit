@@ -112,8 +112,8 @@ interface MockDoc {
   edits: Map<string, string>;
   undo: { apply: () => () => void; inverse: () => void }[];
   redo: (() => () => void)[];
-  /** Checkpoints: named moments, by mark (see `markOf`). */
-  checkpoints?: { id: number; name: string; mark: number; auto: boolean }[];
+  /** Checkpoints: named moments, by mark (see `markOf`), with the cells as they were (the stand-in's way to compare). */
+  checkpoints?: { id: number; name: string; mark: number; auto: boolean; snap?: Map<string, string> }[];
   /** The mark of the state before the oldest undo step (new again after a save). */
   baseMark?: number;
   clean: number;
@@ -3783,7 +3783,18 @@ export class MockBackend implements Backend {
   }
   private cpList(d: MockDoc): import("./backend").Checkpoint[] {
     const now = this.markNow(d);
-    return (d.checkpoints ?? []).map((c) => ({ id: c.id, name: c.name, auto: c.auto, reachable: this.reach(d, c.mark) !== null, steps: this.reach(d, c.mark) ?? 0, current: c.mark === now }));
+    return (d.checkpoints ?? []).map((c) => {
+      const r = this.reach(d, c.mark);
+      const since_note =
+        r === null
+          ? "No longer reachable: the undo history was trimmed past it, a newer change replaced it, or the file was saved."
+          : r === 0
+            ? "The table is in this state now: nothing has changed since."
+            : r > 0
+              ? "This checkpoint is ahead of the table (you went back past it): go to it first, then compare."
+              : "";
+      return { id: c.id, name: c.name, auto: c.auto, reachable: r !== null, steps: r ?? 0, current: c.mark === now, since_note };
+    });
   }
   async checkpointList(doc: number): Promise<import("./backend").Checkpoint[]> {
     return this.cpList(this.get(doc));
@@ -3796,8 +3807,40 @@ export class MockBackend implements Backend {
     const list = (d.checkpoints ??= []);
     const auto = list.find((c) => c.mark === mark && c.auto);
     if (auto) Object.assign(auto, { auto: false, name: n });
-    else list.push({ id: ++markSeq, name: n, mark, auto: false });
+    else list.push({ id: ++markSeq, name: n, mark, auto: false, snap: new Map(d.edits) });
     return this.cpList(d);
+  }
+  /** The cells that differ now from a checkpoint (the stand-in compares the edits it kept). */
+  private sinceCells(d: MockDoc, c: { snap?: Map<string, string> }): import("./backend").SinceCell[] {
+    const keys = new Set([...(c.snap?.keys() ?? []), ...d.edits.keys()]);
+    const out: import("./backend").SinceCell[] = [];
+    for (const k of [...keys].sort((a, b) => Number(a.split(":")[0]) - Number(b.split(":")[0]) || Number(a.split(":")[1]) - Number(b.split(":")[1]))) {
+      const [ids, ps] = k.split(":");
+      const id = Number(ids);
+      const p = Number(ps);
+      const base = id >= 0 && p < d.baseCols ? generated(id, p) : "";
+      const before = c.snap?.get(k) ?? base;
+      const now = d.edits.get(k) ?? base;
+      if (before !== now) out.push({ id, row: this.orderOf(d).indexOf(id), col: p, old: before, new: now });
+    }
+    return out;
+  }
+  async checkpointSince(doc: number, checkpoint: number, offset: number, want: number): Promise<import("./backend").SinceView> {
+    const d = this.get(doc);
+    const c = (d.checkpoints ?? []).find((x) => x.id === checkpoint);
+    if (!c) throw err("invalid", "there is no such checkpoint");
+    const r = this.reach(d, c.mark);
+    if (r === null) throw err("invalid", "That checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or the file was saved.");
+    if (r > 0) throw err("invalid", "That checkpoint is ahead of the table (you went back past it): go to it first, then compare.");
+    const cells = this.sinceCells(d, c);
+    const rows = new Set(cells.map((x) => x.id)).size;
+    return { totals: { steps: -r, rows_changed: rows, cells_changed: cells.length, rows_added: 0, rows_removed: 0, cols_added: 0, cols_removed: 0, cols_moved: false, reordered: false }, cells: cells.slice(offset, offset + want) };
+  }
+  async checkpointSinceReport(doc: number, checkpoint: number): Promise<number | null> {
+    const d = this.get(doc);
+    const c = (d.checkpoints ?? []).find((x) => x.id === checkpoint);
+    if (!c) throw err("invalid", "there is no such checkpoint");
+    return this.sinceCells(d, c).length;
   }
   async checkpointRemove(doc: number, checkpoint: number): Promise<import("./backend").Checkpoint[]> {
     const d = this.get(doc);

@@ -22,8 +22,12 @@
     now: () => number;
     /** Go to a checkpoint (the screen does what Ctrl+Z does for every step crossed). */
     restoreCheckpoint: (c: import("./backend").Checkpoint) => Promise<void>;
+    /** Column titles now, going to a cell, and stopping a running comparison (the checkpoint comparison). */
+    titles: string[];
+    goToCell: (row: number, col: number) => void;
+    stopJob: () => void;
   }
-  let { tab, onInfo, run, confirmLoss, onSave, now, restoreCheckpoint }: Props = $props();
+  let { tab, onInfo, run, confirmLoss, onSave, now, restoreCheckpoint, titles, goToCell, stopJob }: Props = $props();
 
   let view = $state<StepsView | null>(null);
   let problem = $state("");
@@ -140,7 +144,7 @@
 <svelte:window onpointerdown={(e) => { if (menu && !(e.target as HTMLElement | null)?.closest?.(".step-menu")) menu = null; }} onkeydown={(e) => { if (menu && e.key === "Escape") menu = null; }} />
 
 <div class="steps-panel">
-  <CheckpointsPanel {tab} onRestore={restoreCheckpoint} />
+  <CheckpointsPanel {tab} onRestore={restoreCheckpoint} {titles} onGo={goToCell} onStop={stopJob} />
   {#if menu && view?.steps[menu.k]}
     {@const k = menu.k}
     {@const s = view.steps[k]!}

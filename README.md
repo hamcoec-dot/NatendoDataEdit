@@ -1157,9 +1157,20 @@ selection, a column or the whole table:
   reachable") when the undo history is trimmed past it (10,000 steps or 512 MB),
   when a new change replaces what you had undone, and when you save the file,
   because saving starts the undo history again. Checkpoints are not saved to disk
-  and go when the tab closes.
+  and go when the tab closes. **What changed since this checkpoint** (the Δ button on a
+  checkpoint): the counts first (cells changed and in how many rows, rows added or taken out,
+  columns added, taken out or moved, rows sorted or moved), then the changed cells 50 at a
+  time with their old and new values; a click goes to the cell, and the report saves them all
+  as a CSV file. It is worked out from the undo steps the app already keeps, so a checkpoint
+  still costs nothing while it sits, and it runs only when you ask: a Replace all over a
+  million rows takes about half a second, with progress and Stop. Rows are followed by their
+  identity through sorts and deletes, columns through inserts, deletes and moves. It is
+  greyed, with the reason, for the checkpoint that is the table now, for one ahead of the
+  table (you went back past it) and for one that is no longer reachable.
 
 ![Checkpoints at the top of the Steps panel](docs/screenshots/checkpoints.png)
+
+![What changed since a checkpoint](docs/screenshots/since-checkpoint.png)
 
 - **Recipe questions:** in the steps panel, press ? on a step to have the
   recipe ask for one of its values each time it runs ("Which county?",

@@ -4,13 +4,20 @@
   // state in one jump; the moment you left is kept as "Before restoring ..." so the way back is one click.
   import { backend, errorText, type Checkpoint } from "./backend";
   import type { Tab } from "./tab.svelte";
+  import SinceDialog from "./SinceDialog.svelte";
 
   interface Props {
     tab: Tab;
     /** Go to a checkpoint (the screen does what Ctrl+Z does for every step crossed). */
     onRestore: (c: Checkpoint) => Promise<void>;
+    /** Column titles now, and a way to go to a cell (for "what changed since this"). */
+    titles: string[];
+    onGo: (row: number, col: number) => void;
+    onStop: () => void;
   }
-  let { tab, onRestore }: Props = $props();
+  let { tab, onRestore, titles, onGo, onStop }: Props = $props();
+  /** The checkpoint whose changes are shown. */
+  let since = $state<Checkpoint | null>(null);
 
   let list = $state<Checkpoint[]>([]);
   let problem = $state("");
@@ -100,6 +107,7 @@
               <span class="n">{c.name}</span>
               <span class="tag">{c.current ? "now" : !c.reachable ? "no longer reachable" : c.auto ? "automatic" : ""}</span>
             </button>
+            <button type="button" class="diff" aria-label={`What changed since ${c.name}`} title={c.since_note || "What changed since this checkpoint (cells, rows and columns, was and now)"} disabled={c.since_note !== ""} onclick={() => (since = c)}>Δ</button>
             <button type="button" class="x" aria-label={`Forget ${c.name}`} title="Forget this checkpoint (the table does not change)" onclick={() => void forget(c)}>✕</button>
           </li>
         {/each}
@@ -108,6 +116,10 @@
     {/if}
   {/if}
 </section>
+
+{#if since}
+  <SinceDialog doc={tab.id} checkpoint={since} {titles} onGo={(r, c) => { since = null; onGo(r, c); }} {onStop} onClose={() => (since = null)} />
+{/if}
 
 <style>
   .checkpoints {
@@ -193,6 +205,19 @@
     color: var(--muted);
     font-size: 11px;
     white-space: nowrap;
+  }
+  .diff {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    padding: 0 6px;
+  }
+  .diff:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .x {
     background: none;

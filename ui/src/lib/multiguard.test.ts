@@ -16,6 +16,8 @@ const read = (f: string): string => {
  *  WRITE_METHODS are refused at the backend while several blocks are selected. */
 const NOT_WRITES = [
   "checkpointList",
+  "checkpointSince",
+  "checkpointSinceReport",
   "checkpointAdd",
   "checkpointRemove",
   "appInfo",
