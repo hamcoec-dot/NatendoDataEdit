@@ -3,7 +3,7 @@
   // search them, show hidden columns dimmed, flip to the next or previous row, jump to a cell and edit in place
   // (one undo step per field). It reads one row at a time and keeps nothing but what is on screen.
   import { untrack } from "svelte";
-  import { backend, errorText, type DocInfo } from "./backend";
+  import { backend, errorText } from "./backend";
   import { prefs } from "./prefs.svelte";
   import { recordList, togglePin } from "./record";
   import RecordFields from "./RecordFields.svelte";
@@ -15,9 +15,8 @@
     titles: string[];
     /** Move the active cell (shown row, column). */
     onGo: (row: number, col: number) => void;
-    onInfo: (info: DocInfo) => void;
   }
-  let { tab, titles, onGo, onInfo }: Props = $props();
+  let { tab, titles, onGo }: Props = $props();
 
   /** Most fields read at once (as in the Form view). */
   const MAX_FIELDS = 500;
@@ -28,6 +27,10 @@
   let values = $state<string[]>([]);
   let original = $state<string[]>([]);
   let loadedRow = $state(-1);
+  /** The file the fields were read from (and its tab): everything typed is saved THERE, whichever file the panel
+   *  shows by the time the save runs (Ctrl+Tab and Ctrl+PageDown work inside a field). */
+  let loadedTab: Tab | null = null;
+  let loadedDoc = -1;
   let problem = $state("");
   let query = $state("");
   let editing = $state<number | null>(null);
@@ -41,17 +44,22 @@
     void tab.version;
     if (count <= 0 || r < 0 || r >= tab.info.rows) {
       untrack(() => {
+        // What was typed in the file shown before is saved into it first (the cells are read before the reset).
+        void flushDirty();
         values = [];
         original = [];
         loadedRow = -1;
+        loadedTab = null;
+        loadedDoc = -1;
       });
       return;
     }
+    const t = tab;
     const mine = ++seq;
     const frame = requestAnimationFrame(() => {
       // What was typed belongs to the row it was typed in: save it there before this row replaces it (a flip by
       // keyboard leaves the field without a blur).
-      const settle = loadedRow >= 0 && loadedRow !== r ? flushDirty() : Promise.resolve();
+      const settle = loadedRow >= 0 && (loadedRow !== r || loadedDoc !== d) ? flushDirty() : Promise.resolve();
       void settle
         .then(() => (mine === seq ? backend().copyCells(d, r, 1, 0, count) : null))
         .then((text) => {
@@ -63,8 +71,11 @@
           const keep = editing;
           const typed = keep !== null ? values[keep] : "";
           original = fresh;
-          values = fresh.map((v, i) => (i === keep && loadedRow === r ? (typed ?? v) : v));
+          // Only the same row of the same file keeps what was being typed.
+          values = fresh.map((v, i) => (i === keep && loadedRow === r && loadedDoc === d ? (typed ?? v) : v));
           loadedRow = r;
+          loadedDoc = d;
+          loadedTab = t;
           problem = "";
         })
         .catch((e: unknown) => {
@@ -87,42 +98,51 @@
       pins: tab.recordPins,
     }),
   );
-  const protectedCols = $derived(new Set(tab.info.protected ?? []));
-  const reason = (c: number): string => (tab.info.read_only ? "This file is locked, so nothing can be changed." : protectedCols.has(c) ? "This column is protected from changes." : "");
+  /** Why field `c` of tab `t` cannot be edited ("" when it can). */
+  const reasonOf = (t: Tab, c: number): string => (t.info.read_only ? "This file is locked, so nothing can be changed." : (t.info.protected ?? []).includes(c) ? "This column is protected from changes." : "");
+  const reason = (c: number): string => reasonOf(tab, c);
   const pos = $derived(tab.header && row === 0 ? "Title row" : `Row ${(row - tab.firstRow + 1).toLocaleString()} of ${Math.max(0, tab.info.rows - tab.firstRow).toLocaleString()} shown`);
 
   // ---- editing ----
   /** Save changed fields into `at` (the row they were read from, never the row the grid is on now). One undo step. */
-  async function saveCells(at: number, cols: number[]): Promise<void> {
+  async function saveCells(t: Tab, at: number, cols: number[]): Promise<void> {
     const cells: [number, number, string][] = cols.map((c) => [at, c, values[c] ?? ""]);
-    const sent = cells.map(([, c, t]) => [c, t] as const);
+    const sent = cells.map(([, c, x]) => [c, x] as const);
+    const here = () => loadedTab === t && loadedRow === at;
     try {
-      const d = await backend().setCells(doc, cells);
-      // Only the row still on screen is updated: another row has already replaced it.
-      if (loadedRow === at) for (const [c, t] of sent) if (values[c] === t) original[c] = t;
+      const d = await backend().setCells(t.id, cells);
+      // Only the row of the file still on screen is updated: another row or file has already replaced it.
+      if (here()) for (const [c, x] of sent) if (values[c] === x) original[c] = x;
       problem = "";
-      onInfo(d);
+      t.update(d, true);
     } catch (e) {
       problem = errorText(e);
-      if (loadedRow === at) for (const [c] of sent) values[c] = original[c] ?? "";
+      if (here()) for (const [c] of sent) values[c] = original[c] ?? "";
     }
   }
-  const dirtyCols = (): number[] => values.flatMap((v, c) => (v !== original[c] && reason(c) === "" ? [c] : []));
+  const dirtyCols = (t: Tab): number[] => values.flatMap((v, c) => (v !== original[c] && reasonOf(t, c) === "" ? [c] : []));
   async function flushDirty(): Promise<void> {
-    const cols = dirtyCols();
-    if (cols.length && loadedRow >= 0) await saveCells(loadedRow, cols);
+    const t = loadedTab;
+    if (!t || loadedRow < 0) return;
+    const cols = dirtyCols(t);
+    if (cols.length) await saveCells(t, loadedRow, cols);
   }
   async function commit(c: number): Promise<void> {
-    if ((values[c] ?? "") === original[c] || reason(c) !== "" || loadedRow < 0) return;
-    await saveCells(loadedRow, [c]);
+    const t = loadedTab;
+    if (!t || loadedRow < 0 || (values[c] ?? "") === original[c] || reasonOf(t, c) !== "") return;
+    await saveCells(t, loadedRow, [c]);
   }
+  // Closing the panel (or the file) saves what is being typed into its own file and row.
+  $effect(() => () => void flushDirty());
 
   // ---- long values ----
-  let big = $state<{ col: number; text: string; row: number } | null>(null);
+  let big = $state<{ col: number; text: string; row: number; t: Tab } | null>(null);
   async function expand(c: number): Promise<void> {
+    const t = loadedTab ?? tab;
+    const at = loadedRow >= 0 ? loadedRow : row;
     try {
-      const full = await backend().cellText(doc, row, c);
-      big = { col: c, text: full.text, row: loadedRow >= 0 ? loadedRow : row };
+      const full = await backend().cellText(t.id, at, c);
+      big = { col: c, text: full.text, row: at, t };
     } catch (e) {
       problem = errorText(e);
     }
@@ -131,10 +151,10 @@
     const b = big;
     if (!b) return;
     big = null;
-    if (reason(b.col) !== "") return;
+    if (reasonOf(b.t, b.col) !== "") return;
     try {
-      const d = await backend().setCells(doc, [[b.row, b.col, b.text]]);
-      onInfo(d);
+      const d = await backend().setCells(b.t.id, [[b.row, b.col, b.text]]);
+      b.t.update(d, true);
     } catch (e) {
       problem = errorText(e);
     }

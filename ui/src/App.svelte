@@ -7805,7 +7805,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         read={READ}
         onOpened={opened}
         onSetRule={(col, rule) => setRule(col, rule)}
-        record={{ onGo: (row, col) => grid?.select({ row, col }), onInfo: (info) => tab?.update(info, true) }}
+        record={{ onGo: (row, col) => grid?.select({ row, col }) }}
         steps={{
           onInfo: (info) => {
             const t = tab;

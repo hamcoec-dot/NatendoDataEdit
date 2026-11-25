@@ -33,7 +33,7 @@
       now: () => number;
     };
     /** The Record panel's hooks: move the active cell, and take in a changed document. */
-    record: { onGo: (row: number, col: number) => void; onInfo: (info: DocInfo) => void };
+    record: { onGo: (row: number, col: number) => void };
     onClose: () => void;
   }
   let { tab, which = $bindable(), titles, activity, read, onOpened, onFilterValue, onSetRule, steps, record, onClose }: Props = $props();

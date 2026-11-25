@@ -169,6 +169,50 @@ const url = process.argv[3] || "http://localhost:5261";
   const drawn = await panel().locator("input.value").count();
   ok(drawn > 0 && drawn < 100, `600 columns draw only the fields in view (${drawn})`);
 
+  // ---- typing in a field, then switching file with Ctrl+PageDown: the text is saved into ITS file and row ----
+  {
+    const T2 = String.fromCharCode(9);
+    const E2 = String.fromCharCode(13, 10);
+    await fill(["Name" + T2 + "City", "AnnA" + T2 + "A1", "BobA" + T2 + "A2", "CatA" + T2 + "A3"].join(E2));
+    const idA = await p.evaluate(() => window.__nde.tab.id);
+    await fill(["Name" + T2 + "City", "AnnB" + T2 + "B1", "BobB" + T2 + "B2", "CatB" + T2 + "B3"].join(E2));
+    const idB = await p.evaluate(() => window.__nde.tab.id);
+    const text = (id, r, c) => p.evaluate(async ([id, r, c]) => (await window.__nde.backend.cellText(id, r, c)).text, [id, r, c]);
+    for (const [label, rowA, rowB, edited] of [["different rows", 3, 1, 3], ["same row", 2, 2, 2]]) {
+      await p.keyboard.press("Control+PageUp");
+      await p.waitForTimeout(400);
+      await p.evaluate((r) => window.__nde.grid.select({ row: r, col: 0 }), rowA);
+      await p.keyboard.press("Control+PageDown");
+      await p.waitForTimeout(400);
+      await p.evaluate((r) => window.__nde.grid.select({ row: r, col: 0 }), rowB);
+      await p.keyboard.press("Control+PageUp");
+      await p.waitForTimeout(400);
+      if (!(await panel().count())) await p.keyboard.press("Alt+r");
+      await panel().waitFor({ timeout: 5000 });
+      await p.waitForTimeout(500);
+      const f = field("Name");
+      const was = await text(idA, edited, 0);
+      await f.click();
+      await f.press("End");
+      await f.type("TYPED");
+      await p.keyboard.press("Control+PageDown");
+      await p.waitForTimeout(800);
+      await field("City").click();
+      await p.waitForTimeout(600);
+      ok((await text(idA, edited, 0)) === was + "TYPED", `${label}: the typed text lands in file A's own row`);
+      ok((await text(idB, 1, 0)) === "AnnB" && (await text(idB, 2, 0)) === "BobB" && (await text(idB, 3, 0)) === "CatB", `${label}: file B is unchanged`);
+      // One Ctrl+Z in A takes it back.
+      await p.keyboard.press("Control+PageUp");
+      await p.waitForTimeout(500);
+      await p.evaluate(() => window.__nde.grid.focus());
+      await p.keyboard.press("Control+z");
+      await p.waitForTimeout(500);
+      ok((await text(idA, edited, 0)) === was, `${label}: one Ctrl+Z in A undoes it`);
+      await p.keyboard.press("Control+PageDown");
+      await p.waitForTimeout(400);
+    }
+  }
+
   ok(errors.length === 0, `no page errors ${errors.join(" | ").slice(0, 200)}`);
   await b.close();
   process.exit(failed ? 1 : 0);
