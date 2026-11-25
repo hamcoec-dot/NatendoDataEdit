@@ -811,6 +811,30 @@ everything is also in command search.
   numbers), date (with limits), length, from a list, pattern, no repeats, or
   your own expression. Cells that fail are marked; show only the rows with
   problems. Checks are saved with views and can run from the command line.
+- **Rules with names, a wavy underline and Jump to next problem:** the Data
+  checks dialog takes several rules per column, each with an optional name
+  ("5-digit ZIP"), ready-made rules for the column you are in (5 digits, no
+  spaces at the start or end, a real date written YYYY-MM-DD, whole number, one
+  of a list, no repeats, not blank) and **Suggest rules from this data**, a list
+  with a tick on each rule and the reason ("all 1,200 values are written
+  999-9999"), added only when you click. A rule is only suggested when it would
+  pass at least 99% of the values it looked at. **F7** goes to the next cell
+  that breaks a rule, **Shift+F7** to the previous one, in the order the table
+  is shown, wrapping round ("back at the top"); problems in hidden columns are
+  passed over and counted in the message. The status bar names the rule the
+  active cell breaks, says "3 rules, 412 problems" for the last full check
+  ("(not current)" once the data changed) and has a **Check now** button; hover
+  a marked cell to read the rule. View > Show problems as picks a red fill (the
+  default), a wavy underline, or both. **Keep these rules with the file**
+  writes a small `voters.csv.ndchecks` file beside the table (only the names,
+  patterns and lists you typed, never cells; not for private or encrypted files
+  or a read-only folder); when the file opens again the rules load and the
+  status bar says so, without running anything until you click Check now.
+  **Forget these rules** clears them. On the pattern pill, **Check this
+  pattern** turns the column's shape into a rule.
+
+![Cells that break the rules have a wavy red underline; the status bar names the rule](docs/screenshots/rule-underline.png)
+*A real-date rule on joined and a not-blank rule on first_name: F7 stops on each problem.*
 - **Check fields with patterns:** one simple screen with a pattern box next to
   each column and ready-made patterns (e-mail, ZIP, phone, web address,
   letters, digits). Then show the rows that fail or pass, put failing rows

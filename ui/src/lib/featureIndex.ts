@@ -194,6 +194,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "group look alikes by sound or spelling": ["data.valuesLookalikes", "data.values"],
   // Checking data
   "data checks": ["data.checks", "data.unmarkChecks", "data.clearChecks"],
+  "rules with names a wavy underline and jump to next problem": ["data.nextProblem", "data.prevProblem", "data.checkNow", "data.checks", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "data.patternCheck"],
   "check fields with patterns": ["data.fieldCheck"],
   "clean up suggestions": ["clean.suggest"],
   // Import and export
