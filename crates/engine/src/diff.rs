@@ -125,6 +125,9 @@ pub struct DiffIndex {
     pub result_rev: Option<u64>,
 }
 
+/// A marked row and its first marked column.
+type RowHit = (u64, Option<u32>);
+
 /// A row of the first table read for the result (values, key and its number in the sheet).
 pub struct RowA {
     number: u64,
@@ -312,14 +315,18 @@ impl Document {
         let titles_a = self.diff_titles(spec);
         let rows_a = self.data_rows(spec.keep_first);
         let total_a = rows_a.end.saturating_sub(rows_a.start);
-        let look = pairing.repeated > 0;
-        let (empty_a, dup_a) = scan_keys(self, &spec.keys, spec, look, progress)?;
+        let empty_a = pairing.empty_here;
+        let dup_a = if pairing.repeated > 0 {
+            scan_keys(self, &spec.keys, spec, true, progress)?.1
+        } else {
+            Vec::new()
+        };
         let all_a: Vec<u32> = (0..cols_a).collect();
         let reader = Cols::new(self, &all_a);
         let listed = pairing.capped(MAX_LISTED_ROWS);
-        let mut buf = Vec::new();
         let width = cols_a as usize;
-        let mut read = |id: u32, r: u64| -> RowA {
+        let read = |id: u32, r: u64| -> RowA {
+            let mut buf = Vec::new();
             reader.read(self, id, &mut buf);
             let vals: Vec<String> = (0..width)
                 .map(|c| reader.get(&buf, c).to_string())
@@ -335,10 +342,14 @@ impl Document {
                 keys,
             }
         };
-        let removed: Vec<RowA> = listed.removed.iter().map(|&(id, r)| read(id, r)).collect();
+        let removed: Vec<RowA> = listed
+            .removed
+            .par_iter()
+            .map(|&(id, r)| read(id, r))
+            .collect();
         let changed: Vec<RowA> = listed
             .changed
-            .iter()
+            .par_iter()
             .map(|&(id, r, _)| read(id, r))
             .collect();
         Ok(DiffFirst {
@@ -397,9 +408,12 @@ impl Document {
         report.truncated = pairing.changed.len() > MAX_LISTED_ROWS
             || pairing.removed.len() > MAX_LISTED_ROWS
             || pairing.added.len() > MAX_LISTED_ROWS;
-        let (empty_b, dup_b) = scan_keys(other, &keys_b, spec, pairing.repeated > 0, progress)?;
-        report.empty_b = empty_b;
-        report.dup_b = dup_b;
+        // The second table's empty keys are in its index (an empty key hashes to one known value).
+        let empty_key = key_hash(&vec![""; spec.keys.len()], spec.match_case, spec.trim);
+        report.empty_b = index.rows.iter().filter(|r| r.0 == empty_key).count() as u64;
+        if pairing.repeated > 0 {
+            report.dup_b = scan_keys(other, &keys_b, spec, true, progress)?.1;
+        }
 
         // The values of the rows listed (the rest are counted only).
         let listed = pairing.capped(MAX_LISTED_ROWS);
@@ -462,72 +476,113 @@ impl Document {
             }
             check(&out)?;
         }
-        // Changed rows: the second table's values, and what changed.
-        for (vr, ra) in changed.iter().enumerate() {
-            let nid = listed.changed[vr].2;
-            let newer = values.row(vr);
-            let mut changed_cols: Vec<u32> = Vec::new();
-            let mut what: Vec<String> = Vec::new();
-            for c in 0..width_a {
-                if index.map[c].is_none() {
-                    continue;
-                }
-                if ra.vals[c] != newer[c] {
-                    changed_cols.push(c as u32);
-                    what.push(format!("{}: {} → {}", titles_a[c], ra.vals[c], newer[c]));
-                }
-            }
-            let ka = key_parts(ra);
-            if is_blank(&ka, spec.trim) {
-                // Rows with an empty key are never paired with each other: one removed, one added.
-                line.clear();
-                line.extend(["removed".to_string(), ra.number.to_string(), String::new()]);
-                line.extend(ra.vals.iter().cloned());
-                line.extend(blank_b.iter().cloned());
-                line.push(String::new());
-                push_line(&mut out, &line);
-                rows_out += 1;
-                report.changed -= 1;
-                report.removed += 1;
-                continue;
-            }
-            if changed_cols.is_empty() {
-                // Only the fingerprints differed (e.g. spaces at the ends with trim off): the same.
-                report.changed -= 1;
-                report.same += 1;
-                continue;
-            }
-            cells += changed_cols.len() as u64;
-            reader_b.read(other, nid, &mut bbuf);
-            line.clear();
-            line.extend(["changed".to_string(), ra.number.to_string(), String::new()]);
-            line.extend(newer.iter().cloned());
-            line.extend((0..only_b_cols.len()).map(|i| reader_b.get(&bbuf, i).to_string()));
-            line.push(what.join("; "));
-            push_line(&mut out, &line);
-            rows_out += 1;
-            let key = key_hash(&ka, spec.match_case, spec.trim);
-            let bcols: Box<[u32]> = changed_cols
-                .iter()
-                .filter_map(|&c| index.map[c as usize])
-                .collect();
-            a_side.insert(
-                key,
-                Entry {
-                    kind: Kind::Changed,
-                    cols: changed_cols.into_boxed_slice(),
-                },
-            );
-            b_side.insert(
-                key,
-                Entry {
-                    kind: Kind::Changed,
-                    cols: bcols,
-                },
-            );
-            check(&out)?;
-            progress.step(1)?;
+        // Changed rows: the second table's values, and what changed. Each row is worked out on its own (in
+        // parallel); the rows are then taken in order.
+        struct Built {
+            /// 0 changed, 1 empty key (a removed row), 2 the same after all.
+            kind: u8,
+            line: Vec<u8>,
+            key: u128,
+            cols: Box<[u32]>,
+            bcols: Box<[u32]>,
         }
+        let built: Vec<Built> = changed
+            .par_iter()
+            .enumerate()
+            .map(|(vr, ra)| {
+                let nid = listed.changed[vr].2;
+                let newer = values.row(vr);
+                let mut changed_cols: Vec<u32> = Vec::new();
+                let mut what: Vec<String> = Vec::new();
+                for c in 0..width_a {
+                    if index.map[c].is_some() && ra.vals[c] != newer[c] {
+                        changed_cols.push(c as u32);
+                        what.push(format!("{}: {} → {}", titles_a[c], ra.vals[c], newer[c]));
+                    }
+                }
+                let ka = key_parts(ra);
+                let mut line: Vec<String> = Vec::with_capacity(header.len());
+                let mut bytes = Vec::new();
+                if is_blank(&ka, spec.trim) {
+                    // Rows with an empty key are never paired with each other: one removed, one added.
+                    line.extend(["removed".to_string(), ra.number.to_string(), String::new()]);
+                    line.extend(ra.vals.iter().cloned());
+                    line.extend(blank_b.iter().cloned());
+                    line.push(String::new());
+                    push_line(&mut bytes, &line);
+                    return Built {
+                        kind: 1,
+                        line: bytes,
+                        key: 0,
+                        cols: Box::new([]),
+                        bcols: Box::new([]),
+                    };
+                }
+                if changed_cols.is_empty() {
+                    // Only the fingerprints differed (e.g. spaces at the ends with trim off): the same.
+                    return Built {
+                        kind: 2,
+                        line: bytes,
+                        key: 0,
+                        cols: Box::new([]),
+                        bcols: Box::new([]),
+                    };
+                }
+                let mut bbuf = Vec::new();
+                reader_b.read(other, nid, &mut bbuf);
+                line.extend(["changed".to_string(), ra.number.to_string(), String::new()]);
+                line.extend(newer.iter().cloned());
+                line.extend((0..only_b_cols.len()).map(|i| reader_b.get(&bbuf, i).to_string()));
+                line.push(what.join("; "));
+                push_line(&mut bytes, &line);
+                let bcols: Box<[u32]> = changed_cols
+                    .iter()
+                    .filter_map(|&c| index.map[c as usize])
+                    .collect();
+                Built {
+                    kind: 0,
+                    line: bytes,
+                    key: key_hash(&ka, spec.match_case, spec.trim),
+                    cols: changed_cols.into_boxed_slice(),
+                    bcols,
+                }
+            })
+            .collect();
+        for x in built {
+            match x.kind {
+                1 => {
+                    out.extend_from_slice(&x.line);
+                    rows_out += 1;
+                    report.changed -= 1;
+                    report.removed += 1;
+                }
+                2 => {
+                    report.changed -= 1;
+                    report.same += 1;
+                }
+                _ => {
+                    cells += x.cols.len() as u64;
+                    out.extend_from_slice(&x.line);
+                    rows_out += 1;
+                    a_side.insert(
+                        x.key,
+                        Entry {
+                            kind: Kind::Changed,
+                            cols: x.cols,
+                        },
+                    );
+                    b_side.insert(
+                        x.key,
+                        Entry {
+                            kind: Kind::Changed,
+                            cols: x.bcols,
+                        },
+                    );
+                }
+            }
+            check(&out)?;
+        }
+        progress.step(changed.len() as u64)?;
         // Added rows: in the second table only.
         for (i, &nid) in listed.added.iter().enumerate() {
             let vals = values.row(listed.changed.len() + i);
@@ -615,7 +670,7 @@ impl Document {
                 };
                 done += take;
                 let parts: Vec<u64> = (s0..e0).step_by(MAX_WINDOW as usize).collect();
-                let found: Vec<Result<Option<(u64, Option<u32>)>, Error>> = parts
+                let found: Vec<Result<Option<RowHit>, Error>> = parts
                     .par_iter()
                     .map(|&ws| {
                         let we = (ws + MAX_WINDOW).min(e0);

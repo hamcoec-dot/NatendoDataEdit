@@ -265,6 +265,8 @@ pub struct Pairing {
     /// Newer row ids not paired, in the newer file's order.
     pub(crate) added: Vec<u32>,
     pub(crate) repeated: u64,
+    /// Rows here whose key is empty (all key cells blank).
+    pub(crate) empty_here: u64,
 }
 
 impl Pairing {
@@ -276,6 +278,7 @@ impl Pairing {
             removed: self.removed.iter().take(n).copied().collect(),
             added: self.added.iter().take(n).copied().collect(),
             repeated: self.repeated,
+            empty_here: self.empty_here,
         }
     }
 }
@@ -434,6 +437,8 @@ impl Document {
                 Ok(out)
             })
             .collect::<Result<_, _>>()?;
+        let empty_key = key_hash(&vec![""; spec.keys.len()], spec.match_case, spec.trim);
+        let mut empty_here = 0u64;
         let mut repeated = 0u64;
         for w in sorted.windows(2) {
             if w[0].0 == w[1].0 {
@@ -446,6 +451,9 @@ impl Document {
         let mut changed = Vec::new();
         let mut removed = Vec::new();
         for &(id, r, key, hash) in mine.iter().flatten() {
+            if key == empty_key {
+                empty_here += 1;
+            }
             let first = sorted.partition_point(|x| x.0 < key);
             if sorted.get(first).is_none_or(|x| x.0 != key) {
                 removed.push((id, r));
@@ -488,6 +496,7 @@ impl Document {
             removed,
             added,
             repeated,
+            empty_here,
         })
     }
 
