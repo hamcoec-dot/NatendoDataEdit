@@ -2246,6 +2246,51 @@ async fn checkpoint_remove(
     blocking(move || docs.checkpoint_remove(doc, checkpoint)).await
 }
 
+/// What changed since a checkpoint: the counts and one page of the changed cells (a job with progress and Cancel).
+#[tauri::command]
+async fn checkpoint_since(
+    docs: DocsState<'_>,
+    doc: u32,
+    checkpoint: u32,
+    offset: u64,
+    want: usize,
+) -> CmdResult<docs::SinceView> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.checkpoint_since(doc, checkpoint, offset, want)).await
+}
+
+/// Save what changed since a checkpoint as a CSV report chosen in the Save dialog; `None` if cancelled.
+#[tauri::command]
+async fn checkpoint_since_report(
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    recent: RecentState<'_>,
+    doc: u32,
+    checkpoint: u32,
+) -> CmdResult<Option<u64>> {
+    let docs = docs.inner().clone();
+    let recent = recent.inner().clone();
+    blocking(move || {
+        let base = docs.info(doc)?.name;
+        let stem = base.rsplit_once('.').map_or(base.as_str(), |(b, _)| b);
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Save what changed since the checkpoint")
+            .set_file_name(format!("{stem} (changes since checkpoint).csv"))
+            .add_filter("CSV", &["csv"])
+            .set_parent(&window);
+        if let Some(dir) = docs.path_of(doc)?.as_ref().and_then(|p| p.parent()) {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.save_file() else {
+            return Ok(None);
+        };
+        let n = docs.checkpoint_since_report(doc, checkpoint, &path)?;
+        private_copy(&docs, &recent, doc, &path)?;
+        Ok(Some(n))
+    })
+    .await
+}
+
 /// Go to the state a checkpoint names.
 #[tauri::command]
 async fn checkpoint_restore(docs: DocsState<'_>, doc: u32, checkpoint: u32) -> CmdResult<DocInfo> {
@@ -4176,6 +4221,8 @@ pub fn run() {
             checkpoint_add,
             checkpoint_remove,
             checkpoint_restore,
+            checkpoint_since,
+            checkpoint_since_report,
             steps_change,
             steps_ask,
             batch_pick,

@@ -22,6 +22,8 @@ use crate::scan::{self, Mode};
 use crate::source::Source;
 use crate::Error;
 
+pub mod since;
+
 /// Highest column index an edit may write (keeps a typo from allocating
 /// millions of empty cells).
 pub const MAX_EDIT_COL: u32 = (1 << 20) - 1;
@@ -233,7 +235,7 @@ impl Op {
 thread_local! {
     /// While a bulk change runs on this thread: the document it edits and the mark of that document just before its
     /// first undo step was made (see `capture_mark_start`).
-    static CAPTURE: std::cell::RefCell<Option<(u64, Option<u64>)>> = const { std::cell::RefCell::new(None) };
+    static CAPTURE: std::cell::RefCell<Option<(u64, Option<(u64, u32)>)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Start noting, on this thread, the mark of document `uid` just before the next change made to it, read under the
@@ -242,24 +244,10 @@ pub fn capture_mark_start(uid: u64) {
     CAPTURE.with(|c| *c.borrow_mut() = Some((uid, None)));
 }
 
-/// Stop noting, and the mark noted: `None` when no change was made to the document meanwhile.
-pub fn capture_mark_take() -> Option<u64> {
+/// Stop noting, and the mark noted with the row-id watermark taken at the same moment (`next_row_id`): `None` when no
+/// change was made to the document meanwhile. Rows with an id from the watermark on were made after the mark.
+pub fn capture_mark_take() -> Option<(u64, u32)> {
     CAPTURE.with(|c| c.borrow_mut().take().and_then(|(_, m)| m))
-}
-
-/// SPIKE: what `Document::spike_changes_since` found.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct SinceSpike {
-    pub steps: usize,
-    /// Distinct original rows the steps touched.
-    pub touched_rows: usize,
-    /// Of those, rows whose cells differ now from the mark.
-    pub rows_changed: usize,
-    pub cells_changed: u64,
-    pub rows_added: usize,
-    pub rows_removed: usize,
-    pub reordered: bool,
-    pub columns_changed: bool,
 }
 
 /// The next unique step id, across every document of the process (a document opened again never repeats one).
@@ -1175,108 +1163,6 @@ impl Document {
         self.redo_bytes = 0;
     }
 
-    /// SPIKE (read-only, not for merge): what changed since the state `mark` names, worked out from the inverse
-    /// steps the undo stack already holds, without rewinding the document and without copying any row. A row's
-    /// state before the OLDEST step after the mark is its state at the mark; rows are matched by id, so sorting
-    /// and deleting do not confuse it. `watermark` is `next_row_id()` when the mark was made (rows with an id from it
-    /// on were made later). Returns `None` when the history no longer reaches the mark or the mark is ahead.
-    pub fn spike_changes_since(&self, mark: u64, watermark: u32) -> Option<SinceSpike> {
-        let steps = match self.step_reach(mark)? {
-            d if d <= 0 => (-d) as usize,
-            _ => return None,
-        };
-        let ops = &self.undo[self.undo.len() - steps..];
-        let mut out = SinceSpike {
-            steps,
-            ..Default::default()
-        };
-        // The state of every touched original row at the mark (a reference into the stored steps: nothing copied).
-        let mut first: HashMap<u32, &Option<Edit>> = HashMap::new();
-        let mut gone: HashSet<u32> = HashSet::new();
-        fn walk<'a>(
-            op: &'a Op,
-            wm: u32,
-            first: &mut HashMap<u32, &'a Option<Edit>>,
-            gone: &mut HashSet<u32>,
-            out: &mut SinceSpike,
-        ) {
-            match op {
-                Op::Restore(states) => {
-                    for (id, st) in states {
-                        first.entry(*id).or_insert(st);
-                    }
-                }
-                Op::Insert { rows, .. } => {
-                    // Rows a later step took out.
-                    for (id, st) in rows {
-                        first.entry(*id).or_insert(st);
-                        if *id < wm {
-                            gone.insert(*id);
-                            out.rows_removed += 1;
-                        } else {
-                            // A row made after the mark and taken out again: it cancels one that was added.
-                            out.rows_added = out.rows_added.wrapping_sub(1);
-                        }
-                    }
-                }
-                Op::Remove { count, .. } => out.rows_added = out.rows_added.wrapping_add(*count),
-                Op::SetOrder(_) | Op::MoveRows { .. } => out.reordered = true,
-                Op::ColInsert { .. }
-                | Op::ColRemove { .. }
-                | Op::MoveCols { .. }
-                | Op::SetMap(_) => out.columns_changed = true,
-                Op::Batch(v) => v.iter().for_each(|o| walk(o, wm, first, gone, out)),
-                Op::SetHidden(_) | Op::SetFilter(_) => {}
-            }
-        }
-        for op in ops {
-            walk(op, watermark, &mut first, &mut gone, &mut out);
-        }
-        out.touched_rows = first.len();
-        if out.columns_changed {
-            // Comparing cell by cell needs the column map at the mark: left to the real build; counted only here.
-            return Some(out);
-        }
-        let mut then_buf: Vec<String> = Vec::new();
-        for (&id, st) in &first {
-            // A row made after the mark, or taken out since, has nothing to compare.
-            if id >= watermark || gone.contains(&id) {
-                continue;
-            }
-            then_buf.clear();
-            match st {
-                None => {
-                    let (bytes, mode) = self.raw_row(id);
-                    then_buf = self.original_fields(id, bytes, mode).unwrap_or_default();
-                }
-                Some(Edit::Full(v)) => then_buf.extend(v.iter().cloned()),
-                Some(Edit::Patch { width, cells }) => {
-                    then_buf = self.patched(id, *width, cells);
-                }
-            }
-            let now: Vec<String> = match self.row_source(id) {
-                RowSource::Edited(v) => v.to_vec(),
-                RowSource::Raw { bytes, mode } => {
-                    self.original_fields(id, bytes, mode).unwrap_or_default()
-                }
-            };
-            let n = then_buf.len().max(now.len());
-            let mut changed = 0u64;
-            for c in 0..n {
-                let a = then_buf.get(c).map(String::as_str).unwrap_or("");
-                let b = now.get(c).map(String::as_str).unwrap_or("");
-                if a != b {
-                    changed += 1;
-                }
-            }
-            if changed > 0 {
-                out.rows_changed += 1;
-                out.cells_changed += changed;
-            }
-        }
-        Some(out)
-    }
-
     /// This document's id for `capture_mark_start`.
     pub fn uid(&self) -> u64 {
         self.uid
@@ -2101,7 +1987,7 @@ impl Document {
         CAPTURE.with(|c| {
             if let Some((uid, mark)) = c.borrow_mut().as_mut() {
                 if *uid == self.uid && mark.is_none() {
-                    *mark = Some(self.step_mark());
+                    *mark = Some((self.step_mark(), self.next_id));
                 }
             }
         });
@@ -2903,6 +2789,7 @@ mod tests {
 1
 ");
         let before = d.step_mark();
+        let wm_before = d.next_row_id();
         capture_mark_start(d.uid());
         other.set_cell(1, 0, "o".into()).unwrap();
         assert_eq!(
@@ -2915,118 +2802,12 @@ mod tests {
         d.set_cell(1, 0, "y".into()).unwrap();
         assert_eq!(
             capture_mark_take(),
-            Some(before),
-            "the first change's mark, not the last"
+            Some((before, wm_before)),
+            "the first change's mark and watermark, not the last"
         );
         capture_mark_start(d.uid());
         assert_eq!(capture_mark_take(), None, "no change, no mark");
         assert_eq!(d.step_reach(before), Some(-2));
-    }
-
-    /// SPIKE: the since-a-mark diff worked out from the undo steps equals a brute-force comparison of the whole table at
-    /// the mark and now, over random edits, deletes, inserts and sorts (rows matched by id).
-    #[test]
-    fn spike_changes_since_equals_brute_force() {
-        let mut x: u64 = 0x1234_5678_9ABC_DEF1;
-        let mut rnd = move |n: u64| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x % n
-        };
-        for round in 0..30 {
-            let mut text = String::from("a,b,c\n");
-            for i in 0..300 {
-                text.push_str(&format!("{i},n{},{}\n", i % 17, i % 5));
-            }
-            let mut d = doc(text.as_bytes());
-            // Some history before the mark.
-            for _ in 0..rnd(10) {
-                let r = rnd(d.row_count());
-                d.set_cell(r, rnd(3) as u32, "pre".into()).unwrap();
-            }
-            let mark = d.step_mark();
-            let wm = d.next_row_id();
-            let by_id = |d: &Document| -> HashMap<u32, Vec<String>> {
-                (0..d.row_count())
-                    .map(|r| (d.id_at(r).unwrap(), d.row_values(r).unwrap()))
-                    .collect()
-            };
-            let then = by_id(&d);
-            let steps = 1 + rnd(40);
-            for step in 0..steps {
-                match rnd(8) {
-                    0..=3 => {
-                        let r = rnd(d.row_count());
-                        let _ = d.set_cell(r, rnd(3) as u32, format!("e{round}-{step}"));
-                    }
-                    4 if d.row_count() > 5 => {
-                        let _ = d.delete_rows(rnd(d.row_count()), 1);
-                    }
-                    5 => {
-                        let at = rnd(d.row_count() + 1);
-                        let _ = d.insert_rows(
-                            at,
-                            vec![vec![format!("new{step}"), "x".into(), "y".into()]],
-                        );
-                    }
-                    6 => {
-                        let _ = d.sort(&crate::sort::SortSpec {
-                            keys: vec![crate::sort::SortKey {
-                                col: rnd(3) as u32,
-                                descending: rnd(2) == 0,
-                                kind: Default::default(),
-                                match_case: false,
-                            }],
-                            keep_first: true,
-                            ..Default::default()
-                        });
-                    }
-                    _ => {}
-                }
-            }
-            let now = by_id(&d);
-            let mut want = SinceSpike {
-                steps: d.undo.len().min(0),
-                ..Default::default()
-            };
-            for (id, a) in &then {
-                match now.get(id) {
-                    None => want.rows_removed += 1,
-                    Some(b) => {
-                        let n = a.len().max(b.len());
-                        let c = (0..n).filter(|&i| a.get(i) != b.get(i)).count() as u64;
-                        if c > 0 {
-                            want.rows_changed += 1;
-                            want.cells_changed += c;
-                        }
-                    }
-                }
-            }
-            want.rows_added = now.keys().filter(|id| !then.contains_key(id)).count();
-            let got = d
-                .spike_changes_since(mark, wm)
-                .expect("the mark is reachable");
-            assert_eq!(
-                (
-                    got.rows_changed,
-                    got.cells_changed,
-                    got.rows_added,
-                    got.rows_removed
-                ),
-                (
-                    want.rows_changed,
-                    want.cells_changed,
-                    want.rows_added,
-                    want.rows_removed
-                ),
-                "round {round}, {steps} steps"
-            );
-            assert_eq!(
-                got.steps as u64,
-                d.step_reach(mark).map(|s| (-s) as u64).unwrap()
-            );
-        }
     }
 
     #[test]

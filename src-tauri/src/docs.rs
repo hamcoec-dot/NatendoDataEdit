@@ -464,6 +464,9 @@ pub struct Entry {
     recipe: Mutex<RecipeLog>,
     /// Named moments in the undo history (see `Checkpoints`).
     checkpoints: Mutex<Checkpoints>,
+    /// The last "what changed since this checkpoint" plan, kept while the document is as it was
+    /// (checkpoint id, document revision, plan), so paging does not compare again.
+    since_plan: Mutex<Option<(u32, u64, natendo_engine::document::since::SincePlan)>>,
     /// The filter panel's column codes (see `FacetCache`).
     facets: Mutex<natendo_engine::filter::FacetCache>,
     /// The other list of the last "match people" run (for accepting).
@@ -1018,6 +1021,8 @@ struct Checkpoint {
     id: u32,
     name: String,
     mark: u64,
+    /// `Document::next_row_id` at the same moment as the mark: rows with an id from it on were made later.
+    watermark: u32,
     /// Made by the app before a risky change, not by the person.
     auto: bool,
 }
@@ -1030,13 +1035,14 @@ struct Checkpoints {
 }
 
 impl Checkpoints {
-    fn add(&mut self, name: String, mark: u64, auto: bool) -> u32 {
+    fn add(&mut self, name: String, mark: u64, watermark: u32, auto: bool) -> u32 {
         self.next += 1;
         let id = self.next;
         self.list.push(Checkpoint {
             id,
             name,
             mark,
+            watermark,
             auto,
         });
         let cap = if auto {
@@ -1053,6 +1059,13 @@ impl Checkpoints {
     }
 }
 
+/// What changed since a checkpoint, as the screen asks for it.
+#[derive(Debug, Clone, Serialize)]
+pub struct SinceView {
+    pub totals: natendo_engine::document::since::SinceTotals,
+    pub cells: Vec<natendo_engine::document::since::SinceCell>,
+}
+
 /// One checkpoint as the panel shows it.
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckpointInfo {
@@ -1065,6 +1078,8 @@ pub struct CheckpointInfo {
     pub steps: i64,
     /// The table is in exactly this state now.
     pub current: bool,
+    /// Why "What changed since this?" cannot be answered ("" when it can).
+    pub since_note: String,
 }
 
 /// What a bulk change is called in "Before ..." and whether it gets an automatic checkpoint. No wildcard: a new
@@ -1766,6 +1781,7 @@ impl Docs {
             encrypted_from: Mutex::new(None),
             recipe: Mutex::new(RecipeLog::default()),
             checkpoints: Mutex::new(Checkpoints::default()),
+            since_plan: Mutex::new(None),
             facets: Mutex::new(natendo_engine::filter::FacetCache::new()),
             matched: Mutex::new(None),
             updates: Mutex::new(None),
@@ -4915,7 +4931,8 @@ impl Docs {
 
     /// The automatic checkpoint "Before <label>" at `mark`, when the change really made a step (the table is in a
     /// different state now) and no checkpoint already names that moment.
-    fn auto_checkpoint(&self, entry: &Entry, mark: u64, label: &str) {
+    fn auto_checkpoint(&self, entry: &Entry, taken: (u64, u32), label: &str) {
+        let (mark, watermark) = taken;
         if entry.read().step_mark() == mark {
             return;
         }
@@ -4923,7 +4940,7 @@ impl Docs {
         if book.list.iter().any(|c| c.mark == mark) {
             return;
         }
-        book.add(format!("Before {label}"), mark, true);
+        book.add(format!("Before {label}"), mark, watermark, true);
     }
 
     /// Name this moment: a checkpoint at the table's state now (a few bytes; nothing is copied).
@@ -4933,7 +4950,11 @@ impl Docs {
             return Err(CmdError::new("invalid", "give the checkpoint a name"));
         }
         let entry = self.get(id)?;
-        let mark = entry.read().step_mark();
+        // The mark and the row-id watermark are read under one lock: the same moment.
+        let (mark, watermark) = {
+            let d = entry.read();
+            (d.step_mark(), d.next_row_id())
+        };
         {
             let mut book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
             // Naming a moment that already has an automatic checkpoint turns that one into the person's own.
@@ -4941,7 +4962,7 @@ impl Docs {
                 c.auto = false;
                 c.name = name;
             } else {
-                book.add(name, mark, false);
+                book.add(name, mark, watermark, false);
             }
         }
         self.checkpoint_list(id)
@@ -4963,6 +4984,12 @@ impl Docs {
                 reachable: d.step_reach(c.mark).is_some(),
                 steps: d.step_reach(c.mark).unwrap_or(0),
                 current: c.mark == now,
+                since_note: match d.step_reach(c.mark) {
+                    None => "No longer reachable: the undo history was trimmed past it, a newer change replaced it, or the file was saved.".to_string(),
+                    Some(0) => "The table is in this state now: nothing has changed since.".to_string(),
+                    Some(s) if s > 0 => "This checkpoint is ahead of the table (you went back past it): go to it first, then compare.".to_string(),
+                    Some(_) => String::new(),
+                },
             })
             .collect())
     }
@@ -4993,7 +5020,10 @@ impl Docs {
                 .ok_or_else(|| CmdError::new("invalid", "there is no such checkpoint"))?;
             (c.name.clone(), c.mark)
         };
-        let leaving = entry.read().step_mark();
+        let (leaving, leaving_wm) = {
+            let d = entry.read();
+            (d.step_mark(), d.next_row_id())
+        };
         let mut info = self.edit_any(id, true, |d| {
             if d.go_to_mark(mark) {
                 Ok(())
@@ -5011,11 +5041,127 @@ impl Docs {
                 book.add(
                     format!("Before restoring \u{201c}{name}\u{201d}"),
                     leaving,
+                    leaving_wm,
                     true,
                 );
             }
         }
         Ok(info)
+    }
+
+    /// The checkpoint's mark and watermark.
+    fn checkpoint_mark(&self, entry: &Entry, cp: u32) -> CmdResult<(u64, u32)> {
+        let book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
+        book.list
+            .iter()
+            .find(|c| c.id == cp)
+            .map(|c| (c.mark, c.watermark))
+            .ok_or_else(|| CmdError::new("invalid", "there is no such checkpoint"))
+    }
+
+    /// The plan of "what changed since this checkpoint": a job with progress and Cancel the first time (and after
+    /// any change), kept while the document stays as it is. Never run while a list is drawn: only when asked.
+    fn since_plan_for(
+        &self,
+        entry: &Entry,
+        cp: u32,
+    ) -> CmdResult<(natendo_engine::document::since::SincePlan, u64, u32)> {
+        let (mark, wm) = self.checkpoint_mark(entry, cp)?;
+        {
+            let d = entry.read();
+            let cached = entry.since_plan.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((c, rev, plan)) = cached.as_ref() {
+                if *c == cp && *rev == d.revision() {
+                    return Ok((plan.clone(), mark, wm));
+                }
+            }
+        }
+        let job = entry.start("Comparing with the checkpoint")?;
+        let d = entry.read();
+        let plan = d.since_plan(mark, wm, &job.progress)?;
+        *entry.since_plan.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((cp, d.revision(), plan.clone()));
+        Ok((plan, mark, wm))
+    }
+
+    /// What changed since a checkpoint: every count, and one page of the changed cells (was / now, in row id order).
+    pub fn checkpoint_since(
+        &self,
+        id: u32,
+        cp: u32,
+        offset: u64,
+        want: usize,
+    ) -> CmdResult<SinceView> {
+        let entry = self.get(id)?;
+        let (plan, mark, wm) = self.since_plan_for(&entry, cp)?;
+        let d = entry.read();
+        let cells = d.since_page(&plan, mark, wm, offset, want.min(500))?;
+        Ok(SinceView {
+            totals: plan.totals.clone(),
+            cells,
+        })
+    }
+
+    /// Write what changed since a checkpoint as a CSV report to `path`; returns the cells written.
+    pub fn checkpoint_since_report(&self, id: u32, cp: u32, path: &Path) -> CmdResult<u64> {
+        self.check_writable(path)?;
+        let entry = self.get(id)?;
+        let (plan, mark, wm) = self.since_plan_for(&entry, cp)?;
+        let d = entry.read();
+        if d.path()
+            .is_some_and(|p| natendo_engine::save::same_path(p, path))
+        {
+            return Err(Error::Invalid("choose another name: that is the open file".into()).into());
+        }
+        let titles: Vec<String> = (0..d.col_count())
+            .map(|c| {
+                d.cell(0, c)
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| format!("Column {}", c + 1))
+            })
+            .collect();
+        let file = std::fs::File::create(path).map_err(|e| CmdError::new("io", e.to_string()))?;
+        let mut out = std::io::BufWriter::new(file);
+        let mut line = String::new();
+        let mut put = |fields: &[&str], out: &mut dyn std::io::Write| -> CmdResult<()> {
+            line.clear();
+            for (i, f) in fields.iter().enumerate() {
+                if i > 0 {
+                    line.push(',');
+                }
+                natendo_engine::scan::write_field(
+                    f,
+                    natendo_engine::dialect::Dialect::CSV,
+                    &mut line,
+                );
+            }
+            line.push_str("\r\n");
+            out.write_all(line.as_bytes())
+                .map_err(|e| CmdError::new("io", e.to_string()))
+        };
+        put(&["Row now", "Column", "Was", "Now"], &mut out)?;
+        let t = &plan.totals;
+        let mut offset = 0u64;
+        loop {
+            let page = d.since_page(&plan, mark, wm, offset, 5_000)?;
+            if page.is_empty() {
+                break;
+            }
+            offset += page.len() as u64;
+            for c in &page {
+                let row = c.row.map_or(String::new(), |r| (r + 1).to_string());
+                let col = titles
+                    .get(c.col as usize)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Column {}", c.col + 1));
+                put(&[&row, &col, &c.old, &c.new], &mut out)?;
+            }
+        }
+        use std::io::Write as _;
+        out.flush()
+            .map_err(|e| CmdError::new("io", e.to_string()))?;
+        let _ = t;
+        Ok(offset)
     }
 
     /// Refuse while the steps panel looks back.
@@ -10202,6 +10348,88 @@ ca,California
         // Forgetting one leaves the table alone.
         let n = docs.checkpoint_list(id).unwrap().len();
         assert_eq!(docs.checkpoint_remove(id, start).unwrap().len(), n - 1);
+    }
+
+    /// B4 part 2: "what changed since this checkpoint" through the shell: counts and pages by row id, a plain refusal
+    /// for a checkpoint ahead of the table (and the note that greys it), and the automatic "Before Split into rows"
+    /// checkpoint, whose rows count once.
+    #[test]
+    fn checkpoint_since_counts_pages_and_refuses_plainly() {
+        let docs = Docs::default();
+        let p = tmp("since.csv", b"name,tags\nann,a|b|c\nbob,x\ncat,p|q\n");
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        docs.checkpoint_add(id, "begin").unwrap();
+        let begin = docs.checkpoint_list(id).unwrap()[0].id;
+        let info = docs.checkpoint_list(id).unwrap();
+        assert_eq!(
+            info[0].since_note,
+            "The table is in this state now: nothing has changed since."
+        );
+        docs.set_cells(id, vec![(1, 0, "Anna".into()), (3, 1, "pq".into())])
+            .unwrap();
+        let v = docs.checkpoint_since(id, begin, 0, 10).unwrap();
+        assert_eq!(
+            (
+                v.totals.rows_changed,
+                v.totals.cells_changed,
+                v.totals.steps
+            ),
+            (2, 2, 1)
+        );
+        assert_eq!(v.cells.len(), 2);
+        assert_eq!(
+            (
+                v.cells[0].old.as_str(),
+                v.cells[0].new.as_str(),
+                v.cells[0].row
+            ),
+            ("ann", "Anna", Some(1))
+        );
+        // A page past the first: the same plan, the next cells.
+        let second = docs.checkpoint_since(id, begin, 1, 10).unwrap();
+        assert_eq!(second.cells.len(), 1);
+        assert_eq!(second.cells[0].new, "pq");
+        // The list says it can be compared.
+        assert_eq!(docs.checkpoint_list(id).unwrap()[0].since_note, "");
+        // The report: a CSV with a line per cell.
+        let out = std::env::temp_dir().join(format!("since-report-{}.csv", std::process::id()));
+        assert_eq!(docs.checkpoint_since_report(id, begin, &out).unwrap(), 2);
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(text.starts_with("Row now,Column,Was,Now"), "{text}");
+        assert!(text.contains("ann,"), "{text}");
+        let _ = std::fs::remove_file(&out);
+        // Split into rows: an automatic checkpoint is made inside the change; the rows it adds are added once.
+        let spec = natendo_engine::reshape::SplitRows {
+            col: 1,
+            separator: "|".into(),
+            trim: true,
+            skip_empty: true,
+            keep_first: true,
+        };
+        docs.data_op(id, DataOp::SplitRows { spec }).unwrap();
+        let list = docs.checkpoint_list(id).unwrap();
+        let before = list
+            .iter()
+            .find(|c| c.name == "Before Split into rows")
+            .expect("the automatic checkpoint");
+        let v = docs.checkpoint_since(id, before.id, 0, 10).unwrap();
+        // a|b|c makes two more rows (p|q was edited to pq above, so it does not split).
+        assert_eq!(v.totals.rows_added, 2, "added once");
+        // Going back past the checkpoint leaves it ahead of the table: refused, with a plain note.
+        docs.checkpoint_restore(id, begin).unwrap();
+        let list = docs.checkpoint_list(id).unwrap();
+        let ahead = list
+            .iter()
+            .find(|c| c.name == "Before Split into rows")
+            .unwrap();
+        assert!(
+            ahead.since_note.contains("ahead of the table"),
+            "{}",
+            ahead.since_note
+        );
+        let e = docs.checkpoint_since(id, ahead.id, 0, 10).unwrap_err();
+        assert!(e.message.contains("ahead of the table"), "{}", e.message);
     }
 
     /// B4: risky bulk changes name a moment first; cheap ones do not; the automatic ones are capped at 20 and
