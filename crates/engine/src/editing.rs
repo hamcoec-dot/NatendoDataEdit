@@ -727,14 +727,15 @@ impl Document {
         let reader = value.map(|v| Cols::new(self, &[v]));
         // Per row: its value as a number (NaN: not a number) and its id.
         let read = spec.read;
+        let vrd = value.map_or(crate::coltype::Reader::plain(spec.read), |v| {
+            self.read_ctx(spec.read).reader(v)
+        });
         let vals: Vec<(u32, f64)> = self.par_rows(rows.clone(), progress, |_, id, buf| {
             let x = match &reader {
                 Some(rd) => {
                     rd.read(self, id, buf);
                     let v = rd.get(buf, 0);
-                    crate::coltype::Reader::plain(read)
-                        .number(v)
-                        .unwrap_or(f64::NAN)
+                    vrd.number(v).unwrap_or(f64::NAN)
                 }
                 None => f64::NAN,
             };

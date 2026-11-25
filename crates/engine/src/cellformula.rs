@@ -813,6 +813,8 @@ impl Document {
             return Ok(sheet);
         }
         let list: Vec<u32> = cols.keys().map(|&c| c as u32).collect();
+        let ctx = self.read_ctx(read);
+        let rds: Vec<crate::coltype::Reader> = list.iter().map(|&c| ctx.reader(c)).collect();
         let needs: Vec<Need> = cols.values().copied().collect();
         let reader = Cols::new(self, &list);
         let n = (hi - lo + 1) as usize;
@@ -857,7 +859,7 @@ impl Document {
                             o.text.push(t.to_string());
                         }
                         if nd.totals {
-                            let x = crate::coltype::Reader::plain(read).number(t);
+                            let x = rds[i].number(t);
                             if nd.numbers {
                                 o.num.push(x.unwrap_or(f64::NAN));
                             }

@@ -102,7 +102,13 @@ fn plain_number(s: &str) -> bool {
     !zero_led && !t.contains(['e', 'E'])
 }
 
-pub fn compare_cells(a: &str, b: &str, spec: &CompareCols) -> Cmp {
+pub fn compare_cells(
+    a: &str,
+    b: &str,
+    spec: &CompareCols,
+    rda: crate::coltype::Reader,
+    rdb: crate::coltype::Reader,
+) -> Cmp {
     let blank = |s: &str| {
         if spec.spaces {
             s.is_empty()
@@ -120,10 +126,7 @@ pub fn compare_cells(a: &str, b: &str, spec: &CompareCols) -> Cmp {
         return Cmp::Same;
     }
     if spec.numbers && plain_number(a) && plain_number(b) {
-        if let (Some(x), Some(y)) = (
-            crate::coltype::Reader::plain(spec.read).number(a),
-            crate::coltype::Reader::plain(spec.read).number(b),
-        ) {
+        if let (Some(x), Some(y)) = (rda.number(a), rdb.number(b)) {
             return if x == y { Cmp::Same } else { Cmp::Different };
         }
     }
@@ -170,6 +173,8 @@ impl Document {
         let rows = self.data_rows(spec.keep_first);
         let n = rows.end - rows.start;
         progress.start(n);
+        let ctx = self.read_ctx(spec.read);
+        let (rda, rdb) = (ctx.reader(spec.a), ctx.reader(spec.b));
         (0..(n as usize).div_ceil(CHUNK))
             .into_par_iter()
             .map(|c| -> Result<Vec<Each>, Error> {
@@ -183,7 +188,7 @@ impl Document {
                     out.push((
                         r,
                         id,
-                        compare_cells(reader.get(&buf, 0), reader.get(&buf, 1), spec),
+                        compare_cells(reader.get(&buf, 0), reader.get(&buf, 1), spec, rda, rdb),
                     ));
                 }
                 progress.step(e - s)?;
@@ -315,26 +320,116 @@ mod tests {
     #[test]
     fn compares_cells() {
         let s = CompareCols::default();
-        assert_eq!(compare_cells("Main St", "main  st ", &s), Cmp::Same);
-        assert_eq!(compare_cells("5", "$5.00", &s), Cmp::Same);
-        assert_eq!(compare_cells("x", "", &s), Cmp::OnlyFirst);
-        assert_eq!(compare_cells(" ", "y", &s), Cmp::OnlySecond);
-        assert_eq!(compare_cells("", "  ", &s), Cmp::Same);
+        assert_eq!(
+            compare_cells(
+                "Main St",
+                "main  st ",
+                &s,
+                crate::coltype::Reader::plain(s.read),
+                crate::coltype::Reader::plain(s.read)
+            ),
+            Cmp::Same
+        );
+        assert_eq!(
+            compare_cells(
+                "5",
+                "$5.00",
+                &s,
+                crate::coltype::Reader::plain(s.read),
+                crate::coltype::Reader::plain(s.read)
+            ),
+            Cmp::Same
+        );
+        assert_eq!(
+            compare_cells(
+                "x",
+                "",
+                &s,
+                crate::coltype::Reader::plain(s.read),
+                crate::coltype::Reader::plain(s.read)
+            ),
+            Cmp::OnlyFirst
+        );
+        assert_eq!(
+            compare_cells(
+                " ",
+                "y",
+                &s,
+                crate::coltype::Reader::plain(s.read),
+                crate::coltype::Reader::plain(s.read)
+            ),
+            Cmp::OnlySecond
+        );
+        assert_eq!(
+            compare_cells(
+                "",
+                "  ",
+                &s,
+                crate::coltype::Reader::plain(s.read),
+                crate::coltype::Reader::plain(s.read)
+            ),
+            Cmp::Same
+        );
         // A lost leading zero, or an exponent, is a difference.
-        assert_eq!(compare_cells("01234", "1234", &s), Cmp::Different);
-        assert_eq!(compare_cells("000123", "123", &s), Cmp::Different);
-        assert_eq!(compare_cells("1e3", "1000", &s), Cmp::Different);
-        assert_eq!(compare_cells("0.50", "0.5", &s), Cmp::Same);
-        assert_eq!(compare_cells("0", "0.00", &s), Cmp::Same);
+        assert_eq!(
+            compare_cells(
+                "01234",
+                "1234",
+                &s,
+                crate::coltype::Reader::plain(s.read),
+                crate::coltype::Reader::plain(s.read)
+            ),
+            Cmp::Different
+        );
+        assert_eq!(
+            compare_cells(
+                "000123",
+                "123",
+                &s,
+                crate::coltype::Reader::plain(s.read),
+                crate::coltype::Reader::plain(s.read)
+            ),
+            Cmp::Different
+        );
+        assert_eq!(
+            compare_cells(
+                "1e3",
+                "1000",
+                &s,
+                crate::coltype::Reader::plain(s.read),
+                crate::coltype::Reader::plain(s.read)
+            ),
+            Cmp::Different
+        );
+        assert_eq!(
+            compare_cells(
+                "0.50",
+                "0.5",
+                &s,
+                crate::coltype::Reader::plain(s.read),
+                crate::coltype::Reader::plain(s.read)
+            ),
+            Cmp::Same
+        );
+        assert_eq!(
+            compare_cells(
+                "0",
+                "0.00",
+                &s,
+                crate::coltype::Reader::plain(s.read),
+                crate::coltype::Reader::plain(s.read)
+            ),
+            Cmp::Same
+        );
         let strict = CompareCols {
             case: true,
             spaces: true,
             numbers: false,
             ..Default::default()
         };
-        assert_eq!(compare_cells("Main St", "main st", &strict), Cmp::Different);
-        assert_eq!(compare_cells("5", "5.00", &strict), Cmp::Different);
-        assert_eq!(compare_cells(" ", "", &strict), Cmp::OnlyFirst);
+        assert_eq!(compare_cells("Main St", "main st", &strict, crate::coltype::Reader::plain(strict.read), crate::coltype::Reader::plain(strict.read)), Cmp::Different);
+        assert_eq!(compare_cells("5", "5.00", &strict, crate::coltype::Reader::plain(strict.read), crate::coltype::Reader::plain(strict.read)), Cmp::Different);
+        assert_eq!(compare_cells(" ", "", &strict, crate::coltype::Reader::plain(strict.read), crate::coltype::Reader::plain(strict.read)), Cmp::OnlyFirst);
     }
 
     #[test]
