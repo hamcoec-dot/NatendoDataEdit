@@ -423,9 +423,52 @@ fn scan_string(b: &[u8], i: usize) -> Option<(usize, bool)> {
                 j += 2;
             }
             b'"' => return Some((j + 1, esc)),
+            // A raw control character inside a string is not JSON: the general reader reports it.
+            c if *c < 0x20 => return None,
             _ => j += 1,
         }
     }
+}
+
+/// The end of a JSON number starting at `i` (`-?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?`), or `None`
+/// when what is there is not one (`1.2.3`, `-`, `1e`, `01`, `+1` are left to the general reader).
+fn scan_number(b: &[u8], mut i: usize) -> Option<usize> {
+    if b.get(i) == Some(&b'-') {
+        i += 1;
+    }
+    match b.get(i)? {
+        b'0' => i += 1,
+        b'1'..=b'9' => {
+            while b.get(i).is_some_and(u8::is_ascii_digit) {
+                i += 1;
+            }
+        }
+        _ => return None,
+    }
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let from = i;
+        while b.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if i == from {
+            return None;
+        }
+    }
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(b.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        let from = i;
+        while b.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if i == from {
+            return None;
+        }
+    }
+    Some(i)
 }
 
 /// The text of a string token (quotes included) as a string.
@@ -470,13 +513,7 @@ fn fast_value(t: &str, i: usize) -> Option<(Value, usize)> {
             Some((Value::String(string_of(t, i, end, esc)?), end))
         }
         c if *c == b'-' || c.is_ascii_digit() => {
-            let mut j = i + 1;
-            while matches!(
-                b.get(j),
-                Some(b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
-            ) {
-                j += 1;
-            }
+            let j = scan_number(b, i)?;
             Some((Value::String(t[i..j].to_string()), j))
         }
         b't' if t[i..].starts_with("true") => Some((Value::Bool(true), i + 4)),
@@ -1540,6 +1577,107 @@ mod tests {
         for r in ["{\"a\":}", "[1,]", "{\"a\" 1}", "[1] x", "{\"a\":\"x"] {
             assert_eq!(fast_row(r), None, "{r}");
         }
+    }
+
+    /// What the general reader makes of a row (the cell rule of `exact_cell`), or `None` when it refuses.
+    fn general_row(r: &str) -> Option<Value> {
+        // The text must be one valid JSON value first (the general reader's own check).
+        serde_json::from_str::<&serde_json::value::RawValue>(r).ok()?;
+        if r.trim_start().starts_with('{') {
+            let m: Pairs = serde_json::from_str(r).ok()?;
+            let mut out = serde_json::Map::new();
+            for (k, v) in m.0 {
+                out.insert(k, exact_cell(v.get()).ok()?);
+            }
+            Some(Value::Object(out))
+        } else if r.trim_start().starts_with('[') {
+            let items: Vec<&serde_json::value::RawValue> = serde_json::from_str(r).ok()?;
+            let cells: Result<Vec<Value>, _> =
+                items.into_iter().map(|v| exact_cell(v.get())).collect();
+            Some(Value::Array(cells.ok()?))
+        } else {
+            None
+        }
+    }
+
+    /// Damaged rows: the fast reader either refuses or gives exactly what the general reader gives, and
+    /// never accepts what the general reader rejects (1.2.3, 1-2, -, 1e, 01, +1, raw control characters...).
+    #[test]
+    fn fast_reader_never_accepts_what_the_general_reader_rejects() {
+        for bad in [
+            r#"{"a":1.2.3}"#,
+            r#"{"a":1-2}"#,
+            r#"{"a":-}"#,
+            r#"{"a":1e}"#,
+            r#"{"a":01}"#,
+            r#"{"a":+1}"#,
+            r#"[1.]"#,
+            r#"[.5]"#,
+            r#"[1e+]"#,
+            r#"[--1]"#,
+            "[\"a\u{1}b\"]",
+            "{\"a\":\"x\ny\"}",
+            "{\"a\tb\":1}",
+        ] {
+            assert_eq!(fast_row(bad), None, "{bad:?}");
+            assert_eq!(general_row(bad), None, "{bad:?}");
+        }
+        let seeds = [
+            r#"{"id":12345678901234567890123,"price":1.50,"name":"Ada \"Q\" \u00e9","ok":true,"n":null,"e":-1.5E+10,"m":{"q":[1,"a]b"]}}"#,
+            r#"[1,"two",3.50,false,null,[1,[2]],{"a":"b"},-0.10,1E5,0]"#,
+            r#"  { "a" : 0.5 , "b" : [ 1 , 2 ] }  "#,
+        ];
+        let alphabet: Vec<u8> = "0123456789.eE+-{}[]:, tfnul"
+            .bytes()
+            .chain([b'"', b'\\', b'\n', b'\t', 1, b'a'])
+            .collect();
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let (mut same, mut refused, mut rejected) = (0u32, 0u32, 0u32);
+        for _ in 0..60_000 {
+            let mut m = seeds[(next() % seeds.len() as u64) as usize]
+                .as_bytes()
+                .to_vec();
+            for _ in 0..1 + next() % 3 {
+                let at = (next() % m.len() as u64) as usize;
+                match next() % 3 {
+                    0 => m[at] = alphabet[(next() % alphabet.len() as u64) as usize],
+                    1 => m.insert(at, alphabet[(next() % alphabet.len() as u64) as usize]),
+                    _ => {
+                        m.remove(at);
+                        if m.is_empty() {
+                            m.push(b'0');
+                        }
+                    }
+                }
+            }
+            let Ok(text) = String::from_utf8(m) else {
+                continue;
+            };
+            match (fast_row(&text), general_row(&text)) {
+                (Some(f), Some(g)) => {
+                    assert_eq!(f, g, "{text:?}");
+                    same += 1;
+                }
+                (None, _) => refused += 1,
+                (Some(_), None) => {
+                    panic!("the fast reader accepted what the general reader rejects: {text:?}")
+                }
+            }
+            if general_row(&text).is_none() {
+                rejected += 1;
+            }
+        }
+        // The test must really exercise all three outcomes.
+        assert!(
+            same > 1000 && refused > 1000 && rejected > 1000,
+            "{same} {refused} {rejected}"
+        );
     }
 
     #[test]

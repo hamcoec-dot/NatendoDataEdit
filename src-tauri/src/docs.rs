@@ -8222,6 +8222,40 @@ mod tests {
         assert_eq!(cell(1, 0), " ann  lee ");
     }
 
+    /// A1a: the Open-a-table command on a database with a NUMERIC REAL 1.50, a TEXT 00123 and a 19-digit
+    /// INTEGER: text and integers come through exactly, the REAL is what the database holds (1.5), and the
+    /// note names the column (never a value).
+    #[test]
+    fn open_a_table_keeps_text_and_integers_exact_and_notes_decimal_columns() {
+        let db = std::env::temp_dir().join(format!("nd-a1a-open-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&db);
+        {
+            let c = rusqlite::Connection::open(&db).unwrap();
+            c.execute_batch(
+                "CREATE TABLE t(price NUMERIC, zip TEXT, big INTEGER);
+                 INSERT INTO t VALUES(1.50, '00123', 1234567890123456789);",
+            )
+            .unwrap();
+        }
+        let docs = Docs::default();
+        let (info, note) = docs.open_sqlite_report(&db, "t").unwrap();
+        let cell = |r: u64, c: u32| docs.cell_text(info.id, r, c).unwrap().0;
+        assert_eq!(cell(1, 0), "1.5");
+        assert_eq!(cell(1, 1), "00123");
+        assert_eq!(cell(1, 2), "1234567890123456789");
+        assert!(
+            note.contains("\u{201c}price\u{201d}")
+                && note.contains("trailing zeros were already lost"),
+            "{note}"
+        );
+        assert!(
+            !note.contains("1.5")
+                && !note.contains("00123")
+                && !note.contains("1234567890123456789")
+        );
+        let _ = std::fs::remove_file(&db);
+    }
+
     #[test]
     fn sqlite_tables() {
         let a = tmp("m15q_a.csv", b"id,name\r\n1,Ann\r\n");
