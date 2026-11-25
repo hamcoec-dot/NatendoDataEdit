@@ -3,6 +3,7 @@
 
 import type { Pattern, ReadOptions, Scope } from "./backend";
 import { sanitizeText, USUAL_SANITIZE, type SanitizeOptions } from "./invisible";
+import { fixMojibake } from "./mojibake";
 
 export type At =
   | { kind: "start" }
@@ -43,6 +44,7 @@ export type Step =
   | { tool: "reverse" }
   | { tool: "spaces"; how: SpacesHow }
   | ({ tool: "sanitize" } & SanitizeOptions)
+  | { tool: "fix_mojibake" }
   | { tool: "number"; start: number; step: number; digits: number; at_end: boolean; separator: string; replace: boolean }
   | { tool: "digits"; keep: boolean }
   | { tool: "now"; format: string; at_end: boolean; separator: string; replace: boolean }
@@ -159,6 +161,7 @@ export const TOOLS: Tool[] = [
   { id: "reverse", group: "Text", label: "Reverse text", make: () => ({ tool: "reverse" }) },
   { id: "case", group: "Text", label: "Change case", make: () => ({ tool: "case", to: "title" }) },
   { id: "spaces", group: "Spaces", label: "Add or remove spaces", make: () => ({ tool: "spaces", how: "collapse" }) },
+  { id: "fix_mojibake", group: "Text", label: "Fix mojibake (cafÃ© to café)", make: () => ({ tool: "fix_mojibake" }) },
   { id: "sanitize", group: "Spaces", label: "Sanitize look-alike characters", make: () => ({ tool: "sanitize", ...USUAL_SANITIZE }) },
   { id: "number", group: "Numbers", label: "Number the cells", make: () => ({ tool: "number", start: 1, step: 1, digits: 0, at_end: false, separator: "", replace: true }) },
   { id: "digits", group: "Numbers", label: "Remove or keep digits", make: () => ({ tool: "digits", keep: false }) },
@@ -272,6 +275,8 @@ export function describe(s: Step): string {
       return "Reverse the text";
     case "spaces":
       return SPACE_WORDS[s.how];
+    case "fix_mojibake":
+      return "Fix mojibake: text that was UTF-8 but read as Windows-1252 (cafÃ© becomes café)";
     case "sanitize":
       return "Sanitize: zero-width characters, odd spaces, smart quotes and look-alike letters";
     case "number":
@@ -441,6 +446,8 @@ export function runStep(s: Step, t: string, index: number): string {
     }
     case "reverse":
       return [...t].reverse().join("");
+    case "fix_mojibake":
+      return fixMojibake(t) ?? t;
     case "sanitize":
       return sanitizeText(t, s) ?? t;
     case "spaces":
