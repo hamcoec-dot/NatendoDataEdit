@@ -531,6 +531,73 @@ impl Document {
         })
     }
 
+    /// The next marked row after shown row `from` (before it with `backward`), wrapping once round the table:
+    /// `(row, wrapped, first marked column)`; `None` when nothing is marked. In blocks, in parallel inside a
+    /// block, stopping at the first block with a hit; cancellable.
+    pub fn diff_next(
+        &self,
+        index: &DiffIndex,
+        side: Side,
+        from: u64,
+        backward: bool,
+        progress: &Progress,
+    ) -> Result<Option<(u64, bool, Option<u32>)>, Error> {
+        if !index.current(side, self.data_revision()) {
+            return Err(Error::Changed);
+        }
+        let n = self.row_count();
+        let first = u64::from(index.spec.keep_first && side != Side::Result) | u64::from(side == Side::Result);
+        if n <= first {
+            return Ok(None);
+        }
+        let from = from.clamp(first, n - 1);
+        // Row ranges in the order they are met: after the start, then (wrapped) up to and including it.
+        let ranges: [(std::ops::Range<u64>, bool); 2] = if backward {
+            [(first..from, false), (from..n, true)]
+        } else {
+            [(from + 1..n, false), (first..from + 1, true)]
+        };
+        progress.start(n - first);
+        const BLOCK: u64 = 1 << 14;
+        for (range, wrapped) in ranges {
+            let (a, b) = (range.start, range.end);
+            let mut done = 0u64;
+            while done < b.saturating_sub(a) {
+                let take = BLOCK.min(b - a - done);
+                let (s0, e0) = if backward { (b - done - take, b - done) } else { (a + done, a + done + take) };
+                done += take;
+                let parts: Vec<u64> = (s0..e0).step_by(MAX_WINDOW as usize).collect();
+                let found: Vec<Result<Option<(u64, Option<u32>)>, Error>> = parts
+                    .par_iter()
+                    .map(|&ws| {
+                        let we = (ws + MAX_WINDOW).min(e0);
+                        let m = self.diff_marks(index, side, ws, we - ws, 0, u32::MAX / 2)?;
+                        Ok(if backward {
+                            m.iter().max_by_key(|x| (x.row, x.col)).map(|x| (x.row, x.col))
+                        } else {
+                            m.iter().min_by_key(|x| (x.row, x.col)).map(|x| (x.row, x.col))
+                        })
+                    })
+                    .collect();
+                let mut hits = Vec::new();
+                for f in found {
+                    if let Some(h) = f? {
+                        hits.push(h);
+                    }
+                }
+                let hit = if backward { hits.into_iter().max() } else { hits.into_iter().min() };
+                if let Some((row, col)) = hit {
+                    // The first marked column of that row (the whole row when the row is marked as a whole).
+                    let in_row = self.diff_marks(index, side, row, 1, 0, u32::MAX / 2)?;
+                    let col = in_row.iter().filter_map(|m| m.col).min().or(col);
+                    return Ok(Some((row, wrapped, col)));
+                }
+                progress.step(e0 - s0)?;
+            }
+        }
+        Ok(None)
+    }
+
     /// The differences in a window of this table's shown rows (a table of `side`): a row is looked up by its
     /// key, so the marks are right after any sort, filter, insert or delete. Nothing is marked for a row
     /// with an empty key. `Error::Changed` when the rows are no longer the ones the diff was made from.
@@ -745,6 +812,27 @@ mod tests {
         rm.sort_by_key(|x| (x.row, x.col));
         // Result rows: removed(Di), changed(Bo), changed(Cy), added(Eve); columns 3.. are the first table's.
         assert_eq!(rm.iter().map(|x| (x.row, x.col, x.kind)).collect::<Vec<_>>(), vec![(1, None, 2), (2, Some(5), 0), (3, Some(4), 0), (4, None, 1)]);
+    }
+
+    #[test]
+    fn next_difference_walks_the_marked_rows_both_ways_and_wraps() {
+        let a = doc(A);
+        let o = a.diff_files(&doc(B), &spec(&[0]), &Progress::new()).unwrap();
+        let p = Progress::new();
+        let mut at = 0;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            let (row, wrapped, _) = a.diff_next(&o.index, Side::A, at, false, &p).unwrap().unwrap();
+            seen.push((row, wrapped));
+            at = row;
+        }
+        assert_eq!(seen, vec![(2, false), (3, false), (4, false), (2, true)]);
+        let (row, wrapped, col) = a.diff_next(&o.index, Side::A, 2, true, &p).unwrap().unwrap();
+        assert_eq!((row, wrapped), (4, true));
+        assert_eq!(col, None, "the removed row is marked as a whole");
+        let same = doc(A);
+        let none = same.diff_files(&same, &spec(&[0]), &Progress::new()).unwrap();
+        assert!(same.diff_next(&none.index, Side::A, 0, false, &p).unwrap().is_none());
     }
 
     #[test]

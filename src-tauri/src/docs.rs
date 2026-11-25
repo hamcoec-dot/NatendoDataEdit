@@ -934,6 +934,41 @@ pub struct TableReport {
     pub record: Option<DocInfo>,
 }
 
+/// A key-aware diff kept while its tabs are open: the index that draws it on the first table, the second
+/// and the result, and which tabs those are.
+struct DiffState {
+    index: natendo_engine::diff::DiffIndex,
+    a: u32,
+    b: u32,
+    result: u32,
+}
+
+/// What the diff command gives back: the result tab, the counts and the report text.
+#[derive(Debug, Serialize)]
+pub struct DiffReportOut {
+    pub info: DocInfo,
+    pub report: natendo_engine::diff::DiffReport,
+    pub diff: u64,
+}
+
+/// A window of marks for a tab, and whether the diff still fits the tab's rows.
+#[derive(Debug, Serialize)]
+pub struct DiffMarksOut {
+    /// `None`: this tab is in no diff.
+    pub diff: Option<u64>,
+    /// The tab was edited after the compare: nothing is drawn, the UI says "compare again".
+    pub out_of_date: bool,
+    pub marks: Vec<natendo_engine::diff::DiffMark>,
+}
+
+/// Where a "next difference" landed.
+#[derive(Debug, Serialize)]
+pub struct DiffJump {
+    pub row: u64,
+    pub col: Option<u32>,
+    pub wrapped: bool,
+}
+
 /// What a comparison with a newer file keeps for accepting changes.
 struct UpdatesKept {
     updates: natendo_engine::updates::Updates,
@@ -1390,6 +1425,9 @@ pub struct Docs {
     /// (so two windows never share one): the indexed other table (or
     /// list) and pasted lists, so previews do not copy them again.
     joins: Mutex<HashMap<u32, JoinCache>>,
+    /// Key-aware diffs (by number) kept while their tabs are open.
+    diffs: Mutex<HashMap<u64, DiffState>>,
+    next_diff: AtomicU64,
     /// Numbers given to pasted lists.
     next_list: std::sync::atomic::AtomicU64,
     /// LOOKUP tables by tab, its revision and the two columns.
@@ -1619,6 +1657,7 @@ impl Docs {
     }
 
     pub fn close(&self, id: u32) {
+        self.diff_clear(id);
         let gone = self.map().remove(&id);
         if let Some(e) = &gone {
             e.cancel.store(true, Ordering::Relaxed);
@@ -3062,8 +3101,135 @@ impl Docs {
         ))
     }
 
+    // ---- key-aware diff ----
+
+    /// Compare tab `a` (the first) with tab `b` (the second) by key and open the differences as a new tab.
+    /// A job on `a` (progress and Cancel). Each step takes ONE table's read lock and lets it go (never both at
+    /// once, so comparing a tab with itself works and nothing can deadlock); the result is private when
+    /// either table is, and nothing about the values is logged.
+    pub fn diff_files(
+        &self,
+        a: u32,
+        b: u32,
+        spec: natendo_engine::diff::DiffSpec,
+    ) -> CmdResult<DiffReportOut> {
+        use natendo_engine::document::Progress;
+        let ea = self.get(a)?;
+        let eb = self.get(b)?;
+        let job = ea.start("Comparing")?;
+        let progress: &Progress = &job.progress;
+        let titles = ea.read().diff_titles(&spec);
+        let index = Document::diff_index(&eb.read(), &titles, &spec, progress)?;
+        let first = ea.read().diff_first(&index, &spec, progress)?;
+        let out = eb
+            .read()
+            .diff_second(index, first, &spec, progress)
+            .map_err(|e| {
+                if matches!(e, Error::Changed) {
+                    CmdError::new("changed", "a table changed while comparing; try again")
+                } else {
+                    e.into()
+                }
+            })?;
+        drop(job);
+        let natendo_engine::diff::DiffOutcome { table, report, mut index } = out;
+        let doc = table.into_document()?;
+        let (rid, _) = self.insert(doc, false)?;
+        self.inherit_private(rid, &[a, b], &[]);
+        self.set_title_of(rid, format!("Diff: {} vs {}", self.stem(a), self.stem(b)));
+        index.result_rev = Some(self.get(rid)?.read().data_revision());
+        let id = self.next_diff.fetch_add(1, Ordering::Relaxed) + 1;
+        {
+            let mut m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
+            // A newer diff of the same tabs replaces the older one.
+            m.retain(|_, d| !(d.a == a && d.b == b));
+            m.insert(id, DiffState { index, a, b, result: rid });
+        }
+        Ok(DiffReportOut {
+            info: self.info(rid)?,
+            report,
+            diff: id,
+        })
+    }
+
+    /// The differences in a window of tab `id` (a first table, a second table or a result), looked up by
+    /// each shown row's key. Never waits behind a change ("busy").
+    pub fn diff_marks(
+        &self,
+        id: u32,
+        row: u64,
+        rows: u64,
+        col: u32,
+        cols: u32,
+    ) -> CmdResult<DiffMarksOut> {
+        use natendo_engine::diff::Side;
+        let entry = self.get(id)?;
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(CmdError::new("busy", "the file is being changed"))
+            }
+        };
+        let m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
+        let Some((did, st)) = m.iter().filter(|(_, s)| s.a == id || s.b == id || s.result == id).max_by_key(|(k, _)| **k) else {
+            return Ok(DiffMarksOut { diff: None, out_of_date: false, marks: Vec::new() });
+        };
+        let side = if st.result == id { Side::Result } else if st.a == id { Side::A } else { Side::B };
+        if !st.index.current(side, d.data_revision()) {
+            return Ok(DiffMarksOut { diff: Some(*did), out_of_date: true, marks: Vec::new() });
+        }
+        let marks = d.diff_marks(&st.index, side, row, rows, col, cols)?;
+        Ok(DiffMarksOut { diff: Some(*did), out_of_date: false, marks })
+    }
+
+    /// The next (previous) difference after a row of tab `id` (a job: Cancel).
+    pub fn diff_next(&self, id: u32, row: u64, backward: bool) -> CmdResult<Option<DiffJump>> {
+        use natendo_engine::diff::Side;
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for the next difference")?;
+        let d = entry.read();
+        let m = self.diffs.lock().unwrap_or_else(|p| p.into_inner());
+        let Some((_, st)) = m.iter().filter(|(_, s)| s.a == id || s.b == id || s.result == id).max_by_key(|(k, _)| **k) else {
+            return Ok(None);
+        };
+        let side = if st.result == id { Side::Result } else if st.a == id { Side::A } else { Side::B };
+        let hit = d.diff_next(&st.index, side, row, backward, &job.progress)?;
+        Ok(hit.map(|(row, wrapped, col)| DiffJump { row, col, wrapped }))
+    }
+
+    /// Forget the diff tab `id` is in (its marks go from all its tabs).
+    pub fn diff_clear(&self, id: u32) {
+        self.diffs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|_, s| !(s.a == id || s.b == id || s.result == id));
+    }
+
+    /// A tab was only re-ordered (a sort): the diff still fits its rows, so it follows the new revision.
+    fn diff_follow_sort(&self, id: u32, before: u64, after: u64) {
+        use natendo_engine::diff::Side;
+        for st in self.diffs.lock().unwrap_or_else(|p| p.into_inner()).values_mut() {
+            for (tab, side) in [(st.a, Side::A), (st.b, Side::B), (st.result, Side::Result)] {
+                if tab == id && st.index.current(side, before) {
+                    st.index.follow_order(side, after);
+                }
+            }
+        }
+    }
+
     /// Sort every row (one undo step).
     pub fn sort(&self, id: u32, spec: SortSpec) -> CmdResult<DocInfo> {
+        // A sort only puts the rows in another order, so a diff drawn on this tab still fits it.
+        let before = self.get(id).map(|e| e.read().data_revision()).ok();
+        let info = self.sort_inner(id, spec)?;
+        if let Some(b) = before {
+            self.diff_follow_sort(id, b, info.data_revision);
+        }
+        Ok(info)
+    }
+
+    fn sort_inner(&self, id: u32, spec: SortSpec) -> CmdResult<DocInfo> {
         self.recorded(
             id,
             Logged::Step(RecipeOp::Sort { spec: spec.clone() }),
