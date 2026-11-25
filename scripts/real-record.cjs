@@ -156,6 +156,7 @@ makeFiles();
 const fileHash = (f) => crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex");
 const cellOf = async (p, doc, row, col) => (await invoke(p, "cell_text", { doc, row, col })).text;
 const panelName = (p) => p.getByTestId("record-panel").locator("input.value").first().inputValue();
+const curN = async (p) => Number(((await p.getByTestId("record-pos").textContent()) || "").match(/Row ([\d,]+) of/)?.[1].replace(/,/g, "")) || 0;
 const median = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)] ?? 0;
 
 const proof = async () => {
@@ -170,14 +171,14 @@ const proof = async () => {
   // Moving the active cell: time from the key to the panel showing the new row.
   const lat = [];
   for (let i = 0; i < 40; i++) {
-    const want = await m.evaluate(() => window.__nde.tab.cell.row + 1);
+    const want = (await curN(m)) + 1;
     const t = Date.now();
     await m.keyboard.press("ArrowDown");
     await waitFor(async () => (await panelName(m)) === `Person${want - 1}`, 2000, 5);
     lat.push(Date.now() - t);
   }
   info(`[${path.basename(path.dirname(exe))}] key to panel updated, 40 moves: median ${median(lat)} ms, max ${Math.max(...lat)} ms`);
-  const row = await m.evaluate(() => window.__nde.tab.cell.row);
+  const row = await curN(m);
   ok((await panelName(m)) === `Person${row - 1}`, `the panel follows the selection (row ${row})`);
   // Edit in the panel, one undo step.
   const nameField = m.getByTestId("record-panel").getByLabel("city", { exact: true });
@@ -225,6 +226,25 @@ const frames = async () => {
     }
     runs.sort((a, b) => a.median - b.median);
     info(`[${path.basename(path.dirname(exe))}] scrolling ${ROWS} rows, panel ${open ? "open (Record, if built)" : "closed"}: draw median ${runs[0].median.toFixed(2)} ms, p95 ${runs[0].p95.toFixed(2)} ms (${runs[0].n} draws; medians ${runs.map((r) => r.median.toFixed(2)).join(", ")})`);
+    // Moving the active cell with the panel open or closed: draw times and the whole 100-move run.
+    await m.locator("canvas").first().click({ position: { x: 80, y: 60 } });
+    const moveRuns = [];
+    for (let k = 0; k < 5; k++) {
+      await m.evaluate(() => {
+        window.__ndeDrawLog = [];
+      });
+      const t0 = Date.now();
+      for (let i = 0; i < 100; i++) {
+        await m.keyboard.press(k % 2 ? "ArrowUp" : "ArrowDown");
+        await sleep(8);
+      }
+      const total = Date.now() - t0;
+      await sleep(150);
+      const d = [...(await m.evaluate(() => window.__ndeDrawLog || []))].sort((a, b) => a - b);
+      moveRuns.push({ median: d[Math.floor(d.length / 2)] ?? 0, total });
+    }
+    moveRuns.sort((a, b) => a.median - b.median);
+    info(`[${path.basename(path.dirname(exe))}] 100 cell moves, panel ${open ? "open (Record, if built)" : "closed"}: draw median ${moveRuns[0].median.toFixed(2)} ms; runs ${moveRuns.map((r) => `${r.median.toFixed(2)}ms/${r.total}ms`).join(", ")}`);
     await killApp();
   }
 };
