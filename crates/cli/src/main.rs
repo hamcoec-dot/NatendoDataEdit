@@ -12,6 +12,7 @@
 mod app;
 mod join;
 mod more;
+mod patch;
 mod tools;
 
 use std::path::Path;
@@ -40,6 +41,10 @@ const USAGE: &str = "usage: natendo-cli --version
            [--fail-on-gap] [--no-header] [--sheet N] [--json]
        natendo-cli sets <a.csv:ID> <b.csv:ID> [... up to 5; keys a.csv:ID+Ward or #1+#4] [--match-case]
            [--no-trim] [--loose] [--slice a,!b [--rows-of a] [--keys-only] -o <out>] [--json]
+       natendo-cli patch create <old> <new> --key <col> [--key ...] -o <fix.ndpatch>
+           (--phrase-stdin | --phrase-file <f> | --plain) [--match-case] [--no-trim] [--leave-out] [--overwrite]
+       natendo-cli patch apply <fix.ndpatch> <data> -o <out> [--dry-run] [--phrase-stdin | --phrase-file <f>]
+           [--to <format>] [--overwrite]   (exit 1: something could not be applied)
        natendo-cli sample <in> -o <out> (--rows N | --percent P | --every N) [--seed S]
        natendo-cli slice <in> -o <out> --rows <first>-<last>
        natendo-cli split <in> -o <folder> (--rows N | --by <col>) [--to csv|tsv]
@@ -116,6 +121,12 @@ fn main() -> ExitCode {
             Err(e) => Err(e),
         },
         ["sets", rest @ ..] => tools::sets(&with_json(rest, json)),
+        ["patch", "create", rest @ ..] => patch::create(rest, json),
+        ["patch", "apply", rest @ ..] => match patch::apply(rest, json) {
+            Ok(true) => Ok(()),
+            Ok(false) => return ExitCode::from(PROBLEMS),
+            Err(e) => Err(e),
+        },
         ["sample", rest @ ..] => tools::sample(&with_json(rest, json)),
         ["slice", rest @ ..] => tools::slice(&with_json(rest, json)),
         ["split", rest @ ..] => tools::split(&with_json(rest, json)),
