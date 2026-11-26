@@ -859,6 +859,8 @@ everything is also in command search.
   in the status bar counts them and steps through them. Eight-digit values count
   as dates only in a column that is mostly dates and whose title does not say it
   holds IDs or numbers. Nothing in the file changes.
+
+  ![The date radar: two dates that can be read two ways lit amber with a corner mark](docs/screenshots/date-radar.png)
 - **Shifted and ragged rows:** when a file has rows with a different number of
   fields than most (a stray comma in a name, a line broken in two), a note says
   how many and what the usual number is; **Review** shows only those rows.
