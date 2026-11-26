@@ -15,5 +15,12 @@ describe("processing receipts in the browser preview", () => {
     const r = await new MockBackend().receiptVerify(true, true);
     expect(r?.ok).toBe(true);
     expect(r?.lines[0]?.what).toBe("the receipt's seal");
+    expect(r?.verdict).toMatch(/checks out/);
+  });
+  it("a seal alone is not a pass: no files compared says so", async () => {
+    const r = await new MockBackend().receiptVerify(false, false);
+    expect(r?.ok).toBe(false);
+    expect(r?.compared).toBe(0);
+    expect(r?.verdict).toMatch(/^The seal matches, but no files were compared/);
   });
 });

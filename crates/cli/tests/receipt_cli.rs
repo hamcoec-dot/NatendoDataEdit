@@ -89,6 +89,18 @@ fn receipts_from_runs_verify_chain_and_show_changes() {
     let (code, out) = run(&["receipt", "verify", &rb, "--input", &a, "--output", &b]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("checks out"));
+    // A seal alone: not a pass (exit 1, ok false), and it says no files were compared.
+    let (code, v) = json(&["receipt", "verify", &rc]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["compared"], 0);
+    assert_eq!(v["checks"][0]["ok"], true);
+    let (code, out) = run(&["receipt", "verify", &rc]);
+    assert_eq!(code, 1);
+    assert!(
+        out.contains("The seal matches, but no files were compared"),
+        "{out}"
+    );
     // The output changed: exit 1 and says which.
     std::fs::write(&c, "name\r\nAnn\r\n").unwrap();
     let (code, v) = json(&["receipt", "verify", &rc, "--output", &c]);

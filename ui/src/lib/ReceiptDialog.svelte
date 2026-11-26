@@ -37,7 +37,7 @@
   <label class="row"><input type="checkbox" bind:checked={withFiles} /> Then pick the files that went in and came out, to compare</label>
   <label class="row"><input type="checkbox" bind:checked={chain} disabled={!withFiles} /> Also check the receipt beside each file that went in (the chain)</label>
   {#if report}
-    <p class={report.ok ? "good" : "problem"}>{report.ok ? "The receipt checks out." : "The receipt does not check out."}</p>
+    <p class={report.ok ? "good" : "problem"}>{report.verdict}</p>
     <ul class="lines" aria-label="Checks">
       {#each report.lines as l, i (i)}
         <li class={l.ok ? "good" : "problem"}><strong>{l.ok ? "OK" : "Not OK"}</strong> {l.what}: {l.why}</li>

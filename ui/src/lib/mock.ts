@@ -1333,9 +1333,19 @@ export class MockBackend implements Backend {
     this.receiptNotes.delete(doc);
     return n;
   }
-  async receiptVerify(_withFiles: boolean, _chain: boolean): Promise<import("./backend").ReceiptReport | null> {
+  async receiptVerify(withFiles: boolean, _chain: boolean): Promise<import("./backend").ReceiptReport | null> {
     this.calls.push("receiptVerify");
-    return { ok: true, lines: [{ what: "the receipt's seal", ok: true, why: "matches its contents" }], summary: { action: "save as", tool: "Natendo Data Edit (preview)", inputs: [], outputs: [] } };
+    const lines = [{ what: "the receipt's seal", ok: true, why: "matches its contents" }];
+    if (withFiles) lines.push({ what: "input data.csv", ok: true, why: "same bytes (12 bytes)" });
+    return {
+      ok: withFiles,
+      compared: withFiles ? 1 : 0,
+      verdict: withFiles
+        ? "The receipt checks out: its seal matches and the files compared are the ones it names."
+        : "The seal matches, but no files were compared: name the files read or written to check them.",
+      lines,
+      summary: { action: "save as", tool: "Natendo Data Edit (preview)", inputs: [], outputs: [] },
+    };
   }
   async save(doc: number, f: SaveFlags): Promise<DocInfo | null> {
     if (this.get(doc).info.peeking) throw err("peeking", "looking at an earlier recipe step: go back to the latest step to change or save");

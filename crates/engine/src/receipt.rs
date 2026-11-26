@@ -306,7 +306,13 @@ pub struct VerifyLine {
 /// What [`verify`] found; `ok` when every line is.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct VerifyReport {
+    /// Every line is ok and at least one file was compared: a seal alone
+    /// only shows the receipt was not changed, not that the files match.
     pub ok: bool,
+    /// Files compared with the receipt's entries.
+    pub compared: usize,
+    /// The one-line answer, the same in the app and on the command line.
+    pub verdict: String,
     pub lines: Vec<VerifyLine>,
     /// What the receipt says, for showing: action, tool, times, file names.
     pub summary: Value,
@@ -363,37 +369,63 @@ pub fn verify(
             .map(|a| a.iter().filter_map(|x| x.as_object().cloned()).collect())
             .unwrap_or_default()
     };
+    let mut compared = 0usize;
     for (key, label, given) in [("inputs", "input", inputs), ("outputs", "output", outputs)] {
         let list = entries(key);
         for f in given {
             let name = file_name(f);
             let what = format!("{label} {name}");
-            let Some(e) = list
+            // Names can repeat (two inputs called data.csv from two folders):
+            // the file is compared with every entry of its name.
+            let same_name: Vec<&Map<String, Value>> = list
                 .iter()
-                .find(|e| e.get("name").and_then(Value::as_str) == Some(name.as_str()))
-            else {
+                .filter(|e| e.get("name").and_then(Value::as_str) == Some(name.as_str()))
+                .collect();
+            if same_name.is_empty() {
                 lines.push(VerifyLine {
                     what,
                     ok: false,
                     why: format!("the receipt names no {label} called {name}"),
                 });
                 continue;
-            };
-            let want = e.get("sha256").and_then(Value::as_str);
+            }
+            compared += 1;
             let rec = FileRecord::of_file(f, false, progress)?;
-            let (ok, why) = match (want, rec.sha256.as_deref()) {
-                (None, _) => (
+            let wants: Vec<Option<&str>> = same_name
+                .iter()
+                .map(|e| e.get("sha256").and_then(Value::as_str))
+                .collect();
+            let (ok, why) = match rec.sha256.as_deref() {
+                None => (false, "it changed while it was being checked".into()),
+                Some(h) if wants.contains(&Some(h)) => (
+                    true,
+                    if same_name.len() > 1 {
+                        format!(
+                            "same bytes ({} bytes) as one of the {} {label}s of this name",
+                            rec.bytes,
+                            same_name.len()
+                        )
+                    } else {
+                        format!("same bytes ({} bytes)", rec.bytes)
+                    },
+                ),
+                Some(_) if same_name.len() > 1 => (
+                    false,
+                    format!(
+                        "the receipt names {} {label}s called {name}, and this file has the bytes of none of them",
+                        same_name.len()
+                    ),
+                ),
+                Some(_) if wants[0].is_none() => (
                     false,
                     "the receipt holds no hash for it (it changed while the run read it)".into(),
                 ),
-                (_, None) => (false, "it changed while it was being checked".into()),
-                (Some(w), Some(h)) if w == h => (true, format!("same bytes ({} bytes)", rec.bytes)),
-                (Some(_), Some(_)) => (
+                Some(_) => (
                     false,
                     format!(
                         "different bytes: {} bytes now, {} in the receipt",
                         rec.bytes,
-                        e.get("bytes").and_then(Value::as_u64).unwrap_or(0)
+                        same_name[0].get("bytes").and_then(Value::as_u64).unwrap_or(0)
                     ),
                 ),
             };
@@ -440,8 +472,19 @@ pub fn verify(
         "steps": m.get("steps").and_then(|s| s.get("kinds")).cloned().unwrap_or(Value::Null),
         "input_changed_during_run": m.get("input_changed_during_run"),
     });
+    let all_ok = lines.iter().all(|l| l.ok);
+    let sealed = lines.first().is_some_and(|l| l.ok);
+    let verdict = if all_ok && compared > 0 {
+        "The receipt checks out: its seal matches and the files compared are the ones it names."
+    } else if sealed && compared == 0 && all_ok {
+        "The seal matches, but no files were compared: name the files read or written to check them."
+    } else {
+        "The receipt does not check out."
+    };
     Ok(VerifyReport {
-        ok: lines.iter().all(|l| l.ok),
+        ok: all_ok && compared > 0,
+        compared,
+        verdict: verdict.into(),
         lines,
         summary,
     })
@@ -557,6 +600,59 @@ mod tests {
         )
         .unwrap();
         assert!(verify(&receipt, &[], &[], false, &p).unwrap().lines[0].ok);
+    }
+
+    #[test]
+    fn a_seal_alone_is_not_a_pass_and_repeated_names_are_all_compared() {
+        let f = Folder::new("names");
+        let input = f.write("in.csv", b"n\r\n1\r\n");
+        let output = f.0.join("out.csv");
+        let receipt = run(&input, &output, false);
+        let p = Progress::new();
+        // F1: no files named: the seal holds, but that is not "checks out".
+        let r = verify(&receipt, &[], &[], false, &p).unwrap();
+        assert!(r.lines[0].ok && !r.ok && r.compared == 0, "{r:?}");
+        assert!(r
+            .verdict
+            .starts_with("The seal matches, but no files were compared"));
+        let r = verify(&receipt, std::slice::from_ref(&input), &[], false, &p).unwrap();
+        assert!(
+            r.ok && r.compared == 1 && r.verdict.contains("checks out"),
+            "{r:?}"
+        );
+        // F2: two inputs with the same name from two folders.
+        std::fs::create_dir_all(f.0.join("x")).unwrap();
+        std::fs::create_dir_all(f.0.join("y")).unwrap();
+        let x = f.write("x/data.csv", b"n\r\n1\r\n");
+        let y = f.write("y/data.csv", b"n\r\n2\r\n");
+        let mut rec = Receipt::start("combine");
+        for at in [&x, &y] {
+            rec.inputs.push(FileRecord::of_file(at, false, &p).unwrap());
+        }
+        let out2 = f.write("both.csv", b"n\r\n1\r\n2\r\n");
+        rec.outputs
+            .push(FileRecord::of_file(&out2, false, &p).unwrap());
+        let both = rec.write_beside(&out2).unwrap();
+        // The second file of that name matches its own entry, not only the first.
+        for at in [&x, &y] {
+            let r = verify(&both, std::slice::from_ref(at), &[], false, &p).unwrap();
+            assert!(r.ok, "{:?}", r.lines);
+            assert!(
+                r.lines[1].why.contains("one of the 2 inputs"),
+                "{:?}",
+                r.lines
+            );
+        }
+        // A third data.csv with other bytes: says the names repeat.
+        std::fs::create_dir_all(f.0.join("z")).unwrap();
+        let z = f.write("z/data.csv", b"n\r\n3\r\n");
+        let r = verify(&both, std::slice::from_ref(&z), &[], false, &p).unwrap();
+        assert!(!r.ok, "{:?}", r.lines);
+        assert!(
+            r.lines[1].why.contains("names 2 inputs called data.csv"),
+            "{:?}",
+            r.lines
+        );
     }
 
     #[test]

@@ -1401,7 +1401,12 @@ export interface ReceiptAsk {
 }
 /** What checking a receipt found. */
 export interface ReceiptReport {
+  /** Every check passed and at least one file was compared. */
   ok: boolean;
+  /** Files compared with the receipt. */
+  compared: number;
+  /** The one-line answer (the same as the command line's). */
+  verdict: string;
   lines: { what: string; ok: boolean; why: string }[];
   summary: Record<string, unknown>;
 }

@@ -138,6 +138,8 @@ pub fn verify_cmd(args: &[&str], json_out: bool) -> Result<bool, String> {
     if json_out {
         crate::more::print_json(&json!({
             "ok": r.ok,
+            "compared": r.compared,
+            "verdict": r.verdict,
             "checks": r.lines,
             "receipt": r.summary,
         }));
@@ -150,14 +152,7 @@ pub fn verify_cmd(args: &[&str], json_out: bool) -> Result<bool, String> {
                 l.why
             );
         }
-        println!(
-            "{}",
-            if r.ok {
-                "The receipt checks out."
-            } else {
-                "The receipt does not check out."
-            }
-        );
+        println!("{}", r.verdict);
     }
     Ok(r.ok)
 }
