@@ -21,6 +21,7 @@ pub mod changes;
 pub mod checkfile;
 pub mod clean;
 pub mod colcompare;
+pub mod coltotals;
 pub mod coltype;
 pub mod counts;
 pub mod crypt;

@@ -21,6 +21,8 @@ import type {
   Backend,
   Change,
   CmdError,
+  ColumnTotal,
+  ColumnTotals,
   Condition,
   DataOp,
   Dir,
@@ -2468,6 +2470,37 @@ export class MockBackend implements Backend {
       t.average = sum / t.numbers;
     }
     return t;
+  }
+
+  async columnTotals(doc: number, cols: number[], header: boolean): Promise<ColumnTotals> {
+    const d = this.get(doc);
+    const info = await this.docInfo(doc);
+    const first = header ? 1 : 0;
+    const columns: ColumnTotal[] = [];
+    for (const col of cols.filter((c) => c < info.cols)) {
+      let filled = 0;
+      let numbers = 0;
+      let sum = 0;
+      let min = Infinity;
+      let max = -Infinity;
+      // The browser stub reads at most 200,000 rows (the engine reads all).
+      for (let r = first; r < Math.min(info.rows, 200_000); r++) {
+        const v = this.value(d, r, col).trim();
+        if (!v) continue;
+        filled++;
+        const x = Number(v.replace(/,/g, ""));
+        if (!Number.isFinite(x)) continue;
+        numbers++;
+        sum += x;
+        min = Math.min(min, x);
+        max = Math.max(max, x);
+      }
+      const cells = Math.max(0, info.rows - first);
+      const title = header ? this.value(d, 0, col) : "";
+      const sums = filled > 0 && numbers / filled >= 0.95 && !/\b(id|zip|code|phone|precinct)\b/i.test(title);
+      columns.push({ col, cells, filled, numbers, blank: cells - filled, sum: numbers ? sum : null, average: numbers ? sum / numbers : null, min: numbers ? min : null, max: numbers ? max : null, too_large: false, suggested: sums ? "sum" : "count" });
+    }
+    return { revision: info.data_revision ?? 0, rows: Math.max(0, info.rows - first), filtered: info.rows < info.total_rows, columns };
   }
 
   async selectionTotalsAreas(doc: number, areas: Rect[]): Promise<Totals> {

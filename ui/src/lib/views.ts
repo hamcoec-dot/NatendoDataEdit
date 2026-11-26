@@ -2,6 +2,7 @@
 // views, recent files and the folder panel; plus checks the UI does before
 // sending (the shell checks again).
 
+import type { TotalChoice } from "./totalsRow";
 import type { Check } from "./backend";
 import type { DisplayFormat } from "./m9";
 import type { ColumnType } from "./readers";
@@ -83,6 +84,8 @@ export interface ViewColumn {
   protect?: boolean;
   /** What the column holds, when the person said (older views have none). */
   col_type?: ColumnType;
+  /** What the totals row shows under it, when the person chose. */
+  total?: TotalChoice;
 }
 export interface View {
   version: number;
@@ -106,6 +109,8 @@ export interface View {
   facets?: { col: number; kind: "values" | "numbers" | "dates" }[];
   /** Titles of the fields pinned in the Record panel (older views have none). */
   record_pins?: string[];
+  /** The totals row under the table is on. */
+  totals_row?: boolean;
 }
 /** A view as "Pick up where you left off" keeps it on disk: only how the
  *  table is laid out. Filters, highlight rules and data checks can hold

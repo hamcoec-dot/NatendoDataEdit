@@ -3,6 +3,7 @@
   // virtual), so a file with ten million rows draws as fast as one with ten.
   // The DOM holds just the canvas, two scrollbars and, while editing, one
   // text box over the active cell.
+  import { TotalsCache, totalParts } from "./totalsRow";
   import { dateTip } from "./dates";
   import { onMount, tick, untrack } from "svelte";
   import type { Tab } from "./tab.svelte";
@@ -46,6 +47,9 @@
   const FIND_COLOR = "#ffd43b";
   /** Row flag colours 1-6 (red, orange, yellow, green, blue, purple). */
   const FLAG_COLORS = ["", "#e5484d", "#f76b15", "#e2b400", "#30a46c", "#0090ff", "#8e4ec6"];
+
+  /** How numbers are read for the totals row (as the status bar does). */
+  const TOTALS_READ = { decimal_comma: false, date_order: "mdy" as const };
 
   interface Props {
     tab: Tab;
@@ -100,8 +104,10 @@
     /** Pixels at the bottom covered by something floating over the grid
      *  (the title-row question): the active cell scrolls clear of them. */
     bottomInset?: number;
+    /** A click on a cell of the totals row (column -1: beside the columns). */
+    onTotals?: (col: number, x: number, y: number) => void;
   }
-  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onCellsOver, onCellsDropOutside, onRenameCol, onInsight, onPill, onXray, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0 }: Props = $props();
+  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onCellsOver, onCellsDropOutside, onRenameCol, onInsight, onPill, onXray, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0, onTotals }: Props = $props();
   // Where this pane is scrolled to (a split view's second pane keeps its own).
   const view = $derived(pane === "split" ? tab.splitScroll : tab);
 
@@ -226,10 +232,99 @@
   function viewH(): number {
     return Math.max(0, height - SCROLLBAR);
   }
+  /** The totals row's height (0 when off): two lines, the label and the numbers. */
+  export function totalsHeight(): number {
+    return tab.totalsOn && tab.info.cols > 0 ? Math.round(lineH * 1.7) : 0;
+  }
+  function inTotals(y: number): boolean {
+    const th = totalsHeight();
+    return th > 0 && y >= viewH() - th && y < viewH();
+  }
+  /** The shown column under `x`, -1 when none is. */
+  function totalsCol(x: number): number {
+    const cols = visibleCols();
+    for (const c of shownCols(cols)) {
+      const at = colX(c, cols);
+      if (x >= at && x < at + tab.columns.width(c) && (c < cols.frozen.end || x >= bodyLeft())) return c;
+    }
+    return -1;
+  }
+  function shownCols(cols: { frozen: Span; body: Span }): number[] {
+    const out: number[] = [];
+    for (const span of [cols.frozen, cols.body]) for (let c = span.start; c < span.end; c++) if (tab.columns.width(c) > 0) out.push(c);
+    return out;
+  }
+
+  const totals = new TotalsCache();
+  /** The totals row, drawn over the bottom of the table. */
+  function drawTotals(ctx: CanvasRenderingContext2D, w: number, h: number, cols: { frozen: Span; body: Span }): void {
+    const th = totalsHeight();
+    if (!th) {
+      totals.stop();
+      return;
+    }
+    const shown = shownCols(cols);
+    if (tab.info.indexed && !tab.peeking) {
+      const i = tab.info;
+      const doc = tab.id;
+      const header = tab.header;
+      const data = `${doc}|${i.data_revision ?? 0}|${header}|${JSON.stringify(i.typed ?? null)}`;
+      const key = `${data}|${i.history_pos}|${i.rows}|${i.total_rows}|${JSON.stringify(tab.filter ?? null)}`;
+      totals.want(key, data, shown, (ask) => backend().columnTotals(doc, ask, header, TOTALS_READ), redraw);
+    }
+    const y = h - th;
+    const first = y + th * 0.28;
+    const second = y + th * 0.71;
+    ctx.save();
+    ctx.fillStyle = colors.header;
+    ctx.fillRect(0, y, w, th);
+    ctx.fillStyle = colors.accent;
+    ctx.fillRect(0, y, w, 2);
+    ctx.textBaseline = "middle";
+    ctx.font = headerFont;
+    ctx.fillStyle = colors.muted;
+    ctx.fillText(totals.label(), rowHeaderW + 6, first);
+    ctx.fillStyle = colors.text;
+    ctx.fillText("\u03a3", rowHeaderW - 10 - ctx.measureText("\u03a3").width, second);
+    ctx.font = font;
+    for (const c of shown) {
+      const frozen = c < cols.frozen.end;
+      const x = colX(c, cols);
+      const cw = tab.columns.width(c);
+      const left = frozen ? x : Math.max(x, bodyLeft());
+      const right = x + cw;
+      if (right <= left) continue;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(left, y + th * 0.48, right - left, th * 0.52);
+      ctx.clip();
+      ctx.fillStyle = colors.border;
+      ctx.fillRect(right - 1, y + th * 0.5, 1, th * 0.5);
+      const got = totals.get(c);
+      if (got) {
+        const p = totalParts(got.total, tab.columns.totals.get(c));
+        // Faded while a newer number is being worked out.
+        ctx.globalAlpha = got.stale ? 0.4 : 1;
+        const nameW = p.name ? ctx.measureText(p.name).width + 8 : 0;
+        const valueW = ctx.measureText(p.value).width;
+        if (nameW + valueW + 12 <= cw) {
+          ctx.fillStyle = colors.muted;
+          ctx.fillText(p.name, x + 6, second);
+        }
+        ctx.fillStyle = colors.text;
+        ctx.fillText(p.value, Math.max(x + 6, x + cw - 7 - valueW), second);
+      }
+      ctx.restore();
+    }
+    ctx.fillStyle = colors.border;
+    ctx.fillRect(rowHeaderW - 1, y, 1, th);
+    ctx.restore();
+  }
+
   function maxScrollY(): number {
     const content = geom.between(tab.firstRow + frozenRows(), tab.firstRow + dataRows());
     // Room to scroll the last rows clear of anything floating at the bottom.
-    return Math.max(0, content - (viewH() - bodyTop()) + geom.step + bottomInset);
+    return Math.max(0, content - (viewH() - bodyTop()) + geom.step + bottomInset + totalsHeight());
   }
   function maxScrollX(): number {
     const content = tab.columns.total() - tab.columns.x(frozenCols());
@@ -282,6 +377,7 @@
     void tab.filterButtons;
     void tab.info;
     void tab.banded;
+    void tab.totalsOn;
     void tab.valueTypes;
     void tab.divider;
     void tab.scales;
@@ -609,6 +705,7 @@
     drawAreas(ctx, w, h, extras);
     drawMove(ctx, w, h);
     drawCut(ctx, w, h);
+    drawTotals(ctx, w, h, cols);
     drawFreezeDrag(ctx, w, h);
     scrollTick++;
     positionEditor();
@@ -1987,7 +2084,7 @@
     if (c.row >= off + fr) {
       const y = geom.top(c.row) - geom.top(off + fr);
       const rh = geom.h(c.row);
-      const vis = Math.max(rh, viewH() - bodyTop() - bottomInset);
+      const vis = Math.max(rh, viewH() - bodyTop() - bottomInset - totalsHeight());
       if (y < view.scrollY) view.scrollY = y;
       else if (y + rh > view.scrollY + vis) view.scrollY = y + rh - vis;
     }
@@ -2149,6 +2246,16 @@
     // keys (Ctrl+arrows, typing) would stop reaching the grid. Stop that
     // first, before anything async runs.
     e.preventDefault();
+    // The totals row covers the cells under it: a click there is its own. It opens a menu, so the
+    // window's "pressed outside the menu" rule must not see this press (and nothing may wait first).
+    const [tx, ty] = local(e);
+    if (inTotals(ty)) {
+      e.stopPropagation();
+      const at = { x: e.clientX, y: e.clientY };
+      if (editing && !(await commitEdit())) return;
+      if (e.button === 0) onTotals?.(totalsCol(tx), at.x, at.y);
+      return;
+    }
     if (editing && !(await commitEdit())) return;
     sink.focus({ preventScroll: true });
     const [x, y] = local(e);
@@ -2340,6 +2447,10 @@
   let cursor = $state("default");
   function onMouseMove(e: MouseEvent): void {
     const [x, y] = local(e);
+    if (inTotals(y) && !freezing && !moving && !drag) {
+      cursor = "pointer";
+      return;
+    }
     if (freezing) {
       freezing.n = freezeCount(freezing.kind, x, y);
       cursor = freezing.kind === "rows" ? "row-resize" : "col-resize";
@@ -2641,6 +2752,10 @@
   function onContextMenu(e: MouseEvent): void {
     e.preventDefault();
     const [x, y] = local(e);
+    if (inTotals(y)) {
+      onTotals?.(totalsCol(x), e.clientX, e.clientY);
+      return;
+    }
     const h = hit(x, y);
     if (h.area === "none") return;
     // The pattern pill has a menu of its own (the column is not selected by it).

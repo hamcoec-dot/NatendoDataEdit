@@ -18,3 +18,4 @@
 - A SQLite database in write-ahead mode with unsaved changes in its `-wal` file (or an unfinished `-journal`) is no longer opened, because reading it could create or change files beside it. Close it in the program using it first.
 - **Recipes with a dates step:** a step recorded from now on says what it does with ambiguous dates (left as typed, month first or day first). Older recipes keep their behaviour.
 - **Find relationships:** Data > Find relationships shows which columns settle which, which are one to one or blank together, and the rows that break each.
+- **Totals row:** View > Totals row pins one total per column under the table, over the rows shown. Columns of IDs and codes are counted, not added.

@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuar
 use crate::recovery::Autosaved;
 use natendo_engine::cellformula::CellFormula;
 use natendo_engine::clean::{CleanMatrix, CleanPreview, CleanSpec, MatrixPreview, SplitName};
+use natendo_engine::coltotals::{ColumnTotal, MAX_COLUMN_TOTALS};
 use natendo_engine::document::repair::{Repair, RowText, SameShape};
 use natendo_engine::editing::{
     Arrange, Extract, GroupCalc, MapValues, TallySpec, ValueTally, MAX_PAIRS,
@@ -430,6 +431,8 @@ pub struct Entry {
     /// The quick totals being worked out for the selection, if any: a newer
     /// selection or any change cancels them.
     totals: Mutex<Option<Arc<Progress>>>,
+    /// The totals row's results for one revision of the document.
+    column_totals: Mutex<ColumnTotalsCache>,
     /// The find bar's match count being worked out, if any: a newer count
     /// or any change cancels it.
     find_count: Mutex<Option<Arc<Progress>>>,
@@ -603,6 +606,10 @@ impl Entry {
         if let Some(p) = self.totals.lock().unwrap_or_else(|p| p.into_inner()).take() {
             p.cancel.store(true, Ordering::Relaxed);
         }
+        self.column_totals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .stop();
         if let Some(p) = self
             .find_count
             .lock()
@@ -1606,6 +1613,35 @@ pub(crate) fn part_name(name: &str, empty: &str) -> String {
     }
 }
 
+/// The totals row's results kept for one state of a document.
+#[derive(Default)]
+struct ColumnTotalsCache {
+    /// (revision, title row, how text is read).
+    key: Option<(u64, bool, ReadOptions)>,
+    found: HashMap<u32, ColumnTotal>,
+    /// Stops the work for `key`.
+    job: Option<Arc<Progress>>,
+}
+
+impl ColumnTotalsCache {
+    /// Stop the work under way; finished results stay.
+    fn stop(&mut self) {
+        if let Some(p) = self.job.take() {
+            p.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ColumnTotalsOut {
+    pub revision: u64,
+    /// Data rows shown (and so totalled).
+    pub rows: u64,
+    /// Some rows are hidden or filtered out.
+    pub filtered: bool,
+    pub columns: Vec<ColumnTotal>,
+}
+
 /// Quick totals, with the distinct count when asked for.
 #[derive(Debug, Serialize, Clone, Copy, PartialEq)]
 pub struct TotalsOut {
@@ -1947,6 +1983,7 @@ impl Docs {
             gaps: Mutex::new(None),
             relations: Mutex::new(None),
             totals: Mutex::new(None),
+            column_totals: Mutex::new(ColumnTotalsCache::default()),
             find_count: Mutex::new(None),
             ghost_count: Mutex::new(None),
             find_blocks: Mutex::new(None),
@@ -3502,6 +3539,75 @@ impl Docs {
             *slot = None;
         }
         Ok(r?)
+    }
+
+    /// The totals row: each of `cols` over the shown rows. Results are kept
+    /// until the document changes, so only columns not yet totalled are
+    /// read. A change (or a request for a newer revision) stops older work.
+    pub fn column_totals(
+        &self,
+        id: u32,
+        cols: Vec<u32>,
+        header: bool,
+        read: ReadOptions,
+    ) -> CmdResult<ColumnTotalsOut> {
+        if cols.len() > MAX_COLUMN_TOTALS {
+            return Err(CmdError::new("bad_request", "too many columns at once"));
+        }
+        let entry = self.get(id)?;
+        let busy = || CmdError::new("busy", "the file is being changed");
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return Err(busy()),
+        };
+        if entry.change_waiting() {
+            return Err(busy());
+        }
+        let key = (d.revision(), header, read);
+        let cache = || {
+            entry
+                .column_totals
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+        };
+        let (missing, progress) = {
+            let mut c = cache();
+            if c.key != Some(key) {
+                c.stop();
+                c.found.clear();
+                c.key = Some(key);
+            }
+            let mut missing: Vec<u32> = cols
+                .iter()
+                .copied()
+                .filter(|k| *k < d.col_count() && !c.found.contains_key(k))
+                .collect();
+            missing.sort_unstable();
+            missing.dedup();
+            // Two panes may ask for the same revision at once: one flag stops
+            // both when the document changes.
+            let progress = c.job.get_or_insert_with(Default::default).clone();
+            (missing, progress)
+        };
+        if !missing.is_empty() {
+            let found = d.column_totals(&missing, header, read, &progress)?;
+            let mut c = cache();
+            if c.key == Some(key) {
+                c.found.extend(found.into_iter().map(|t| (t.col, t)));
+            }
+        }
+        let rows = d.row_count().saturating_sub(u64::from(header));
+        let c = cache();
+        Ok(ColumnTotalsOut {
+            revision: key.0,
+            rows,
+            filtered: d.row_count() < d.total_rows(),
+            columns: cols
+                .iter()
+                .filter_map(|k| c.found.get(k).copied())
+                .collect(),
+        })
     }
 
     /// [`Docs::selection_totals`] over several blocks (Ctrl+click): made

@@ -137,6 +137,7 @@ const NOT_WRITES = [
   "openLink",
   "selectionTotals",
   "selectionTotalsAreas",
+  "columnTotals",
   "chartData",
   "highlights",
   "dataEdge",
