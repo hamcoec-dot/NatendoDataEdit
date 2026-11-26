@@ -33,24 +33,32 @@ const MAX_PARTS: u64 = 10_000;
 const MAX_PRINTED: usize = 1_000;
 
 /// The options of one command: values by name, flags, and the rest.
-struct Opts<'a> {
-    plain: Vec<&'a str>,
+pub(crate) struct Opts<'a> {
+    pub(crate) plain: Vec<&'a str>,
     values: Vec<(&'a str, &'a str)>,
     flags: Vec<&'a str>,
 }
 
 impl<'a> Opts<'a> {
-    fn get(&self, k: &str) -> Option<&'a str> {
+    pub(crate) fn get(&self, k: &str) -> Option<&'a str> {
         self.values
             .iter()
             .rev()
             .find(|(n, _)| *n == k)
             .map(|(_, v)| *v)
     }
-    fn has(&self, k: &str) -> bool {
+    pub(crate) fn has(&self, k: &str) -> bool {
         self.flags.contains(&k)
     }
-    fn header(&self) -> bool {
+    /// Every value given for `k`, in order.
+    pub(crate) fn all(&self, k: &str) -> Vec<&'a str> {
+        self.values
+            .iter()
+            .filter(|(n, _)| *n == k)
+            .map(|(_, v)| *v)
+            .collect()
+    }
+    pub(crate) fn header(&self) -> bool {
         !self.has("--no-header")
     }
 }
@@ -79,7 +87,7 @@ fn parse<'a>(args: &[&'a str], values: &[&str], flags: &[&str]) -> Result<Opts<'
 }
 
 /// Column `name` (a title, any case, or a number from 1).
-fn col_of(d: &Document, header: bool, name: &str) -> Result<u32, String> {
+pub(crate) fn col_of(d: &Document, header: bool, name: &str) -> Result<u32, String> {
     let name = name.trim();
     let n = d.col_count();
     if !name.is_empty() && name.chars().all(|c| c.is_ascii_digit()) {
@@ -103,24 +111,25 @@ fn col_of(d: &Document, header: bool, name: &str) -> Result<u32, String> {
     Err(format!("there is no column \"{name}\""))
 }
 
-fn cols_of(d: &Document, header: bool, list: &str) -> Result<Vec<u32>, String> {
+pub(crate) fn cols_of(d: &Document, header: bool, list: &str) -> Result<Vec<u32>, String> {
     list.split(',')
         .filter(|s| !s.trim().is_empty())
         .map(|s| col_of(d, header, s))
         .collect()
 }
 
-fn out_of<'a>(o: &Opts<'a>) -> Result<Out<'a>, String> {
+pub(crate) fn out_of<'a>(o: &Opts<'a>) -> Result<Out<'a>, String> {
     Ok(Out {
         path: o.get("-o").ok_or("give the output file with -o")?,
         to: o.get("--to"),
         header: o.header(),
         landscape: false,
         overwrite: o.has("--overwrite"),
+        encoding: None,
     })
 }
 
-fn one_input<'a>(o: &Opts<'a>) -> Result<&'a str, String> {
+pub(crate) fn one_input<'a>(o: &Opts<'a>) -> Result<&'a str, String> {
     match o.plain.as_slice() {
         [x] => Ok(x),
         _ => Err(USAGE.to_string()),
@@ -135,13 +144,17 @@ fn step(d: &mut Document, op: RecipeOp) -> Result<(), String> {
 const OUT_OPTS: [&str; 3] = ["-o", "--to", "--sheet"];
 const OUT_FLAGS: [&str; 3] = ["--no-header", "--overwrite", "--json"];
 
-fn opts<'a>(args: &[&'a str], more: &[&str], flags: &[&str]) -> Result<Opts<'a>, String> {
+pub(crate) fn opts<'a>(
+    args: &[&'a str],
+    more: &[&str],
+    flags: &[&str],
+) -> Result<Opts<'a>, String> {
     let values: Vec<&str> = OUT_OPTS.iter().chain(more).copied().collect();
     let fl: Vec<&str> = OUT_FLAGS.iter().chain(flags).copied().collect();
     parse(args, &values, &fl)
 }
 
-fn sheet(o: &Opts) -> Result<u32, String> {
+pub(crate) fn sheet(o: &Opts) -> Result<u32, String> {
     match o.get("--sheet") {
         None => Ok(0),
         Some(s) => s
@@ -152,7 +165,7 @@ fn sheet(o: &Opts) -> Result<u32, String> {
     }
 }
 
-fn done(o: &Opts, msg: String, extra: Value) {
+pub(crate) fn done(o: &Opts, msg: String, extra: Value) {
     if o.has("--json") {
         let mut v = extra;
         v["message"] = json!(msg);

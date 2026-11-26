@@ -90,6 +90,57 @@ impl Default for MatchSpec {
     }
 }
 
+impl MatchSpec {
+    /// The columns compared here and there, and how each is compared: what
+    /// [`MatchSide::build`] takes for each side (the app and the command line
+    /// both build their sides from this).
+    pub fn columns(&self) -> (Vec<u32>, Vec<u32>, Vec<FieldKind>) {
+        (
+            self.fields.iter().map(|f| f.col).collect(),
+            self.fields.iter().map(|f| f.other_col).collect(),
+            self.fields.iter().map(|f| f.kind).collect(),
+        )
+    }
+}
+
+/// [`find_matches`] on two documents (or one, against itself), both readable
+/// here: the sides are built as the app builds them.
+pub fn match_documents(
+    this: &Document,
+    other: Option<&Document>,
+    spec: &MatchSpec,
+    progress: &Progress,
+) -> Result<MatchReport, Error> {
+    if spec.fields.is_empty() || spec.fields.len() > MAX_FIELDS {
+        return Err(Error::Invalid(format!(
+            "choose 1 to {MAX_FIELDS} columns to compare"
+        )));
+    }
+    let (here, there, kinds) = spec.columns();
+    let other_side = match other {
+        Some(o) => Some(MatchSide::build(
+            o,
+            &there,
+            &kinds,
+            &[],
+            spec.other_header,
+            spec.read,
+            progress,
+        )?),
+        None => None,
+    };
+    let this_side = MatchSide::build(
+        this,
+        &here,
+        &kinds,
+        &[],
+        spec.keep_first,
+        spec.read,
+        progress,
+    )?;
+    find_matches(&this_side, other_side.as_ref(), spec, progress)
+}
+
 /// A possible match.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {

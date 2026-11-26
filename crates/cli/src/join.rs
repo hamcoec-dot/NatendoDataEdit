@@ -237,6 +237,7 @@ pub fn join(args: &[&str], json: bool) -> Result<(), String> {
                 delimiter: Some(b'\t'),
                 ..Default::default()
             };
+            crate::refuse_encrypted(path)?;
             let keys = Document::open_indexed(std::path::Path::new(path), opts, None)
                 .map_err(|e| format!("{path}: {e}"))?;
             let mut text = String::new();
@@ -263,6 +264,7 @@ pub fn join(args: &[&str], json: bool) -> Result<(), String> {
             header,
             landscape: false,
             overwrite: o.overwrite,
+            encoding: None,
         },
     )?;
     if json {

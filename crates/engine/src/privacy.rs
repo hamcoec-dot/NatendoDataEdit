@@ -79,7 +79,7 @@ static KEY_CACHE: std::sync::Mutex<Option<CachedKey>> = std::sync::Mutex::new(No
 const KEY_CACHE_TIME: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Overwrite bytes that held a secret.
-pub(crate) fn wipe(b: &mut [u8]) {
+pub fn wipe(b: &mut [u8]) {
     b.iter_mut().for_each(|x| *x = 0);
     std::hint::black_box(&b);
 }

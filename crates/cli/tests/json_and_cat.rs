@@ -118,6 +118,33 @@ fn every_command_answers_in_json() {
     let (code, v) = json(&["validate", &a, "--checks", &checks]);
     assert_eq!(code, 1);
     assert!(v["problems"].is_number());
+    // The commands added with CLI parity.
+    assert_eq!(ok(&["compare", &a, &a, "--key", "name"])["differs"], false);
+    assert!(ok(&["match", &a, "--field", "name"])["total"].is_number());
+    assert!(ok(&["lookalikes", &a, "--column", "name"])["groups"].is_array());
+    assert!(ok(&["xray", &a])["cells"].is_number());
+    assert!(w(&["xray", &a, "--sanitize"], &[])["changed"].is_number());
+    assert_eq!(ok(&["encoding", "detect", &a])["encoding"], "UTF-8");
+    assert!(ok(&["encoding", "scan", &a])["rows"].is_number());
+    assert!(ok(&["private", &a])["columns"].is_array());
+    let spec = d.write(
+        "s.json",
+        r#"{"columns":[{"title":"name","action":"keep"},{"title":"party","action":"drop"},{"title":"amount","action":"keep"}]}"#,
+    );
+    assert_eq!(w(&["share-safe", &a, "--spec", &spec], &[])["cols"], 2);
+    let pw = d.write("pw.txt", "a long test password\n");
+    let enc = d.path("a.ndenc");
+    let v = ok(&[
+        "encrypt",
+        &a,
+        "-o",
+        &enc,
+        "--password-file",
+        &pw,
+        "--overwrite",
+    ]);
+    assert_eq!(v["rows"], 4);
+    assert!(w(&["decrypt", &enc], &["--password-file", &pw])["bytes"].is_number());
 
     // Failures are one JSON object and exit code 2.
     let missing = d.path("none.csv");
@@ -132,6 +159,14 @@ fn every_command_answers_in_json() {
         vec!["join", &a, &missing, "-o", &out, "--key", "name"],
         vec!["validate", &a, "--checks", &missing],
         vec!["app", "tabs"],
+        vec!["compare", &a, &missing, "--key", "name"],
+        vec!["match", &a],
+        vec!["xray", &missing],
+        vec!["encoding", "scan", &missing],
+        vec!["private", &missing],
+        vec!["share-safe", &a, "-o", &out, "--spec", &missing],
+        vec!["encrypt", &a, "-o", &out],
+        vec!["decrypt", &missing, "-o", &out, "--password-file", &missing],
     ] {
         let (code, v) = json(&args);
         assert_eq!(code, 2, "{args:?}: {v}");

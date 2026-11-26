@@ -1324,6 +1324,26 @@ impl Document {
         }
     }
 
+    /// The first `max` shown rows (0-based) whose row id is in `set` (one bit
+    /// per id, as reports keep their failing rows), in order.
+    pub fn shown_rows_in(&self, set: &[u64], max: usize) -> Vec<u64> {
+        let mut out = Vec::new();
+        let mut left: u64 = set.iter().map(|w| u64::from(w.count_ones())).sum();
+        for r in 0..self.row_count() {
+            if out.len() >= max || left == 0 {
+                break;
+            }
+            if let Some(id) = self.id_at(r) {
+                let id = id as usize;
+                if set.get(id >> 6).is_some_and(|w| w >> (id & 63) & 1 == 1) {
+                    left -= 1;
+                    out.push(r);
+                }
+            }
+        }
+        out
+    }
+
     /// Id of the shown row `row` (see [`Document::row_count`]).
     pub(crate) fn id_at(&self, row: u64) -> Option<u32> {
         match &self.view {

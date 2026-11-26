@@ -92,6 +92,12 @@ pub(crate) fn load(path: &str, sheet: u32) -> Result<Document, String> {
     if !ext.as_deref().is_some_and(|e| IMPORT_TYPES.contains(&e)) {
         return crate::open(path);
     }
+    crate::refuse_encrypted(path)?;
+    if crate::READ_AS.get().is_some() {
+        return Err(format!(
+            "{path}: --encoding is for delimited text files; this one is imported"
+        ));
+    }
     let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
     if meta.len() > import::MAX_TEXT_INPUT as u64 {
         return Err(format!("{path}: too large to import"));
@@ -145,6 +151,8 @@ pub(crate) struct Out<'a> {
     pub header: bool,
     pub landscape: bool,
     pub overwrite: bool,
+    /// Delimited text only: the encoding to write (`--to-encoding`); UTF-8 when `None`.
+    pub encoding: Option<Encoding>,
 }
 
 /// Write a document to `out` (delimited text or an export format).
@@ -166,12 +174,14 @@ pub(crate) fn write_out(d: &mut Document, input: &str, o: &Out) -> Result<String
     match target(o.path, o.to)? {
         Target::Delimited(sep) => {
             let dialect = Dialect::new(sep, Some(b'"')).map_err(|e| e.to_string())?;
+            let encoding = o.encoding.unwrap_or(Encoding::Utf8);
             let r = d
                 .save(SaveOptions {
                     path: Some(out_path.to_path_buf()),
                     format: Some(Format {
-                        encoding: Encoding::Utf8,
-                        bom: false,
+                        encoding,
+                        // UTF-16 and UTF-32 files are read by their byte order mark.
+                        bom: !matches!(encoding, Encoding::Utf8 | Encoding::Legacy(_)),
                         dialect,
                         line_break: LineBreak::CrLf,
                     }),
@@ -182,6 +192,9 @@ pub(crate) fn write_out(d: &mut Document, input: &str, o: &Out) -> Result<String
                 })
                 .map_err(|e| format!("{}: {e}", o.path))?;
             Ok(format!("saved {} rows to {}", r.rows, r.path.display()))
+        }
+        Target::Export(_) if o.encoding.is_some() => {
+            Err("--to-encoding is for delimited text (csv, tsv, psv, txt)".into())
         }
         Target::Export(format) => {
             let mut opts = ExportOptions {
@@ -215,6 +228,7 @@ struct Args<'a> {
     checks: Option<&'a str>,
     force: bool,
     dry_run: bool,
+    to_encoding: Option<&'a str>,
 }
 
 fn parse<'a>(args: &[&'a str], allowed: &[&str]) -> Result<Args<'a>, String> {
@@ -231,6 +245,7 @@ fn parse<'a>(args: &[&'a str], allowed: &[&str]) -> Result<Args<'a>, String> {
         checks: None,
         force: false,
         dry_run: false,
+        to_encoding: None,
     };
     let mut it = args.iter();
     while let Some(&x) = it.next() {
@@ -260,6 +275,7 @@ fn parse<'a>(args: &[&'a str], allowed: &[&str]) -> Result<Args<'a>, String> {
             "--checks" => a.checks = Some(value()?),
             "--force" => a.force = true,
             "--dry-run" => a.dry_run = true,
+            "--to-encoding" => a.to_encoding = Some(value()?),
             _ => a.plain.push(x),
         }
     }
@@ -285,6 +301,7 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
             rest.push(x);
         }
     }
+    let (allow_secret, rest) = crate::secret::take_flag(&rest, crate::secret::ALLOW_IN_FILE);
     let args = rest.as_slice();
     let a = parse(
         args,
@@ -309,6 +326,7 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
         return Err(format!("{recipe_path}: a recipe file can be at most 16 MB"));
     }
     let bytes = std::fs::read(recipe_path).map_err(|e| format!("{recipe_path}: {e}"))?;
+    crate::secret::refuse_secret_in_file(recipe_path, &bytes, allow_secret)?;
     let recipe = natendo_engine::recipe::Recipe::from_json(&bytes)
         .map_err(|e| format!("{recipe_path}: {e}"))?;
     let recipe = recipe
@@ -405,6 +423,7 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
             header: a.header,
             landscape: false,
             overwrite: a.overwrite,
+            encoding: None,
         },
     )?;
     if json_out {
@@ -440,12 +459,7 @@ pub fn pivot(args: &[&str], json_out: bool) -> Result<(), String> {
         b
     };
     let saved = SavedPivot::from_json(&bytes).map_err(|e| format!("{layout}: {e}"))?;
-    let d = Document::open_indexed(
-        Path::new(input),
-        natendo_engine::OpenOptions::default(),
-        None,
-    )
-    .map_err(|e| format!("{input}: {e}"))?;
+    let d = crate::open(input)?;
     let keep_first = a.header && saved.spec.keep_first;
     let all: Vec<u32> = (0..d.col_count()).collect();
     let titles = d.titles(&all, keep_first);
@@ -467,6 +481,7 @@ pub fn pivot(args: &[&str], json_out: bool) -> Result<(), String> {
             header: true,
             landscape: false,
             overwrite: a.overwrite,
+            encoding: None,
         },
     )?;
     report_written(json_out, msg, t.row_count(), out, json!({}));
@@ -497,11 +512,13 @@ pub fn convert(args: &[&str], json_out: bool) -> Result<(), String> {
             "--no-header",
             "--landscape",
             "--overwrite",
+            "--to-encoding",
         ],
     )?;
     let ([input], Some(out)) = (a.plain.as_slice(), a.out) else {
         return Err(USAGE.to_string());
     };
+    let to_encoding = a.to_encoding.map(crate::encoding_named).transpose()?;
     let mut d = load(input, a.sheet)?;
     let msg = write_out(
         &mut d,
@@ -512,6 +529,7 @@ pub fn convert(args: &[&str], json_out: bool) -> Result<(), String> {
             header: a.header,
             landscape: a.landscape,
             overwrite: a.overwrite,
+            encoding: to_encoding,
         },
     )?;
     report_written(json_out, msg, d.row_count(), out, json!({}));
@@ -556,6 +574,7 @@ pub fn compute(args: &[&str], json_out: bool) -> Result<(), String> {
             header: a.header,
             landscape: false,
             overwrite: a.overwrite,
+            encoding: None,
         },
     )?;
     if rep.errors > 0 && !json_out {

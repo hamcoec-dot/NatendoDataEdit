@@ -231,6 +231,21 @@ pub struct DiffOutcome {
 pub const RESULT_LEAD: u32 = 3;
 
 impl DiffIndex {
+    /// How many changed rows changed each column (the first table's numbering), most first.
+    pub fn changed_columns(&self) -> Vec<(u32, u64)> {
+        let mut n: HashMap<u32, u64> = HashMap::new();
+        for e in self.a_side.values() {
+            if e.kind == Kind::Changed {
+                for &c in e.cols.iter() {
+                    *n.entry(c).or_default() += 1;
+                }
+            }
+        }
+        let mut v: Vec<(u32, u64)> = n.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v
+    }
+
     /// Whether the table's rows are as they were when the diff was made (a sort only reorders them, and
     /// the shell moves the number along for it; any other change makes the marks out of date).
     pub fn current(&self, side: Side, data_revision: u64) -> bool {
