@@ -51,6 +51,7 @@ pub mod import;
 pub mod index;
 pub mod insight;
 pub mod join;
+pub mod keyset;
 pub mod lintsuggest;
 pub mod logs;
 pub mod lookalike;

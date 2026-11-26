@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ use crate::document::{Document, Progress, View};
 use crate::expr::{Ctx, Expr};
 use crate::filter::FilterSpec;
 use crate::find::{Matcher, Pattern};
+use crate::keyset::{KeyBinding, KeySet, KeySource};
 use crate::ops::{check_cols, Cols};
 use crate::reshape::RowPlan;
 use crate::value::ReadOptions;
@@ -81,7 +83,27 @@ pub enum CheckKind {
     Expression {
         expr: String,
     },
+    /// The cell's value must be one of the values of `column` (a title) in the open table
+    /// called `table` (a foreign key). Blank cells pass with `allow_blank`. The app reads the
+    /// other table (`CheckSpec::keys`); without it the rule does not run and says why.
+    ForeignKey {
+        table: String,
+        column: String,
+        #[serde(default)]
+        match_case: bool,
+        #[serde(default = "yes")]
+        trim: bool,
+        #[serde(default = "yes")]
+        allow_blank: bool,
+    },
 }
+
+fn yes() -> bool {
+    true
+}
+
+/// Longest table or column name in a "value must exist in" rule, in characters.
+pub const MAX_REF_CHARS: usize = 260;
 
 /// One check: a kind on a column (`col` is ignored for expressions).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -108,6 +130,25 @@ pub struct CheckSpec {
     pub read: ReadOptions,
     /// Local date and time as days since 1970 (TODAY, NOW in expressions).
     pub now: f64,
+    /// For each check (by number), the other table a "value must exist in" rule reads,
+    /// filled in by the app (never saved or sent).
+    #[serde(skip)]
+    pub keys: Vec<KeyBinding>,
+}
+
+/// A rule that did not run, and why ("open precincts.csv").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotRun {
+    pub check: u32,
+    pub why: String,
+}
+
+/// A table a "value must exist in" rule read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TableUsed {
+    pub check: u32,
+    #[serde(flatten)]
+    pub source: KeySource,
 }
 
 /// One problem: shown row, column (`None` for a row check), check number.
@@ -139,6 +180,27 @@ pub struct CheckReport {
     /// Per unique check (by number): row ids whose value repeats.
     #[serde(skip)]
     pub repeats: Vec<(u32, Vec<u64>)>,
+    /// Rules that did not run (a "value must exist in" rule whose table is not open): their
+    /// rows were not checked by them, so nothing is shown or sorted as if they passed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_run: Vec<NotRun>,
+    /// The tables "value must exist in" rules read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<TableUsed>,
+}
+
+impl CheckReport {
+    /// Refused when a rule did not run: a list that leaves it out must not look clean.
+    fn all_ran(&self) -> Result<(), Error> {
+        match self.not_run.first() {
+            Some(n) => Err(Error::Invalid(format!(
+                "rule {} did not run: {}",
+                n.check + 1,
+                n.why
+            ))),
+            None => Ok(()),
+        }
+    }
 }
 
 /// A part's nearest problem: row, column, rule number, row rule.
@@ -199,6 +261,10 @@ enum Test {
     /// The other key columns (`also`), marked with the rule's column when a row repeats.
     Unique(Vec<u32>),
     Expr(Expr),
+    /// A value of another table's column (blank passes with the flag).
+    Exists(Arc<KeySet>, bool),
+    /// A rule that cannot run here, and why (it passes, and the run says so).
+    NotRun(String),
 }
 
 /// A unique rule's `also` columns, checked: at most `MAX_KEY_COLS` in the key, none twice,
@@ -329,6 +395,26 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
                 reader_cols.extend_from_slice(also);
                 Test::Unique(also.clone())
             }
+            CheckKind::ForeignKey {
+                table,
+                column,
+                match_case,
+                trim,
+                allow_blank,
+            } => match spec.keys.get(tests.len()) {
+                Some(KeyBinding::Ready(set)) if set.compares(*match_case, *trim) => {
+                    Test::Exists(set.clone(), *allow_blank)
+                }
+                Some(KeyBinding::Ready(_)) => {
+                    Test::NotRun("the other table was read another way: run again".into())
+                }
+                Some(KeyBinding::Missing(why)) => Test::NotRun(why.clone()),
+                Some(KeyBinding::None) | None => Test::NotRun(format!(
+                    "open {} (the rule reads its column {})",
+                    table.trim(),
+                    column.trim()
+                )),
+            },
             CheckKind::Expression { expr } => {
                 let e = Expr::parse(expr, &names)?;
                 check_cols(d, e.columns())?;
@@ -354,6 +440,17 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
 }
 
 impl Compiled {
+    /// The first rule that cannot run here, as an error (for paths that would otherwise
+    /// show its problems as none).
+    fn all_run(&self) -> Result<(), Error> {
+        for (i, t) in self.tests.iter().enumerate() {
+            if let Test::NotRun(why) = t {
+                return Err(Error::Invalid(format!("rule {} did not run: {why}", i + 1)));
+            }
+        }
+        Ok(())
+    }
+
     /// Does check `i` pass for this row? (`Unique` always passes here.)
     fn passes(
         &self,
@@ -383,10 +480,15 @@ impl Compiled {
         }
         let v = reader.get(buf, self.at[i]);
         if v.trim().is_empty() {
-            return !matches!(t, Test::Required);
+            return match t {
+                Test::Required => false,
+                Test::Exists(_, allow_blank) => *allow_blank,
+                _ => true,
+            };
         }
         match t {
-            Test::Required | Test::Unique(_) | Test::Expr(_) => true,
+            Test::Required | Test::Unique(_) | Test::Expr(_) | Test::NotRun(_) => true,
+            Test::Exists(set, _) => set.has(v),
             Test::DateIso => is_iso_date(v),
             // A check the person wrote reads cells by its own rule (not by the column's type).
             Test::Number { min, max, whole } => match plain.number(v) {
@@ -490,6 +592,9 @@ impl Check {
             ),
             CheckKind::Unique { .. } => "Unique (no repeats)".into(),
             CheckKind::Expression { expr } => format!("Row rule: {expr}"),
+            CheckKind::ForeignKey { table, column, .. } => {
+                format!("Value must exist in {table} > {column}")
+            }
         }
     }
 }
@@ -632,6 +737,19 @@ impl Document {
             repeats,
             ..Default::default()
         };
+        for (i, t) in c.tests.iter().enumerate() {
+            match t {
+                Test::NotRun(why) => rep.not_run.push(NotRun {
+                    check: i as u32,
+                    why: why.clone(),
+                }),
+                Test::Exists(set, _) => rep.tables.push(TableUsed {
+                    check: i as u32,
+                    source: set.source.clone(),
+                }),
+                _ => {}
+            }
+        }
         for p in parts {
             rep.rows += p.rows;
             rep.problems += p.problems;
@@ -710,6 +828,7 @@ impl Document {
         passing: bool,
     ) -> Result<RowPlan, Error> {
         self.ready_for_bulk()?;
+        report.all_ran()?;
         let base = self.next_row_id();
         let mut bits = report.failing.clone();
         bits.resize((base as usize).div_ceil(64), 0);
@@ -752,6 +871,7 @@ impl Document {
         scope: crate::sort::SortScope,
     ) -> Result<crate::sort::SortPlan, Error> {
         self.ready_for_bulk()?;
+        report.all_ran()?;
         let total = self.total_rows();
         let first = u64::from(keep_first && total > 0);
         // The shown positions being put in order, when rows are hidden and
@@ -809,7 +929,9 @@ impl Document {
         progress: &Progress,
     ) -> Result<crate::ops::ColPlan, Error> {
         self.ready_for_bulk()?;
+        report.all_ran()?;
         let c = compile(self, spec)?;
+        c.all_run()?;
         let n = spec.checks.len();
         let titles = self.titles(
             &spec
@@ -834,6 +956,7 @@ impl Document {
                     CheckKind::Pattern { .. } => "pattern",
                     CheckKind::Unique { .. } => "repeated",
                     CheckKind::Expression { .. } => "rule",
+                    CheckKind::ForeignKey { .. } => "not in the other table",
                 };
                 match k.kind {
                     CheckKind::Expression { .. } => format!("rule {}", i + 1),
@@ -942,6 +1065,7 @@ impl Document {
     ) -> Result<Vec<CheckMark>, Error> {
         self.ready_for_bulk()?;
         let c = compile(self, spec)?;
+        c.all_run()?;
         let n = self.row_count();
         let r0 = rows.start.max(u64::from(spec.keep_first && n > 0));
         let r1 = rows.end.min(n);
@@ -993,6 +1117,7 @@ impl Document {
     ) -> Result<JumpResult, Error> {
         self.ready_for_bulk()?;
         let c = compile(self, spec)?;
+        c.all_run()?;
         let n = self.row_count();
         let first_row = u64::from(spec.keep_first && n > 0);
         let mut out = JumpResult::default();
@@ -1246,6 +1371,17 @@ pub fn check_spec(spec: &CheckSpec) -> Result<(), Error> {
                 return Err(Error::Invalid(format!(
                     "a list can hold at most {MAX_LIST} values"
                 )))
+            }
+            CheckKind::ForeignKey { table, column, .. }
+                if table.trim().is_empty()
+                    || column.trim().is_empty()
+                    || table.chars().count() > MAX_REF_CHARS
+                    || column.chars().count() > MAX_REF_CHARS =>
+            {
+                return Err(Error::Invalid(
+                    "a \"value must exist in\" rule needs a table and a column (up to 260 characters each)"
+                        .into(),
+                ))
             }
             CheckKind::Unique { also, .. } if also.len() + 1 > MAX_KEY_COLS => {
                 return Err(Error::Invalid(format!(
@@ -1959,5 +2095,224 @@ mod repeat_props {
             }
             prop_assert_eq!(part, full);
         }
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    use crate::OpenOptions;
+
+    fn doc(s: &str) -> Document {
+        Document::from_bytes(s.as_bytes().to_vec(), OpenOptions::default(), Some("csv")).unwrap()
+    }
+
+    fn fk(match_case: bool, trim: bool, allow_blank: bool) -> Check {
+        Check::new(
+            Some(1),
+            CheckKind::ForeignKey {
+                table: "precincts".into(),
+                column: "Code".into(),
+                match_case,
+                trim,
+                allow_blank,
+            },
+        )
+    }
+
+    fn with(checks: Vec<Check>, keys: Vec<KeyBinding>) -> CheckSpec {
+        CheckSpec {
+            checks,
+            keep_first: true,
+            keys,
+            ..Default::default()
+        }
+    }
+
+    fn set(other: &Document, match_case: bool, trim: bool) -> KeyBinding {
+        KeyBinding::Ready(Arc::new(
+            KeySet::build(other, 0, true, match_case, trim, u64::MAX, &Progress::new()).unwrap(),
+        ))
+    }
+
+    const VOTERS: &str =
+        "name,precinct\r\nAnn,P1\r\nBo,p2\r\nCy, P1 \r\nDee,\r\nEli,P9\r\nFay,P3\r\n";
+    const PRECINCTS: &str = "Code,Area\r\nP1,North\r\nP2,South\r\nP3,East\r\n,blank\r\n";
+
+    #[test]
+    fn values_missing_from_the_other_table_are_problems() {
+        let d = doc(VOTERS);
+        let other = doc(PRECINCTS);
+        let p = Progress::new();
+        // No case, trimmed, blanks allowed: only P9 is missing.
+        let r = d
+            .run_checks(
+                &with(vec![fk(false, true, true)], vec![set(&other, false, true)]),
+                &p,
+            )
+            .unwrap();
+        assert_eq!(r.per_check, vec![1]);
+        assert_eq!(r.listed[0].value, "P9");
+        assert!(r.not_run.is_empty());
+        assert_eq!(r.tables.len(), 1);
+        assert_eq!((r.tables[0].source.rows, r.tables[0].source.hidden), (4, 0));
+        // Blanks not allowed: Dee too. Case matters: p2 too. Not trimmed: " P1 " too.
+        let r = d
+            .run_checks(
+                &with(vec![fk(false, true, false)], vec![set(&other, false, true)]),
+                &p,
+            )
+            .unwrap();
+        assert_eq!(r.per_check, vec![2]);
+        let r = d
+            .run_checks(
+                &with(vec![fk(true, true, true)], vec![set(&other, true, true)]),
+                &p,
+            )
+            .unwrap();
+        assert_eq!(r.per_check, vec![2]);
+        let r = d
+            .run_checks(
+                &with(
+                    vec![fk(false, false, true)],
+                    vec![set(&other, false, false)],
+                ),
+                &p,
+            )
+            .unwrap();
+        assert_eq!(r.per_check, vec![2]);
+        // A set read another way than the rule asks does not run (never a wrong answer).
+        let r = d
+            .run_checks(
+                &with(vec![fk(true, true, true)], vec![set(&other, false, true)]),
+                &p,
+            )
+            .unwrap();
+        assert_eq!(r.not_run.len(), 1);
+    }
+
+    #[test]
+    fn a_rule_whose_table_is_not_open_does_not_run_and_nothing_looks_clean() {
+        let mut d = doc(VOTERS);
+        let p = Progress::new();
+        let req = Check::new(Some(0), CheckKind::Required);
+        for keys in [
+            vec![],
+            vec![KeyBinding::None, KeyBinding::None],
+            vec![
+                KeyBinding::None,
+                KeyBinding::Missing("open precincts".into()),
+            ],
+        ] {
+            let s = with(vec![req.clone(), fk(false, true, true)], keys);
+            let r = d.run_checks(&s, &p).unwrap();
+            assert_eq!(r.per_check, vec![0, 0]);
+            assert_eq!(r.not_run.len(), 1);
+            assert_eq!(r.not_run[0].check, 1);
+            assert!(
+                r.not_run[0].why.contains("open precincts"),
+                "{}",
+                r.not_run[0].why
+            );
+            // Every path that would show the rule's problems as none refuses.
+            assert!(d.plan_show_problems(&r, true, false).is_err());
+            assert!(d.plan_show_problems(&r, true, true).is_err());
+            assert!(d.plan_sort_problems(&r, true).is_err());
+            assert!(d.plan_check_column(&s, &r, "", &p).is_err());
+            assert!(d
+                .problem_marks(0..d.row_count(), &s, &r.repeats, &p)
+                .is_err());
+            assert!(d
+                .next_problem(1, 0, false, &s, &r.repeats, &[], &p)
+                .is_err());
+            // The screen marks just leave the rule out; the rules still fit the table.
+            assert!(d.check_marks(0, 10, 0, 2, &s, &r.repeats).is_ok());
+            assert!(d.rules_fit(&s).is_ok());
+        }
+        // With the table: all of those work.
+        let other = doc(PRECINCTS);
+        let s = with(
+            vec![req, fk(false, true, true)],
+            vec![KeyBinding::None, set(&other, false, true)],
+        );
+        let r = d.run_checks(&s, &p).unwrap();
+        let plan = d.plan_show_problems(&r, true, false).unwrap();
+        d.apply_rows(plan).unwrap();
+        assert_eq!(d.row_count(), 2, "the title row and Eli (P9)");
+    }
+
+    #[test]
+    fn a_rule_can_read_its_own_table() {
+        let d = doc("id,manager\r\n1,\r\n2,1\r\n3,2\r\n4,7\r\n");
+        let own = KeyBinding::Ready(Arc::new(
+            KeySet::build(&d, 0, true, false, true, u64::MAX, &Progress::new()).unwrap(),
+        ));
+        let rule = Check::new(
+            Some(1),
+            CheckKind::ForeignKey {
+                table: "staff".into(),
+                column: "id".into(),
+                match_case: false,
+                trim: true,
+                allow_blank: true,
+            },
+        );
+        let r = d
+            .run_checks(&with(vec![rule], vec![own]), &Progress::new())
+            .unwrap();
+        assert_eq!(r.per_check, vec![1]);
+        assert_eq!(r.listed[0].value, "7");
+    }
+
+    #[test]
+    fn the_other_tables_hidden_rows_are_not_read_and_are_counted() {
+        let mut other = doc(PRECINCTS);
+        let spec = crate::filter::FilterSpec {
+            keep_first: true,
+            columns: vec![crate::filter::ColumnFilter {
+                col: 1,
+                rule: crate::filter::Rule::Values {
+                    values: vec!["North".into()],
+                    blanks: false,
+                },
+            }],
+            ..Default::default()
+        };
+        let plan = other.plan_filter(&spec, &Progress::new()).unwrap();
+        other.apply_filter(plan).unwrap();
+        let s = KeySet::build(&other, 0, true, false, true, u64::MAX, &Progress::new()).unwrap();
+        assert_eq!((s.source.rows, s.source.hidden, s.len()), (1, 3, 1));
+        assert!(s.has("p1") && !s.has("P2"));
+        // A budget too small for the table is refused.
+        assert!(KeySet::build(&other, 0, true, false, true, 8, &Progress::new()).is_err());
+    }
+
+    #[test]
+    fn a_value_must_exist_rule_needs_a_table_and_a_column() {
+        let mut c = fk(false, true, true);
+        assert!(check_spec(&with(vec![c.clone()], vec![])).is_ok());
+        if let CheckKind::ForeignKey { table, .. } = &mut c.kind {
+            *table = " ".into();
+        }
+        assert!(check_spec(&with(vec![c.clone()], vec![])).is_err());
+        assert_eq!(
+            fk(false, true, true).describe(),
+            "Value must exist in precincts > Code"
+        );
+        // Stored with its settings; defaults when left out.
+        let back: Check = serde_json::from_str(
+            r#"{"col":1,"kind":{"type":"foreign_key","table":"t","column":"c"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            back.kind,
+            CheckKind::ForeignKey {
+                table: "t".into(),
+                column: "c".into(),
+                match_case: false,
+                trim: true,
+                allow_blank: true
+            }
+        );
     }
 }

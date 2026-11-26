@@ -27,7 +27,7 @@ const USAGE: &str = "usage: natendo-cli --version
        natendo-cli clean <cleaner> <in> -o <out> [--columns 1,3] [--skip-header] [--overwrite]
        natendo-cli convert <in> -o <out> [--to csv|tsv|psv|json|xml|html|md|xlsx|pdf|fixed] [--sheet N] [--no-header] [--landscape] [--overwrite]
        natendo-cli compute <in> -o <out> --expr <expression> [--title <name>] [--no-header] [--overwrite]
-       natendo-cli validate <in> --checks <checks.json> [--no-header] [--json]
+       natendo-cli validate <in> --checks <checks.json> [--table name=file]... [--no-header] [--json]
        natendo-cli run <recipe.json> <in> -o <out> [--set <question>=<answer> ...] [--to <format>] [--force] [--dry-run] [--no-header] [--overwrite]
        natendo-cli headers <in> [--json]
        natendo-cli select <in> -o <out> --columns <a,b,...>

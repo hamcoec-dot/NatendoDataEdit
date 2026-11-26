@@ -41,6 +41,7 @@ use natendo_engine::highlight::{Highlight, Mark};
 use natendo_engine::join::{
     AppendSource, AppendSpec, JoinPreview, JoinReport, JoinSource, JoinSpec, LookupTable,
 };
+use natendo_engine::keyset::{KeyBinding, KeySet};
 use natendo_engine::ops::{
     self, ColPlan, Dir, FillSpec, MergeColumns, PasteSpec, SplitColumn, MAX_BLOCK_CELLS,
 };
@@ -56,7 +57,7 @@ use natendo_engine::tools::{
     Breaks, Combine, CompareIndex, CompareReport, CompareSpec, FillBlanks, Repeats, Reshape,
     Sample, SplitParts, Stack, MAX_COMBINE,
 };
-use natendo_engine::validate::{CheckMark, CheckReport, CheckSpec};
+use natendo_engine::validate::{CheckKind, CheckMark, CheckReport, CheckSpec};
 use natendo_engine::value::ReadOptions;
 use natendo_engine::{
     scan, Dialect, Document, Encoding, Error, Format, LineBreak, OpenOptions, Progress, Quoting,
@@ -1841,6 +1842,9 @@ pub struct Docs {
     next_list: std::sync::atomic::AtomicU64,
     /// LOOKUP tables by tab, its revision and the two columns.
     lookups: Mutex<Vec<(String, Arc<LookupTable>)>>,
+    /// Value sets of "value must exist in" rules by tab, its revision, the column and the
+    /// way of comparing (kept while that tab is unchanged; dropped when it closes).
+    key_sets: Mutex<Vec<(String, Arc<KeySet>)>>,
     /// Whether a path is in private file mode (set when the app starts;
     /// the recent list keeps the private files and folders).
     private_check: Mutex<Option<PrivateCheck>>,
@@ -1862,6 +1866,15 @@ struct JoinCache {
 const MAX_JOIN_LISTS: usize = 4;
 /// LOOKUP tables kept at once.
 const MAX_LOOKUP_TABLES: usize = 8;
+/// Most value sets kept for "value must exist in" rules.
+const MAX_KEY_SETS: usize = 8;
+
+/// Memory all kept value sets may hold together: a quarter of the computer's memory, at most 2 GB.
+fn key_sets_budget() -> u64 {
+    natendo_engine::sysmem::installed_bytes()
+        .map_or(1 << 30, |b| b / 4)
+        .min(2 << 30)
+}
 
 /// The options that decide how the other table is indexed (cache key).
 fn index_key(spec: &JoinSpec) -> String {
@@ -2111,6 +2124,10 @@ impl Docs {
         }
         let mine = format!("{id}:");
         self.lookups
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(k, _)| !k.starts_with(&mine));
+        self.key_sets
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .retain(|(k, _)| !k.starts_with(&mine));
@@ -6393,6 +6410,13 @@ impl Docs {
             DataOp::MapValues { from: Some(f), .. } => Some(self.map_pairs(f)?),
             _ => None,
         };
+        // The tables "value must exist in" rules read, the same way.
+        let keys = match &op {
+            DataOp::ShowProblems { spec, .. }
+            | DataOp::SortProblems { spec, .. }
+            | DataOp::CheckColumn { spec, .. } => self.key_bindings(id, spec)?,
+            _ => Vec::new(),
+        };
         // LOOKUP tables of a computed column, copied out the same way.
         let mut read_tabs: Vec<u32> = Vec::new();
         let tables = match &op {
@@ -6525,6 +6549,10 @@ impl Docs {
                     Planned::Rows(plan)
                 }
                 DataOp::ShowProblems { spec, passing } => {
+                    let spec = &CheckSpec {
+                        keys: keys.clone(),
+                        ..spec.clone()
+                    };
                     let rep = d.run_checks(spec, p)?;
                     Planned::Rows(d.plan_show_problems(&rep, spec.keep_first, *passing)?)
                 }
@@ -6561,11 +6589,19 @@ impl Docs {
                     Planned::Rows(d.plan_show_ragged(&found, *keep_first, *pick)?)
                 }
                 DataOp::SortProblems { spec, scope } => {
+                    let spec = &CheckSpec {
+                        keys: keys.clone(),
+                        ..spec.clone()
+                    };
                     let rep = d.run_checks(spec, p)?;
                     groups.set(rep.rows);
                     Planned::Sort(d.plan_sort_problems(&rep, spec.keep_first, *scope)?)
                 }
                 DataOp::CheckColumn { spec, title } => {
+                    let spec = &CheckSpec {
+                        keys: keys.clone(),
+                        ..spec.clone()
+                    };
                     let rep = d.run_checks(spec, p)?;
                     groups.set(rep.rows);
                     Planned::Cols(d.plan_check_column(spec, &rep, title, p)?)
@@ -7090,9 +7126,140 @@ impl Docs {
         Ok(Lookups(out))
     }
 
+    /// For each rule of `spec` (by number), the table a "value must exist in" rule reads:
+    /// the open tab with that name (or that name without its extension), never two (then the
+    /// rule does not run and says to close one), its column by title. Read from the tab's
+    /// shown data rows and kept while the tab is unchanged. A rule on this tab's own column
+    /// reads this tab (call before taking this tab's lock).
+    pub fn key_bindings(&self, id: u32, spec: &CheckSpec) -> CmdResult<Vec<KeyBinding>> {
+        if !spec
+            .checks
+            .iter()
+            .any(|c| matches!(c.kind, CheckKind::ForeignKey { .. }))
+        {
+            return Ok(Vec::new());
+        }
+        let names: Vec<(u32, String)> = self
+            .ids()
+            .into_iter()
+            .filter_map(|i| self.info(i).ok().map(|n| (i, n.name)))
+            .collect();
+        let mut out = Vec::with_capacity(spec.checks.len());
+        for c in &spec.checks {
+            let CheckKind::ForeignKey {
+                table,
+                column,
+                match_case,
+                trim,
+                ..
+            } = &c.kind
+            else {
+                out.push(KeyBinding::None);
+                continue;
+            };
+            let want = table.trim().to_lowercase();
+            let hits: Vec<u32> = names
+                .iter()
+                .filter(|(_, n)| {
+                    let n = n.to_lowercase();
+                    n == want || n.rsplit_once('.').is_some_and(|(stem, _)| stem == want)
+                })
+                .map(|(i, _)| *i)
+                .collect();
+            let other = match hits.as_slice() {
+                [one] => *one,
+                [] => {
+                    out.push(KeyBinding::Missing(format!("open {}", table.trim())));
+                    continue;
+                }
+                _ => {
+                    out.push(KeyBinding::Missing(format!(
+                        "two open files are called {}: close one",
+                        table.trim()
+                    )));
+                    continue;
+                }
+            };
+            let entry = self.get(other)?;
+            let d = entry.read();
+            // The other table's first row holds titles; this tab's own column follows its setting.
+            let keep_first = if other == id { spec.keep_first } else { true };
+            let titles = d.expr_names(keep_first);
+            let want_col = column.trim().to_lowercase();
+            let Some(col) = titles
+                .iter()
+                .position(|t| t.trim().to_lowercase() == want_col)
+            else {
+                out.push(KeyBinding::Missing(format!(
+                    "{} has no column {}",
+                    table.trim(),
+                    column.trim()
+                )));
+                continue;
+            };
+            let name = format!(
+                "{other}:{}:{col}:{}:{}:{}",
+                d.revision(),
+                u8::from(keep_first),
+                u8::from(*match_case),
+                u8::from(*trim)
+            );
+            let hit = self
+                .key_sets
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, s)| s.clone());
+            let set = match hit {
+                Some(s) => s,
+                None => {
+                    let budget = key_sets_budget();
+                    let mut s = KeySet::build(
+                        &d,
+                        col as u32,
+                        keep_first,
+                        *match_case,
+                        *trim,
+                        budget,
+                        &Progress::new(),
+                    )?;
+                    s.source.doc = other;
+                    s.source.table = table.trim().to_string();
+                    s.source.column = titles[col].clone();
+                    let s = Arc::new(s);
+                    let mut cache = self.key_sets.lock().unwrap_or_else(|p| p.into_inner());
+                    // Sets of an earlier state of the same tab are no use any more.
+                    let now = format!("{other}:{}:", d.revision());
+                    let mine = format!("{other}:");
+                    cache.retain(|(k, _)| !k.starts_with(&mine) || k.starts_with(&now));
+                    cache.push((name, s.clone()));
+                    // The oldest go first while there are too many or they hold too much memory.
+                    while cache.len() > MAX_KEY_SETS
+                        || (cache.len() > 1
+                            && cache.iter().map(|(_, s)| s.bytes()).sum::<u64>() > budget)
+                    {
+                        cache.remove(0);
+                    }
+                    s
+                }
+            };
+            out.push(KeyBinding::Ready(set));
+        }
+        Ok(out)
+    }
+
+    /// `spec` with its "value must exist in" rules' tables filled in.
+    fn with_keys(&self, id: u32, spec: &CheckSpec) -> CmdResult<CheckSpec> {
+        let mut s = spec.clone();
+        s.keys = self.key_bindings(id, spec)?;
+        Ok(s)
+    }
+
     /// Run data checks over the shown rows (a job: progress and Cancel).
     pub fn run_checks(&self, id: u32, spec: &CheckSpec) -> CmdResult<CheckReport> {
         let key = serde_json::to_string(&spec.checks).unwrap_or_default();
+        let spec = &self.with_keys(id, spec)?;
         let entry = self.get(id)?;
         let job = entry.start("Checking")?;
         let d = entry.read();
@@ -7459,6 +7626,7 @@ impl Docs {
         spec: &CheckSpec,
     ) -> CmdResult<Vec<CheckMark>> {
         let key = serde_json::to_string(&spec.checks).unwrap_or_default();
+        let spec = &self.with_keys(id, spec)?;
         let entry = self.get(id)?;
         let d = entry.read();
         let last = entry.checks.lock().unwrap_or_else(|p| p.into_inner());
@@ -7483,6 +7651,7 @@ impl Docs {
         skip_cols: &[u32],
     ) -> CmdResult<natendo_engine::validate::JumpResult> {
         let key = serde_json::to_string(&spec.checks).unwrap_or_default();
+        let spec = &self.with_keys(id, spec)?;
         let entry = self.get(id)?;
         let job = entry.start("Looking for the next problem")?;
         let d = entry.read();
@@ -8310,6 +8479,9 @@ impl Docs {
         id: u32,
         mut spec: natendo_engine::special::SpecialSpec,
     ) -> CmdResult<natendo_engine::special::SpecialCells> {
+        if let natendo_engine::special::SpecialKind::Problems { checks } = &mut spec.kind {
+            checks.keys = self.key_bindings(id, checks)?;
+        }
         let entry = self.get(id)?;
         let job = entry.start("Looking")?;
         let d = entry.read();
