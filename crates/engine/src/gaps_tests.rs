@@ -5,7 +5,12 @@ use crate::sort::SortSpec;
 use crate::OpenOptions;
 
 fn doc(text: &str) -> Document {
-    Document::from_bytes(text.as_bytes().to_vec(), OpenOptions::default(), Some("csv")).unwrap()
+    Document::from_bytes(
+        text.as_bytes().to_vec(),
+        OpenOptions::default(),
+        Some("csv"),
+    )
+    .unwrap()
 }
 
 /// A one-column table titled `N`, with a second column so it reads as CSV.
@@ -43,10 +48,7 @@ fn refused(d: &Document, s: &GapsSpec) -> String {
 #[test]
 fn a_gap_in_the_middle_and_none_at_the_ends() {
     let r = run(&["1001", "1002", "1006", "1007", "1009"]);
-    assert_eq!(
-        lines(&r),
-        ["1003 to 1005 (3 missing)", "1008 (1 missing)"]
-    );
+    assert_eq!(lines(&r), ["1003 to 1005 (3 missing)", "1008 (1 missing)"]);
     assert_eq!((r.rows, r.distinct, r.missing.as_str()), (5, 5, "4"));
     assert_eq!(r.series[0].first, "1001");
     assert_eq!(r.series[0].last, "1009");
@@ -67,7 +69,7 @@ fn two_widths_of_one_prefix_are_two_shapes() {
     let r = run(&["INV-001", "INV-002", "INV-003", "INV-01", "INV-05"]);
     assert_eq!((r.rows, r.other_shape, r.range_total), (3, 2, 0));
     assert_eq!(r.pattern_total, 2);
-    assert_eq!(r.other_rows, [Some(4), Some(5)]);
+    assert_eq!(r.other_rows, [Some(5), Some(6)]);
     let mut s = spec();
     s.pattern = Some(Pattern {
         prefix: "INV-".into(),
@@ -75,10 +77,7 @@ fn two_widths_of_one_prefix_are_two_shapes() {
         width: 2,
     });
     let d = column(&["INV-001", "INV-002", "INV-003", "INV-01", "INV-05"]);
-    assert_eq!(
-        lines(&run_with(&d, &s)),
-        ["INV-02 to INV-04 (3 missing)"]
-    );
+    assert_eq!(lines(&run_with(&d, &s)), ["INV-02 to INV-04 (3 missing)"]);
 }
 
 #[test]
@@ -96,10 +95,7 @@ fn the_digit_run_that_changes_most_is_picked() {
     let mut s = spec();
     s.run = Some(0);
     let d = column(&["INV-00123/2024", "INV-00123/2026"]);
-    assert_eq!(
-        lines(&run_with(&d, &s)),
-        ["INV-00123/2025 (1 missing)"]
-    );
+    assert_eq!(lines(&run_with(&d, &s)), ["INV-00123/2025 (1 missing)"]);
 }
 
 #[test]
@@ -169,7 +165,7 @@ fn listed_ranges_are_capped_with_exact_totals() {
 fn duplicates_blanks_and_small_columns() {
     let r = run(&["5", "5", "", "5", "7", "7"]);
     assert_eq!((r.duplicate_values, r.duplicate_extra, r.blank), (2, 3, 1));
-    assert_eq!(r.duplicates[0].rows, [Some(1), Some(2), Some(4)]);
+    assert_eq!(r.duplicates[0].rows, [Some(2), Some(3), Some(5)]);
     let r = run(&[]);
     assert_eq!((r.rows, r.range_total, r.missing.as_str()), (0, 0, "0"));
     let r = run(&["9"]);
@@ -183,7 +179,7 @@ fn drops_are_counted_in_file_order_even_after_a_sort() {
     let mut d = column(&["1", "2", "3", "10", "4", "5"]);
     let before = run_with(&d, &spec());
     assert_eq!(before.drops, 1);
-    assert_eq!(before.drop_rows, [Some(5)]);
+    assert_eq!(before.drop_rows, [Some(6)]);
     let plan = d
         .plan_sort(
             &SortSpec {
@@ -202,7 +198,7 @@ fn drops_are_counted_in_file_order_even_after_a_sort() {
     d.apply_sort(plan).unwrap();
     let after = run_with(&d, &spec());
     assert_eq!(after.drops, 1);
-    assert_eq!(after.drop_rows, [Some(5)]);
+    assert_eq!(after.drop_rows, [Some(6)]);
 }
 
 #[test]
@@ -261,10 +257,7 @@ fn series_are_audited_each_on_their_own() {
     s.col = 1;
     s.series = vec![0];
     let r = run_with(&d, &s);
-    assert_eq!(
-        lines(&r),
-        ["2: 7 (1 missing)", "10: 2 (1 missing)"]
-    );
+    assert_eq!(lines(&r), ["2: 7 (1 missing)", "10: 2 (1 missing)"]);
     assert_eq!(r.series_total, 3);
     assert!(r.series[1].too_few);
     assert_eq!(r.drops, 0);
@@ -313,7 +306,8 @@ fn rows_next_to_each_gap_include_every_repeat() {
 #[test]
 fn rows_added_by_hand_join_the_sequence_but_not_the_order_check() {
     let mut d = column(&["1", "2", "5"]);
-    d.insert_rows(1, vec![vec!["3".into(), "1".into()]]).unwrap();
+    d.insert_rows(1, vec![vec!["3".into(), "1".into()]])
+        .unwrap();
     let r = run_with(&d, &spec());
     assert_eq!((r.added, r.drops, r.rows), (1, 0, 4));
     assert_eq!(lines(&r), ["4 (1 missing)"]);
@@ -353,11 +347,8 @@ fn present_and_missing_make_the_whole_range() {
         sp.run = Some(0);
         let r = run_with(&doc(&s), &sp);
         for series in 0..3u64 {
-            let present: std::collections::BTreeSet<u64> = rows
-                .iter()
-                .filter(|x| x.0 == series)
-                .map(|x| x.1)
-                .collect();
+            let present: std::collections::BTreeSet<u64> =
+                rows.iter().filter(|x| x.0 == series).map(|x| x.1).collect();
             let mut all = present.clone();
             for line in r.ranges.iter().filter(|l| l.series == [series.to_string()]) {
                 let (a, b): (u64, u64) = (line.from.parse().unwrap(), line.to.parse().unwrap());
@@ -366,9 +357,7 @@ fn present_and_missing_make_the_whole_range() {
                 }
             }
             let want: Vec<u64> = match (present.first(), present.last()) {
-                (Some(&a), Some(&b))
-                    if rows.iter().filter(|x| x.0 == series).count() >= 2 =>
-                {
+                (Some(&a), Some(&b)) if rows.iter().filter(|x| x.0 == series).count() >= 2 => {
                     (a..=b).collect()
                 }
                 _ => present.iter().copied().collect(),

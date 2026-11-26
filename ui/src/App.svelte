@@ -60,6 +60,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import ZipPickDialog from "./lib/ZipPickDialog.svelte";
   import TidyTitlesDialog from "./lib/TidyTitlesDialog.svelte";
   import CompareColsDialog, { type CompareAction } from "./lib/CompareColsDialog.svelte";
+  import GapsDialog from "./lib/GapsDialog.svelte";
+  import type { GapReport, GapsSpec } from "./lib/gaps";
   import type { CompareCols } from "./lib/backend";
   import { typedCell } from "./lib/cellformula";
   import type { TitleSpec } from "./lib/backend";
@@ -3382,6 +3384,59 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
 
+  // ---- gaps in a sequence ----
+  let gapsAsk = $state<{ titles: string[]; col: number } | null>(null);
+
+  function openGaps(): void {
+    const t = tab;
+    if (!t) return;
+    const titles = Array.from({ length: Math.min(t.info.cols, 5_000) }, (_, c) => columnTitle(t, c));
+    gapsAsk = { titles, col: Math.min(t.cell.col, titles.length - 1) };
+  }
+
+  async function runGaps(spec: GapsSpec): Promise<GapReport | null> {
+    const t = tab;
+    if (!t) return null;
+    try {
+      return await runJob("Looking for gaps", () => backend().gapAudit(t.id, spec));
+    } catch (e) {
+      say(errorText(e));
+      return null;
+    }
+  }
+
+  async function showGapRows(spec: GapsSpec): Promise<void> {
+    gapsAsk = null;
+    const rep = await runOp({ op: "show_gap_rows", spec }, "Filtering");
+    if (rep) say(`Showing ${plural(rep.rows, "row")} next to a gap. Data › Clear filter shows every row.`);
+  }
+
+  async function openGapsTab(spec: GapsSpec, saveIt: boolean): Promise<void> {
+    gapsAsk = null;
+    const t = tab;
+    if (!t) return;
+    try {
+      const d = await runJob("Looking for gaps", () => backend().newTable(t.id, { op: "gaps", spec }));
+      if (!d) return;
+      addTab(d, false);
+      if (saveIt) {
+        await tick();
+        await save(true);
+      } else say("The summary and the missing ranges are in a new tab.");
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  async function copyGaps(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      say("Copied the missing ranges.");
+    } catch {
+      say("Could not reach the clipboard.");
+    }
+  }
+
   // ---- tidy column titles ----
   let tidyAsk = $state(false);
   let lastTidy = $state<TitleSpec | null>(null);
@@ -6134,6 +6189,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "format.hideCols", label: "&Hide columns", keys: ["Ctrl+0"], run: hideCols, enabled: hasTab },
     { id: "format.tidyTitles", label: "&Tidy column titles…", run: openTidyTitles, enabled: ready },
     { id: "data.compareCols", label: "Compare t&wo columns…", run: openCompareCols, enabled: ready },
+    { id: "data.gaps", label: "Find gaps in a sequence…", run: openGaps, enabled: ready },
     {
       id: "format.protectCols",
       label: "&Protect column (no changes)",
@@ -6412,7 +6468,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
         "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
-        "data.join", "data.match", "data.street", "data.append", "data.compareCols", "-",
+        "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.gaps", "-",
         "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",
         "find.find", "find.replace", "find.batch", "find.next", "find.prev", "find.ghosts",
       ],
@@ -6446,10 +6502,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.gaps", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -8801,6 +8857,22 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     readOnly={!!tab.info.read_only}
     onRun={(spec, action) => void runCompareCols(spec, action).then(() => grid?.focus())}
     onClose={() => { compareAsk = null; grid?.focus(); }}
+  />
+{/if}
+{#if gapsAsk && tab}
+  {@const g = gapsAsk}
+  <GapsDialog
+    titles={g.titles}
+    hidden={hiddenColsOf(tab)}
+    col={g.col}
+    header={tab.header && tab.info.rows > 0}
+    rows={tab.info.rows}
+    onRun={runGaps}
+    onCancelRun={() => { if (tab) void backend().cancelJob(tab.id); }}
+    onShowRows={(s) => void showGapRows(s).then(() => grid?.focus())}
+    onOpenTab={(s, saveIt) => void openGapsTab(s, saveIt).then(() => grid?.focus())}
+    onCopy={(t) => void copyGaps(t)}
+    onClose={() => { gapsAsk = null; grid?.focus(); }}
   />
 {/if}
 {#if tidyAsk && tab}

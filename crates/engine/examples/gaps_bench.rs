@@ -12,11 +12,7 @@ fn table(rows: u64, scattered: bool) -> Document {
     let mut s = String::from("Invoice,Ward\r\n");
     for i in 0..rows {
         // All different; every thousandth number left out.
-        let n = if scattered {
-            (i * 7_919) % rows
-        } else {
-            i
-        };
+        let n = if scattered { (i * 7_919) % rows } else { i };
         let n = n + n / 1000;
         s.push_str(&format!("INV-{n:08},{}\r\n", i % 40));
     }
@@ -75,12 +71,15 @@ fn main() {
                     p.cancel.store(true, Ordering::Relaxed);
                     Instant::now()
                 });
-                let _ = d.gap_audit(&gaps, &p);
+                let _ = d.gap_audit(&gaps, p);
                 let ended = Instant::now();
                 let asked = h.join().unwrap();
                 worst = worst.max(ended.saturating_duration_since(asked));
             });
         }
-        println!("{name}: slowest stop after Cancel {:.1} ms", worst.as_secs_f64() * 1e3);
+        println!(
+            "{name}: slowest stop after Cancel {:.1} ms",
+            worst.as_secs_f64() * 1e3
+        );
     }
 }

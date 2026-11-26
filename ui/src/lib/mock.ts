@@ -3,6 +3,7 @@
 // the desktop shell and by tests. It is not the engine; it only has to
 // behave the same at the command level.
 
+import type { GapReport, GapsSpec } from "./gaps";
 import { COLUMNS_CHANGED } from "./ragged";
 import { joinPreview } from "./repair";
 import { mockDrill, mockItems, mockPivot, type ItemList, type PivotField, type PivotGrid, type PivotSpec } from "./pivot";
@@ -2580,6 +2581,12 @@ export class MockBackend implements Backend {
         if (s.keep_first && rows > 0) keep.add(this.rowId(d, 0));
         return this.report(this.setView(d, keep, { columns: [], keep_first: s.keep_first }), { rows: shown });
       }
+      case "show_gap_rows": {
+        const found = this.gaps(doc, op.spec).beside;
+        const keep = new Set<number>(found.map((r) => this.rowId(d, r)));
+        if (op.spec.keep_first && rows > 0) keep.add(this.rowId(d, 0));
+        return this.report(this.setView(d, keep, { columns: [], keep_first: op.spec.keep_first }), { rows: found.length });
+      }
       case "show_ragged": {
         // The stand-in has no file rows of other widths: tests name them.
         if (d.info.column_changes) throw err("invalid", COLUMNS_CHANGED);
@@ -3174,6 +3181,76 @@ export class MockBackend implements Backend {
     return best ? best[1] : null;
   }
 
+  async gapAudit(doc: number, spec: GapsSpec): Promise<GapReport> {
+    return this.gaps(doc, spec).report;
+  }
+
+  /** The browser preview's audit: one column, the last run of digits, the
+   *  most common text around it; no series (the desktop app does the rest). */
+  private gaps(doc: number, spec: GapsSpec): { report: GapReport; beside: number[] } {
+    const d = this.get(doc);
+    if (spec.series.length || spec.each_shape || spec.start || spec.end) throw err("invalid", "the browser preview does not do this; the desktop app does");
+    const cells: { around: string; digits: string; row: number }[] = [];
+    let blank = 0;
+    let other = 0;
+    const first = spec.keep_first ? 1 : 0;
+    for (let r = first; r < this.rowCount(d); r++) {
+      const v = this.value(d, r, spec.col).trim();
+      const m = /^(.*?)([0-9]{1,15})([^0-9]*)$/.exec(v);
+      if (!v) blank++;
+      else if (!m) other++;
+      else cells.push({ around: JSON.stringify([m[1], m[3]]), digits: m[2]!, row: r });
+    }
+    const count = new Map<string, number>();
+    for (const c of cells) count.set(c.around, (count.get(c.around) ?? 0) + 1);
+    const best = [...count].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const own = cells.filter((c) => c.around === best);
+    const [prefix, suffix] = JSON.parse(best ?? '["",""]') as [string, string];
+    const width = Math.max(0, ...own.filter((c) => c.digits.length > 1 && c.digits.startsWith("0")).map((c) => c.digits.length));
+    const show = (n: number) => `${prefix}${String(n).padStart(width, "0")}${suffix}`;
+    const sorted = [...own].sort((a, b) => Number(a.digits) - Number(b.digits));
+    const ranges: GapReport["ranges"] = [];
+    const beside = new Set<number>();
+    let missing = 0;
+    for (let i = 1; i < sorted.length; i++) {
+      const a = Number(sorted[i - 1]!.digits);
+      const b = Number(sorted[i]!.digits);
+      if (b - a < 2) continue;
+      ranges.push({ series: [], from: show(a + 1), to: show(b - 1), count: String(b - a - 1) });
+      missing += b - a - 1;
+      for (const c of sorted) if (Number(c.digits) === a || Number(c.digits) === b) beside.add(c.row);
+    }
+    const distinct = new Set(own.map((c) => Number(c.digits))).size;
+    const pattern = best === undefined ? null : { prefix, suffix, width };
+    const label = `${prefix}${"#".repeat(Math.max(1, width))}${suffix}`;
+    const report: GapReport = {
+      run: 0,
+      pattern,
+      patterns: pattern ? [{ pattern, label, count: own.length }] : [],
+      pattern_total: count.size,
+      shown: this.rowCount(d) - first,
+      rows: own.length,
+      distinct,
+      blank,
+      other_shape: other + cells.length - own.length,
+      other_rows: [],
+      outside: 0,
+      drops: own.filter((c, i) => i > 0 && Number(c.digits) < Number(own[i - 1]!.digits)).length,
+      drop_rows: [],
+      added: 0,
+      duplicate_values: 0,
+      duplicate_extra: own.length - distinct,
+      duplicates: [],
+      series: own.length ? [{ key: [], first: show(Number(sorted[0]!.digits)), last: show(Number(sorted.at(-1)!.digits)), rows: own.length, distinct, missing: String(missing), too_few: own.length < 2 }] : [],
+      series_total: own.length ? 1 : 0,
+      ranges,
+      range_total: ranges.length,
+      missing: String(missing),
+      looks_like_amounts: false,
+    };
+    return { report, beside: [...beside] };
+  }
+
   async compareCols(doc: number, spec: CompareCols): Promise<CompareColsReport> {
     const d = this.get(doc);
     const rep: CompareColsReport = { same: 0, different: 0, only_first: 0, only_second: 0, rows: [] };
@@ -3285,6 +3362,15 @@ export class MockBackend implements Backend {
 
   async newTable(doc: number, op: TableOp): Promise<DocInfo> {
     if (op.op === "subtotals") throw err("invalid", "the browser preview does not make subtotals; the desktop app does");
+    if (op.op === "gaps") {
+      const r = this.gaps(doc, op.spec).report;
+      const out = [["Missing", r.missing, ""], ["", "", ""], ["From", "To", "Missing"], ...r.ranges.map((g) => [g.from, g.to, g.count])];
+      const info = this.make("Untitled", out.length, 3);
+      const nd = this.get(info.id);
+      out.forEach((line, i) => line.forEach((v, c) => nd.edits.set(`${i}:${c}`, v)));
+      nd.clean = -1;
+      return this.refresh(nd);
+    }
     if (op.op === "counts") {
       const d = this.get(doc);
       const s = op.spec;

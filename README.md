@@ -787,6 +787,15 @@ everything is also in command search.
 - Charts (line, bar, pie, counts), subtotals and groups, highlight rules.
 - **Compare two open files**, by a key column or by whole rows: what was
   added, removed and changed.
+- **Find gaps in a sequence** (Data > Find gaps in a sequence, or right-click
+  a column or cell): which numbers or IDs are missing from a column, such as
+  `INV-00123`. Missing numbers are listed as ranges, never one line each, with
+  repeated numbers, rows out of order (checked in file order), blanks and rows
+  of a different shape counted. Audit each prefix on its own, split by up to
+  two columns, type a start or end, then show the rows next to each gap, copy
+  the list, or open it as a tab and save it as CSV. Shown rows only. Dates are
+  not audited yet.
+  ![Gap audit: missing invoice numbers listed as ranges](docs/screenshots/gaps.png)
 - **Compare two columns** (Data > Compare two columns, or right-click a
   heading): for each row, are the two cells the same, different, or filled in
   only one? Light up the rows that differ, show only them, or add a column
@@ -1360,6 +1369,7 @@ natendo-cli sort data.csv -o out.csv --by "last name,amount:desc"
 natendo-cli dedupe data.csv -o out.csv --columns email     # the first copy stays
 natendo-cli stats data.csv --columns zip                   # each column's profile
 natendo-cli count data.csv --columns party,precinct        # the counts, most common first
+natendo-cli gaps data.csv --column Invoice --fail-on-gap     # missing numbers; exit 1 when there are any
 natendo-cli sample data.csv -o out.csv --rows 500 --seed 7 # or --percent 5, --every 10
 natendo-cli slice data.csv -o out.csv --rows 1001-2000     # with the title row
 natendo-cli split data.csv -o parts --by county            # or --rows 50000
