@@ -344,6 +344,7 @@ impl Document {
                     fix: Fix::Clean {
                         cols: vec![col],
                         step: Step::Dates {
+                            review: None,
                             from: String::new(),
                             past: false,
                             format: if a.times {
