@@ -57,6 +57,7 @@ pub mod lookalike;
 pub mod mail;
 pub mod notes;
 pub mod ops;
+pub mod patch;
 pub mod pdf;
 pub mod pivot;
 pub mod privacy;

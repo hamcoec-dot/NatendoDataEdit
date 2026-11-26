@@ -122,7 +122,7 @@ fn title_key(t: &str) -> String {
 
 /// For each column here, the newer file's column with the same title
 /// (`by_title`; repeated titles pair in order) or position.
-fn pair_columns(here: &[String], there: &[String], by_title: bool) -> Vec<Option<u32>> {
+pub(crate) fn pair_columns(here: &[String], there: &[String], by_title: bool) -> Vec<Option<u32>> {
     if !by_title {
         return (0..here.len())
             .map(|c| (c < there.len()).then_some(c as u32))
