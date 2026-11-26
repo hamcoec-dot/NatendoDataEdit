@@ -542,6 +542,33 @@ fn what_each_writing_operation_does_to_hidden_rows() {
         };
         s.docs.sort(s.id, spec).map(drop)
     });
+    run("sort_shown", &|s| {
+        let spec = SortSpec {
+            keys: vec![serde_json::from_str(r#"{"col":1,"descending":true}"#).unwrap()],
+            keep_first: true,
+            scope: natendo_engine::sort::SortScope::Shown,
+            ..Default::default()
+        };
+        s.docs.sort(s.id, spec).map(drop)
+    });
+    run("sort_problems_shown", &|s| {
+        let op = DataOp::SortProblems {
+            spec: checks(),
+            scope: natendo_engine::sort::SortScope::Shown,
+        };
+        s.docs.data_op(s.id, op).map(drop)
+    });
+    run("compute_shown", &|s| {
+        let spec = ComputeSpec {
+            expr: "\"k\"".into(),
+            title: "made".into(),
+            keep_first: true,
+            hidden: false,
+            now: 20_000.0,
+            ..Default::default()
+        };
+        s.docs.data_op(s.id, DataOp::Compute { spec }).map(drop)
+    });
     run("replace_all", &|s| {
         let spec = serde_json::from_value(serde_json::json!({
             "pattern": { "text": "ann", "kind": "plain", "match_case": false, "whole_cell": false },
@@ -608,4 +635,39 @@ fn what_each_writing_operation_does_to_hidden_rows() {
         "hidden rows treated otherwise than listed: {wrong:#?}"
     );
     assert!(got.len() >= touches.len());
+}
+
+/// A recipe that filters and then sorts the shown rows does the same on a
+/// fresh copy: the rows its filter hides keep their places.
+#[test]
+fn a_recipe_with_a_filter_then_a_shown_sort_keeps_hidden_rows_in_place() {
+    let s = stage("recipe-a");
+    s.docs.show_rows(s.id, ShowRows::All).unwrap();
+    let spec = SortSpec {
+        keys: vec![serde_json::from_str(r#"{"col":0,"descending":true}"#).unwrap()],
+        keep_first: true,
+        scope: natendo_engine::sort::SortScope::Shown,
+        ..Default::default()
+    };
+    s.docs.sort(s.id, spec).unwrap();
+    let book = s.docs.recipe_of(s.id, true, "r").unwrap();
+    assert!(
+        book.steps
+            .iter()
+            .any(|st| st.describe().contains("shown rows")),
+        "the step says which rows it sorts"
+    );
+    let want = table(&s.docs, s.id);
+    let t = stage("recipe-b");
+    let _ = t.docs.clear_filter(t.id);
+    let _ = t.docs.show_rows(t.id, ShowRows::All);
+    t.docs.run_recipe(t.id, &book, &[], 20_000.0, true).unwrap();
+    let got = table(&t.docs, t.id);
+    assert_eq!(got, want);
+    // Group C, filtered out when the sort ran, is where it was.
+    for (at, row) in t.before.iter().enumerate() {
+        if row[2] == "C" {
+            assert_eq!(got[at][0], row[0]);
+        }
+    }
 }
