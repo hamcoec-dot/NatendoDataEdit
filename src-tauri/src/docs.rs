@@ -1743,6 +1743,8 @@ pub struct Docs {
     /// Comparisons of lists (by number) kept while their screen is open.
     sets: Mutex<HashMap<u64, SetsCache>>,
     next_sets: std::sync::atomic::AtomicU64,
+    /// Comparisons let go to save memory (to say so when one is asked for).
+    sets_dropped: Mutex<std::collections::HashSet<u64>>,
     /// Kept while a Join screen is open, one per tab the screen is for
     /// (so two windows never share one): the indexed other table (or
     /// list) and pasted lists, so previews do not copy them again.
@@ -6847,6 +6849,10 @@ impl Docs {
         while kept.len() >= 4 {
             let oldest = *kept.keys().min().expect("not empty");
             kept.remove(&oldest);
+            self.sets_dropped
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(oldest);
         }
         kept.insert(
             id,
@@ -6888,13 +6894,23 @@ impl Docs {
     /// The kept comparison, refused when any of its tables changed (an edit,
     /// a sort, a filter, hidden rows).
     fn sets_kept(&self, id: u64) -> CmdResult<SetsCache> {
-        let c = self
+        let kept = self
             .sets
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(&id)
-            .cloned()
-            .ok_or_else(lists_changed)?;
+            .cloned();
+        let Some(c) = kept else {
+            let dropped = self.sets_dropped.lock().unwrap_or_else(|p| p.into_inner());
+            return Err(if dropped.contains(&id) {
+                CmdError::new(
+                    "changed",
+                    "this comparison was closed to save memory: run it again",
+                )
+            } else {
+                lists_changed()
+            });
+        };
         for &(tab, rev) in &c.tabs {
             if !self.get(tab).is_ok_and(|e| e.read().revision() == rev) {
                 return Err(lists_changed());
@@ -12400,6 +12416,42 @@ B,y
             docs.sets_open(run.id, 1, 0, false).is_err(),
             "a list closed"
         );
+    }
+
+    #[test]
+    fn a_comparison_let_go_for_memory_says_so() {
+        use natendo_engine::sets::SetList;
+        let docs = Docs::default();
+        let open = |name: &str| {
+            let id = docs
+                .open_path(&tmp(name, b"id\r\n1\r\n"), false)
+                .unwrap()
+                .id;
+            wait(&docs, id);
+            id
+        };
+        let (a, b) = (open("sets-old-a.csv"), open("sets-old-b.csv"));
+        let list = SetList {
+            cols: vec![0],
+            header: true,
+        };
+        let spec = SetsSpec {
+            lists: vec![list.clone(), list],
+            ..Default::default()
+        };
+        let runs: Vec<u64> = (0..5)
+            .map(|_| docs.sets_run(a, &[a, b], &spec).unwrap().id)
+            .collect();
+        let why = docs.sets_open(runs[0], 3, 0, false).unwrap_err();
+        assert_eq!(
+            why.message,
+            "this comparison was closed to save memory: run it again"
+        );
+        assert!(docs.sets_open(runs[1], 3, 0, false).is_ok());
+        // One the screen closed itself is not said to be for memory.
+        docs.sets_close(runs[4]);
+        let why = docs.sets_table(runs[4]).unwrap_err();
+        assert!(why.message.contains("run the comparison again"));
     }
 
     #[test]

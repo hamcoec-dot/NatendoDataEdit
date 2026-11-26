@@ -584,8 +584,11 @@ impl Document {
                     return Err(too_big());
                 }
             }
-            if n % CHUNK == 0 {
+            if (n + 1) % CHUNK == 0 {
                 progress.step(CHUNK as u64)?;
+            } else if n % CHUNK == 0 {
+                // Cancel is looked at early in each chunk too.
+                progress.step(0)?;
             }
         }
         Ok(Table {
