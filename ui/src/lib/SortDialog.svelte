@@ -1,6 +1,7 @@
 <script lang="ts">
   // Custom sort: one or more columns, each with its order and how values
   // compare. The first row stays in place when it holds the titles.
+  import HiddenNote from "./HiddenNote.svelte";
   import { hiddenRows, sortWords } from "./shown.svelte";
   import { untrack } from "svelte";
   import type { SortKey, SortKind, SortSpec } from "./backend";
@@ -120,7 +121,7 @@
     <h2 id="sort-title">Sort</h2>
     <label class="hdr"><input type="checkbox" bind:checked={hasHeader} /> First row is header (keep it at the top)</label>
     {#if hiddenRows.hidden}
-      <p class="hidden-note" class:all={sortAll} data-testid="hidden-note">{sortAll ? "Including hidden rows: every row is put in order." : sortWords(hiddenRows.hidden, hiddenRows.total)}</p>
+      <HiddenNote text={sortAll ? "Including hidden rows: every row is put in order." : sortWords(hiddenRows.hidden, hiddenRows.total)} amber={sortAll} />
       <label class="hdr"><input type="checkbox" bind:checked={sortAll} /> Sort all rows, including hidden ones</label>
     {/if}
     <div class="levels">
@@ -170,15 +171,6 @@
 </div>
 
 <style>
-  .hidden-note {
-    margin: 0.2rem 0;
-    padding: 0.2rem 0.5rem;
-    border-left: 3px solid var(--border, #8886);
-  }
-  .all {
-    border-left-color: #d98e04;
-    background: rgb(217 142 4 / 0.16);
-  }
   .backdrop {
     position: fixed;
     inset: 0;

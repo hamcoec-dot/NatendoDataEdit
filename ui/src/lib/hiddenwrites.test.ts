@@ -20,8 +20,8 @@ const RESPECTS_THE_VIEW: Record<string, string> = {
   setFirstRowCell: "audit: title_operations_change_no_data_row",
   setColumnNames: "audit: title_operations_change_no_data_row",
   replaceTitles: "title row only (a preview of new names)",
-  matchAccept: "by code: pairs are found among shown rows and added to those rows (fuzzy.rs data_rows)",
-  streetLookup: "by code: streets.rs data_rows",
+  matchAccept: "audit: match_accept; a row hidden after the matches were found refuses the accept",
+  streetLookup: "audit: street_lookup",
 };
 
 /** Hidden rows are reached, and the screen or the command says so. */
