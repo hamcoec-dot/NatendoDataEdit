@@ -275,7 +275,7 @@
     <p class="note">The new column is added at the end; values are written as text.</p>
     {#if hiddenRows.hidden}
       <label class="row"><input type="checkbox" bind:checked={fillHidden} /> Also fill the hidden rows</label>
-      <p class="note" data-testid="hidden-note">{fillHidden ? "Including hidden rows: they are filled too." : hiddenWords("empty", hiddenRows.hidden, hiddenRows.total)}</p>
+      <HiddenNote text={fillHidden ? "Including hidden rows: they are filled too." : hiddenWords("empty", hiddenRows.hidden, hiddenRows.total)} amber={fillHidden} />
     {/if}
   {/if}
   {#if kind === "group"}<HiddenNote kind="empty" />{/if}

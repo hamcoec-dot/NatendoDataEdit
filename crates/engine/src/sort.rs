@@ -276,7 +276,8 @@ impl Key {
 }
 
 /// The document position of the `i`th row being sorted.
-fn place(places: &Option<Vec<u32>>, first: u64, i: usize) -> u64 {
+#[inline]
+fn place(places: Option<&[u32]>, first: u64, i: usize) -> u64 {
     match places {
         Some(p) => u64::from(p[i]),
         None => first + i as u64,
@@ -284,7 +285,7 @@ fn place(places: &Option<Vec<u32>>, first: u64, i: usize) -> u64 {
 }
 
 struct Keys<'a> {
-    places: &'a Option<Vec<u32>>,
+    places: Option<&'a [u32]>,
     doc: &'a Document,
     keys: Vec<Key>,
     /// `chunks[c][k]`: keys of column `k` for chunk `c`.
@@ -468,18 +469,14 @@ impl Document {
         let total = self.total_rows();
         let first = u64::from(spec.keep_first && total > 0);
         // The document positions to put in order, when not simply every row
-        // from `first` on.
-        let places: Option<Vec<u32>> = match spec.scope {
-            SortScope::Shown => self.shown_places().map(|shown| {
-                shown
-                    .iter()
-                    .copied()
-                    .filter(|&p| u64::from(p) >= first)
-                    .collect()
-            }),
+        // from `first` on (shown positions are in ascending order).
+        let places: Option<&[u32]> = match spec.scope {
+            SortScope::Shown => self
+                .shown_places()
+                .map(|shown| &shown[shown.partition_point(|&p| u64::from(p) < first)..]),
             SortScope::All => None,
         };
-        let n = places.as_ref().map_or((total - first) as usize, Vec::len);
+        let n = places.map_or((total - first) as usize, <[u32]>::len);
         let ctx = self.read_ctx(spec.read);
         let keys: Vec<Key> = spec
             .keys
@@ -528,7 +525,7 @@ impl Document {
                 let mut buf = Vec::new();
                 let mut text = String::new();
                 for pos in s..e {
-                    let at = place(&places, first, pos);
+                    let at = place(places, first, pos);
                     let id = self.doc_id_at(at).expect("in range");
                     self.read_cells(id, &wanted, &mut buf);
                     for (k, key) in keys.iter().enumerate() {
@@ -559,7 +556,7 @@ impl Document {
             })
             .collect::<Result<_, _>>()?;
         let ks = Keys {
-            places: &places,
+            places,
             doc: self,
             keys,
             chunks,
@@ -578,14 +575,23 @@ impl Document {
         });
         progress.step(n as u64 / 2)?;
         let sorted = perm.iter().enumerate().all(|(i, &(_, p))| p as usize == i);
+        let id_at = |p: u64| self.doc_id_at(p).expect("in range");
         let order = if sorted {
             None
-        } else {
-            let id_at = |p: u64| self.doc_id_at(p).expect("in range");
-            let mut order: Vec<u32> = (0..total).map(id_at).collect();
-            for (i, &(_, p)) in perm.iter().enumerate() {
-                order[place(&places, first, i) as usize] = id_at(place(&places, first, p as usize));
+        } else if let Some(places) = places {
+            // Hidden rows stay: start from the order as it is and put the
+            // shown rows, sorted, into their own places.
+            let mut order = self.order_copy();
+            for (&at, &(_, p)) in places.iter().zip(&perm) {
+                order[at as usize] = id_at(u64::from(places[p as usize]));
             }
+            Some(order)
+        } else {
+            let mut order = Vec::with_capacity(total as usize);
+            if first == 1 {
+                order.push(id_at(0));
+            }
+            order.extend(perm.iter().map(|&(_, p)| id_at(first + u64::from(p))));
             Some(order)
         };
         Ok(SortPlan {

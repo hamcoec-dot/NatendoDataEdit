@@ -1335,6 +1335,14 @@ impl Document {
         }
     }
 
+    /// Every row id in document order, copied in one go.
+    pub(crate) fn order_copy(&self) -> Vec<u32> {
+        match &self.order {
+            Some(o) => o.clone(),
+            None => (0..self.index.rows() as u32).collect(),
+        }
+    }
+
     /// Id of the row at document position `row` (ignoring any filter).
     pub(crate) fn doc_id_at(&self, row: u64) -> Option<u32> {
         match &self.order {

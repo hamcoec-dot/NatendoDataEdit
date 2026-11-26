@@ -2,6 +2,7 @@
   // Computed column: an expression over each row's cells, with the first
   // results shown as you type. The values are written as text (a delimited
   // file cannot keep formulas), in a new column or over an existing one.
+  import HiddenNote from "./HiddenNote.svelte";
   import { hiddenRows, hiddenWords } from "./shown.svelte";
   import { untrack } from "svelte";
   import { backend, errorText, type ComputePreview, type ComputeSpec } from "./backend";
@@ -179,7 +180,7 @@
     {/if}
     {#if place !== "over" && hiddenRows.hidden}
       <label class="row"><input type="checkbox" bind:checked={fillHidden} /> Also fill the hidden rows</label>
-      <p class="hidden-note" class:all={fillHidden} data-testid="hidden-note">{fillHidden ? "Including hidden rows: they are filled too." : hiddenWords("empty", hiddenRows.hidden, hiddenRows.total)}</p>
+      <HiddenNote text={fillHidden ? "Including hidden rows: they are filled too." : hiddenWords("empty", hiddenRows.hidden, hiddenRows.total)} amber={fillHidden} />
     {/if}
   </fieldset>
   {/if}
@@ -209,15 +210,6 @@
 </FormShell>
 
 <style>
-  .hidden-note {
-    margin: 0.2rem 0;
-    padding: 0.2rem 0.5rem;
-    border-left: 3px solid var(--border, #8886);
-  }
-  .all {
-    border-left-color: #d98e04;
-    background: rgb(217 142 4 / 0.16);
-  }
   .mono {
     font-family: ui-monospace, Consolas, monospace;
   }

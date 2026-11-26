@@ -269,6 +269,27 @@ fn second_tab(s: &Stage, name: &str, body: &str) -> u32 {
     id
 }
 
+/// Find people matches of the audited tab's names in another tab: the pairs
+/// as the screen would accept them.
+fn find_pairs(s: &Stage, name: &str) -> Vec<(u32, u64, f32)> {
+    let other = second_tab(
+        s,
+        name,
+        "who,city\r\nann lee0,Oslo\r\nann lee1,Rome\r\nann lee2,Lyon\r\nann lee3,Kiel\r\n",
+    );
+    let spec = serde_json::from_value(serde_json::json!({
+        "fields": [{ "col": 1, "other_col": 0 }],
+        "keep_first": true, "other_header": true, "min_score": 95.0,
+    }))
+    .unwrap();
+    let found = s.docs.match_find(s.id, Some(other), &spec, &[1]).unwrap();
+    found
+        .listed
+        .iter()
+        .map(|p| (p.id, p.other_row, p.score))
+        .collect()
+}
+
 fn clean_spec(scope: Scope) -> CleanSpec {
     CleanSpec {
         cleaner: Cleaner {
@@ -643,6 +664,34 @@ fn what_each_writing_operation_does_to_hidden_rows() {
         s.docs.batch_preview(s.id, spec.clone())?;
         s.docs.batch_confirm(s.id, spec).map(drop)
     });
+    run("match_accept", &|s| {
+        let pairs = find_pairs(s, "match");
+        assert!(!pairs.is_empty());
+        s.docs.match_accept(s.id, &pairs).map(drop)
+    });
+    run("street_lookup", &|s| {
+        let other = second_tab(
+            s,
+            "street",
+            "street,low,high,ward\r\nann lee1,0,10,W1\r\nann lee2,0,10,W2\r\n",
+        );
+        let cols = natendo_engine::streets::IndexCols {
+            street: 0,
+            low: 1,
+            high: 2,
+            side: None,
+            area: None,
+            bring: vec![3],
+            header: true,
+        };
+        let spec = natendo_engine::streets::StreetSpec {
+            address: 1,
+            number: Some(3),
+            keep_first: true,
+            ..Default::default()
+        };
+        s.docs.street_lookup(s.id, other, &cols, &spec).map(drop)
+    });
     run("replace_all", &|s| {
         let spec = serde_json::from_value(serde_json::json!({
             "pattern": { "text": "ann", "kind": "plain", "match_case": false, "whole_cell": false },
@@ -759,4 +808,41 @@ fn title_operations_change_no_data_row() {
     let after = table(&s.docs, s.id);
     assert_ne!(after[0], s.before[0]);
     assert_eq!(after[1..], s.before[1..]);
+}
+
+/// Matches found, then a row among them hidden, then accepted: the hidden row
+/// is never written without a word (the accept is refused).
+#[test]
+fn a_row_hidden_between_find_and_accept_is_not_written_silently() {
+    for how in ["hand", "filter"] {
+        let s = stage(&format!("late-{how}"));
+        let pairs = find_pairs(&s, &format!("late-{how}"));
+        assert!(!pairs.is_empty());
+        let before = table(&s.docs, s.id);
+        // `table` shows every row: find again on that view, then hide.
+        let pairs = find_pairs(&s, &format!("late-again-{how}"));
+        if how == "hand" {
+            s.docs.hide_rows(s.id, 1, 3).unwrap();
+        } else {
+            s.docs
+                .filter(
+                    s.id,
+                    FilterSpec {
+                        columns: vec![ColumnFilter {
+                            col: 2,
+                            rule: Rule::Values {
+                                values: vec!["A".into()],
+                                blanks: false,
+                            },
+                        }],
+                        keep_first: true,
+                        read: Default::default(),
+                    },
+                )
+                .unwrap();
+        }
+        let refused = s.docs.match_accept(s.id, &pairs).unwrap_err();
+        assert_eq!(refused.kind, "changed", "{}", refused.message);
+        assert_eq!(table(&s.docs, s.id), before, "{how}");
+    }
 }

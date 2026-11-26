@@ -120,8 +120,8 @@
   </div>
   {#if hiddenRows.hidden}
     <label class="row"><input type="checkbox" bind:checked={sortAll} /> Put failing rows first among all rows, including hidden ones</label>
-    {#if !sortAll}<p class="note">{sortWords(hiddenRows.hidden, hiddenRows.total)}</p>{/if}
-    <HiddenNote kind="empty" />
+    <HiddenNote label="Put failing rows first" text={sortAll ? "Including hidden rows: every row is put in order." : sortWords(hiddenRows.hidden, hiddenRows.total)} amber={sortAll} />
+    <HiddenNote label={'"Check result" column'} kind="empty" />
   {/if}
   {#snippet buttons()}
     <button type="button" class="primary" data-enter disabled={!filled || running} onclick={() => void check()}>{running ? "Checking…" : "Check now"}</button>

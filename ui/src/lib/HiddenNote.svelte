@@ -1,13 +1,14 @@
 <script lang="ts">
-  // What a dialog says about hidden rows. Nothing while every row shows.
+  // What a dialog says about hidden rows. Nothing while every row shows. Either one of the two fixed kinds, or the
+  // dialog's own words (`text`), amber when hidden rows are included.
   import { hiddenRows, hiddenWords, type HiddenKind } from "./shown.svelte";
 
-  let { kind }: { kind: HiddenKind } = $props();
-  const words = $derived(hiddenWords(kind, hiddenRows.hidden, hiddenRows.total));
+  let { kind, text = "", amber = false, label = "" }: { kind?: HiddenKind; text?: string; amber?: boolean; label?: string } = $props();
+  const words = $derived(text || (kind ? hiddenWords(kind, hiddenRows.hidden, hiddenRows.total) : ""));
 </script>
 
 {#if words}
-  <p class="hidden-note" class:all={kind === "all"} data-testid="hidden-note">{words}</p>
+  <p class="hidden-note" class:all={amber || kind === "all"} data-testid="hidden-note">{label ? `${label}: ` : ""}{words}</p>
 {/if}
 
 <style>

@@ -661,26 +661,42 @@ impl Document {
         self.ready_for_bulk()?;
         let total = self.total_rows();
         let first = u64::from(keep_first && total > 0);
-        let mut order: Vec<u32> = (0..total)
-            .map(|r| self.doc_id_at(r).ok_or(Error::OutOfRange))
-            .collect::<Result<_, _>>()?;
-        // The document positions being put in order.
-        let places: Vec<usize> = match (scope, self.shown_places()) {
-            (crate::sort::SortScope::Shown, Some(shown)) => shown
-                .iter()
-                .map(|&p| p as usize)
-                .filter(|&p| p as u64 >= first)
-                .collect(),
-            _ => (first as usize..total as usize).collect(),
+        // The shown positions being put in order, when rows are hidden and
+        // stay where they are.
+        let places: Option<&[u32]> = match scope {
+            crate::sort::SortScope::Shown => self
+                .shown_places()
+                .map(|shown| &shown[shown.partition_point(|&p| u64::from(p) < first)..]),
+            crate::sort::SortScope::All => None,
         };
-        let (mut failing, passing): (Vec<u32>, Vec<u32>) = places
-            .iter()
-            .map(|&p| order[p])
-            .partition(|&id| bit(&report.failing, id));
-        failing.extend(passing);
-        for (&p, id) in places.iter().zip(failing) {
-            order[p] = id;
-        }
+        let order = if let Some(places) = places {
+            let mut order = self.order_copy();
+            let (mut failing, passing): (Vec<u32>, Vec<u32>) = places
+                .iter()
+                .map(|&p| order[p as usize])
+                .partition(|&id| bit(&report.failing, id));
+            failing.extend(passing);
+            for (&p, id) in places.iter().zip(failing) {
+                order[p as usize] = id;
+            }
+            order
+        } else {
+            let mut order: Vec<u32> = Vec::with_capacity(total as usize);
+            let mut rest: Vec<u32> = Vec::new();
+            if first == 1 {
+                order.push(self.doc_id_at(0).expect("a first row"));
+            }
+            for r in first..total {
+                let id = self.doc_id_at(r).ok_or(Error::OutOfRange)?;
+                if bit(&report.failing, id) {
+                    order.push(id);
+                } else {
+                    rest.push(id);
+                }
+            }
+            order.extend(rest);
+            order
+        };
         let same = (0..total).all(|r| self.doc_id_at(r) == Some(order[r as usize]));
         Ok(crate::sort::SortPlan::from_order(
             self,
