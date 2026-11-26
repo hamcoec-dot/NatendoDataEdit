@@ -1849,6 +1849,13 @@ export interface Backend {
   /** Pick an encrypted file (null: cancelled), then open it. */
   pickEncrypted(): Promise<string | null>;
   openEncrypted(password: string): Promise<DocInfo>;
+  /** Preview golden records from a one-list match's accepted pairs (a job). */
+  goldenPlan(doc: number, accepted: [number, number, number][], spec: import("./golden").GoldenSpec): Promise<import("./golden").GoldenSummary>;
+  /** A page of the preview's clusters. */
+  goldenPage(doc: number, page: number): Promise<import("./golden").GoldenCluster[]>;
+  /** The result as a new tab, and the folded rows as another with `away`. */
+  goldenCreate(doc: number, away: boolean): Promise<import("./golden").GoldenMade>;
+  goldenClose(doc: number): Promise<void>;
   /** Where to save a patch (Save dialog; null: cancelled). */
   patchPickSave(doc: number): Promise<string | null>;
   /** Write the differences from tab `a` to the newer tab `b` (a job on `a`). `plain`: the user chose no phrase. */
@@ -2606,6 +2613,18 @@ class TauriBackend implements Backend {
   }
   pickEncrypted() {
     return call<string | null>("pick_encrypted");
+  }
+  goldenPlan(doc: number, accepted: [number, number, number][], spec: import("./golden").GoldenSpec) {
+    return call<import("./golden").GoldenSummary>("golden_plan", { doc, accepted, spec });
+  }
+  goldenPage(doc: number, page: number) {
+    return call<import("./golden").GoldenCluster[]>("golden_page", { doc, page });
+  }
+  goldenCreate(doc: number, away: boolean) {
+    return call<import("./golden").GoldenMade>("golden_create", { doc, away });
+  }
+  goldenClose(doc: number) {
+    return call<void>("golden_close", { doc });
   }
   patchPickSave(doc: number) {
     return call<string | null>("patch_pick_save", { doc });

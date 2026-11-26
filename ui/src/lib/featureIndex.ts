@@ -236,6 +236,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "text for rows not found": ["data.join"],
   "lookup inside computed columns and": ["data.compute", "data.join"],
   // Matching people and addresses
+  "golden records": ["data.match"],
   "match people": ["data.match"],
   "street range lookup": ["data.street"],
   "take changes from a newer file": ["tools.updates"],

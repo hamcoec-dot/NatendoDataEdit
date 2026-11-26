@@ -4235,6 +4235,98 @@ export class MockBackend implements Backend {
   async pickEncrypted(): Promise<string | null> {
     return "C:\\Data\\voters.ndenc";
   }
+  /** The browser preview's golden records: one cluster per connected hub,
+   *  "keep" and "sum" rules only (the engine's tests hold the real ones). */
+  private goldens = new Map<number, { revision: number; spec: import("./golden").GoldenSpec; clusters: { hub: number; members: number[]; only: boolean; values: string[]; flags: Map<number, string> }[]; summary: import("./golden").GoldenSummary }>();
+  private goldenKept(doc: number) {
+    const k = this.goldens.get(doc);
+    if (!k) throw err("invalid", "preview the golden records again");
+    if (k.revision !== this.get(doc).undo.length) throw err("changed", "the table changed since the match: run Match people again");
+    return k;
+  }
+  private goldenName(d: MockDoc, r: number, col: number | null): string {
+    return (col === null ? "" : this.value(d, r, col)) || `row ${r + 1}`;
+  }
+  async goldenPlan(doc: number, accepted: [number, number, number][], spec: import("./golden").GoldenSpec): Promise<import("./golden").GoldenSummary> {
+    this.calls.push("goldenPlan");
+    const d = this.get(doc);
+    const near = new Map<number, Set<number>>();
+    for (const [a, b] of accepted) {
+      for (const [x, y] of [[a, b], [b, a]] as const) near.set(x, (near.get(x) ?? new Set()).add(y));
+    }
+    const rows = [...near.keys()].filter((r) => r < this.rowCount(d)).sort((a, b) => near.get(b)!.size - near.get(a)!.size || a - b);
+    const used = new Set<number>();
+    const clusters: NonNullable<ReturnType<typeof this.goldens.get>>["clusters"] = [];
+    const cols = this.colCount(d);
+    for (const hub of rows) {
+      if (used.has(hub)) continue;
+      const members = [hub, ...[...near.get(hub)!].filter((r) => !used.has(r)).sort((a, b) => a - b)];
+      if (members.length < 2 || members.length > spec.max_cluster) continue;
+      const only = members.some((a) => members.some((b) => a !== b && !near.get(a)!.has(b)));
+      if (spec.require_all && only) continue;
+      members.forEach((m) => used.add(m));
+      const flags = new Map<number, string>();
+      const values = Array.from({ length: cols }, (_, c) => {
+        const all = members.map((r) => this.value(d, r, c));
+        const first = this.value(d, hub, c) || all.find((v) => v) || "";
+        if (spec.rules.find((r) => r.col === c)?.rule.rule !== "sum") return first;
+        const nums = all.filter((v) => v.trim()).map(Number);
+        if (nums.every((v) => Number.isFinite(v))) return String(nums.reduce((s, v) => s + v, 0));
+        flags.set(c, "not an exact number: first value kept");
+        return first;
+      });
+      clusters.push({ hub, members, only, values, flags });
+    }
+    const merged = clusters.filter((c) => !spec.skip.includes(c.hub));
+    const folded = merged.reduce((s, c) => s + c.members.length - 1, 0);
+    const summary: import("./golden").GoldenSummary = {
+      counts: { clusters: merged.length, folded, hub_only: merged.filter((c) => c.only).length, skipped: clusters.length - merged.length, review: 0, unmerged_pairs: 0, flagged: merged.reduce((s, c) => s + c.flags.size, 0), rows: this.rowCount(d) - 1 - folded, hidden: d.hidden?.size ?? 0 },
+      listed: clusters.length,
+      never_offered: 0,
+      review: [],
+    };
+    this.goldens.set(doc, { revision: d.undo.length, spec, clusters, summary });
+    return summary;
+  }
+  async goldenPage(doc: number, page: number): Promise<import("./golden").GoldenCluster[]> {
+    const k = this.goldenKept(doc);
+    const d = this.get(doc);
+    return k.clusters.slice(page * 200, page * 200 + 200).map((c) => ({
+      hub: c.hub,
+      members: c.members.map((r) => this.goldenName(d, r, k.spec.id_col)),
+      hub_only: c.only,
+      skipped: k.spec.skip.includes(c.hub),
+      cells: c.values.flatMap((value, col) => {
+        const differ = [...new Set(c.members.map((r) => this.value(d, r, col)).filter((v) => v !== value))];
+        const flag = c.flags.get(col) ?? null;
+        return differ.length || flag ? [{ col, value, differ, flag }] : [];
+      }),
+    }));
+  }
+  async goldenCreate(doc: number, away: boolean): Promise<import("./golden").GoldenMade> {
+    this.calls.push("goldenCreate");
+    const k = this.goldenKept(doc);
+    const d = this.get(doc);
+    const cols = Array.from({ length: this.colCount(d) }, (_, c) => c);
+    const line = (r: number) => cols.map((c) => this.value(d, r, c));
+    const merged = k.clusters.filter((c) => !k.spec.skip.includes(c.hub));
+    const out = [[...line(0), "Merged_IDs", "Merged_Count"]];
+    const gone = [["Cluster", "File row", ...line(0)]];
+    for (let r = 1; r < this.rowCount(d); r++) {
+      const n = merged.findIndex((c) => c.members.includes(r));
+      const c = merged[n];
+      if (!c) out.push([...line(r), "", ""]);
+      else {
+        if (r === Math.min(...c.members)) out.push([...c.values, c.members.map((m) => this.goldenName(d, m, k.spec.id_col)).join("; "), String(c.members.length)]);
+        if (r !== c.hub) gone.push([String(n + 1), String(r + 1), ...line(r)]);
+      }
+    }
+    return { away: away ? this.setsDoc("Merged away", gone) : null, info: this.setsDoc("Golden records", out) };
+  }
+  async goldenClose(doc: number): Promise<void> {
+    this.goldens.delete(doc);
+  }
+
   /** The browser preview's patch files: kept in memory by name. */
   private patches = new Map<string, { patch: MockPatch; phrase: string | null }>();
   private patchRuns = new Map<number, { patch: MockPatch; revision: number }>();
