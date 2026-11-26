@@ -6137,7 +6137,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
     if (!t.info.indexed || t.info.filtered) return;
     try {
-      t.totalRow = await backend().totalRow(t.id, t.header, READ);
+      const r = await backend().totalRow(t.id, t.header, READ);
+      // The bar names columns by their header cells: make sure those are loaded (the words follow t.version).
+      if (r && t.header) for (const c of r.checks) t.cache.request(0, 1, c.col, c.col + 1);
+      t.totalRow = r;
     } catch {
       t.totalRow = null;
     }
@@ -6146,6 +6149,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** The total-line bar's words: which row, and whether the numbers add up (which columns do not). */
   function totalWords(t: Tab): string {
     const r = t.totalRow!;
+    void t.version; // header cells arriving rename "Column 3" to its title
     const where = `Row ${(r.row + 1).toLocaleString()} looks like a total row (“${r.label}”)`;
     const subs = r.subtotals > 0 ? ` (${plural(r.subtotals, "subtotal row")} above ${r.subtotals === 1 ? "is" : "are"} not counted)` : "";
     if (r.adds_up) return `${where}, and the rows above add up to it exactly${subs}.`;
