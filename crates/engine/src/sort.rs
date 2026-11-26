@@ -87,6 +87,21 @@ pub struct SortSpec {
     pub read: ReadOptions,
     /// Custom orders, used by [`SortKind::List`].
     pub lists: Vec<Vec<String>>,
+    /// Which rows are put in order. Left out (sorts and recipes saved before
+    /// this was recorded): all of them.
+    pub scope: SortScope,
+}
+
+/// Which rows a sort puts in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortScope {
+    /// Every row, hidden ones too.
+    #[default]
+    All,
+    /// The shown rows, among their own places: a row a filter or the user hid
+    /// stays where it is.
+    Shown,
 }
 
 /// A computed sort, applied with [`Document::apply_sort`].
@@ -260,7 +275,16 @@ impl Key {
     }
 }
 
+/// The document position of the `i`th row being sorted.
+fn place(places: &Option<Vec<u32>>, first: u64, i: usize) -> u64 {
+    match places {
+        Some(p) => u64::from(p[i]),
+        None => first + i as u64,
+    }
+}
+
 struct Keys<'a> {
+    places: &'a Option<Vec<u32>>,
     doc: &'a Document,
     keys: Vec<Key>,
     /// `chunks[c][k]`: keys of column `k` for chunk `c`.
@@ -322,7 +346,7 @@ impl Keys<'_> {
             };
             let id = self
                 .doc
-                .doc_id_at(self.first + pos as u64)
+                .doc_id_at(place(self.places, self.first, pos as usize))
                 .expect("sorted rows exist");
             let mut buf = Vec::new();
             self.doc.read_cells(id, &[p], &mut buf);
@@ -443,7 +467,19 @@ impl Document {
         };
         let total = self.total_rows();
         let first = u64::from(spec.keep_first && total > 0);
-        let n = (total - first) as usize;
+        // The document positions to put in order, when not simply every row
+        // from `first` on.
+        let places: Option<Vec<u32>> = match spec.scope {
+            SortScope::Shown => self.shown_places().map(|shown| {
+                shown
+                    .iter()
+                    .copied()
+                    .filter(|&p| u64::from(p) >= first)
+                    .collect()
+            }),
+            SortScope::All => None,
+        };
+        let n = places.as_ref().map_or((total - first) as usize, Vec::len);
         let ctx = self.read_ctx(spec.read);
         let keys: Vec<Key> = spec
             .keys
@@ -492,7 +528,8 @@ impl Document {
                 let mut buf = Vec::new();
                 let mut text = String::new();
                 for pos in s..e {
-                    let id = self.doc_id_at(first + pos as u64).expect("in range");
+                    let at = place(&places, first, pos);
+                    let id = self.doc_id_at(at).expect("in range");
                     self.read_cells(id, &wanted, &mut buf);
                     for (k, key) in keys.iter().enumerate() {
                         let cell = slots[k].map_or("", |s| &buf[s]);
@@ -522,6 +559,7 @@ impl Document {
             })
             .collect::<Result<_, _>>()?;
         let ks = Keys {
+            places: &places,
             doc: self,
             keys,
             chunks,
@@ -543,14 +581,11 @@ impl Document {
         let order = if sorted {
             None
         } else {
-            let mut order = Vec::with_capacity(total as usize);
-            if first == 1 {
-                order.push(self.doc_id_at(0).expect("first row"));
+            let id_at = |p: u64| self.doc_id_at(p).expect("in range");
+            let mut order: Vec<u32> = (0..total).map(id_at).collect();
+            for (i, &(_, p)) in perm.iter().enumerate() {
+                order[place(&places, first, i) as usize] = id_at(place(&places, first, p as usize));
             }
-            order.extend(
-                perm.iter()
-                    .map(|&(_, p)| self.doc_id_at(first + p as u64).expect("in range")),
-            );
             Some(order)
         };
         Ok(SortPlan {
@@ -597,6 +632,7 @@ mod tests {
 
     fn by(col: u32, kind: SortKind, descending: bool) -> SortSpec {
         SortSpec {
+            scope: Default::default(),
             keys: vec![SortKey {
                 col,
                 descending,
@@ -606,6 +642,65 @@ mod tests {
             keep_first: false,
             read: ReadOptions::default(),
             lists: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_sort_of_the_shown_rows_leaves_hidden_rows_in_their_places() {
+        let mut d = doc("h\r\n5\r\n9\r\n3\r\n8\r\n1\r\n");
+        d.hide_rows(2, 1).unwrap(); // the 9
+        d.hide_rows(3, 1).unwrap(); // the 8
+        let before = d.revision();
+        let mut spec = by(0, SortKind::Number, false);
+        spec.keep_first = true;
+        spec.scope = SortScope::Shown;
+        assert!(d.sort(&spec).unwrap());
+        assert_eq!(col(&d, 0), ["h", "1", "3", "5"]);
+        d.show_rows(crate::rows::ShowRows::All).unwrap();
+        assert_eq!(col(&d, 0), ["h", "1", "9", "3", "8", "5"]);
+        assert!(d.revision() > before);
+        // One undo step (after the one that showed the rows) puts the whole
+        // order back.
+        d.undo();
+        d.undo();
+        d.show_rows(crate::rows::ShowRows::All).unwrap();
+        assert_eq!(col(&d, 0), ["h", "5", "9", "3", "8", "1"]);
+        // A sort saved before the choice existed sorts every row.
+        let old: SortSpec = serde_json::from_str(r#"{"keys":[{"col":0}]}"#).unwrap();
+        assert_eq!(old.scope, SortScope::All);
+    }
+
+    proptest! {
+        /// Shown rows come out as a plain sort of those rows alone; hidden
+        /// rows do not move.
+        #[test]
+        fn shown_sort_equals_sorting_the_shown_rows(
+            rows in proptest::collection::vec(("[a-c]{0,3}", proptest::bool::ANY), 1..40),
+            desc in proptest::bool::ANY,
+        ) {
+            let text: String = rows.iter().enumerate().map(|(i, r)| format!("{},{i}\r\n", r.0)).collect();
+            let mut d = doc(&text);
+            for (i, r) in rows.iter().enumerate().rev() {
+                if r.1 {
+                    d.hide_rows(i as u64, 1).unwrap();
+                }
+            }
+            let mut spec = by(0, SortKind::Text, desc);
+            spec.scope = SortScope::Shown;
+            let shown: String = rows.iter().enumerate().filter(|(_, r)| !r.1).map(|(i, r)| format!("{},{i}\r\n", r.0)).collect();
+            d.sort(&spec).unwrap();
+            if !shown.is_empty() {
+                let mut alone = doc(&shown);
+                alone.sort(&by(0, SortKind::Text, desc)).unwrap();
+                prop_assert_eq!(col(&d, 1), col(&alone, 1));
+            }
+            d.show_rows(crate::rows::ShowRows::All).unwrap();
+            let after = col(&d, 1);
+            for (i, r) in rows.iter().enumerate() {
+                if r.1 {
+                    prop_assert_eq!(&after[i], &i.to_string());
+                }
+            }
         }
     }
 
@@ -673,6 +768,7 @@ mod tests {
         let src = "name,team,score\r\nann,b,3\r\nbob,a,3\r\ncat,b,10\r\ndan,a,1\r\neve,b,3\r\n";
         let mut d = doc(src);
         let spec = SortSpec {
+            scope: Default::default(),
             keys: vec![
                 SortKey {
                     col: 1,

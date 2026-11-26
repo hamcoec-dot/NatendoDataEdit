@@ -13079,6 +13079,7 @@ B,y
         let id = docs.open_path(&p, false).unwrap().id;
         wait(&docs, id);
         let spec = SortSpec {
+            scope: Default::default(),
             keys: vec![SortKey {
                 col: 1,
                 descending: false,

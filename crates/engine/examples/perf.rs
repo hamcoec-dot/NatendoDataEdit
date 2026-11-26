@@ -444,6 +444,7 @@ fn main() {
     let budget = |secs: f64| Duration::from_secs_f64(secs * rs);
     let p = Progress::new();
     let key = |col, kind| SortSpec {
+        scope: Default::default(),
         keys: vec![SortKey {
             col,
             descending: false,
@@ -2128,6 +2129,7 @@ fn main() {
     let _ = fs::remove_dir_all(&xdir);
     let t = Instant::now();
     let custom = SortSpec {
+        scope: Default::default(),
         keys: vec![SortKey {
             col: 4,
             descending: false,
@@ -2146,6 +2148,7 @@ fn main() {
     );
     let t = Instant::now();
     let by_len = SortSpec {
+        scope: Default::default(),
         keys: vec![SortKey {
             col: 3,
             descending: true,
