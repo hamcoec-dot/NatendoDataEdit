@@ -145,7 +145,7 @@
     </div>
     {#if tab === "cells"}
       <div class="tools"><button type="button" onclick={() => (cells = fresh(true))}>Take all</button><button type="button" onclick={() => (cells = fresh(false))}>Take none</button></div>
-      <div class="list">
+      <div class="changes">
         {#each found.cells.slice(page * PAGE, page * PAGE + PAGE) as c, k (page * PAGE + k)}
           {@const i = page * PAGE + k}
           <label class="line"><input type="checkbox" checked={ticked(cells, i, !!c.hidden)} onchange={() => (cells = flip(cells, i))} /><span>Row {(c.row + 1).toLocaleString()}{c.hidden ? " (hidden)" : ""}</span><span>{title(c.col)}</span><span class="old">{short(c.old)}</span><span>→ {short(c.new)}</span></label>
@@ -157,7 +157,7 @@
       {/if}
     {:else if tab === "added"}
       <div class="tools"><button type="button" onclick={() => (added = fresh(true))}>Take all</button><button type="button" onclick={() => (added = fresh(false))}>Take none</button></div>
-      <div class="list">
+      <div class="changes">
         {#each found.added as r, i (i)}
           <label class="line"><input type="checkbox" checked={ticked(added, i, false)} onchange={() => (added = flip(added, i))} /><span class="wide">{r.slice(0, 8).map(short).join(" · ")}</span></label>
         {/each}
@@ -169,7 +169,7 @@
         {#if hiddenRemoved}<button type="button" onclick={() => (removed = fresh(true, false))}>Delete them all, with the {plural(hiddenRemoved, "hidden row")}</button>{/if}
         <button type="button" onclick={() => (removed = fresh(false, true))}>Keep all</button>
       </div>
-      <div class="list">
+      <div class="changes">
         {#each found.removed.slice(page * PAGE, page * PAGE + PAGE) as r, k (page * PAGE + k)}
           {@const i = page * PAGE + k}
           <label class="line"><input type="checkbox" checked={ticked(removed, i, rowHidden(i))} onchange={() => (removed = flip(removed, i))} /><span class="wide">Row {(r + 1).toLocaleString()}{rowHidden(i) ? " (hidden)" : ""} is not in the newer file; tick to delete it</span></label>
@@ -206,7 +206,8 @@
   .tabs [aria-selected="true"] {
     font-weight: 600;
   }
-  .list {
+  /* Not "list": the dialog frame lays that class out as a grid of narrow tick boxes. */
+  .changes {
     max-height: 320px;
     overflow: auto;
     border: 1px solid var(--border, #8884);
