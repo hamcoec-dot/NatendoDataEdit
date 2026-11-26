@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hiddenWords, kindOfOp, sortWords } from "./shown.svelte";
+import { actingWords, gapBetween, hiddenWords, kindOfOp, seamWords, sortWords } from "./shown.svelte";
 
 describe("what is said about hidden rows", () => {
   it("says nothing while every row shows", () => {
@@ -18,3 +18,18 @@ describe("what is said about hidden rows", () => {
     expect(kindOfOp("clean")).toBeNull();
   });
 });
+
+describe("the pill and the seams", () => {
+  it("says which rows edits act on", () => {
+    expect(actingWords(48_900, 49_042, false)).toBe(`Acting on 142 shown rows (${(48_900).toLocaleString()} hidden, untouched)`);
+    expect(actingWords(3, 10, true)).toBe("Including hidden rows (3 hidden)");
+    expect(actingWords(0, 10, false)).toMatch(/every row/);
+  });
+  it("counts and names a gap", () => {
+    expect([gapBetween(-1, 0), gapBetween(0, 1), gapBetween(1, 50), gapBetween(undefined, 5)]).toEqual([0, 0, 48, 0]);
+    expect(seamWords(48, false, true)).toBe("48 rows hidden here. Click to show them.");
+    expect(seamWords(1, true, false)).toBe("1 row filtered out here.");
+    expect(seamWords(2, true, true)).toMatch(/filtered out or hidden by hand/);
+  });
+});
+

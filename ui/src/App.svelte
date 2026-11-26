@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { hiddenRows, hiddenWords, kindOfOp } from "./lib/shown.svelte";
+  import { actingWords, hiddenRows, hiddenWords, kindOfOp } from "./lib/shown.svelte";
   import { forgetHeaders, recallColumnTypes, recallHeader, rememberColumnTypes, rememberedHeaders, rememberHeader, type TypeMemory } from "./lib/headerMemory";
 import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type ColumnType } from "./lib/readers";
   import { sessionToOffer } from "./lib/sessionOffer";
@@ -4685,6 +4685,20 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     say(n ? `${plural(n, "hidden row")} shown again.` : "No hidden rows in the selection. Select the rows on both sides of the hidden ones, or use Unhide all rows.");
   }
 
+  /** The dotted line in the row numbers was clicked: show the rows hidden by hand there. */
+  function openSeam(row: number): void {
+    const t = tab;
+    if (!t) return;
+    if (!t.info.hidden_rows) {
+      say("A filter leaves rows out here. Data > Clear filter shows every row.");
+      return;
+    }
+    const at = Math.max(t.firstRow, row - 1);
+    const to = Math.min(t.info.rows - 1, row);
+    grid?.select({ row: at, col: 0 }, { row: to, col: Math.max(0, t.info.cols - 1) });
+    void tick().then(() => showRows(false));
+  }
+
   async function shuffleRows(): Promise<void> {
     const t = tab;
     if (!t) return;
@@ -6623,6 +6637,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     },
     { id: "format.showCols", label: "&Unhide columns", keys: ["Ctrl+Shift+0", "Ctrl+Shift+)"], run: () => unhideCols(), enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
     { id: "format.colWidth", label: "Set column &width…", run: () => askColWidth(), enabled: hasTab },
+    { id: "view.whichRows", label: "Which rows do edits act on?", run: () => say(actingWords(hiddenRows.hidden, hiddenRows.total, hiddenRows.including > 0)), enabled: ready },
     { id: "format.showAllCols", label: "Unhide all columns", run: () => { tab!.columns.showAll(); tab!.bump(); }, enabled: () => !!tab && tab.columns.hiddenCount() > 0 },
     { id: "format.header", label: "First row is &header", run: toggleHeader, enabled: hasTab, checked: () => !!tab?.header },
     { id: "col.typeAuto", label: "Treat this column as Auto (guess from the cells)", run: () => void setTypeOfColumns("auto"), enabled: hasTab, checked: () => typeIsNow("auto") },
@@ -6890,7 +6905,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelRecord", "view.recordPrev", "view.recordNext", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.totalsRow", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.whichRows", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.totalsRow", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
@@ -8546,6 +8561,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           <div class="splitview" class:cols={sp.dir === "cols"} bind:this={splitEl} style={sp.dir === "cols" ? `grid-template-columns: minmax(0, ${sp.at}fr) 6px minmax(0, ${1 - sp.at}fr)` : `grid-template-rows: minmax(0, ${sp.at}fr) 6px minmax(0, ${1 - sp.at}fr)`}>
             <div class="pane">
             <Grid
+                  onSeam={(row) => openSeam(row)}
                   bind:this={grid}
                   {tab}
                   bottomInset={headerAskInset}
@@ -8584,6 +8600,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
             <div class="divider" role="separator" aria-orientation={sp.dir === "cols" ? "vertical" : "horizontal"} aria-label="Split: drag to resize, or to the edge to close" title="Drag to resize; drag to the edge to close the split" onpointerdown={splitDrag}></div>
             <div class="pane">
             <Grid
+                  onSeam={(row) => openSeam(row)}
                   pane="split"
                   bottomInset={headerAskInset}
                   {tab}
@@ -8622,6 +8639,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           </div>
         {:else}
         <Grid
+          onSeam={(row) => openSeam(row)}
           bind:this={grid}
           {tab}
           bottomInset={headerAskInset}
@@ -8782,6 +8800,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       {#if tab}<QuickTotals {tab} />{/if}
       {#if status.sel}<span>{status.sel}</span>{/if}
       {#if status.heightsHidden}<span title="The rows you gave a height keep it and get it back when the filter or the hidden rows are cleared.">Custom row heights hidden while filtered</span>{/if}
+      {#if tab && hiddenRows.hidden}
+        <span class="acting" class:including={hiddenRows.including > 0} data-testid="acting-pill">{actingWords(hiddenRows.hidden, hiddenRows.total, hiddenRows.including > 0)}</span>
+      {/if}
       {#if status.hidden}
         <button type="button" class="small filtered" title="Hidden rows are still saved. Click to show them all again." onclick={() => void showRows(true)}>{plural(status.hidden, "hidden row")} ✕</button>
       {/if}
@@ -9619,6 +9640,15 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 {/if}
 
 <style>
+  .acting {
+    white-space: nowrap;
+  }
+  .acting.including {
+    padding: 0 0.4rem;
+    border-radius: 4px;
+    background: rgb(217 142 4 / 0.28);
+    font-weight: 600;
+  }
   .shell {
     display: flex;
     flex-direction: column;
