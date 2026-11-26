@@ -1,6 +1,7 @@
 ## Not yet released
 
 - **Fixed: Changes from a newer file with hidden rows.** With rows filtered or hidden, it could offer to add a second copy of a hidden row, or to delete a row the newer file still had. Every row of both tables is now compared; changes to hidden rows are marked, and a hidden row is never deleted without being ticked. Tools that read another tab say how many of its rows are hidden. The review list now shows each old and new value (they were squeezed out of sight).
+- **Behaviour change: with rows hidden, sorting and new computed columns act on the shown rows.** Sort, the quick sorts and "Put failing rows first" leave hidden rows where they are, and a new computed column leaves them empty, unless you tick the box that includes them. Recipes saved by earlier versions still act on every row. Tools that change hidden rows anyway now say how many.
 - **CSV export safety** (on to start with): in the list of changes, the report of what changed since a checkpoint and the share-safe copy, a cell that a spreadsheet could run as a formula gets one apostrophe in front, so it shows as text. Split into files has its own tick, off to start with. Saving your own file never changes it.
 - **Shifted rows:** a note on opening counts the rows with a different number of fields than most, and the Data menu shows only those, the short ones or the long ones.
 - Emptying a cell past the end of a short row no longer adds empty fields to it.
