@@ -784,6 +784,19 @@ everything is also in command search.
 *Thirty cells of the joined column say n/a: the pill shows the date shape and the share that differs.*
 - **Quick totals** of the selection (sum, average, count, numbers, smallest,
   largest, different values, characters), with one click to copy a total.
+- **Totals row** (View > Totals row, or right-click a cell): a row pinned
+  under the table with one total for every column over the rows shown, so a
+  filter or hidden rows change it at once. Click a total to choose Sum,
+  Average, Count, Count blank, Minimum, Maximum or None; right-click copies
+  one total or all of them as a row. A column starts as a Sum only when nearly
+  all its filled cells are numbers; columns of IDs, ZIP codes, phone numbers,
+  precincts and the like (by their title, by the shape of their values, or set
+  as Text or Id) start as a Count. Sums are compensated, accurate to about 15
+  digits. The row is only on screen: it is never saved into the file,
+  exported or printed, and copying all totals leaves out hidden columns. The
+  choices are kept with saved views.
+
+  ![The totals row under a filtered made-up voter list: IDs and ZIP codes counted, votes added](docs/screenshots/totals-row.png)
 - Charts (line, bar, pie, counts), subtotals and groups, highlight rules.
 - **Compare two open files**, by a key column or by whole rows: what was
   added, removed and changed (a diff of the two files).
@@ -1191,7 +1204,8 @@ preview:
   found by their titles; a title not found, after a rename say, is offered
   from the column in the same place, and you choose), or run it with
   `natendo-cli pivot`. Data > Pivot table on a pivot tab reopens its layout.
-  Sums are exact (no rounding drift) and a pivot never changes the file.
+  Sums are compensated (no drift from adding many numbers; accurate to about
+  15 digits) and a pivot never changes the file.
 
 ![Opening a pivot layout after a column was renamed: it asks to use the column in the same place](docs/screenshots/pivot-by-place.png)
 *A layout saved when column 4 was "city" asks before using it now that it is "town".*

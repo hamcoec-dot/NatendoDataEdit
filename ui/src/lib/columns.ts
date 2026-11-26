@@ -6,6 +6,7 @@
 // too, so they move with the columns when columns are inserted or deleted.
 
 import type { DisplayFormat } from "./m9";
+import type { TotalChoice } from "./totalsRow";
 
 /** How a column lines up its text (automatic: numbers right, text left). */
 export type Align = "left" | "center" | "right";
@@ -19,6 +20,7 @@ export interface ColSnap {
   wraps: number[];
   aligns?: [number, Align][];
   clips?: number[];
+  totals?: [number, TotalChoice][];
 }
 
 export class Columns {
@@ -31,6 +33,8 @@ export class Columns {
   /** Columns whose long text is cut at the column's edge instead of
    *  spilling into the empty cells beside it. */
   clips = new Set<number>();
+  /** What the totals row shows per column (others: suggested). */
+  totals = new Map<number, TotalChoice>();
   /** Widths of hidden columns before they were hidden, so showing them
    *  again gives them back (only those not at the default width). */
   private hiddenWas = new Map<number, number>();
@@ -91,7 +95,7 @@ export class Columns {
    *  only the overrides, which are few unless many columns were resized). */
   key(): string {
     const f: [number, DisplayFormat][] = [...this.formats];
-    return JSON.stringify([this.defaultWidth, [...this.widths], [...this.hiddenWas], f, [...this.wraps], [...this.aligns], [...this.clips]]);
+    return JSON.stringify([this.defaultWidth, [...this.widths], [...this.hiddenWas], f, [...this.wraps], [...this.aligns], [...this.clips], [...this.totals]]);
   }
 
   /** A copy of the widths, hidden columns, formats and wrapping (for undo). */
@@ -104,6 +108,7 @@ export class Columns {
       wraps: [...this.wraps].sort((a, b) => a - b),
       aligns: [...this.aligns].sort((a, b) => a[0] - b[0]),
       clips: [...this.clips].sort((a, b) => a - b),
+      totals: [...this.totals].sort((a, b) => a[0] - b[0]),
     };
   }
 
@@ -116,6 +121,7 @@ export class Columns {
     this.wraps = new Set(s.wraps);
     this.aligns = new Map(s.aligns ?? []);
     this.clips = new Set(s.clips ?? []);
+    this.totals = new Map(s.totals ?? []);
     this.rebuild();
   }
 
@@ -127,6 +133,7 @@ export class Columns {
     this.wraps.clear();
     this.aligns.clear();
     this.clips.clear();
+    this.totals.clear();
     this.rebuild();
   }
 
@@ -164,6 +171,12 @@ export class Columns {
       if (to !== null) clips.add(to);
     }
     this.clips = clips;
+    const totals = new Map<number, TotalChoice>();
+    for (const [c, t] of this.totals) {
+      const to = move(c);
+      if (to !== null) totals.set(to, t);
+    }
+    this.totals = totals;
     const was = new Map<number, number>();
     for (const [c, w] of this.hiddenWas) {
       const to = move(c);
@@ -188,6 +201,7 @@ export class Columns {
     this.wraps = new Set([...this.wraps].map(place));
     this.aligns = new Map([...this.aligns].map(([c, a]) => [place(c), a]));
     this.clips = new Set([...this.clips].map(place));
+    this.totals = new Map([...this.totals].map(([c, t]) => [place(c), t]));
     this.hiddenWas = new Map([...this.hiddenWas].map(([c, w]) => [place(c), w]));
     this.rebuild();
   }

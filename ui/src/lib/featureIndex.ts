@@ -193,6 +193,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "column insights": ["view.insights", "data.profile"],
   "pattern pill": ["data.patternOdd", "data.patternMatch", "data.patternOddBlanks", "data.patternCopy"],
   "quick totals": ["view.panel"],
+  "totals row": ["view.totalsRow", "view.total.sum", "view.total.average", "view.total.count", "view.total.blank", "view.total.min", "view.total.max", "view.total.none", "view.total.auto", "view.copyTotal", "view.copyTotals"],
   "charts line bar pie counts": ["view.panelChart", "data.subtotals", "view.highlights"],
   "compare two open files": ["tools.compare"],
   "find gaps in a sequence": ["data.gaps"],

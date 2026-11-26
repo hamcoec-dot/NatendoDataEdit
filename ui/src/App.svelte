@@ -101,6 +101,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import StreetDialog from "./lib/StreetDialog.svelte";
   import UpdatesDialog from "./lib/UpdatesDialog.svelte";
   import EncryptDialog from "./lib/EncryptDialog.svelte";
+  import { MAX_ASKED, TOTAL_CHOICES, totalCopy, type TotalChoice } from "./lib/totalsRow";
   import SqliteDialog from "./lib/SqliteDialog.svelte";
   import NotesDialog from "./lib/NotesDialog.svelte";
   import WatchDialog from "./lib/WatchDialog.svelte";
@@ -989,8 +990,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         format: t.columns.formats.get(c) ?? null,
         protect: (t.info.protected ?? []).includes(c) || undefined,
         col_type: typeAt(t.info.typed, c) === "auto" ? undefined : typeAt(t.info.typed, c),
+        total: t.columns.totals.get(c),
       })),
       banded: t.banded,
+      totals_row: t.totalsOn || undefined,
       row_lines: t.rowLines,
       row_heights: t.rowHeights.empty ? undefined : t.rowHeights.toView(),
       facets: t.facetCards.map((c) => ({ col: c.col, kind: c.kind })),
@@ -1131,6 +1134,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       else t.columns.aligns.delete(c);
       if (vc.clip) t.columns.clips.add(c);
       else t.columns.clips.delete(c);
+      if (vc.total && TOTAL_CHOICES.some(([k]) => k === vc.total)) t.columns.totals.set(c, vc.total);
+      else t.columns.totals.delete(c);
       const f = cleanFormat(vc.format);
       if (f) t.columns.formats.set(c, f);
       else t.columns.formats.delete(c);
@@ -1157,6 +1162,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       }
     }
     t.banded = v.banded === true;
+    t.totalsOn = v.totals_row === true;
     t.facetCards = (v.facets ?? []).slice(0, 32).flatMap((f) => {
       const c = to(f.col);
       return c === null || c === undefined || c < 0 ? [] : [{ col: c, kind: f.kind === "numbers" || f.kind === "dates" ? f.kind : "values", range: null }];
@@ -6486,6 +6492,17 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "format.bakeDisplay", label: "Write the display format into the cells", run: () => void bakeFormats(), enabled: () => !!tab && !tab.busy && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
     { id: "format.clearDisplay", label: "Remove display format", multiArea: true, keys: ["Ctrl+\\"], run: () => { if (tab) setFormat(selectedCols(tab), null); }, enabled: () => !!tab && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
     { id: "view.banded", label: "Alternating row &colours", run: toggleBanded, enabled: hasTab, checked: () => !!tab?.banded },
+    { id: "view.totalsRow", label: "Tota&ls row (under the shown rows)", run: () => { if (tab) { tab.totalsOn = !tab.totalsOn; tab.bump(); } }, enabled: hasTab, checked: () => !!tab?.totalsOn },
+    { id: "view.total.sum", ...totalCommand("sum") },
+    { id: "view.total.average", ...totalCommand("average") },
+    { id: "view.total.count", ...totalCommand("count") },
+    { id: "view.total.blank", ...totalCommand("blank") },
+    { id: "view.total.min", ...totalCommand("min") },
+    { id: "view.total.max", ...totalCommand("max") },
+    { id: "view.total.none", ...totalCommand("none") },
+    { id: "view.total.auto", label: "Totals row: Automatic", run: () => chooseTotal(null), enabled: totalsOn, checked: () => !!tab && !tab.columns.totals.has(totalColumn()) },
+    { id: "view.copyTotal", label: "Copy this column's total", run: () => void copyTotals([totalColumn()]), enabled: totalsOn },
+    { id: "view.copyTotals", label: "Copy all totals as a row", run: () => void copyTotals(null), enabled: totalsOn },
     { id: "data.shuffle", label: "Shu&ffle rows (random order)", run: () => void shuffleRows(), enabled: ready, repeatable: true },
     { id: "tools.fillBlanks", label: "&Fill blank cells…", run: () => openTools("fill_blanks"), enabled: ready },
     { id: "tools.countRepeats", label: "&Count repeats in a new column…", run: () => openTools("count_repeats"), enabled: ready },
@@ -6622,7 +6639,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelRecord", "view.recordPrev", "view.recordNext", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.totalsRow", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
@@ -6671,8 +6688,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
+    totals: [...TOTAL_CHOICES.map(([c]) => `view.total.${c}`), "view.total.auto", "-", "view.copyTotal", "view.copyTotals", "-", "view.totalsRow"],
     tab: ["file.save", "file.saveAs", "-", "data.compareLists", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "-", "view.panelSummary", "-", "edit.clear"],
@@ -7842,8 +7860,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** The column a heading's right-click menu was opened on (Rename acts
    *  on it, not on the selection's focus column). */
   let contextCol: number | null = null;
-  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner" | "tab" | "pill" | "type", col: number): void {
-    contextCol = area === "col" || area === "pill" || area === "type" ? col : null;
+  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner" | "tab" | "pill" | "type" | "totals", col: number): void {
+    contextCol = area === "col" || area === "pill" || area === "type" || (area === "totals" && col >= 0) ? col : null;
     openMenu = null;
     // The cut items show only while something is cut.
     const cutItems = new Set(["edit.moveCut", "edit.cancelCut"]);
@@ -7855,6 +7873,48 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (!counts && items[0] === "-") items = items.slice(1);
     // Nothing is picked until the pointer or an arrow key moves onto an item.
     context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items, index: -1 };
+  }
+
+  // ---- the totals row ------------------------------------------------------
+
+  /** The command that gives a totals cell one choice. */
+  function totalCommand(c: TotalChoice) {
+    const name = TOTAL_CHOICES.find(([k]) => k === c)?.[1] ?? c;
+    return { label: `Totals row: ${name}`, run: () => chooseTotal(c), enabled: totalsOn, checked: () => !!tab && tab.columns.totals.get(totalColumn()) === c };
+  }
+
+  function totalsOn(): boolean {
+    return !!tab?.totalsOn;
+  }
+  /** The column the totals menu was opened on, else the active cell's. */
+  const totalColumn = (): number => contextCol ?? tab?.cell.col ?? 0;
+
+  function chooseTotal(choice: TotalChoice | null): void {
+    const t = tab;
+    if (!t) return;
+    const c = totalColumn();
+    if (choice === null) t.columns.totals.delete(c);
+    else t.columns.totals.set(c, choice);
+    t.bump();
+  }
+
+  /** Copy one column's total, or (null) every shown column's as one row of cells. */
+  async function copyTotals(only: number[] | null): Promise<void> {
+    const t = tab;
+    if (!t || !t.info.indexed) return;
+    const cols = only ?? Array.from({ length: Math.min(t.info.cols, 16_384) }, (_, c) => c).filter((c) => !t.columns.isHidden(c));
+    try {
+      const out: string[] = [];
+      for (let at = 0; at < cols.length; at += MAX_ASKED) {
+        const part = cols.slice(at, at + MAX_ASKED);
+        const r = await backend().columnTotals(t.id, part, t.header, { decimal_comma: false, date_order: "mdy" });
+        for (const c of part) out.push(totalCopy(r.columns.find((x) => x.col === c), t.columns.totals.get(c)));
+      }
+      await navigator.clipboard.writeText(out.join("\t"));
+      say(only ? "Copied the total." : `Copied ${plural(out.length, "total")} as one row.`);
+    } catch (e) {
+      say(errorText(e));
+    }
   }
 
   /** The title-row question, floating over the grid (it takes no room, so
@@ -8226,6 +8286,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
                   locked={tab.info.read_only}
                   onCommit={commitCell}
                   onContext={openContext}
+                  onTotals={(c, x, y) => openContext(x, y, "totals", c)}
                   onRenameCol={(c) => void askRename(c)}
                   onInsight={(c) => (profileCol = c)}
                   onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
@@ -8263,6 +8324,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
                   locked={tab.info.read_only}
                   onCommit={commitCell}
                   onContext={openContext}
+                  onTotals={(c, x, y) => openContext(x, y, "totals", c)}
                   onRenameCol={(c) => void askRename(c)}
                   onInsight={(c) => (profileCol = c)}
                   onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
@@ -8300,6 +8362,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           locked={tab.info.read_only}
           onCommit={commitCell}
           onContext={openContext}
+          onTotals={(c, x, y) => openContext(x, y, "totals", c)}
           onRenameCol={(c) => void askRename(c)}
           onInsight={(c) => (profileCol = c)}
                   onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
@@ -8382,7 +8445,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       />
     {/if}
     {#if headerQuestion && tab}
-      <div class="header-ask" role="group" aria-label="Title row question" bind:clientHeight={headerAskH} transition:fade={{ duration: 250 }}>
+      <div class="header-ask" role="group" aria-label="Title row question" style:margin-bottom={tab?.totalsOn ? `${grid?.totalsHeight() ?? 0}px` : null} bind:clientHeight={headerAskH} transition:fade={{ duration: 250 }}>
         <span role="status" aria-live="polite">{headerQuestion}</span>
         <button type="button" class="small" title="Alt+Shift+Y" aria-keyshortcuts="Alt+Shift+Y" onclick={() => void answerHeader(true)}>Yes, column names</button>
         <button type="button" class="small" title="Alt+Shift+N" aria-keyshortcuts="Alt+Shift+N" onclick={() => void answerHeader(false)}>No, it's data</button>

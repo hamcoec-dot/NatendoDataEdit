@@ -53,18 +53,26 @@ pub struct Totals {
 pub const MAX_DISTINCT: usize = 2_000_000;
 
 #[derive(Clone, Copy)]
-struct Acc {
+pub(crate) struct Acc {
     chars: u64,
-    cells: u64,
-    filled: u64,
-    numbers: u64,
+    pub(crate) cells: u64,
+    pub(crate) filled: u64,
+    pub(crate) numbers: u64,
     sum: Kahan,
     min: f64,
     max: f64,
 }
 
 impl Acc {
-    fn new() -> Acc {
+    /// Take one number in.
+    pub(crate) fn number(&mut self, x: f64) {
+        self.numbers += 1;
+        self.sum.add(x);
+        self.min = self.min.min(x);
+        self.max = self.max.max(x);
+    }
+
+    pub(crate) fn new() -> Acc {
         Acc {
             chars: 0,
             cells: 0,
@@ -76,7 +84,7 @@ impl Acc {
         }
     }
 
-    fn merge(mut self, o: Acc) -> Acc {
+    pub(crate) fn merge(mut self, o: Acc) -> Acc {
         self.chars += o.chars;
         self.cells += o.cells;
         self.filled += o.filled;
@@ -90,7 +98,7 @@ impl Acc {
 
 /// The totals of what was read; columns past the last one count as blank
 /// cells (`cells` is what was asked for).
-fn totals_of(acc: Acc, cells: u64) -> Totals {
+pub(crate) fn totals_of(acc: Acc, cells: u64) -> Totals {
     let has = acc.numbers > 0;
     let sum = acc.sum.value();
     let fits = sum.is_finite();
@@ -261,10 +269,7 @@ impl Document {
                         }
                         a.filled += 1;
                         if let Some(x) = rd.number(v) {
-                            a.numbers += 1;
-                            a.sum.add(x);
-                            a.min = a.min.min(x);
-                            a.max = a.max.max(x);
+                            a.number(x);
                         }
                     }
                 }
