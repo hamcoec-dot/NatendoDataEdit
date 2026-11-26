@@ -12,6 +12,8 @@
     picked: number[];
     hidden: number[];
     protectedCols: number[];
+    /** Columns set to Text or Id: never read as dates. */
+    textCols: number[];
     header: boolean;
     /** The table's state: a preview is only good for the one it read. */
     revision: string;
@@ -23,11 +25,8 @@
     onApply: (spec: CleanMatrix, counted: number) => void;
     onClose: () => void;
   }
-  let { titles, picked, hidden, protectedCols, header, revision, readOnly, onPreview, onCancelRun, onOpenCleaner, onApply, onClose }: Props = $props();
+  let { titles, picked, hidden, protectedCols, textCols, header, revision, readOnly, onPreview, onCancelRun, onOpenCleaner, onApply, onClose }: Props = $props();
   const init = untrack(() => ({ header, picked }));
-  /** Dates join the matrix once the date radar's Dates step is in. Greyed in
-   *  development builds until then, and left out of a release. */
-  const datesLater = import.meta.env.DEV;
   let cols = $state<number[]>([...init.picked]);
   let picks = $state<Record<number, ColumnPick>>({});
   let busy = $state(false);
@@ -38,6 +37,7 @@
 
   const kept = $derived(new Set(protectedCols));
   const away = $derived(new Set(hidden));
+  const words = $derived(new Set(textCols));
   /** Shown columns first, then the hidden ones. */
   const rows = $derived([...titles.map((_, c) => c).filter((c) => !away.has(c)), ...titles.map((_, c) => c).filter((c) => away.has(c))]);
   const firstHidden = $derived(rows.find((c) => away.has(c)));
@@ -63,6 +63,9 @@
   /** A header tick: the cleaner for every ticked column. */
   function tickAll(id: TickId, on: boolean): void {
     for (const c of cols) tickCell(c, id, on);
+  }
+  function datesAll(on: boolean): void {
+    for (const c of cols) if (!words.has(c)) setPick(c, { dates: on });
   }
   function caseAll(v: CasePick): void {
     for (const c of cols) setPick(c, { case: v });
@@ -138,13 +141,24 @@
             </select>
           </th>
           <th scope="col">Saved cleaner</th>
-          {#if datesLater}<th scope="col" class="off">Normalize dates (waits for the date radar)</th>{/if}
+          <th scope="col">
+            <label
+              ><span>Dates as yyyy-mm-dd</span>
+              <input
+                type="checkbox"
+                aria-label="Dates as yyyy-mm-dd for every ticked column"
+                disabled={busy || !cols.some((c) => !words.has(c))}
+                checked={cols.some((c) => !words.has(c)) && cols.every((c) => words.has(c) || pickOf(c).dates)}
+                onchange={(e) => datesAll((e.currentTarget as HTMLInputElement).checked)}
+              /></label
+            >
+          </th>
           <th scope="col">Would change</th>
         </tr>
       </thead>
       <tbody>
         {#each rows as c (c)}
-          {#if c === firstHidden}<tr><th colspan={TICKS.length + (datesLater ? 5 : 4)} scope="colgroup" class="divider">Hidden columns</th></tr>{/if}
+          {#if c === firstHidden}<tr><th colspan={TICKS.length + 5} scope="colgroup" class="divider">Hidden columns</th></tr>{/if}
           {@const off = busy || kept.has(c)}
           {@const p = pickOf(c)}
           {@const n = countOf(c)}
@@ -179,12 +193,25 @@
                 <button type="button" disabled={off} aria-label={`Choose a saved cleaner for ${titles[c]}`} onclick={() => void chooseCleaner(c)}>Choose…</button>
               {/if}
             </td>
-            {#if datesLater}<td><input type="checkbox" aria-label={`Normalize dates: ${titles[c]}`} disabled /></td>{/if}
+            <td>
+              <input
+                type="checkbox"
+                aria-label={`Dates as yyyy-mm-dd: ${titles[c]}`}
+                title={words.has(c) ? "A Text or Id column is never read as dates." : undefined}
+                checked={p.dates}
+                disabled={off || words.has(c)}
+                onchange={(e) => {
+                  setPick(c, { dates: (e.currentTarget as HTMLInputElement).checked });
+                  if (!cols.includes(c)) tickColumn(c, true);
+                }}
+              />
+            </td>
             <td class="count">
               {#if n}
                 {n.changed.toLocaleString()}
                 {#if n.protected}<small>{n.protected.toLocaleString()} protected, left alone</small>{/if}
-                {#if n.left}<small>{n.left.toLocaleString()} not readable, left alone</small>{/if}
+                {#if n.ambiguous_left}<small>{n.ambiguous_left.toLocaleString()} readable two ways, left as typed</small>{/if}
+                {#if n.left > n.ambiguous_left}<small>{(n.left - n.ambiguous_left).toLocaleString()} not changed as dates or numbers, left alone</small>{/if}
                 {#if n.homoglyph_cells}<small>{n.homoglyph_cells.toLocaleString()} with look-alike letters</small>{/if}
               {/if}
             </td>
@@ -193,7 +220,7 @@
       </tbody>
     </table>
   </div>
-  <p class="muted">{ORDER_TEXT} Shown rows only{init.header ? "; the title row is left out" : ""}.</p>
+  <p class="muted">{ORDER_TEXT} Dates readable two ways, two-digit years and eight bare digits stay as typed: Data › Check dates handles those. Shown rows only{init.header ? "; the title row is left out" : ""}.</p>
   {#if problem}<p class="warn" role="alert">{problem}</p>{/if}
   {#if idle}<p class="muted" role="note">{idle === 1 ? "1 ticked column has" : `${idle} ticked columns have`} nothing to do and will be left alone.</p>{/if}
   {#if busy}

@@ -70,6 +70,7 @@ const url = process.argv[3] || "http://localhost:5362";
   ok((await box("Name").isChecked()) && !(await box("Note").isChecked()) && !(await box("Code (protected)").isChecked()), "Select all leaves hidden and protected columns out");
   ok(await dlg.getByRole("button", { name: "Preview" }).isDisabled(), "nothing to preview until a cleaner is ticked");
   await box("Trim for every ticked column").check();
+  ok((await box("Dates as yyyy-mm-dd for every ticked column").isEnabled()) && !(await box("Dates as yyyy-mm-dd: Name").isChecked()) && (await box("Dates as yyyy-mm-dd: Code (protected)").count()) + (await dlg.getByRole("checkbox", { name: /^Dates as yyyy-mm-dd: Code/ }).count()) >= 1, "a dates tick for each column, unticked");
   await box("Collapse spaces: Name").check();
   await box("Digits only: Phone").check();
   await dlg.getByRole("combobox", { name: "Case: Name" }).selectOption("title");

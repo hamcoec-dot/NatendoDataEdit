@@ -6,13 +6,14 @@ const saved = { file: "names.ndclean", cleaner: { version: 1, name: "", steps: [
 
 describe("clean matrix ticks", () => {
   it("run in the fixed order however they were ticked", () => {
-    const steps = stepsFor({ ticks: ["digits", "collapse", "trim", "breaks", "invisible", "sanitize"], case: "upper", saved });
-    expect(steps.map((s) => (s.tool === "spaces" ? s.how : s.tool))).toEqual(["sanitize", "remove", "line_breaks", "trim", "collapse", "accents", "digits", "case"]);
+    const steps = stepsFor({ ticks: ["digits", "collapse", "trim", "breaks", "invisible", "sanitize"], case: "upper", saved, dates: true });
+    expect(steps.map((s) => (s.tool === "spaces" ? s.how : s.tool))).toEqual(["sanitize", "remove", "line_breaks", "trim", "collapse", "accents", "digits", "case", "dates"]);
+    expect(steps.at(-1)).toEqual({ tool: "dates", format: "yyyy-mm-dd", ambiguous: "leave", review: { compact: false, two_digit: false } });
     expect(TICKS.map((t) => t.id)).toEqual(["sanitize", "invisible", "breaks", "trim", "collapse", "digits"]);
   });
 
   it("puts a saved cleaner in its place without digits ticked", () => {
-    expect(stepsFor({ ticks: [], case: "", saved })).toEqual([{ tool: "accents" }]);
+    expect(stepsFor({ ticks: [], case: "", saved, dates: false })).toEqual([{ tool: "accents" }]);
   });
 
   it("leaves out columns with nothing to do and records titles and the file", () => {

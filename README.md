@@ -1201,8 +1201,9 @@ selection, a column or the whole table:
   Protected columns are greyed and left alone; hidden columns are listed apart
   and never picked by Select all. A recorded recipe finds the columns by title
   and keeps its own copy of a saved cleaner's steps, so later changes to the
-  cleaner file do not change the recipe. Date normalising is not in the matrix
-  yet: use the Dates tool.
+  cleaner file do not change the recipe. **Dates as yyyy-mm-dd** changes only
+  dates that read one way: those readable two ways, two-digit years and eight
+  bare digits stay as typed and are counted (use Check dates for them).
   ![Clean matrix: columns down the side, cleaners across](docs/screenshots/clean-matrix.png)
 - Replace text, dates and times, or numbers; add, pad, remove, reverse or
   random text; add or remove spaces, numbers, dates and times.
