@@ -858,7 +858,19 @@ everything is also in command search.
   (dates only month-first, only day-first, mixed, or nothing at all), and a pill
   in the status bar counts them and steps through them. Eight-digit values count
   as dates only in a column that is mostly dates and whose title does not say it
-  holds IDs or numbers. Nothing in the file changes.
+  holds IDs or numbers. Checking changes nothing in the file.
+
+  **Review and convert dates** (Data menu, right-click menu, or **Review…** in
+  the pill) counts the whole column and writes the dates as `2026-04-25`. You
+  choose what happens to the ambiguous ones: leave them, read them all month
+  first or day first, or type each one (the first 500 are listed). When the
+  column gives no clue about the order, nothing is picked for you. Eight-digit
+  values and two-digit years change only when ticked. A preview shows how many
+  cells change and how many stay as typed. The conversion is one undo step
+  (cells you typed yourself are a second one), and a recorded recipe says what
+  it does with ambiguous dates.
+
+  ![The date review screen: the choices for ambiguous dates and a preview](docs/screenshots/date-review.png)
 
   ![The date radar: two dates that can be read two ways lit amber with a corner mark](docs/screenshots/date-radar.png)
 - **Shifted and ragged rows:** when a file has rows with a different number of

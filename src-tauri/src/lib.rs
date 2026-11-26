@@ -2711,6 +2711,17 @@ async fn date_marks(
 }
 
 #[tauri::command]
+async fn date_list(
+    docs: DocsState<'_>,
+    doc: u32,
+    col: u32,
+    keep_first: bool,
+) -> CmdResult<Vec<(u64, u64, String)>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.date_list(doc, col, keep_first)).await
+}
+
+#[tauri::command]
 async fn date_find(
     docs: DocsState<'_>,
     doc: u32,
@@ -4260,6 +4271,7 @@ pub fn run() {
             date_scan,
             date_marks,
             date_find,
+            date_list,
             row_text,
             repair_row,
             same_shape,

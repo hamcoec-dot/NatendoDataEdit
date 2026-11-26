@@ -35,7 +35,7 @@ export type NamePart = "title" | "first" | "middle" | "last" | "suffix" | "first
 
 export type Step =
   | { tool: "replace"; find: Pattern; with: string }
-  | { tool: "dates"; format: string; from?: string; past?: boolean }
+  | { tool: "dates"; format: string; from?: string; past?: boolean; ambiguous?: "leave" | "mdy" | "dmy"; review?: { compact: boolean; two_digit: boolean } }
   | { tool: "numbers"; decimals: number | null; thousands: boolean; decimal_comma: boolean }
   | { tool: "add"; text: string; at: At }
   | { tool: "random"; length: number; chars: Charset }
