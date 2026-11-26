@@ -1827,7 +1827,9 @@ fn main() {
     );
     assert!(r.rows > 0);
     let t = Instant::now();
-    let plan = big.plan_sort_problems(&r, true).unwrap();
+    let plan = big
+        .plan_sort_problems(&r, true, Default::default())
+        .unwrap();
     big.apply_sort(plan).unwrap();
     check.budget(
         "put rows that fail first (after the check)",

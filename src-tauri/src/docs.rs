@@ -806,6 +806,8 @@ pub enum DataOp {
     /// Put the rows that fail the checks first.
     SortProblems {
         spec: CheckSpec,
+        #[serde(default)]
+        scope: natendo_engine::sort::SortScope,
     },
     /// Add a "Check result" column (OK, or the checks the row fails).
     CheckColumn {
@@ -1397,7 +1399,10 @@ fn recipe_step(op: &DataOp) -> Logged {
         DataOp::FillSpecial { .. } => {
             return Logged::LeftOut("filling the cells Go To Special picked".into())
         }
-        DataOp::SortProblems { spec } => RecipeOp::SortProblems { spec: spec.clone() },
+        DataOp::SortProblems { spec, scope } => RecipeOp::SortProblems {
+            spec: spec.clone(),
+            scope: *scope,
+        },
         DataOp::CheckColumn { spec, title } => RecipeOp::CheckColumn {
             spec: spec.clone(),
             title: title.clone(),
@@ -1493,9 +1498,9 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
         RecipeOp::GroupCalc { spec } => DataOp::GroupCalc { spec },
         RecipeOp::Arrange { spec } => DataOp::Arrange { spec },
         RecipeOp::Extract { spec } => DataOp::Extract { spec },
-        RecipeOp::SortProblems { mut spec } => {
+        RecipeOp::SortProblems { mut spec, scope } => {
             spec.now = now;
-            DataOp::SortProblems { spec }
+            DataOp::SortProblems { spec, scope }
         }
         RecipeOp::CheckColumn { mut spec, title } => {
             spec.now = now;
@@ -6067,7 +6072,7 @@ impl Docs {
 
     fn data_op_now(&self, id: u32, op: DataOp) -> CmdResult<OpReport> {
         if let DataOp::ShowProblems { spec, .. }
-        | DataOp::SortProblems { spec }
+        | DataOp::SortProblems { spec, .. }
         | DataOp::CheckColumn { spec, .. } = &op
         {
             natendo_engine::validate::check_spec(spec)?;
@@ -6324,10 +6329,10 @@ impl Docs {
                     groups.set(found.short);
                     Planned::Rows(d.plan_show_ragged(&found, *keep_first, *pick)?)
                 }
-                DataOp::SortProblems { spec } => {
+                DataOp::SortProblems { spec, scope } => {
                     let rep = d.run_checks(spec, p)?;
                     groups.set(rep.rows);
-                    Planned::Sort(d.plan_sort_problems(&rep, spec.keep_first)?)
+                    Planned::Sort(d.plan_sort_problems(&rep, spec.keep_first, *scope)?)
                 }
                 DataOp::CheckColumn { spec, title } => {
                     let rep = d.run_checks(spec, p)?;
@@ -9520,6 +9525,7 @@ mod tests {
                 id,
                 DataOp::SortProblems {
                     spec: checks.clone(),
+                    scope: Default::default(),
                 },
             )
             .unwrap();
