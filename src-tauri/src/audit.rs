@@ -40,6 +40,7 @@ fn name_of(op: &DataOp) -> &'static str {
         DataOp::Compute { .. } => "compute",
         DataOp::ShowProblems { .. } => "show_problems",
         DataOp::ShowRagged { .. } => "show_ragged",
+        DataOp::ShowRelationExceptions { .. } => "show_relation_exceptions",
         DataOp::ShowShape { .. } => "show_shape",
         DataOp::ShowGapRows { .. } => "show_gap_rows",
         DataOp::SortProblems { .. } => "sort_problems",
