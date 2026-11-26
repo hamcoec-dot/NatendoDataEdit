@@ -788,6 +788,14 @@ export class MockBackend implements Backend {
     for (let r = Math.max(row, keepFirst ? 1 : 0); r < Math.min(row + rows, this.rowCount(d)); r++) if (this.twoWays(d, r, col)) out.push(r);
     return out;
   }
+  async gapHidden(doc: number, row: number): Promise<number> {
+    const d = this.get(doc);
+    const from = row === 0 ? 0 : this.pos(d, row - 1) + 1;
+    const to = row >= this.rowCount(d) ? d.info.total_rows : this.pos(d, row);
+    let n = 0;
+    for (let p = from; p < to; p++) if (d.hidden?.has(d.order ? (d.order[p] ?? 0) : p)) n++;
+    return n;
+  }
   async dateList(doc: number, col: number, keepFirst: boolean): Promise<[number, number, string][]> {
     const d = this.get(doc);
     const out: [number, number, string][] = [];

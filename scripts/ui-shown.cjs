@@ -92,6 +92,97 @@ const url = process.argv[3] || "http://localhost:5301";
   if (found) await p.mouse.click(box.x + 25, found.y);
   await p.waitForTimeout(1200);
   ok((await p.evaluate(() => window.__nde.tab.info.total_rows - window.__nde.tab.info.rows)) === 0 && (await p.getByTestId("acting-pill").count()) === 0, "clicking it shows the rows again, and the pill goes");
+  // Each end of the table, the line's colour, and a gap that is only filtered out.
+  const hiddenNow = () => p.evaluate(() => window.__nde.tab.info.total_rows - window.__nde.tab.info.rows);
+  const findSeam = async (from, to, re) => {
+    for (let y = from; y < to; y += 3) {
+      await p.mouse.move(box.x + 25, y);
+      await p.waitForTimeout(150);
+      const tip = await p.evaluate(() => [...document.querySelectorAll("[title]")].map((e) => e.getAttribute("title")).find((t) => /here/.test(t || "")) || "");
+      if (re.test(tip)) return { y, tip };
+    }
+    return null;
+  };
+  const hide = async (row, count) => {
+    await p.evaluate(([row, count]) => window.__nde.grid.select({ row, col: 1 }, { row: row + count - 1, col: 1 }), [row, count]);
+    await p.waitForTimeout(300);
+    await run("format.hideRows");
+  };
+  const showByClick = async (seam, name, count) => {
+    await p.mouse.click(box.x + 25, seam.y);
+    await p.waitForTimeout(1200);
+    ok((await hiddenNow()) === 0, `${name}: clicking shows the rows again (${await hiddenNow()} hidden)`);
+    await run("edit.undo");
+    await p.waitForTimeout(600);
+    ok((await hiddenNow()) === count, `${name}: one undo hides them again (${await hiddenNow()})`);
+    await run("format.showAllRows");
+  };
+  await run("view.accent.amber");
+  await hide(1, 2);
+  await p.mouse.move(600, 400);
+  await p.waitForTimeout(400);
+  const first = await findSeam(box.y + 12, box.y + 45, /hidden here/);
+  ok(!!first && /^2 rows hidden here/.test(first.tip), `before the first data row (${first?.tip})`);
+  await p.mouse.move(600, 400);
+  await p.waitForTimeout(300);
+  const colours = await p.evaluate((y) => {
+    const c = document.querySelector("canvas");
+    const r = c.getBoundingClientRect();
+    const k = c.width / r.width;
+    const g = c.getContext("2d");
+    const rgb = (css) => {
+      const x = document.createElement("canvas").getContext("2d");
+      x.fillStyle = css;
+      x.fillRect(0, 0, 1, 1);
+      return [...x.getImageData(0, 0, 1, 1).data].slice(0, 3);
+    };
+    const v = (n) => rgb(getComputedStyle(document.documentElement).getPropertyValue(n).trim());
+    const near = (a, b) => a.every((q, i) => Math.abs(q - b[i]) < 24);
+    const [text, accent] = [v("--text"), v("--accent")];
+    let asText = 0;
+    let asAccent = 0;
+    // The dotted line's own pixels: two rows of pixels under the header row, left of the digits.
+    for (let dy = 25; dy <= 27; dy++) {
+      for (let x = 1; x < 30; x++) {
+        const px = [...g.getImageData(Math.round(x * k), Math.round(dy * k), 1, 1).data].slice(0, 3);
+        if (near(px, text)) asText++;
+        if (near(px, accent)) asAccent++;
+      }
+    }
+    return { asText, asAccent, accent };
+  }, first?.y);
+  ok(colours.asText >= 5 && colours.asAccent === 0, `with the Amber accent the line is in the text colour (${JSON.stringify(colours)})`);
+  if (out) await p.screenshot({ path: path.join(out, "shown-seam-amber.png") });
+  if (first) await showByClick(first, "first gap", 2);
+  const last = await p.evaluate(() => window.__nde.tab.info.rows - 1);
+  await hide(last - 1, 2);
+  await p.evaluate(() => window.__nde.grid.select({ row: window.__nde.tab.info.rows - 1, col: 1 }, { row: window.__nde.tab.info.rows - 1, col: 1 }));
+  await p.waitForTimeout(900);
+  const end = await findSeam(box.y + box.height - 140, box.y + box.height, /hidden here/);
+  ok(!!end && /^2 rows hidden here/.test(end.tip), `after the last row (${end?.tip})`);
+  if (end) await showByClick(end, "last gap", 2);
+  // A filter leaves the second data row out; a row far below is hidden by hand.
+  await run("edit.goHome").catch(() => {});
+  await p.evaluate(() => window.__nde.grid.select({ row: 0, col: 1 }, { row: 0, col: 1 }));
+  await p.waitForTimeout(600);
+  await p.evaluate(async () => {
+    const t = window.__nde.tab;
+    t.update(await window.__nde.backend.setFilter(t.id, { columns: [{ col: 1, rule: { type: "conditions", first: { type: "text", op: "not_equals", text: "Bo" }, second: null, or: false } }], keep_first: true }), true);
+    t.bump();
+  });
+  await p.waitForTimeout(700);
+  await hide(6, 1);
+  const only = await findSeam(box.y + 40, box.y + 75, /filtered out here/);
+  ok(!!only && only.tip === "1 row filtered out here. Click for the filter.", `a filter-only gap promises nothing hidden by hand (${only?.tip})`);
+  const before = await hiddenNow();
+  if (only) await p.mouse.click(box.x + 25, only.y);
+  await p.waitForTimeout(1200);
+  const menu = await p.getByRole("dialog").or(p.locator("[data-testid=filter-menu], .filter-menu")).count();
+  ok(menu > 0 && (await hiddenNow()) === before, `clicking it opens the filter menu and clears nothing (menus ${menu}, ${await hiddenNow()} hidden)`);
+  if (out) await p.screenshot({ path: path.join(out, "shown-filter-gap.png") });
+  await close();
+  await run("data.clearFilter");
+  await run("format.showAllRows");
   // Hide the rows again for the quick sort (the stand-in does not keep hidden rows in place, so it comes last).
   await p.evaluate(() => window.__nde.grid.select({ row: 2, col: 1 }, { row: 4, col: 1 }));
   await run("format.hideRows");
