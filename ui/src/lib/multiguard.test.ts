@@ -89,7 +89,7 @@ const NOT_WRITES = [
   "findChange",
   "findExtreme",
   "specialCells",
-  "compareCols", "gapAudit",
+  "compareCols", "gapAudit", "cleanMatrixPreview", "cleanerOpenNamed",
   "numberRange",
   "typeahead",
   "renameFile",

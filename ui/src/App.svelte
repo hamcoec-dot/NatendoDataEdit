@@ -62,6 +62,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import TidyTitlesDialog from "./lib/TidyTitlesDialog.svelte";
   import CompareColsDialog, { type CompareAction } from "./lib/CompareColsDialog.svelte";
   import GapsDialog from "./lib/GapsDialog.svelte";
+  import CleanMatrixDialog from "./lib/CleanMatrixDialog.svelte";
+  import type { CleanMatrix, MatrixPreview } from "./lib/matrix";
   import type { GapReport, GapsSpec } from "./lib/gaps";
   import type { CompareCols } from "./lib/backend";
   import { typedCell } from "./lib/cellformula";
@@ -3385,6 +3387,47 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
 
+  // ---- clean matrix ----
+  let matrixAsk = $state<{ titles: string[]; picked: number[] } | null>(null);
+
+  function openMatrix(): void {
+    const t = tab;
+    if (!t) return;
+    const titles = Array.from({ length: Math.min(t.info.cols, 5_000) }, (_, c) => columnTitle(t, c));
+    matrixAsk = { titles, picked: [] };
+  }
+
+  /** From a right-click: the selected cells' columns start ticked. */
+  function openMatrixHere(): void {
+    const t = tab;
+    if (!t) return;
+    openMatrix();
+    const r = t.singleRect();
+    if (!matrixAsk || !r) return;
+    const hidden = new Set(hiddenColsOf(t));
+    const kept = new Set(t.info.protected ?? []);
+    matrixAsk.picked = Array.from({ length: Math.min(r.cols, 5_000) }, (_, i) => r.col + i).filter((c) => c < matrixAsk!.titles.length && !hidden.has(c) && !kept.has(c));
+  }
+
+  async function previewMatrix(spec: CleanMatrix): Promise<MatrixPreview | null> {
+    const t = tab;
+    if (!t) return null;
+    try {
+      return await runJob("Cleaning preview", () => backend().cleanMatrixPreview(t.id, spec, localNow()));
+    } catch (e) {
+      say(errorText(e));
+      return null;
+    }
+  }
+
+  async function applyMatrix(spec: CleanMatrix): Promise<void> {
+    matrixAsk = null;
+    const rep = await runOp({ op: "clean_matrix", spec, now: localNow() }, "Cleaning");
+    if (!rep) return;
+    const left = rep.left ? ` ${plural(rep.left, "cell")} could not be read and ${rep.left === 1 ? "was" : "were"} left alone.` : "";
+    say(rep.cells ? `Cleaned ${plural(rep.cells, "cell")} in ${plural(spec.entries.length, "column")}. Ctrl+Z undoes it.${left}` : `Nothing needed cleaning.${left}`);
+  }
+
   // ---- gaps in a sequence ----
   let gapsAsk = $state<{ titles: string[]; col: number } | null>(null);
 
@@ -6400,6 +6443,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.fillExample", label: "Fill by e&xample", keys: ["Ctrl+E"], run: () => void fillByExample(), enabled: ready, repeatable: true },
     { id: "data.splitName", label: "Split names into columns…", run: () => { splitNameOpen = true; }, enabled: ready },
     { id: "clean.tools", label: "&Cleaning tools…", keys: ["Ctrl+Shift+K"], run: () => { cleanTool = "spaces"; }, enabled: ready },
+    { id: "clean.matrix", label: "Clean matrix…", run: openMatrix, enabled: ready },
+    { id: "clean.matrixHere", label: "Clean matrix (these columns)…", run: openMatrixHere, enabled: ready },
     ...TOOLS.map((tl) => ({ id: `clean.tool.${tl.id}`, label: `${tl.label}…`, run: () => { cleanTool = tl.id; }, enabled: ready })),
     { id: "find.find", label: "&Find…", multiArea: true, keys: ["Ctrl+F", "Shift+F5"], run: () => openFind(false), enabled: hasTab },
     { id: "find.replace", label: "&Replace…", multiArea: true, keys: ["Ctrl+H"], run: () => openFind(true), enabled: ready },
@@ -6507,10 +6552,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.gaps", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -8942,6 +8987,23 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     readOnly={!!tab.info.read_only}
     onRun={(spec, action) => void runCompareCols(spec, action).then(() => grid?.focus())}
     onClose={() => { compareAsk = null; grid?.focus(); }}
+  />
+{/if}
+{#if matrixAsk && tab}
+  {@const m = matrixAsk}
+  <CleanMatrixDialog
+    titles={m.titles}
+    picked={m.picked}
+    hidden={hiddenColsOf(tab)}
+    protectedCols={tab.info.protected ?? []}
+    header={tab.header && tab.info.rows > 0}
+    revision={`${tab.info.data_revision ?? 0}:${tab.info.rows}`}
+    readOnly={!!tab.info.read_only}
+    onPreview={previewMatrix}
+    onCancelRun={() => { if (tab) void backend().cancelJob(tab.id); }}
+    onOpenCleaner={() => backend().cleanerOpenNamed()}
+    onApply={(s) => void applyMatrix(s).then(() => grid?.focus())}
+    onClose={() => { matrixAsk = null; grid?.focus(); }}
   />
 {/if}
 {#if gapsAsk && tab}

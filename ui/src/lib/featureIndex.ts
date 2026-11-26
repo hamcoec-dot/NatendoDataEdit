@@ -252,6 +252,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "expand collapse and drill down": ["data.pivot"],
   "use the result": ["data.pivot"],
   // Cleaning tools
+  "clean matrix": ["clean.matrix", "clean.matrixHere"],
   "replace text dates and times": [
     "clean.tools", "clean.tool.replace", "clean.tool.dates", "clean.tool.numbers", "clean.tool.add", "clean.tool.pad",
     "clean.tool.remove", "clean.tool.reverse", "clean.tool.random", "clean.tool.spaces", "clean.tool.digits", "clean.tool.now",

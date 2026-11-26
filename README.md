@@ -1149,6 +1149,18 @@ preview:
 Dozens of cleaning steps, each with a live preview on a sample, for a cell
 selection, a column or the whole table:
 
+- **Clean matrix** (Clean > Clean matrix, or right-click cells or a heading):
+  many columns at once. Tick columns, then tick what each needs: fix
+  look-alikes, strip non-printing characters, remove line breaks, trim,
+  collapse spaces, a saved cleaner, digits only, and a case. The steps always
+  run in that order. Preview counts what would change in each column with
+  three examples, then Apply cleans everything in one pass and one undo step.
+  Protected columns are greyed and left alone; hidden columns are listed apart
+  and never picked by Select all. A recorded recipe finds the columns by title
+  and keeps its own copy of a saved cleaner's steps, so later changes to the
+  cleaner file do not change the recipe. Date normalising is not in the matrix
+  yet: use the Dates tool.
+  ![Clean matrix: columns down the side, cleaners across](docs/screenshots/clean-matrix.png)
 - Replace text, dates and times, or numbers; add, pad, remove, reverse or
   random text; add or remove spaces, numbers, dates and times.
 - Change case, including proper name case (McDonald, O'Brien) and titles with

@@ -7,3 +7,4 @@
 - **Repair bar:** fix a shifted row where it broke: join fields, join it with the next or previous row of the file, or read a stray quote mark as text, with a preview and one undo step. **Fix all like this** repairs every row of the same shape at once, and the emptied extra column can be removed.
 - **Find gaps in a sequence:** Data > Find gaps in a sequence lists the numbers or IDs missing from a column as ranges, with repeats and out-of-order rows, and can show the rows next to each gap. Also `natendo-cli gaps`.
 - **Ambiguous dates:** Check dates in this column lights the dates that could be read two ways and says what the column tells about their order.
+- **Clean matrix:** Clean > Clean matrix cleans many columns at once, each with its own ticked steps, with exact preview counts, in one pass, one undo step and one recipe step.

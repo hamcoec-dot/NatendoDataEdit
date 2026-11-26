@@ -3,6 +3,7 @@
 // without the desktop shell.
 import { InfoGuard } from "./infoguard";
 import type { GapReport, GapsSpec } from "./gaps";
+import type { CleanMatrix, MatrixPreview, NamedCleaner } from "./matrix";
 import type { ColumnType, ColumnTypes } from "./readers";
 import type { Cleaner, CleanPreview, CleanSpec, ExampleSpec, SplitName } from "./clean";
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, SubtotalSpec, Summary, View } from "./views";
@@ -946,6 +947,7 @@ export type DataOp =
   | { op: "show_problems"; spec: CheckSpec; passing?: boolean }
   | { op: "show_ragged"; pick?: "all" | "short" | "long"; keep_first: boolean }
   | { op: "show_gap_rows"; spec: GapsSpec }
+  | { op: "clean_matrix"; spec: CleanMatrix; now: number }
   | { op: "show_shape"; spec: ShapeFilter }
   | { op: "sort_problems"; spec: CheckSpec }
   | { op: "check_column"; spec: CheckSpec; title?: string }
@@ -1594,6 +1596,8 @@ export interface Backend {
   /** Compare two columns: counts and the rows that differ. */
   compareCols(doc: number, spec: CompareCols): Promise<CompareColsReport>;
   gapAudit(doc: number, spec: GapsSpec): Promise<GapReport>;
+  cleanMatrixPreview(doc: number, spec: CleanMatrix, now: number): Promise<MatrixPreview>;
+  cleanerOpenNamed(): Promise<NamedCleaner | null>;
   /** Smallest and largest number of a column ("busy" while changing). */
   numberRange(doc: number, col: number, keepFirst: boolean, read: ReadOptions): Promise<[number, number] | null>;
   /** A value of the column that starts with what is typed. */
@@ -2231,6 +2235,12 @@ class TauriBackend implements Backend {
   }
   cleanerSave(cleaner: Cleaner) {
     return call<string | null>("cleaner_save", { cleaner });
+  }
+  cleanMatrixPreview(doc: number, spec: CleanMatrix, now: number) {
+    return call<MatrixPreview>("clean_matrix_preview", { doc, spec, now });
+  }
+  cleanerOpenNamed() {
+    return call<NamedCleaner | null>("cleaner_open_named");
   }
   cleanerOpen() {
     return call<Cleaner | null>("cleaner_open");
