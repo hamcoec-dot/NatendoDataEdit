@@ -104,6 +104,27 @@ const url = process.argv[3] || "http://localhost:5361";
   await p.keyboard.press("Escape");
   await p.waitForTimeout(300);
 
+  // Dates: the step goes into the spec, and the number controls are gone.
+  await run("data.gaps");
+  await dlg.waitFor({ timeout: 5000 });
+  await dlg.getByRole("radio", { name: "Dates" }).check();
+  await p.waitForTimeout(400);
+  ok((await dlg.getByRole("checkbox", { name: /Audit each shape/ }).count()) === 0 && (await dlg.getByLabel("Digits to follow").count()) === 0, "dates have no digit or shape controls");
+  await dlg.getByLabel("Expected every").selectOption("days");
+  await dlg.getByLabel("Days", { exact: true }).fill("14");
+  await dlg.getByRole("button", { name: "Find gaps" }).click();
+  await p.waitForTimeout(400);
+  let ds = await spec();
+  ok(ds.dates?.step === "days" && ds.dates.n === 14 && ds.each_shape === false && ds.pattern === null && ds.run === null, `the date spec sent (${JSON.stringify(ds.dates)})`);
+  await dlg.getByLabel("Expected every").selectOption("month");
+  ok((await dlg.getByLabel("Start at (optional)").getAttribute("placeholder")) === "2026-03", "a month step shows the month form");
+  await dlg.getByRole("button", { name: "Find gaps" }).click();
+  await p.waitForTimeout(400);
+  ds = await spec();
+  ok(ds.dates?.step === "month" && !("n" in ds.dates), "month");
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(300);
+
   await run("data.gaps");
   await p.keyboard.press("Escape");
   await p.waitForTimeout(300);

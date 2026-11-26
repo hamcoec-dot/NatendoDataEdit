@@ -192,6 +192,27 @@ const proof = async () => {
   ok(info.rows === 15 && info.cols === 3, `the result table: ${info.rows} rows x ${info.cols}`);
   await m.screenshot({ path: path.join(evidence, "gaps-tab.png") });
   ok(fs.readFileSync(FILE, "utf8") === BODY, "the source file is untouched");
+
+  // Dates: 5 January missing, one date two ways round, a time of day.
+  await m.locator('[role="tab"]', { hasText: "invoices.csv" }).click();
+  await sleep(500);
+  const days = ["2026-01-02", "2026-01-03 09:15", "2026-01-03", "01/04/2026", "2026-01-06"];
+  await invoke(m, "set_cells", { doc: 1, cells: NOS.map((_, i) => [i + 1, 1, days[i] ?? ""]) });
+  await m.keyboard.press("Control+Home");
+  await m.keyboard.press("ArrowRight");
+  await cmd(m, "Find gaps in a sequence");
+  await dlg.waitFor({ timeout: 8000 });
+  await dlg.getByRole("radio", { name: "Dates" }).check();
+  await dlg.getByLabel("Column", { exact: true }).selectOption("1");
+  ok(await waitFor(async () => /2 missing in 2 ranges/.test(await body(m))), "the date audit answers");
+  t = await body(m);
+  ok(/2026-01-04 \(1 missing\)/.test(t) && /2026-01-05 \(1 missing\)/.test(t), "the missing days, the ambiguous one not read");
+  ok(/1 ambiguous date not read \(file row 5\)/.test(t) && /1 repeated date/.test(t), "the ambiguous row and the repeat are said");
+  await m.screenshot({ path: path.join(evidence, "gaps-dates.png") });
+  await dlg.getByLabel("Start at (optional)").fill("01/01/2026");
+  await dlg.getByRole("button", { name: "Find gaps" }).click();
+  ok(await waitFor(async () => /type the start as a date like 2026-03-31/.test(await body(m))), "a typed start in another form is refused");
+  await m.keyboard.press("Escape");
 };
 
 (async () => {

@@ -15,9 +15,25 @@ export interface GapsSpec {
   run: number | null;
   pattern: GapPattern | null;
   each_shape: boolean;
+  /** Read the column as dates at this step; null: numbers or IDs. */
+  dates: DateStep | null;
   start: string;
   end: string;
 }
+export type DateStep = { step: "day" | "business" | "week" | "month" } | { step: "days"; n: number };
+
+/** What a date audit left out, or read with care. */
+export interface DateNotes {
+  ambiguous: number;
+  ambiguous_rows: FileRow[];
+  two_digit: number;
+  two_digit_rows: FileRow[];
+  weekend: number;
+  weekend_rows: FileRow[];
+  off_step: number;
+  off_step_rows: FileRow[];
+}
+
 /** A row's place in the file (first line 1); null: added by hand. */
 export type FileRow = number | null;
 export interface GapRange {
@@ -51,6 +67,7 @@ export interface GapReport {
   range_total: number;
   missing: string;
   looks_like_amounts: boolean;
+  dates: DateNotes | null;
 }
 
 /** A whole number of any size with thousands separators. */
