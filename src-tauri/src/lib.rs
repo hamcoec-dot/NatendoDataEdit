@@ -3611,6 +3611,17 @@ async fn run_checks(
     blocking(move || docs.run_checks(doc, &spec)).await
 }
 
+/// Find the numbers missing from a column of numbers or IDs.
+#[tauri::command]
+async fn gap_audit(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::gaps::GapsSpec,
+) -> CmdResult<natendo_engine::gaps::GapReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.gap_audit(doc, &spec).map(|r| (*r).clone())).await
+}
+
 /// X-ray the shown rows for look-alike characters (counts only).
 #[tauri::command]
 async fn xray_report(
@@ -4422,6 +4433,7 @@ pub fn run() {
             mail_preview,
             save_mail,
             run_checks,
+            gap_audit,
             reopen_encoding,
             encoding_choices,
             encoding_preview,

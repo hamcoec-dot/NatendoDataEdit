@@ -922,6 +922,11 @@ fn too_many_series() -> Error {
 }
 
 impl GapReport {
+    /// What was audited.
+    pub fn spec(&self) -> &GapsSpec {
+        &self.spec
+    }
+
     /// The summary and the range lines as a table. `titles`: the "series by"
     /// column titles. Numbers are never expanded.
     pub fn table(&self, titles: &[String]) -> Result<Table, Error> {
