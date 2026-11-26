@@ -143,6 +143,7 @@
     {@const r = report}
     <section aria-label="Gaps found" class:old={stale}>
       {#if stale}<p class="warn" role="note">Something changed: press Find gaps again.</p>{/if}
+      {#if r.too_many_shapes}<p class="warn" role="note">Too many shapes: pick the digit run to follow. Rows of the shapes left over count as a different shape.</p>{/if}
       {#if r.looks_like_amounts}<p class="warn" role="note">This column looks like amounts, not IDs.</p>{/if}
       <p role="status">
         <strong>{grouped(r.missing)} missing</strong> in {r.range_total.toLocaleString()}

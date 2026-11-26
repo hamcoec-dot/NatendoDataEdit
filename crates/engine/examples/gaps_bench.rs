@@ -19,6 +19,20 @@ fn table(rows: u64, scattered: bool) -> Document {
     Document::from_bytes(s.into_bytes(), OpenOptions::default(), Some("csv")).unwrap()
 }
 
+/// A different suffix on every row: far more shapes than are told apart.
+fn shapes(rows: u64) -> Document {
+    let mut s = String::from("Invoice,Ward\r\n");
+    for i in 0..rows {
+        s.push_str(&format!(
+            "INV-{i:06}-x{}a{}b3,{}\r\n",
+            i % 9973,
+            i / 7,
+            i % 40
+        ));
+    }
+    Document::from_bytes(s.into_bytes(), OpenOptions::default(), Some("csv")).unwrap()
+}
+
 fn time(f: impl FnOnce()) -> Duration {
     let t = Instant::now();
     f();
@@ -31,8 +45,13 @@ fn main() {
         ("in order", false, false),
         ("scattered", true, false),
         ("scattered, by ward", true, true),
+        ("a shape on every row", false, false),
     ] {
-        let d = table(rows, scattered);
+        let d = if name == "a shape on every row" {
+            shapes(rows)
+        } else {
+            table(rows, scattered)
+        };
         let gaps = GapsSpec {
             col: 0,
             series: if series { vec![1] } else { vec![] },

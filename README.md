@@ -794,7 +794,11 @@ everything is also in command search.
   of a different shape counted. Audit each prefix on its own, split by up to
   two columns, type a start or end, then show the rows next to each gap, copy
   the list, or open it as a tab and save it as CSV. Shown rows only. Dates are
-  not audited yet.
+  not audited yet. Row numbers are places in the file, counting the title line
+  as 1 and a record that spans several lines once; they follow the file as last
+  saved, so rows you add get a file number after Save (until then they are
+  "added by hand"). With more than 10,000 different shapes the rest count as a
+  different shape, and the report says to pick the digit run.
   ![Gap audit: missing invoice numbers listed as ranges](docs/screenshots/gaps.png)
 - **Compare two columns** (Data > Compare two columns, or right-click a
   heading): for each row, are the two cells the same, different, or filled in

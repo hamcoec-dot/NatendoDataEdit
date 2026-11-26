@@ -178,7 +178,7 @@ const proof = async () => {
   await dlg.getByRole("button", { name: "Open as a tab" }).click();
   await sleep(1200);
   t = await body(m);
-  ok(/Gaps \(invoices\)/.test(t), "the result tab is named for the file");
+  ok(/Gaps in Invoice \(invoices\)/.test(t), "the result tab names the column and the file");
   const info = await invoke(m, "doc_info", { doc: 2 });
   ok(info.rows === 15 && info.cols === 3, `the result table: ${info.rows} rows x ${info.cols}`);
   await m.screenshot({ path: path.join(evidence, "gaps-tab.png") });

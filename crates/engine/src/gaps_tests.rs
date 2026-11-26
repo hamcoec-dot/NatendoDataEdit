@@ -330,6 +330,120 @@ fn cancel_stops_the_audit() {
     ));
 }
 
+#[test]
+fn too_many_shapes_are_capped_and_said() {
+    // A different suffix on nearly every row, with two common rows spread
+    // through chunks that run out of room.
+    let n = MAX_SHAPES + CHUNK * 2;
+    let values: Vec<String> = (0..n)
+        .map(|i| {
+            if i % 1000 == 0 {
+                format!("INV-{}", i / 1000 + 1)
+            } else {
+                format!("INV-{i}-x{i}z")
+            }
+        })
+        .collect();
+    let v: Vec<&str> = values.iter().map(String::as_str).collect();
+    let d = column(&v);
+    let mut s = spec();
+    // The run just after "INV-": the suffix is different on every row.
+    s.run = Some(1);
+    let r = run_with(&d, &s);
+    assert!(r.too_many_shapes);
+    assert_eq!(r.pattern_total, MAX_SHAPES as u64);
+    assert_eq!(r.rows + r.other_shape, n as u64);
+    // The rows with only one run are not of this run at all.
+    s.run = Some(0);
+    let r = run_with(&d, &s);
+    assert!(r.too_many_shapes);
+    assert_eq!(r.pattern.as_ref().unwrap().prefix, "INV-");
+    // The common shape is kept in every chunk, also those read again.
+    assert_eq!(r.rows, n.div_ceil(1000) as u64);
+    assert_eq!(r.range_total, 0);
+    assert_eq!(r.rows + r.other_shape, n as u64);
+    s.each_shape = true;
+    assert!(refused(&d, &s).contains("too many shapes to audit each"));
+    let few = run(&["1", "2"]);
+    assert!(!few.too_many_shapes);
+}
+
+#[test]
+fn a_typed_range_needs_a_number_somewhere() {
+    let d = column(&["abc", ""]);
+    let mut s = spec();
+    s.start = "1".into();
+    assert!(refused(&d, &s).contains("no cell holds a number"));
+    s.each_shape = true;
+    assert!(refused(&d, &s).contains("no cell holds a number"));
+}
+
+/// A typed start and end against a plain model: the missing numbers and the
+/// rows outside the range.
+#[test]
+fn typed_ranges_agree_with_a_model() {
+    let mut seed = 0x853C_49E6_748F_EA9Bu64;
+    let mut next = move |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    for round in 0..1_500 {
+        let n = next(12) + 1;
+        let span = next(40) + 1;
+        let values: Vec<u64> = (0..n).map(|_| next(span) + 5).collect();
+        let text: Vec<String> = values.iter().map(u64::to_string).collect();
+        let v: Vec<&str> = text.iter().map(String::as_str).collect();
+        let mut s = spec();
+        let start = (next(3) > 0).then(|| next(span + 10));
+        let end = (next(3) > 0).then(|| start.unwrap_or(0) + next(span + 10));
+        s.start = start.map_or(String::new(), |x| x.to_string());
+        s.end = end.map_or(String::new(), |x| x.to_string());
+        let d = column(&v);
+        let r = run_with(&d, &s);
+        let present: std::collections::BTreeSet<u64> = values.iter().copied().collect();
+        let outside = values
+            .iter()
+            .filter(|&&x| start.is_some_and(|a| x < a) || end.is_some_and(|b| x > b))
+            .count() as u64;
+        let lo = start.unwrap_or(*present.first().unwrap());
+        let hi = end.unwrap_or(*present.last().unwrap());
+        let checked = values.len() >= 2 || start.is_some() || end.is_some();
+        let want: Vec<u64> = if checked {
+            (lo..=hi).filter(|x| !present.contains(x)).collect()
+        } else {
+            Vec::new()
+        };
+        let got: Vec<u64> = r
+            .ranges
+            .iter()
+            .flat_map(|g| g.from.parse::<u64>().unwrap()..=g.to.parse::<u64>().unwrap())
+            .collect();
+        let say = format!("round {round}: {values:?} from {start:?} to {end:?}");
+        assert_eq!(got, want, "{say}");
+        assert_eq!(r.missing, want.len().to_string(), "{say}");
+        assert_eq!(r.outside, outside, "{say}");
+    }
+}
+
+#[test]
+fn saved_rows_added_by_hand_get_file_numbers() {
+    let mut d = column(&["1", "3"]);
+    d.insert_rows(1, vec![vec!["5".into(), "1".into()]])
+        .unwrap();
+    assert_eq!(run_with(&d, &spec()).added, 1);
+    let path = std::env::temp_dir().join(format!("nde-gaps-{}.csv", std::process::id()));
+    d.save(crate::save::SaveOptions {
+        path: Some(path.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    let r = run_with(&d, &spec());
+    std::fs::remove_file(path).ok();
+    assert_eq!((r.added, r.drops, r.drop_rows), (0, 1, vec![Some(3)]));
+}
+
 /// Present numbers plus expanded ranges are exactly first to last, per series.
 #[test]
 fn present_and_missing_make_the_whole_range() {
