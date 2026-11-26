@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuar
 
 use crate::recovery::Autosaved;
 use natendo_engine::cellformula::CellFormula;
-use natendo_engine::clean::{CleanPreview, CleanSpec, SplitName};
+use natendo_engine::clean::{CleanMatrix, CleanPreview, CleanSpec, MatrixPreview, SplitName};
 use natendo_engine::document::repair::{Repair, RowText, SameShape};
 use natendo_engine::editing::{
     Arrange, Extract, GroupCalc, MapValues, TallySpec, ValueTally, MAX_PAIRS,
@@ -752,6 +752,12 @@ pub enum DataOp {
         spec: CleanSpec,
         now: f64,
     },
+    /// A clean matrix: each ticked column with its steps, in one pass.
+    CleanMatrix {
+        spec: CleanMatrix,
+        /// The moment of the run (days since 1970-01-01, local).
+        now: f64,
+    },
     SplitName {
         spec: SplitName,
     },
@@ -865,13 +871,19 @@ pub enum DataOp {
 /// Check a cleaner run from the webview: the moment (years 1900 to 9999,
 /// as days since 1970) and the column list (the cleaner itself is checked
 /// by the engine).
-fn check_clean(spec: &CleanSpec, now: f64) -> CmdResult<()> {
+/// The moment a cleaning run says it is.
+fn check_now(now: f64) -> CmdResult<()> {
     if !now.is_finite() || !(-25_567.0..=2_932_896.0).contains(&now) {
         return Err(CmdError::new(
             "bad_request",
             "the date and time of the run is not valid",
         ));
     }
+    Ok(())
+}
+
+fn check_clean(spec: &CleanSpec, now: f64) -> CmdResult<()> {
+    check_now(now)?;
     if let natendo_engine::find::Scope::Columns { cols } = &spec.scope {
         if cols.len() > 16_384 {
             return Err(CmdError::new("bad_request", "too many columns chosen"));
@@ -1133,7 +1145,7 @@ fn auto_label_op(op: &RecipeOp) -> Option<&'static str> {
         RecipeOp::RemoveBlankCols { .. } => Some("Remove blank columns"),
         RecipeOp::SplitRows { .. } => Some("Split into rows"),
         RecipeOp::MergeRows { .. } => Some("Merge rows"),
-        RecipeOp::Clean { .. } => Some("Clean-up"),
+        RecipeOp::Clean { .. } | RecipeOp::CleanMatrix { .. } => Some("Clean-up"),
         RecipeOp::DeleteHidden => Some("Delete hidden rows"),
         RecipeOp::JoinFields { .. } => Some("Fix all like this"),
         RecipeOp::MapValues { .. } => Some("Change values from a list"),
@@ -1303,6 +1315,7 @@ fn recipe_step(op: &DataOp) -> Logged {
             descending: *descending,
         },
         DataOp::Clean { spec, .. } => RecipeOp::Clean { spec: spec.clone() },
+        DataOp::CleanMatrix { spec, .. } => RecipeOp::CleanMatrix { spec: spec.clone() },
         DataOp::SplitName { spec } => RecipeOp::SplitName { spec: spec.clone() },
         DataOp::FillExample { spec } => RecipeOp::FillExample { spec: spec.clone() },
         DataOp::Compute { spec } if spec.expr.to_ascii_uppercase().contains("LOOKUP(") => {
@@ -1404,6 +1417,7 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
             descending,
         },
         RecipeOp::Clean { spec } => DataOp::Clean { spec, now },
+        RecipeOp::CleanMatrix { spec } => DataOp::CleanMatrix { spec, now },
         RecipeOp::SplitName { spec } => DataOp::SplitName { spec },
         RecipeOp::FillExample { spec } => DataOp::FillExample { spec },
         RecipeOp::Compute { spec } => DataOp::Compute { spec },
@@ -5876,6 +5890,12 @@ impl Docs {
                 };
                 self.set_column_types(id, set).map(|_| ())
             }
+            RecipeOp::CleanMatrix { spec } => {
+                // Columns are found by title in the file the recipe runs on.
+                let spec = self.get(id)?.read().matrix_by_title(&spec)?;
+                self.data_op(id, DataOp::CleanMatrix { spec, now })
+                    .map(|_| ())
+            }
             other => self.data_op(id, recipe_data_op(other, now)).map(|_| ()),
         };
         done.map(|()| String::new())
@@ -5919,7 +5939,7 @@ impl Docs {
             DataOp::SortColumns { .. } => "Sorting columns",
             DataOp::Join { .. } => "Joining",
             DataOp::Append { .. } => "Appending",
-            DataOp::Clean { .. } => "Cleaning",
+            DataOp::Clean { .. } | DataOp::CleanMatrix { .. } => "Cleaning",
             DataOp::SplitName { .. } => "Splitting names",
             DataOp::FillExample { .. } => "Filling by example",
             DataOp::Compute { .. } => "Computing",
@@ -5947,6 +5967,10 @@ impl Docs {
         };
         if let DataOp::Clean { spec, now } = &op {
             check_clean(spec, *now)?;
+        }
+        if let DataOp::CleanMatrix { spec, now } = &op {
+            check_now(*now)?;
+            spec.check()?;
         }
         let seed = run_seed();
         // The other table is copied out under its own lock first, so two
@@ -6064,6 +6088,12 @@ impl Docs {
                 }
                 DataOp::Clean { spec, now } => {
                     let plan = d.plan_clean(spec, *now, seed, 0, p)?;
+                    *extra.borrow_mut() = (plan.left, None, 0);
+                    other_order.set(plan.other_order);
+                    Planned::Clean(plan)
+                }
+                DataOp::CleanMatrix { spec, now } => {
+                    let plan = d.plan_clean_matrix(spec, *now, seed, p)?.plan;
                     *extra.borrow_mut() = (plan.left, None, 0);
                     other_order.set(plan.other_order);
                     Planned::Clean(plan)
@@ -6648,6 +6678,20 @@ impl Docs {
         *entry.checks.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((key, d.revision(), r.repeats.clone()));
         Ok(r)
+    }
+
+    /// What a clean matrix would change, column by column (a job).
+    pub fn clean_matrix_preview(
+        &self,
+        id: u32,
+        spec: &CleanMatrix,
+        now: f64,
+    ) -> CmdResult<MatrixPreview> {
+        check_now(now)?;
+        let entry = self.get(id)?;
+        let job = entry.start("Cleaning preview")?;
+        let d = entry.read();
+        Ok(d.preview_clean_matrix(spec, now, 1, &job.progress)?)
     }
 
     /// Find the numbers missing from a column (a job: progress and Cancel).
@@ -11941,6 +11985,41 @@ B,y
         assert_eq!(docs.data_op(id, show()).unwrap().rows, 2);
         // The table changed: the old audit is not used.
         assert!(docs.data_op(id, show()).is_err());
+    }
+
+    #[test]
+    fn a_clean_matrix_previews_applies_and_is_recorded() {
+        use natendo_engine::clean::{MatrixEntry, Spaces, Step};
+        let docs = Docs::default();
+        let p = tmp(
+            "matrix.csv",
+            b"name,town
+ ann , york 
+",
+        );
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let entry = |col, title: &str| MatrixEntry {
+            col,
+            title: title.into(),
+            steps: vec![Step::Spaces { how: Spaces::Trim }],
+            from_file: String::new(),
+        };
+        let spec = CleanMatrix {
+            entries: vec![entry(0, "name"), entry(1, "town")],
+            skip_first: true,
+            read: Default::default(),
+        };
+        let preview = docs.clean_matrix_preview(id, &spec, 20_000.0).unwrap();
+        assert_eq!(preview.columns[1].changed, 1);
+        assert!(docs.clean_matrix_preview(id, &spec, f64::NAN).is_err());
+        let op = DataOp::CleanMatrix {
+            spec: spec.clone(),
+            now: 20_000.0,
+        };
+        assert_eq!(docs.data_op(id, op).unwrap().cells, 2);
+        let logged = docs.recipe_of(id, true, "r").unwrap().steps;
+        assert_eq!(logged, vec![RecipeOp::CleanMatrix { spec }]);
     }
 
     #[test]
