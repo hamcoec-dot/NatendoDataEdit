@@ -37,6 +37,9 @@ const backup = () => {
   fs.rmSync(path.join(BACKUP, "no-private-json"), { force: true });
   if (!fs.existsSync(path.join(DATA, "private.json"))) fs.writeFileSync(path.join(BACKUP, "no-private-json"), "");
   else fs.copyFileSync(path.join(DATA, "private.json"), path.join(BACKUP, "private.json"));
+  // The person's recent files and session are moved aside before the app starts, so no screenshot can show a real
+  // file name (they were copied above and are copied back afterwards).
+  for (const f of ["session.json", "recent.json"]) if (fs.existsSync(path.join(DATA, f))) fs.renameSync(path.join(DATA, f), path.join(BACKUP, `${f}.aside-${Date.now()}`));
   const rec = path.join(LOCAL, "recovery");
   const aside = path.join(BACKUP, "recovery");
   if (fs.existsSync(rec) && !fs.existsSync(aside)) fs.renameSync(rec, aside);

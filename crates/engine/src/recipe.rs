@@ -274,7 +274,12 @@ impl RecipeOp {
     /// What the step does, in a few words.
     pub fn describe(&self) -> String {
         match self {
-            RecipeOp::Sort { .. } => "Sort the rows".into(),
+            RecipeOp::Sort { spec } => match spec.scope {
+                crate::sort::SortScope::All => "Sort all the rows, hidden ones too".into(),
+                crate::sort::SortScope::Shown => {
+                    "Sort the shown rows (hidden rows stay where they are)".into()
+                }
+            },
             RecipeOp::Filter { .. } => "Filter the rows".into(),
             RecipeOp::ClearFilter => "Show all rows (no filter)".into(),
             RecipeOp::InsertCols { at, count } => {
