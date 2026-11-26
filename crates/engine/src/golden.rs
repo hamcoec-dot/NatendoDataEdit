@@ -15,10 +15,14 @@
 //! number) the first value is kept and the cell is flagged.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use rayon::prelude::*;
 
 use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Progress};
+use crate::ops::{Cols, CHUNK};
 use crate::reshape::{push_line, too_big, Table, MAX_TABLE_BYTES};
 use crate::value::ReadOptions;
 use crate::Error;
@@ -866,70 +870,92 @@ impl Document {
         let mut out = Vec::new();
         push_line(&mut out, &head);
         let mut gone = Vec::new();
-        let (mut rows, mut gone_rows) = (1u64, 1u64);
         if away {
             let mut head: Vec<String> = vec!["Cluster".into(), "File row".into()];
             head.extend(titles.iter().cloned());
             head.resize(width + 2, String::new());
             push_line(&mut gone, &head);
         }
-        let mut written = vec![false; plan.clusters.len()];
-        // The cluster numbers of the "merged away" rows count merged
-        // clusters only.
-        let mut number = vec![0u64; plan.clusters.len()];
+        // Where each merged cluster's row goes (its first row in the file),
+        // and its number among the merged clusters.
+        let ids: Vec<u32> = self.ids().skip(usize::from(title)).collect();
+        let mut place: Vec<Option<(u32, u64)>> = vec![None; plan.clusters.len()];
         let mut merged = 0u64;
-        progress.start(self.total_rows());
-        for (n, id) in self.ids().enumerate() {
-            if n % STEP == 0 {
-                progress.step(STEP as u64)?;
+        for id in &ids {
+            if let Some(&k) = member.get(id) {
+                if place[k].is_none() {
+                    merged += 1;
+                    place[k] = Some((*id, merged));
+                }
             }
-            if title && n == 0 {
-                continue;
-            }
-            let Some(&k) = member.get(&id) else {
-                let mut line = self.logical_values(id)?;
-                line.resize(width, String::new());
-                line.push(String::new());
-                line.push(String::new());
-                push_line(&mut out, &line);
-                rows += 1;
-                if out.len() > MAX_TABLE_BYTES {
+        }
+        progress.start(ids.len() as u64);
+        let all: Vec<u32> = (0..width as u32).collect();
+        let reader = Cols::new(self, &all);
+        let size = AtomicUsize::new(out.len() + gone.len());
+        // Each chunk of rows on its own; they are joined in order.
+        let parts = ids
+            .par_chunks(CHUNK)
+            .map(|chunk| {
+                progress.step(chunk.len() as u64)?;
+                let (mut out, mut gone) = (Vec::new(), Vec::new());
+                let (mut rows, mut gone_rows) = (0u64, 0u64);
+                let mut buf = Vec::new();
+                for &id in chunk {
+                    let Some(&k) = member.get(&id) else {
+                        reader.read(self, id, &mut buf);
+                        let mut line: Vec<&str> = (0..width).map(|c| reader.get(&buf, c)).collect();
+                        line.extend(["", ""]);
+                        push_line(&mut out, &line);
+                        rows += 1;
+                        continue;
+                    };
+                    let c = &plan.clusters[k];
+                    let (first, number) = place[k].expect("a member's cluster has a place");
+                    if id == first {
+                        let names = c
+                            .members
+                            .iter()
+                            .map(|&m| {
+                                Ok(self.golden_name(m, &self.logical_values(m)?, plan.spec.id_col))
+                            })
+                            .collect::<Result<Vec<_>, Error>>()?;
+                        let mut line = c.values.clone();
+                        line.push(names.join("; "));
+                        line.push(c.members.len().to_string());
+                        push_line(&mut out, &line);
+                        rows += 1;
+                    }
+                    if away && id != c.hub {
+                        // A folded row's own values, as they were.
+                        let file_row = if u64::from(id) < self.original_rows() {
+                            (u64::from(id) + 1).to_string()
+                        } else {
+                            "added by hand".to_string()
+                        };
+                        let number = number.to_string();
+                        reader.read(self, id, &mut buf);
+                        let mut line: Vec<&str> = vec![&number, &file_row];
+                        line.extend((0..width).map(|c| reader.get(&buf, c)));
+                        push_line(&mut gone, &line);
+                        gone_rows += 1;
+                    }
+                }
+                let more = out.len() + gone.len();
+                if size.fetch_add(more, Ordering::Relaxed) + more > MAX_TABLE_BYTES {
                     return Err(too_big());
                 }
-                continue;
-            };
-            let c = &plan.clusters[k];
-            if !written[k] {
-                written[k] = true;
-                merged += 1;
-                number[k] = merged;
-                let names = c
-                    .members
-                    .iter()
-                    .map(|&m| Ok(self.golden_name(m, &self.logical_values(m)?, plan.spec.id_col)))
-                    .collect::<Result<Vec<_>, Error>>()?;
-                let mut line = c.values.clone();
-                line.push(names.join("; "));
-                line.push(c.members.len().to_string());
-                push_line(&mut out, &line);
-                rows += 1;
-            }
-            if away && id != c.hub {
-                // A folded row's own values, as they were.
-                let file_row = if u64::from(id) < self.original_rows() {
-                    (u64::from(id) + 1).to_string()
-                } else {
-                    "added by hand".to_string()
-                };
-                let mut line = vec![number[k].to_string(), file_row];
-                line.extend(self.logical_values(id)?);
-                line.resize(width + 2, String::new());
-                push_line(&mut gone, &line);
-                gone_rows += 1;
-            }
-            if out.len() + gone.len() > MAX_TABLE_BYTES {
-                return Err(too_big());
-            }
+                Ok((out, gone, rows, gone_rows))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let (mut rows, mut gone_rows) = (1u64, 1u64);
+        out.reserve(parts.iter().map(|p| p.0.len()).sum());
+        gone.reserve(parts.iter().map(|p| p.1.len()).sum());
+        for (a, b, n, m) in parts {
+            out.extend_from_slice(&a);
+            gone.extend_from_slice(&b);
+            rows += n;
+            gone_rows += m;
         }
         let table = Table {
             bytes: out,
