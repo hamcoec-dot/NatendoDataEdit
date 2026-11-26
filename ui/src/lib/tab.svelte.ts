@@ -438,10 +438,18 @@ export class Tab {
    *  (replay the moves), otherwise a new change (forget undone moves). */
   redoing = 0;
 
-  /** Data check rules as they were before and after each engine step that put in or took out
-   *  columns (by the undo position it made): Undo puts the rules back as they were (a rule
-   *  dropped with a deleted column comes back), Redo moves them again. */
-  private ruleShifts: { pos: number; before: Check[]; after: Check[] }[] = [];
+  /** Each engine step that put in or took out columns (by the undo position it made), and the
+   *  rules it dropped (with where they stood): Undo moves the rules back the other way and puts
+   *  the dropped ones back, Redo moves them again. Rules added or changed since are kept. */
+  private ruleShifts: { pos: number; at: number; count: number; dropped: { index: number; check: Check }[] }[] = [];
+
+  /** Undo one column shift on the rules as they are now. */
+  private unshiftRules(s: { at: number; count: number; dropped: { index: number; check: Check }[] }): void {
+    const back = shiftChecks(this.checks, s.at, -s.count).checks;
+    for (const d of s.dropped) back.splice(Math.min(d.index, back.length), 0, d.check);
+    this.checks = back;
+    this.checkVersion++;
+  }
 
   /** `count` columns were just put in at `at` (or, with a negative count, taken out from
    *  `at`; the change is already in `info`): the widths and formats and the data check rules
@@ -451,9 +459,13 @@ export class Tab {
     if (!this.checks.length) return 0;
     const before = this.checks;
     const r = shiftChecks(before, at, count);
+    const dropped: { index: number; check: Check }[] = [];
+    before.forEach((c, index) => {
+      if (shiftChecks([c], at, count).dropped) dropped.push({ index, check: c });
+    });
     this.checks = r.checks;
     this.checkVersion++;
-    this.ruleShifts.push({ pos: this.info.history_pos, before, after: r.checks });
+    this.ruleShifts.push({ pos: this.info.history_pos, at, count, dropped });
     if (this.ruleShifts.length > MAX_UNDO) this.ruleShifts.shift();
     return r.dropped;
   }
@@ -734,16 +746,11 @@ export class Tab {
     if (after < before) {
       // Only undo lowers the position: take back every move undone, newest first.
       for (const m of this.colMoves.filter((x) => x.pos > after && x.pos <= before).reverse()) this.followMove(m.to, m.count, m.at);
-      const undone = this.ruleShifts.filter((x) => x.pos > after && x.pos <= before);
-      if (undone.length) {
-        this.checks = undone[0]!.before;
-        this.checkVersion++;
-      }
+      for (const s of this.ruleShifts.filter((x) => x.pos > after && x.pos <= before).reverse()) this.unshiftRules(s);
     } else if (after > before && this.redoing > 0) {
       for (const m of this.colMoves.filter((x) => x.pos > before && x.pos <= after)) this.followMove(m.at, m.count, m.to);
-      const redone = this.ruleShifts.filter((x) => x.pos > before && x.pos <= after);
-      if (redone.length) {
-        this.checks = redone.at(-1)!.after;
+      for (const s of this.ruleShifts.filter((x) => x.pos > before && x.pos <= after)) {
+        this.checks = shiftChecks(this.checks, s.at, s.count).checks;
         this.checkVersion++;
       }
     } else if (after > before) {

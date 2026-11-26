@@ -2217,7 +2217,7 @@ mod key_tests {
             // Every path that would show the rule's problems as none refuses.
             assert!(d.plan_show_problems(&r, true, false).is_err());
             assert!(d.plan_show_problems(&r, true, true).is_err());
-            assert!(d.plan_sort_problems(&r, true).is_err());
+            assert!(d.plan_sort_problems(&r, true, Default::default()).is_err());
             assert!(d.plan_check_column(&s, &r, "", &p).is_err());
             assert!(d
                 .problem_marks(0..d.row_count(), &s, &r.repeats, &p)

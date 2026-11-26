@@ -61,3 +61,24 @@ describe("data check rules follow columns put in and taken out, through Undo and
     expect(t.checks).toEqual([key, req]);
   });
 });
+
+describe("Undo keeps rules added after the column change", () => {
+  it("insert, add a rule, Undo: the new rule stays (moved back with its column)", () => {
+    const t = tab();
+    t.update(info(1, 2, 7), true);
+    t.shiftCols(1, 1);
+    const late: Check = { col: 5, kind: { type: "required" } };
+    t.checks = [...t.checks, late];
+    t.update(info(0, 3, 6), true); // Undo
+    expect(t.checks).toEqual([key, req, { col: 4, kind: { type: "required" } }]);
+  });
+  it("delete a key column, add a rule, Undo: the dropped rule comes back where it was and the new one stays", () => {
+    const t = tab();
+    t.update(info(1, 2, 5), true);
+    t.shiftCols(4, -1);
+    const late: Check = { col: 1, kind: { type: "date_iso" } };
+    t.checks = [...t.checks, late];
+    t.update(info(0, 3, 6), true); // Undo
+    expect(t.checks).toEqual([key, req, late]);
+  });
+});

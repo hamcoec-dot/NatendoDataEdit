@@ -13562,7 +13562,10 @@ mod key_binding_tests {
                 spec: spec.clone(),
                 passing: false,
             },
-            DataOp::SortProblems { spec: spec.clone() },
+            DataOp::SortProblems {
+                spec: spec.clone(),
+                scope: Default::default(),
+            },
             DataOp::CheckColumn {
                 spec: spec.clone(),
                 title: String::new(),
