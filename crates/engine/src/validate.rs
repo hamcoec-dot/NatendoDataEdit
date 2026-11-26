@@ -532,14 +532,7 @@ impl Document {
                 let match_case = *match_case;
                 let mut key = vec![ch.col.expect("checked")];
                 key.extend_from_slice(also);
-                let leader = self.group_rows(rows.clone(), &key, match_case, true, progress)?;
-                let mut in_group = vec![false; leader.len()];
-                for (k, &l) in leader.iter().enumerate() {
-                    if l as usize != k {
-                        in_group[l as usize] = true;
-                        in_group[k] = true;
-                    }
-                }
+                let in_group = self.repeated_keys(rows.clone(), &key, match_case, progress)?;
                 let mut bits = vec![0u64; (base as usize).div_ceil(64)];
                 let reader = Cols::new(self, &key);
                 // Repeated rows with a value (some key part not blank), found in parallel chunks.
@@ -652,6 +645,47 @@ impl Document {
             }
         }
         Ok(rep)
+    }
+
+    /// For each shown row in `rows` (by offset), whether its key (the values of `key`
+    /// together) is shared with another row. A row whose first key column is unique cannot
+    /// repeat the whole key, so the other columns are read only for rows whose first
+    /// column repeats: with no repeats this costs one column.
+    pub(crate) fn repeated_keys(
+        &self,
+        rows: std::ops::Range<u64>,
+        key: &[u32],
+        match_case: bool,
+        progress: &Progress,
+    ) -> Result<Vec<bool>, Error> {
+        let flags = |leader: &[u32]| {
+            let mut out = vec![false; leader.len()];
+            for (k, &l) in leader.iter().enumerate() {
+                if l as usize != k {
+                    out[l as usize] = true;
+                    out[k] = true;
+                }
+            }
+            out
+        };
+        let first = flags(&self.group_rows(rows.clone(), &key[..1], match_case, true, progress)?);
+        if key.len() == 1 {
+            return Ok(first);
+        }
+        let at: Vec<u64> = first
+            .iter()
+            .enumerate()
+            .filter(|(_, &g)| g)
+            .map(|(k, _)| rows.start + k as u64)
+            .collect();
+        let again = flags(&self.group_rows_at(&at, key, match_case, true, progress)?);
+        let mut out = vec![false; first.len()];
+        for (j, g) in again.into_iter().enumerate() {
+            if g {
+                out[(at[j] - rows.start) as usize] = true;
+            }
+        }
+        Ok(out)
     }
 
     /// A plan that shows only the rows a run found problems in (or, with
@@ -1835,5 +1869,44 @@ mod field_tests {
         // Stored without `also` when there is none (older files and views read the same).
         let json = serde_json::to_string(&uniq(0, vec![], false)).unwrap();
         assert!(!json.contains("also"), "{json}");
+    }
+}
+
+#[cfg(test)]
+mod repeat_props {
+    use super::*;
+    use crate::OpenOptions;
+    use proptest::prelude::*;
+
+    const VALUES: [&str; 6] = ["", " ", "a", "A", " a", "b"];
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(300))]
+        /// Grouping on the first column first gives exactly what grouping on the whole key gives.
+        #[test]
+        fn first_column_first_equals_the_whole_key(
+            cells in proptest::collection::vec((0usize..6, 0usize..6, 0usize..6), 0..40),
+            width in 1usize..4,
+            match_case: bool,
+        ) {
+            let mut text = String::from("x,y,z\r\n");
+            for (a, b, c) in &cells {
+                text.push_str(&format!("{},{},{}\r\n", VALUES[*a], VALUES[*b], VALUES[*c]));
+            }
+            let d = Document::from_bytes(text.into_bytes(), OpenOptions::default(), Some("csv")).unwrap();
+            let p = Progress::new();
+            let rows = d.data_rows(true);
+            let key: Vec<u32> = (0..width as u32).collect();
+            let fast = d.repeated_keys(rows.clone(), &key, match_case, &p).unwrap();
+            let leader = d.group_rows(rows, &key, match_case, true, &p).unwrap();
+            let mut full = vec![false; leader.len()];
+            for (k, &l) in leader.iter().enumerate() {
+                if l as usize != k {
+                    full[l as usize] = true;
+                    full[k] = true;
+                }
+            }
+            prop_assert_eq!(fast, full);
+        }
     }
 }
