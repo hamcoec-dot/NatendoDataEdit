@@ -1320,6 +1320,8 @@ preview:
   and how many the stops leave blank; afterwards those are marked amber (F7
   visits them, Esc or Ctrl+Z takes the marks away). A recipe finds the
   stopping column by its title.
+
+  ![Fill blank cells stopped at a subtotal row, a blank row and a row with no ID; the cells left blank are marked amber](docs/screenshots/fill-stops.png)
 - **Stop fill at subtotal**: the fill can also stop at total rows (first
   filled cell Total, Subtotal, Grand total or Sum, with a number in the row;
   a person called Total is not one), whose own text is never carried on.
