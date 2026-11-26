@@ -2338,6 +2338,44 @@ fn match_close(docs: DocsState<'_>, doc: u32) {
     docs.match_close(doc);
 }
 
+/// Preview golden records from a one-list match's accepted pairs.
+#[tauri::command]
+async fn golden_plan(
+    docs: DocsState<'_>,
+    doc: u32,
+    accepted: Vec<(u32, u64, f32)>,
+    spec: natendo_engine::golden::GoldenSpec,
+) -> CmdResult<docs::golden::GoldenSummary> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.golden_plan(doc, &accepted, spec)).await
+}
+
+#[tauri::command]
+async fn golden_page(
+    docs: DocsState<'_>,
+    doc: u32,
+    page: usize,
+) -> CmdResult<Vec<natendo_engine::golden::ClusterView>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.golden_page(doc, page)).await
+}
+
+#[tauri::command]
+async fn golden_create(
+    docs: DocsState<'_>,
+    doc: u32,
+    away: bool,
+) -> CmdResult<docs::golden::GoldenMade> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.golden_create(doc, away)).await
+}
+
+#[tauri::command]
+async fn golden_close(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
+    docs.golden_close(doc);
+    Ok(())
+}
+
 /// The steps done on a tab so far, as a recipe.
 #[tauri::command]
 async fn recipe_get(docs: DocsState<'_>, doc: u32, header: bool) -> CmdResult<RecipeView> {
@@ -4790,6 +4828,10 @@ pub fn run() {
             pick_encrypted,
             open_encrypted,
             updates_find,
+            golden_plan,
+            golden_page,
+            golden_create,
+            golden_close,
             patch_pick_save,
             patch_pick,
             patch_protected,
