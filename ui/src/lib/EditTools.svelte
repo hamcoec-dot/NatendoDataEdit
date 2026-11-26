@@ -3,7 +3,7 @@
   // choosing and ordering columns, pulling a piece of text into its own
   // column, and building a column without typing a formula (a template
   // like "{First} {Last}", or if-then rules). Each is one undo step.
-  import { hiddenRows, hiddenWords } from "./shown.svelte";
+  import { hiddenRows, hiddenWords, includeWhile } from "./shown.svelte";
   import HiddenNote from "./HiddenNote.svelte";
   import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
@@ -173,6 +173,9 @@
     extract: "Extract into a column",
     build: "Build a column",
   };
+
+  // The status pill turns amber while this includes hidden rows.
+  $effect(() => includeWhile(fillHidden && kind === "build"));
 </script>
 
 <FormShell title={TITLES[kind]} {onClose} onEnter={run}>

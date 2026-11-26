@@ -1,9 +1,10 @@
 <script lang="ts">
   // What a dialog says about hidden rows. Nothing while every row shows.
-  import { hiddenRows, hiddenWords, type HiddenKind } from "./shown.svelte";
+  import { hiddenRows, hiddenWords, includeWhile, type HiddenKind } from "./shown.svelte";
 
   let { kind }: { kind: HiddenKind } = $props();
   const words = $derived(hiddenWords(kind, hiddenRows.hidden, hiddenRows.total));
+  $effect(() => includeWhile(kind === "all"));
 </script>
 
 {#if words}

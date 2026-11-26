@@ -2,7 +2,7 @@
   // Computed column: an expression over each row's cells, with the first
   // results shown as you type. The values are written as text (a delimited
   // file cannot keep formulas), in a new column or over an existing one.
-  import { hiddenRows, hiddenWords } from "./shown.svelte";
+  import { hiddenRows, hiddenWords, includeWhile } from "./shown.svelte";
   import { untrack } from "svelte";
   import { backend, errorText, type ComputePreview, type ComputeSpec } from "./backend";
   import FormShell from "./FormShell.svelte";
@@ -132,6 +132,9 @@
   }
   const hint = $derived(help.hint || (FUNCTIONS.find((f) => f.name === fn)?.hint ?? ""));
   const heading = $derived(mode === "filter" ? "Filter by formula" : mode === "change" ? "Change a column with a formula" : "Computed column");
+
+  // The status pill turns amber while this includes hidden rows.
+  $effect(() => includeWhile(fillHidden && place !== "over"));
 </script>
 
 <FormShell title={heading} wide {onClose} onEnter={run}>

@@ -5,7 +5,7 @@
   // failing rows first, or add a "Check result" column. The patterns are
   // the Data checks' pattern checks, so they are kept with views and the
   // other kinds of checks are left as they are.
-  import { hiddenRows, sortWords } from "./shown.svelte";
+  import { hiddenRows, sortWords, includeWhile } from "./shown.svelte";
   import HiddenNote from "./HiddenNote.svelte";
   import { untrack } from "svelte";
   import { backend, errorText, type Check, type CheckReport, type CheckSpec } from "./backend";
@@ -78,6 +78,9 @@
   }
   const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
   const usable = $derived(filled && (which < 0 || (boxes[which] ?? "").trim() !== ""));
+
+  // The status pill turns amber while this includes hidden rows.
+  $effect(() => includeWhile(sortAll));
 </script>
 
 <FormShell title="Check fields" wide {onClose}>

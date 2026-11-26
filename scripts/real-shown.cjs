@@ -167,6 +167,24 @@ const proof = async () => {
   await m.keyboard.press("Control+9");
   await sleep(700);
   ok((await column(0)) === "Eve Cy Bo Ann", `Dee is hidden (${await column(0)})`);
+  // The pill, and the dotted line in the row numbers where Dee is missing.
+  const pill = async () => ((await m.getByTestId("acting-pill").textContent({ timeout: 3000 }).catch(() => "")) || "").trim();
+  ok((await pill()) === "Acting on 4 shown rows (1 hidden, untouched)", `pill: ${await pill()}`);
+  await m.mouse.move(box.x + 20, box.y + 50);
+  await sleep(500);
+  const tip = (await m.locator("canvas").first().evaluate((c) => c.closest("[title]")?.getAttribute("title") || "")) || "";
+  ok(tip === "1 row hidden here. Click to show it.", `the dotted line says: ${tip}`);
+  await m.screenshot({ path: path.join(evidence, "shown-seam.png") });
+  await m.mouse.click(box.x + 20, box.y + 50);
+  await sleep(900);
+  ok((await column(0)) === "Eve Dee Cy Bo Ann" && (await m.getByTestId("acting-pill").count()) === 0, `clicking it shows the row (${await column(0)})`);
+  await m.mouse.click(box.x + 150, box.y + 36);
+  await sleep(200);
+  await m.keyboard.press("Control+Home");
+  await m.keyboard.press("ArrowDown");
+  await m.keyboard.press("Control+9");
+  await sleep(700);
+  ok((await column(0)) === "Eve Cy Bo Ann", "hidden again");
   await m.keyboard.press("Control+Home");
   await cmd(m, "Sort A to Z");
   await sleep(800);
