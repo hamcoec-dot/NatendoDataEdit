@@ -835,6 +835,12 @@ pub struct DateReview {
     pub two_digit: bool,
 }
 
+/// The date a cell certainly holds (days since 1970-01-01): one reading,
+/// a four-digit year. `None` for everything else.
+pub(crate) fn certain_date(t: &str) -> Option<f64> {
+    reviewed_date(t.trim(), Ambiguous::Leave, DateReview::default())
+}
+
 /// A cell's date under the review screen's choices (`None`: leave it).
 fn reviewed_date(t: &str, ambiguous: Ambiguous, review: DateReview) -> Option<f64> {
     use crate::value::{classify_date, DateKind, DateOrder};
