@@ -503,6 +503,14 @@ everything is also in command search.
   repeated titles unique (Phone, Phone 2) and empty ones named. A preview
   lists every title that changes; data check rules follow the new names; one
   undo step, and a recipe step.
+- **Sorting with rows hidden**: while a filter is on or rows are hidden, Sort,
+  the quick A to Z and Z to A commands and **Put failing rows first** order the
+  shown rows among their own places, and hidden rows stay where they are. Tick
+  **Sort all rows, including hidden ones** to move every row. A tool that
+  changes hidden rows anyway (Split column, Merge columns, Split name, Extract)
+  says how many before and after it runs, and one that adds a column for the
+  shown rows says how many are left empty. Recipes saved by earlier versions
+  still act on every row.
 - **Paste into filtered rows**: while a filter is on or rows are hidden,
   Paste, Paste Special, fill, Ctrl+Enter, Delete and Copy work on the rows you
   can see, and hidden rows are left as they were (the status line says how
@@ -1120,8 +1128,9 @@ preview:
   text functions (TEXT, TEXTBEFORE, TEXTAFTER, SPLITPART, PADLEFT, CLEAN,
   COUNTCHAR), choices (SWITCH, CHOOSE, IN, BETWEEN), counts (COUNT, COUNTA)
   and the rows around (PREV and NEXT: the value in the row above or below as
-  shown, for a change from the last row or a running check; a new computed
-  column also fills hidden rows, so there it reads the rows above and below in
+  shown, for a change from the last row or a running check). While rows are
+  hidden a new computed column fills the shown rows only, unless you tick **Also
+  fill the hidden rows** (then PREV and NEXT read the rows above and below in
   the file).
 - **Change a column with a formula** (Data > Change column with a formula, or
   right-click a heading): rewrite a column in place, like `UPPER([Name])` or

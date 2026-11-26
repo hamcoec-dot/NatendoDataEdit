@@ -34,6 +34,7 @@ fn name_of(op: &DataOp) -> &'static str {
         DataOp::Join { .. } => "join",
         DataOp::Append { .. } => "append",
         DataOp::Clean { .. } => "clean",
+        DataOp::CleanMatrix { .. } => "clean_matrix",
         DataOp::SplitName { .. } => "split_name",
         DataOp::FillExample { .. } => "fill_example",
         DataOp::Compute { .. } => "compute",
@@ -257,6 +258,17 @@ fn effect(s: &Stage) -> String {
     }
 }
 
+/// Another tab beside the audited one.
+fn second_tab(s: &Stage, name: &str, body: &str) -> u32 {
+    let dir = std::env::temp_dir().join(format!("nde-audit-{}-other-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join(format!("{name}.csv"));
+    std::fs::write(&p, body).unwrap();
+    let id = s.docs.open_path(&p, false).unwrap().id;
+    wait(&s.docs, id);
+    id
+}
+
 fn clean_spec(scope: Scope) -> CleanSpec {
     CleanSpec {
         cleaner: Cleaner {
@@ -373,6 +385,7 @@ fn data_ops() -> Vec<DataOp> {
         DataOp::Clean {
             spec: clean_spec(Scope::Columns { cols: vec![1] }),
             now: 20_000.0,
+            typed: Vec::new(),
         },
         DataOp::SplitName {
             spec: SplitName {
@@ -575,6 +588,61 @@ fn what_each_writing_operation_does_to_hidden_rows() {
         };
         s.docs.data_op(s.id, DataOp::Compute { spec }).map(drop)
     });
+    run("clean_matrix", &|s| {
+        let spec = natendo_engine::clean::CleanMatrix {
+            entries: vec![natendo_engine::clean::MatrixEntry {
+                col: 1,
+                title: "name".into(),
+                steps: vec![Step::Case { to: CaseTo::Upper }],
+                from_file: String::new(),
+            }],
+            skip_first: true,
+            read: Default::default(),
+        };
+        let op = DataOp::CleanMatrix {
+            spec,
+            now: 20_000.0,
+            revision: None,
+        };
+        s.docs.data_op(s.id, op).map(drop)
+    });
+    run("join", &|s| {
+        let other = second_tab(s, "join", "key,extra\r\nA,1\r\nB,2\r\nC,3\r\nD,4\r\n");
+        let op = DataOp::Join {
+            other: Some(other),
+            list: None,
+            list_id: None,
+            spec: serde_json::from_value(serde_json::json!({
+                "keys": [2], "other_keys": [0], "columns": [1],
+                "keep_first": true, "other_header": true, "add_unmatched": true,
+            }))
+            .unwrap(),
+        };
+        s.docs.data_op(s.id, op).map(drop)
+    });
+    run("append", &|s| {
+        let other = second_tab(s, "append", "id,name\r\n99,zed\r\n");
+        let op = DataOp::Append {
+            other,
+            spec: serde_json::from_value(serde_json::json!({
+                "by_name": true, "keep_first": true, "other_header": true,
+            }))
+            .unwrap(),
+        };
+        s.docs.data_op(s.id, op).map(drop)
+    });
+    run("batch_replace", &|s| {
+        let spec = natendo_engine::find::BatchReplace {
+            pairs: vec![("ann".into(), "bo".into())],
+            whole_cell: false,
+            match_case: false,
+            scope: Scope::All,
+            skip_first: true,
+            skip_cols: Vec::new(),
+        };
+        s.docs.batch_preview(s.id, spec.clone())?;
+        s.docs.batch_confirm(s.id, spec).map(drop)
+    });
     run("replace_all", &|s| {
         let spec = serde_json::from_value(serde_json::json!({
             "pattern": { "text": "ann", "kind": "plain", "match_case": false, "whole_cell": false },
@@ -676,4 +744,19 @@ fn a_recipe_with_a_filter_then_a_shown_sort_keeps_hidden_rows_in_place() {
             assert_eq!(got[at][0], row[0]);
         }
     }
+}
+
+/// Renaming and tidying titles writes the title row only, rows hidden or not.
+#[test]
+fn title_operations_change_no_data_row() {
+    let s = stage("titles");
+    s.docs.set_first_row_cell(s.id, 1, "who".into()).unwrap();
+    s.docs
+        .set_column_names(s.id, vec![(2, "group".into())])
+        .unwrap();
+    let spec = serde_json::from_value(serde_json::json!({ "case": "upper" })).unwrap();
+    s.docs.tidy_titles(s.id, spec).unwrap();
+    let after = table(&s.docs, s.id);
+    assert_ne!(after[0], s.before[0]);
+    assert_eq!(after[1..], s.before[1..]);
 }
