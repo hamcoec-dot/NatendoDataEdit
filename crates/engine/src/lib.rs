@@ -59,6 +59,7 @@ pub mod pivot;
 pub mod privacy;
 pub mod profile;
 pub mod recipe;
+pub mod relations;
 pub mod reshape;
 pub mod rows;
 pub mod save;
