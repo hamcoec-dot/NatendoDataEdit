@@ -5642,6 +5642,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const [col, ...also] = cols.length ? cols : [t.cell.col];
     const check: Check = { col: col!, kind: also.length ? { type: "unique", match_case: false, also } : { type: "unique", match_case: false } };
     t.checks = [...t.checks, check];
+    t.checksMarked = true;
     t.checkVersion++;
     t.bump();
     checksOpen = true;
