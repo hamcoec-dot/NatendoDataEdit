@@ -525,6 +525,10 @@ everything is also in command search.
   says how many before and after it runs, and one that adds a column for the
   shown rows says how many are left empty. Recipes saved by earlier versions
   still act on every row.
+- **Which rows edits act on**: while rows are hidden, a dotted line in the row
+  numbers marks each place they are missing (point at it for how many; click it
+  to show rows hidden by hand), and the status bar says how many rows edits act
+  on. It turns amber while an open screen includes hidden rows.
 - **Paste into filtered rows**: while a filter is on or rows are hidden,
   Paste, Paste Special, fill, Ctrl+Enter, Delete and Copy work on the rows you
   can see, and hidden rows are left as they were (the status line says how

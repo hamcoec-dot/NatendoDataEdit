@@ -2,7 +2,7 @@
   // Custom sort: one or more columns, each with its order and how values
   // compare. The first row stays in place when it holds the titles.
   import HiddenNote from "./HiddenNote.svelte";
-  import { hiddenRows, sortWords } from "./shown.svelte";
+  import { hiddenRows, sortWords, includeWhile } from "./shown.svelte";
   import { untrack } from "svelte";
   import type { SortKey, SortKind, SortSpec } from "./backend";
   import { prefs } from "./prefs.svelte";
@@ -114,6 +114,9 @@
   $effect(() => {
     box.querySelector<HTMLSelectElement>("select")?.focus();
   });
+
+  // The status pill turns amber while this includes hidden rows.
+  $effect(() => includeWhile(sortAll));
 </script>
 
 <div class="backdrop" role="presentation">

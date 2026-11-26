@@ -1,8 +1,40 @@
 // Which rows an operation acts on while a filter or hidden rows are on: the counts of the active tab and the words
 // said about them, in dialogs and in the status line.
 
+import { untrack } from "svelte";
+
 /** The data rows of the active tab (the title row is not counted): all of them, and those hidden. Set by the window. */
-export const hiddenRows = $state({ hidden: 0, total: 0 });
+export const hiddenRows = $state({ hidden: 0, total: 0, including: 0 });
+
+/** While `on`, an open screen includes hidden rows (the status pill turns amber). Call inside `$effect` and return
+ *  what it gives. */
+export function includeWhile(on: boolean): (() => void) | undefined {
+  if (!on) return undefined;
+  untrack(() => hiddenRows.including++);
+  return () => {
+    untrack(() => hiddenRows.including--);
+  };
+}
+
+/** The status pill: which rows an edit acts on. */
+export function actingWords(hidden: number, total: number, including: boolean): string {
+  if (!hidden) return "Edits act on every row: none is hidden.";
+  if (including) return `Including hidden rows (${n(hidden)} hidden)`;
+  const shown = total - hidden;
+  return `Acting on ${n(shown)} shown ${rows(shown)} (${n(hidden)} hidden, untouched)`;
+}
+
+/** The rows missing between two shown rows, said when pointing at the dotted line there. */
+export function seamWords(count: number, filter: boolean, byHand: boolean): string {
+  const some = `${n(count)} ${rows(count)}`;
+  if (filter && byHand) return `${some} hidden here (filtered out or hidden by hand). Click to show those hidden by hand.`;
+  if (filter) return `${some} filtered out here.`;
+  return `${some} hidden here. Click to show ${count === 1 ? "it" : "them"}.`;
+}
+
+/** How many file rows are missing before the shown row whose place is `place` (`before`: the place of the shown row
+ *  above, -1 at the top). */
+export const gapBetween = (before: number | undefined, place: number | undefined): number => (before === undefined || place === undefined ? 0 : Math.max(0, place - before - 1));
 
 /** Which kind of note an operation needs: it changes every row; its new column is left empty in hidden rows. */
 export type HiddenKind = "all" | "empty";
