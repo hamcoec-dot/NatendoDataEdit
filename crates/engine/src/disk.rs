@@ -56,6 +56,21 @@ impl FileStamp {
 impl DiskMark {
     /// Ask the disk. This can take long on a share that does not answer.
     pub fn look(&self) -> Outside {
+        self.look_known(None)
+    }
+
+    /// [`DiskMark::look`] with what the last look at this mark saw: a file
+    /// whose stamp has not moved since gets the same answer without being
+    /// read again (on a share, that would be the whole file every time).
+    pub fn look_known(&self, last: Option<(FileStamp, Outside)>) -> Outside {
+        self.look_with(last, crate::source::hash_file)
+    }
+
+    fn look_with(
+        &self,
+        last: Option<(FileStamp, Outside)>,
+        hash_of: impl Fn(&Path) -> std::io::Result<u64>,
+    ) -> Outside {
         let now = match FileStamp::of(&self.path) {
             Ok(s) => s,
             Err(e) if e.kind() == ErrorKind::NotFound => return Outside::Gone,
@@ -64,14 +79,20 @@ impl DiskMark {
         if Some(now) == self.stamp || self.mapped {
             return Outside::Same;
         }
+        if let Some((seen, answer)) = last {
+            if seen == now {
+                return answer;
+            }
+        }
         // A new time on the same bytes (a copy tool, a "touch") is no change.
         let same_length = self.stamp.is_some_and(|s| s.len == now.len);
         match self.hash {
-            Some(h)
-                if same_length && crate::source::hash_file(&self.path).is_ok_and(|n| n == h) =>
-            {
-                Outside::Touched(now)
-            }
+            Some(h) if same_length => match hash_of(&self.path) {
+                Ok(n) if n == h => Outside::Touched(now),
+                Ok(_) => Outside::Changed(now),
+                // Busy just now: asked again next time.
+                Err(_) => Outside::Same,
+            },
             _ => Outside::Changed(now),
         }
     }
@@ -181,6 +202,40 @@ mod tests {
         assert_eq!(mark.look(), Outside::Gone);
         let none = Document::from_bytes(b"a\r\n".to_vec(), OpenOptions::default(), Some("csv"));
         assert_eq!(none.unwrap().disk_mark(), None);
+    }
+
+    /// A file is read once for each new stamp, whatever the answer was.
+    #[test]
+    fn an_unchanged_stamp_is_not_read_again() {
+        let p = file("once", "a,b\r\n1,2\r\n");
+        let mark = open(&p).disk_mark().unwrap();
+        let reads = std::cell::Cell::new(0);
+        let look = |last| {
+            mark.look_with(last, |path| {
+                reads.set(reads.get() + 1);
+                crate::source::hash_file(path)
+            })
+        };
+        // Touched, then the same stamp again.
+        later(&p, 5);
+        let Outside::Touched(stamp) = look(None) else {
+            panic!("touched")
+        };
+        let again = look(Some((stamp, Outside::Touched(stamp))));
+        assert_eq!((again, reads.get()), (Outside::Touched(stamp), 1));
+        // Another file of the same length (ignored by the person, say).
+        std::fs::write(&p, "a,b\r\n1,3\r\n").unwrap();
+        later(&p, 10);
+        let Outside::Changed(new) = look(Some((stamp, Outside::Touched(stamp)))) else {
+            panic!("changed")
+        };
+        let again = look(Some((new, Outside::Changed(new))));
+        assert_eq!((again, reads.get()), (Outside::Changed(new), 2));
+        // A read that fails is no answer to keep.
+        later(&p, 15);
+        let busy = mark.look_with(None, |_| Err(std::io::ErrorKind::PermissionDenied.into()));
+        assert_eq!(busy, Outside::Same);
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]
