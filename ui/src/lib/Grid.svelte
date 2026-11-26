@@ -3,6 +3,7 @@
   // virtual), so a file with ten million rows draws as fast as one with ten.
   // The DOM holds just the canvas, two scrollbars and, while editing, one
   // text box over the active cell.
+  import { dateTip } from "./dates";
   import { onMount, tick, untrack } from "svelte";
   import type { Tab } from "./tab.svelte";
   import { enterStep, prefs } from "./prefs.svelte";
@@ -295,6 +296,8 @@
     void prefs.data.showGhosts;
     void tab.diffOn;
     void tab.diffVersion;
+    void tab.dateCheck;
+    void tab.dateVersion;
     void tab.busy;
     void tab.ghostVersion;
     void prefs.data.alignNumbers;
@@ -613,6 +616,7 @@
     wantFindHits(rows, cols);
     wantGhosts(rows, cols);
     wantDiff(rows, cols);
+    wantDates(rows);
     wantNotes(rows);
   }
 
@@ -716,6 +720,40 @@
           if (diffKey === key) diffKey = "";
         });
     }, 60);
+  }
+
+  // ---- date radar: the ambiguous dates among the rows on screen ----------------
+  /** Amber for a date that can be read two ways (not the red of a problem). */
+  const DATE_AMBER = "#e69500";
+  let dateKey = "";
+  function wantDates(rows: { frozen: Span; body: Span }): void {
+    const check = tab.dateCheck;
+    if (!check) {
+      if (tab.dateMarks.size) {
+        tab.dateMarks = new Set();
+        tab.dateVersion++;
+      }
+      dateKey = "";
+      return;
+    }
+    const areas = [rows.frozen, rows.body].filter((a) => a.end > a.start);
+    const key = `${tab.id}|${tab.version}|${tab.info.data_revision}|${check.col}|${tab.header}|${areas.map((a) => `${a.start}-${a.end}`).join(",")}`;
+    if (key === dateKey) return;
+    dateKey = key;
+    const t = tab;
+    void Promise.all(areas.map((a) => backend().dateMarks(t.id, check.col, t.header, a.start, a.end - a.start)))
+      .then((all) => {
+        if (dateKey !== key) return;
+        t.dateMarks = new Set(all.flat());
+        draw();
+      })
+      .catch(() => {
+        // A busy file, or a column that no longer reads as dates: nothing lit.
+        if (dateKey === key) {
+          t.dateMarks = new Set();
+          draw();
+        }
+      });
   }
 
   // ---- highlight rules -------------------------------------------------------
@@ -1569,6 +1607,20 @@
             if (link) ctx.fillRect(tx, ty + Math.round(fontPx * 0.55), Math.min(w, cw - 2 * pad), 1);
           }
         }
+        if (tab.dateCheck?.col === c && tab.dateMarks.has(r)) {
+          // Amber, with a corner triangle so the mark does not rest on colour.
+          ctx.fillStyle = DATE_AMBER;
+          ctx.globalAlpha = 0.28;
+          ctx.fillRect(x, y, cw - 1, rh - 1);
+          ctx.globalAlpha = 1;
+          const side = Math.min(8, rh - 2);
+          ctx.beginPath();
+          ctx.moveTo(x + cw - 1 - side, y);
+          ctx.lineTo(x + cw - 1, y);
+          ctx.lineTo(x + cw - 1, y + side);
+          ctx.closePath();
+          ctx.fill();
+        }
         if (diffOn) {
           const dk = tab.diffMarks.get(`${r}:${c}`) ?? tab.diffMarks.get(`${r}:*`);
           if (dk !== undefined) {
@@ -2354,6 +2406,7 @@
       }
       const dm = !link && cellHit ? (tab.diffMarks.get(`${cellHit.row}:${cellHit.col}`) ?? tab.diffMarks.get(`${cellHit.row}:*`)) : undefined;
       if (dm !== undefined && !gh) rule = DIFF_TIPS[dm] ?? "";
+      if (!link && !gh && cellHit && tab.dateCheck?.col === cellHit.col && tab.dateMarks.has(cellHit.row)) rule = dateTip(tab.cache.get(cellHit.row, cellHit.col) ?? "");
       tip = link ? `${link}\nCtrl+click to open` : gh ? `Replace all would change this cell:\n${tab.cache.get(cellHit!.row, cellHit!.col) ?? ""}\n\u2192 ${gh.after}${gh.cut ? "\u2026" : ""}` : rule;
       const pointer = h.area === "cell" && ((e.ctrlKey && !!linkAt(h.row, h.col)) || onTickBox(x, y, h.row, h.col) || onPickButton(x, y, h.row, h.col));
       const r = tab.drawRect;

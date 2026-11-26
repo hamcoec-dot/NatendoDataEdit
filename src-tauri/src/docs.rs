@@ -2864,6 +2864,50 @@ impl Docs {
         )
     }
 
+    /// How many dates of each kind column `col` holds (the first `sample`
+    /// shown rows, or all of them). A look: nothing changes.
+    pub fn date_scan(
+        &self,
+        id: u32,
+        col: u32,
+        keep_first: bool,
+        sample: Option<u64>,
+    ) -> CmdResult<natendo_engine::datescan::DateScan> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking at the dates")?;
+        let d = entry.read();
+        Ok(d.date_scan(col, keep_first, sample, &job.progress)?)
+    }
+
+    /// The shown rows on screen whose date in `col` can be read two ways.
+    pub fn date_marks(
+        &self,
+        id: u32,
+        col: u32,
+        keep_first: bool,
+        row: u64,
+        rows: u64,
+    ) -> CmdResult<Vec<u64>> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.date_marks(col, keep_first, row, rows)?)
+    }
+
+    /// The next or previous such row from `from`.
+    pub fn date_find(
+        &self,
+        id: u32,
+        col: u32,
+        keep_first: bool,
+        from: u64,
+        forward: bool,
+    ) -> CmdResult<Option<u64>> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for the next date")?;
+        let d = entry.read();
+        Ok(d.date_find(col, keep_first, from, forward, &job.progress)?)
+    }
+
     /// Paste as column names: set cells of the table's first row (column,
     /// name) as one undo step, shown or not (protected columns too, as a
     /// rename). Not a recipe step: the names are this file's.

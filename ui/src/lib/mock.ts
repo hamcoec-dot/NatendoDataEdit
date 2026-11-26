@@ -50,7 +50,7 @@ import { encodeViewport, decodeViewport, type ViewportData } from "./binary";
 import { parseTsv, toTsv } from "./tsv";
 import { runCleaner, type Cleaner, type CleanPreview, type CleanSpec } from "./clean";
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, Summary, View } from "./views";
-import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, Written, TableReport, RaggedList, RowText, RowRepair, SameShape, Totals } from "./backend";
+import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, Written, TableReport, RaggedList, RowText, RowRepair, SameShape, DateScan, Totals } from "./backend";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
@@ -737,6 +737,37 @@ export class MockBackend implements Backend {
     const d = this.get(doc);
     Object.assign(d.info, { usual_fields: usual, ragged_rows: short.length + long.length });
     return this.refresh(d);
+  }
+
+  /** The stand-in's date radar: only slash dates, both parts 12 or under and different. */
+  private twoWays(d: MockDoc, row: number, col: number): boolean {
+    const m = /^(\d{1,2})\/(\d{1,2})\/\d{4}$/.exec(this.value(d, this.rowId(d, row), col).trim());
+    return !!m && Number(m[1]) <= 12 && Number(m[2]) <= 12 && m[1] !== m[2];
+  }
+  async dateScan(doc: number, col: number, keepFirst: boolean, sample: number | null): Promise<DateScan> {
+    const d = this.get(doc);
+    const rows = Math.max(0, this.rowCount(d) - (keepFirst ? 1 : 0));
+    const looked = Math.min(rows, sample ?? rows, 5_000);
+    let ambiguous = 0;
+    for (let r = keepFirst ? 1 : 0, k = 0; k < looked; r++, k++) if (this.twoWays(d, r, col)) ambiguous++;
+    this.calls.push(`dateScan:${col}:${sample}`);
+    return { looked: sample === null ? rows : looked, rows, blank: 0, iso: looked - ambiguous, written: 0, month_first_only: 0, day_first_only: 0, ambiguous, same_either: 0, compact: 0, compact_numbers: 0, not_date: 0, two_digit_year: 0, set_order: null, other_order: 0 };
+  }
+  async dateMarks(doc: number, col: number, keepFirst: boolean, row: number, rows: number): Promise<number[]> {
+    const d = this.get(doc);
+    const out: number[] = [];
+    for (let r = Math.max(row, keepFirst ? 1 : 0); r < Math.min(row + rows, this.rowCount(d)); r++) if (this.twoWays(d, r, col)) out.push(r);
+    return out;
+  }
+  async dateFind(doc: number, col: number, keepFirst: boolean, from: number, forward: boolean): Promise<number | null> {
+    const d = this.get(doc);
+    const first = keepFirst ? 1 : 0;
+    const total = this.rowCount(d) - first;
+    for (let step = 1; step <= Math.min(total, 5_000); step++) {
+      const r = first + ((((from - first + (forward ? step : -step)) % total) + total) % total);
+      if (this.twoWays(d, r, col)) return r;
+    }
+    return null;
   }
 
   async raggedList(doc: number): Promise<RaggedList> {

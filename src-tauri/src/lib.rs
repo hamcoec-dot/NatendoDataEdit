@@ -2686,6 +2686,44 @@ async fn cell_text(docs: DocsState<'_>, doc: u32, row: u64, col: u32) -> CmdResu
 }
 
 #[tauri::command]
+async fn date_scan(
+    docs: DocsState<'_>,
+    doc: u32,
+    col: u32,
+    keep_first: bool,
+    sample: Option<u64>,
+) -> CmdResult<natendo_engine::datescan::DateScan> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.date_scan(doc, col, keep_first, sample)).await
+}
+
+#[tauri::command]
+async fn date_marks(
+    docs: DocsState<'_>,
+    doc: u32,
+    col: u32,
+    keep_first: bool,
+    row: u64,
+    rows: u64,
+) -> CmdResult<Vec<u64>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.date_marks(doc, col, keep_first, row, rows)).await
+}
+
+#[tauri::command]
+async fn date_find(
+    docs: DocsState<'_>,
+    doc: u32,
+    col: u32,
+    keep_first: bool,
+    from: u64,
+    forward: bool,
+) -> CmdResult<Option<u64>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.date_find(doc, col, keep_first, from, forward)).await
+}
+
+#[tauri::command]
 async fn ragged_list(
     docs: DocsState<'_>,
     doc: u32,
@@ -4219,6 +4257,9 @@ pub fn run() {
             viewport,
             cell_text,
             ragged_list,
+            date_scan,
+            date_marks,
+            date_find,
             row_text,
             repair_row,
             same_shape,
