@@ -526,6 +526,7 @@ fn what_each_writing_operation_does_to_hidden_rows() {
     }
     run("sort", &|s| {
         let spec = SortSpec {
+            scope: Default::default(),
             keys: vec![SortKey {
                 col: 1,
                 descending: true,

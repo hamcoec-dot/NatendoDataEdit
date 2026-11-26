@@ -70,6 +70,7 @@ fn main() {
         // A working session: sort, filter by a formula, Find all, clear the filter, undo,
         // sort again, edit a few cells; then export.
         let key = |col, kind| SortSpec {
+            scope: Default::default(),
             keys: vec![SortKey {
                 col,
                 descending: false,
