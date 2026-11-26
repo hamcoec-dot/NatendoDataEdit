@@ -201,8 +201,14 @@ fn effect(s: &Stage) -> String {
             gone = true;
             continue;
         };
-        moved |=
-            order_now.iter().position(|i| *i == r[0]) != order_was.iter().position(|i| *i == r[0]);
+        // With as many rows as before, a hidden row must be exactly where it
+        // was; otherwise it is placed among the rows that are still there.
+        moved |= if after.len() == s.before.len() {
+            after.iter().position(|x| x[id_col] == r[0])
+                != s.before.iter().position(|x| x[0] == r[0])
+        } else {
+            order_now.iter().position(|i| *i == r[0]) != order_was.iter().position(|i| *i == r[0])
+        };
         for (c, title) in was.iter().enumerate() {
             // A column the operation took away is a column operation, said
             // apart from a change to the row's values.
