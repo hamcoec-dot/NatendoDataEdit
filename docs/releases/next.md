@@ -6,3 +6,4 @@
 - **Leading zeros from LibreOffice sheets:** a number an `.ods` sheet shows as `00123` can now be imported that way, with the same question as for Excel files. Excel formats written with quoted dashes or spaces (`00"-"000`) are recognised too.
 - **Repair bar:** fix a shifted row where it broke: join fields, join it with the next or previous row of the file, or read a stray quote mark as text, with a preview and one undo step. **Fix all like this** repairs every row of the same shape at once, and the emptied extra column can be removed.
 - **Ambiguous dates:** Check dates in this column lights the dates that could be read two ways and says what the column tells about their order.
+- **Recipes with a dates step:** a step recorded from now on says what it does with ambiguous dates (left as typed, month first or day first). Older recipes keep their behaviour.
