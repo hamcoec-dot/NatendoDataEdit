@@ -454,6 +454,252 @@ impl Document {
     }
 }
 
+/// Rows to cut, by id, with the cells they keep.
+type Cut = Vec<(u32, Vec<String>)>;
+
+/// Changes shown before "Fix all like this" is applied.
+pub const SHOWN_CHANGES: usize = 20;
+
+/// One row "Fix all like this" would change: its cells afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ShapeRow {
+    pub id: u32,
+    pub file_row: u64,
+    pub cells: Vec<String>,
+}
+
+/// The rows with the same number of fields as a repaired one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SameShape {
+    pub revision: u64,
+    pub total: u64,
+    /// How many of them are not on screen.
+    pub hidden: u64,
+    /// The first [`SHOWN_CHANGES`].
+    pub first: Vec<ShapeRow>,
+}
+
+/// A join of `groups` fits rows of `fields` fields whose usual number is
+/// `usual`.
+fn check_shape(groups: &[u32], fields: u32, usual: u32) -> Result<(), Error> {
+    let covered: u64 = groups.iter().map(|&g| u64::from(g)).sum();
+    if groups.contains(&0) || covered > u64::from(fields) || !groups.iter().any(|&g| g > 1) {
+        return Err(Error::Invalid("choose the fields to join".into()));
+    }
+    if fields == usual {
+        return Err(Error::Invalid(
+            "rows with the usual number of fields are never changed together".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `values` with its neighbouring fields joined as `groups` says.
+fn join_groups(values: &[String], groups: &[u32], separator: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(values.len());
+    let mut at = 0usize;
+    for &g in groups {
+        out.push(values[at..at + g as usize].join(separator));
+        at += g as usize;
+    }
+    out.extend_from_slice(&values[at..]);
+    out
+}
+
+impl Document {
+    fn width_of(&self, id: u32) -> u64 {
+        match self.overlay.get(id) {
+            Some(edit) => u64::from(edit.width()),
+            None => self.file_fields(id),
+        }
+    }
+
+    /// Why no repair can be made at all.
+    fn repairable(&self) -> Result<(), Error> {
+        self.ready_for_bulk()?;
+        if self.col_map().is_some() {
+            return Err(Error::Invalid(COLUMNS_CHANGED.into()));
+        }
+        Ok(())
+    }
+
+    /// The ids, in table order, of the rows of exactly `fields` fields (the
+    /// title row never, hidden rows too).
+    fn rows_of_width(
+        &self,
+        header: bool,
+        fields: u32,
+        progress: &Progress,
+    ) -> Result<Vec<(u64, u32)>, Error> {
+        let first = u64::from(header);
+        let total = self.total_rows();
+        progress.start(total.saturating_sub(first));
+        let mut out = Vec::new();
+        for at in first..total {
+            let id = self.doc_id_at(at).ok_or(Error::OutOfRange)?;
+            if self.width_of(id) == u64::from(fields) {
+                out.push((at, id));
+            }
+            if at % 8192 == 0 {
+                progress.step(8192.min(total - at))?;
+            }
+        }
+        Ok(out)
+    }
+
+    /// What "Fix all like this" would do: join the fields `groups` of every
+    /// row that has exactly `fields` fields.
+    pub fn same_shape(
+        &self,
+        header: bool,
+        fields: u32,
+        groups: &[u32],
+        progress: &Progress,
+    ) -> Result<SameShape, Error> {
+        self.repairable()?;
+        check_shape(groups, fields, self.index.stats().usual_fields())?;
+        if self.format.dialect.merges() {
+            return Err(Error::Invalid(MERGED.into()));
+        }
+        let rows = self.rows_of_width(header, fields, progress)?;
+        let sep = self.format.dialect.delimiter_str();
+        let mut first = Vec::new();
+        for &(_, id) in rows.iter().take(SHOWN_CHANGES) {
+            let mut cells = join_groups(&self.logical_values(id)?, groups, sep);
+            let mut used = 0usize;
+            cells.retain(|v| {
+                used += v.len() + 1;
+                used <= MAX_SHOWN
+            });
+            first.push(ShapeRow {
+                id,
+                file_row: if self.file_row(id) {
+                    u64::from(id) + 1
+                } else {
+                    0
+                },
+                cells,
+            });
+        }
+        let hidden = rows
+            .iter()
+            .filter(|&&(at, _)| self.shown_at(at).is_none())
+            .count() as u64;
+        Ok(SameShape {
+            revision: self.revision(),
+            total: rows.len() as u64,
+            hidden,
+            first,
+        })
+    }
+
+    /// Join the fields `groups` of every row of exactly `fields` fields, but
+    /// those in `skip`, as one undo step; the rows changed.
+    pub fn fix_all(
+        &mut self,
+        header: bool,
+        revision: u64,
+        fields: u32,
+        groups: &[u32],
+        skip: &[u32],
+        progress: &Progress,
+    ) -> Result<u64, Error> {
+        self.repairable()?;
+        check_shape(groups, fields, self.index.stats().usual_fields())?;
+        if self.format.dialect.merges() {
+            return Err(Error::Invalid(MERGED.into()));
+        }
+        if revision != self.revision() {
+            return Err(Error::Invalid(CHANGED.into()));
+        }
+        let first_joined = groups.iter().position(|&g| g > 1).unwrap_or(0);
+        self.unprotected_from(first_joined, fields as usize)?;
+        let skip: std::collections::HashSet<u32> = skip.iter().copied().collect();
+        let sep = self.format.dialect.delimiter_str().to_string();
+        let mut states = Vec::new();
+        for (_, id) in self.rows_of_width(header, fields, progress)? {
+            if skip.contains(&id) {
+                continue;
+            }
+            let values = join_groups(&self.logical_values(id)?, groups, &sep);
+            states.push(self.state_for(id, values)?);
+        }
+        let n = states.len() as u64;
+        if n > 0 {
+            self.push(Op::Restore(states));
+        }
+        Ok(n)
+    }
+
+    /// The columns past the usual number can be removed: none has a title or
+    /// a value in any row, hidden ones too. Gives how many columns and the
+    /// rows that hold such cells; refused with the reason otherwise.
+    fn extra_columns(&self, header: bool, progress: &Progress) -> Result<(u32, Cut), Error> {
+        self.repairable()?;
+        let usual = self.index.stats().usual_fields();
+        let cols = self.col_count();
+        if cols <= usual {
+            return Err(Error::Invalid(
+                "the table has no column past the usual number".into(),
+            ));
+        }
+        let total = self.total_rows();
+        progress.start(total);
+        let mut rows = Vec::new();
+        for at in 0..total {
+            let id = self.doc_id_at(at).ok_or(Error::OutOfRange)?;
+            if self.width_of(id) > u64::from(usual) {
+                let mut values = self.logical_values(id)?;
+                if values[usual as usize..].iter().any(|v| !v.is_empty()) {
+                    return Err(Error::Invalid(if header && at == 0 {
+                        "a column past the usual number has a title".into()
+                    } else {
+                        "a column past the usual number holds values".into()
+                    }));
+                }
+                values.truncate(usual as usize);
+                rows.push((id, values));
+            }
+            if at % 8192 == 0 {
+                progress.step(8192.min(total - at))?;
+            }
+        }
+        Ok((cols - usual, rows))
+    }
+
+    /// How many empty, untitled columns past the usual number could be
+    /// removed (0: none).
+    pub fn empty_extra_columns(&self, header: bool, progress: &Progress) -> u32 {
+        self.extra_columns(header, progress).map_or(0, |e| e.0)
+    }
+
+    /// Cut the empty cells past the usual number from every row that has
+    /// them, as one undo step. Not a column delete: no column is moved, so
+    /// ragged rows can still be repaired.
+    pub fn remove_empty_extra_columns(
+        &mut self,
+        header: bool,
+        revision: u64,
+        progress: &Progress,
+    ) -> Result<u32, Error> {
+        if revision != self.revision() {
+            return Err(Error::Invalid(CHANGED.into()));
+        }
+        let (n, rows) = self.extra_columns(header, progress)?;
+        let usual = self.index.stats().usual_fields();
+        self.unprotected_from(usual as usize, (usual + n) as usize)?;
+        let mut states = Vec::with_capacity(rows.len());
+        for (id, values) in rows {
+            states.push((id, Some(Edit::Full(values))));
+        }
+        self.push(Op::Batch(vec![
+            Op::Restore(states),
+            Op::SetWidth(Some(usual)),
+        ]));
+        Ok(n)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -763,5 +1009,77 @@ mod tests {
         let t = d.row_text(2, true).unwrap();
         assert_eq!(t.row, Some(1));
         assert!(t.previous.unwrap().hidden);
+    }
+
+    #[test]
+    fn fix_all_changes_only_rows_of_the_same_shape() {
+        let body = "id,name,city\n1,Smith, John,Rome\n2,ann,Oslo\n3,Doe, Jane,Lima\n4\n5,a,b,c,d\n6,Roe, Bo,Kiel\n7,x,y\n8,x,y\n9,x,y\n";
+        let (mut d, p) = open(body);
+        let progress = Progress::new();
+        let same = d.same_shape(true, 4, &[1, 2], &progress).unwrap();
+        assert_eq!((same.total, same.hidden), (3, 0));
+        assert_eq!(same.first[0].cells, ["1", "Smith, John", "Rome"]);
+        // A sort between the preview and Apply moves rows, never the change: the old reading is refused.
+        d.move_rows(1, 1, 4).unwrap();
+        assert!(d
+            .fix_all(true, same.revision, 4, &[1, 2], &[], &progress)
+            .is_err());
+        let same = d.same_shape(true, 4, &[1, 2], &progress).unwrap();
+        let skipped = same.first.iter().find(|r| r.file_row == 4).unwrap().id;
+        let n = d
+            .fix_all(true, same.revision, 4, &[1, 2], &[skipped], &progress)
+            .unwrap();
+        assert_eq!(n, 2);
+        let rows = all(&d);
+        assert!(rows.iter().any(|r| r == &["6", "Roe, Bo", "Kiel"]));
+        assert!(
+            rows.iter().any(|r| r == &["3", "Doe", " Jane", "Lima"]),
+            "unticked"
+        );
+        assert!(rows.iter().any(|r| r.len() == 5) && rows.iter().any(|r| r == &["4"]));
+        assert!(d.undo());
+        assert!(d.undo());
+        assert_eq!(saved(&mut d, &p), body);
+        // Never the rows of usual width, nor without a join.
+        assert!(d.same_shape(true, 3, &[2], &progress).is_err());
+        assert!(d.same_shape(true, 4, &[1, 1], &progress).is_err());
+        d.insert_cols(0, 1).unwrap();
+        assert!(d.same_shape(true, 4, &[2], &progress).is_err());
+    }
+
+    #[test]
+    fn the_empty_column_goes_by_cutting_cells() {
+        let body = "a,b,c\n1,Smith, John,3\n4,5,6\n7,8,9,\n";
+        let (mut d, p) = open(body);
+        let progress = Progress::new();
+        assert_eq!(d.col_count(), 4);
+        // A value in the extra column (the unrepaired row) keeps it.
+        assert_eq!(d.empty_extra_columns(true, &progress), 0);
+        apply(&mut d, 1, join(&[1, 2])).unwrap();
+        assert_eq!(d.empty_extra_columns(true, &progress), 1);
+        // A title typed this session keeps it too, hidden rows or not.
+        d.set_cell(0, 3, "extra".into()).unwrap();
+        assert_eq!(d.empty_extra_columns(true, &progress), 0);
+        assert!(d.undo());
+        let revision = d.revision();
+        assert_eq!(
+            d.remove_empty_extra_columns(true, revision, &progress)
+                .unwrap(),
+            1
+        );
+        assert_eq!(d.col_count(), 3);
+        assert!(
+            !d.has_column_changes(),
+            "no column map: repair keeps working"
+        );
+        assert!(d.undo());
+        assert_eq!(d.col_count(), 4);
+        assert!(d.redo());
+        assert_eq!(d.col_count(), 3);
+        assert_eq!(
+            saved(&mut d, &p),
+            "a,b,c\n1,\"Smith, John\",3\n4,5,6\n7,8,9\n"
+        );
+        assert_eq!(d.col_count(), 3);
     }
 }

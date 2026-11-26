@@ -199,6 +199,10 @@ enum Op {
     SetEncoding(Encoding),
     /// Several ops applied in order as one undo step.
     Batch(Vec<Op>),
+    /// How many columns the file's own rows reach (`None`: as many as the
+    /// widest). Lowered only once every wider row has been cut in the same
+    /// step.
+    SetWidth(Option<u32>),
 }
 
 /// A filter's rules and result, as an undo step keeps them (see [`View`]).
@@ -241,7 +245,8 @@ impl Op {
             | Op::MoveRows { .. }
             | Op::ColRemove { .. }
             | Op::MoveCols { .. }
-            | Op::SetEncoding(_) => 32,
+            | Op::SetEncoding(_)
+            | Op::SetWidth(_) => 32,
         }
     }
 }
@@ -432,6 +437,8 @@ pub struct Document {
     pub(crate) invalid_bytes: bool,
     pub(crate) index: RowIndex,
     order: Option<Vec<u32>>,
+    /// See [`Op::SetWidth`].
+    file_width: Option<u32>,
     overlay: Overlay,
     next_id: u32,
     /// Column map: logical column -> physical column. `None` is the identity.
@@ -618,6 +625,7 @@ impl Document {
             invalid_bytes,
             index,
             order: None,
+            file_width: None,
             overlay: Overlay::default(),
             next_id: 0,
             cols: None,
@@ -1076,7 +1084,9 @@ impl Document {
 
     /// Physical columns in use by the file and the edits.
     fn physical_width(&self) -> u32 {
-        self.index.stats().max_fields.max(self.overlay.max_width())
+        self.file_width
+            .unwrap_or(self.index.stats().max_fields)
+            .max(self.overlay.max_width())
     }
 
     /// True while columns are inserted, deleted or moved (saving then
@@ -2339,6 +2349,7 @@ impl Document {
                 Op::SetEncoding(old)
             }
             Op::SetMap(m) => Op::SetMap(std::mem::replace(&mut self.cols, m)),
+            Op::SetWidth(w) => Op::SetWidth(std::mem::replace(&mut self.file_width, w)),
             Op::SetOrder(o) => {
                 let old = std::mem::replace(&mut self.order, o);
                 self.rows_moved();
@@ -2520,6 +2531,7 @@ impl Document {
         self.index = index;
         self.order = None;
         self.cols = None;
+        self.file_width = None;
         self.next_col = 0;
         self.swapped.clear();
         self.map_identity.store(0, Ordering::Relaxed);
