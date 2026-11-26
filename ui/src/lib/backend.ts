@@ -128,6 +128,16 @@ export interface ReportNotes {
   cut: boolean;
 }
 
+/** A row near the end that looks like a total line, and whether the rows above add up to it. */
+export interface TotalRow {
+  row: number;
+  /** Rows from it to the end (blank lines after it go with it). */
+  count: number;
+  label: string;
+  checks: { col: number; total: string; sum: string | null; matches: boolean }[];
+  adds_up: boolean;
+}
+
 /** Which end of the table rows are set aside at. */
 export type NotePlace = "head" | "foot";
 
@@ -1642,6 +1652,8 @@ export interface Backend {
   /** Set rows aside above ("head") or below the table as report notes (one undo step). */
   setAside(doc: number, at: number, count: number, place: NotePlace): Promise<DocInfo>;
   reportNotes(doc: number): Promise<ReportNotes>;
+  /** A total line among the last 5 rows (null: none, or rows are hidden), with its sums checked. */
+  totalRow(doc: number, header: boolean, read: ReadOptions): Promise<TotalRow | null>;
   /** Put every report note back into the table (one undo step). */
   putBackNotes(doc: number): Promise<DocInfo>;
   /** Save the report notes, or leave them out (one undo step; nothing is lost). */
@@ -2200,6 +2212,9 @@ class TauriBackend implements Backend {
   }
   reportNotes(doc: number) {
     return call<ReportNotes>("report_notes", { doc });
+  }
+  totalRow(doc: number, header: boolean, read: ReadOptions) {
+    return call<TotalRow | null>("total_row", { doc, header, read });
   }
   putBackNotes(doc: number) {
     return call<DocInfo>("put_back_notes", { doc });

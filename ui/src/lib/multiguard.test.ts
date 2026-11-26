@@ -26,6 +26,7 @@ const NOT_WRITES = [
   "gapHidden",
   "setAsideCheck",
   "reportNotes",
+  "totalRow",
   "keepNotes",
   "rowText",
   "rowWidth",

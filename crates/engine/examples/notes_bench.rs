@@ -75,6 +75,27 @@ fn main() {
         aside[4] = aside[4].min(ms(t));
         assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&path).unwrap());
     }
+    // The total-row check (piece b) against the column totals over the same rows.
+    let d = Document::open_indexed(path.as_ref(), opts, None).unwrap();
+    let read = natendo_engine::value::ReadOptions::default();
+    let p = natendo_engine::Progress::new();
+    let cols: Vec<u32> = (0..d.col_count()).collect();
+    let mut tb = [f64::MAX; 2];
+    for _ in 0..5 {
+        let t = Instant::now();
+        let found = d.find_total_row(true, read, &p).unwrap();
+        tb[0] = tb[0].min(ms(t));
+        assert!(found.is_some_and(|f| f.adds_up));
+        let t = Instant::now();
+        d.column_totals(&cols, true, read, &p).unwrap();
+        tb[1] = tb[1].min(ms(t));
+    }
+    println!(
+        "total row check {:.1} ms, column totals of every column {:.1} ms ({:.2}x)",
+        tb[0],
+        tb[1],
+        tb[0] / tb[1]
+    );
     println!(
         "set aside 4 head {:.1} ms, undo {:.1} ms, set aside 1 foot {:.1} ms, write with notes {:.0} ms, save with notes {:.0} ms (bytes equal the original)",
         aside[0], aside[1], aside[2], aside[3], aside[4]

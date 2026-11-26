@@ -119,10 +119,21 @@ impl Document {
         read: ReadOptions,
         progress: &Progress,
     ) -> Result<Vec<ColumnTotal>, Error> {
+        self.column_totals_in(cols, self.data_rows(header), header, read, progress)
+    }
+
+    /// [`Document::column_totals`] over shown rows `rows` only.
+    pub(crate) fn column_totals_in(
+        &self,
+        cols: &[u32],
+        rows: std::ops::Range<u64>,
+        header: bool,
+        read: ReadOptions,
+        progress: &Progress,
+    ) -> Result<Vec<ColumnTotal>, Error> {
         if cols.len() > MAX_COLUMN_TOTALS || cols.iter().any(|&c| c >= self.col_count()) {
             return Err(Error::OutOfRange);
         }
-        let rows = self.data_rows(header);
         let (first, end) = (rows.start, rows.end);
         let reader = Cols::new(self, cols);
         let ctx = self.read_ctx(read);

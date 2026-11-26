@@ -3621,6 +3621,25 @@ impl Docs {
         })
     }
 
+    /// A total line among the last rows, and whether the rows above add up
+    /// to it (`None`: none, or rows are hidden). Never waits behind a change.
+    pub fn total_row(
+        &self,
+        id: u32,
+        header: bool,
+        read: ReadOptions,
+    ) -> CmdResult<Option<natendo_engine::document::report::TotalRow>> {
+        let entry = self.get(id)?;
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(CmdError::new("busy", "the file is being changed"))
+            }
+        };
+        Ok(d.find_total_row(header, read, &Progress::new())?)
+    }
+
     /// The report notes, for the panel.
     pub fn report_notes(&self, id: u32) -> CmdResult<ReportNotes> {
         Ok(self.get(id)?.read().report_notes())

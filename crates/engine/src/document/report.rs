@@ -654,6 +654,132 @@ impl Document {
     }
 }
 
+/// A row near the end that looks like a total line (piece b).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TotalRow {
+    /// Its place among the rows (0-based).
+    pub row: u64,
+    /// Rows from it to the end (blank lines after a total go with it).
+    pub count: u64,
+    /// Its first filled cell ("Total", "Grand total:").
+    pub label: String,
+    /// The number cells and what the rows above add up to.
+    pub checks: Vec<TotalCheck>,
+    /// Every number cell matches its column's sum.
+    pub adds_up: bool,
+}
+
+/// One number cell of a total row.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TotalCheck {
+    pub col: u32,
+    /// The cell as written.
+    pub total: String,
+    /// The rows above, added up and written with as many decimals as the
+    /// cell (`None`: no numbers to add).
+    pub sum: Option<String>,
+    pub matches: bool,
+}
+
+/// Rows at the end looked at for a total line.
+pub const TOTAL_ROWS_LOOKED_AT: u64 = 5;
+
+/// The words that start a total line (whole cell, any case, a colon after
+/// allowed).
+fn total_word(cell: &str) -> bool {
+    let c = cell.trim().trim_end_matches(':').trim().to_lowercase();
+    matches!(c.as_str(), "total" | "grand total" | "subtotal" | "sum")
+}
+
+impl Document {
+    /// A total line among the last rows: its first filled cell is Total,
+    /// Grand total, Subtotal or Sum and it has at least one number cell.
+    /// Only then are the rows above added up (one pass, the column readers'
+    /// numbers). `None` while rows are hidden or filtered, or when there is
+    /// none. With `header`, the first row is titles and is not added.
+    pub fn find_total_row(
+        &self,
+        header: bool,
+        read: crate::value::ReadOptions,
+        progress: &Progress,
+    ) -> Result<Option<TotalRow>, Error> {
+        self.ready()?;
+        if self.view.is_some() {
+            return Ok(None);
+        }
+        let n = self.total_rows();
+        let first = u64::from(header);
+        if n <= first + 1 {
+            return Ok(None);
+        }
+        let ctx = self.read_ctx(read);
+        let from = n.saturating_sub(TOTAL_ROWS_LOOKED_AT).max(first + 1);
+        for pos in (from..n).rev() {
+            let values = self.row_values(pos)?;
+            let Some(label_col) = values.iter().position(|v| !v.trim().is_empty()) else {
+                continue;
+            };
+            if !total_word(&values[label_col]) {
+                continue;
+            }
+            let cols: Vec<u32> = values
+                .iter()
+                .enumerate()
+                .filter(|&(c, v)| {
+                    c != label_col
+                        && (c as u32) < self.col_count()
+                        && !v.trim().is_empty()
+                        && ctx.reader(c as u32).number(v.trim()).is_some()
+                })
+                .map(|(c, _)| c as u32)
+                .take(crate::coltotals::MAX_COLUMN_TOTALS)
+                .collect();
+            if cols.is_empty() {
+                // A word like "Total" with no number (a last name, say).
+                continue;
+            }
+            let sums = self.column_totals_in(&cols, first..pos, header, read, progress)?;
+            let mut checks = Vec::with_capacity(cols.len());
+            for (s, &c) in sums.iter().zip(&cols) {
+                let text = values[c as usize].trim().to_string();
+                let want = ctx.reader(c).number(&text).unwrap_or(f64::NAN);
+                let dec = decimals(&text);
+                let sum = s.totals.sum.filter(|_| s.totals.numbers > 0);
+                let matches = sum.is_some_and(|x| {
+                    (x - want).abs() <= 0.5 * 10f64.powi(-(dec as i32)) + want.abs() * 1e-12
+                });
+                checks.push(TotalCheck {
+                    col: c,
+                    total: text,
+                    sum: sum.map(|x| format!("{x:.dec$}")),
+                    matches,
+                });
+            }
+            return Ok(Some(TotalRow {
+                row: pos,
+                count: n - pos,
+                label: values[label_col].trim().to_string(),
+                adds_up: checks.iter().all(|c| c.matches),
+                checks,
+            }));
+        }
+        Ok(None)
+    }
+}
+
+/// Digits after the decimal point of a number as written ("1,234.50" -> 2).
+fn decimals(text: &str) -> usize {
+    let t = text.trim().trim_end_matches('%');
+    match t.rfind('.') {
+        Some(i) => t[i + 1..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .count()
+            .min(10),
+        None => 0,
+    }
+}
+
 fn too_many(lines: usize) -> Error {
     Error::Invalid(format!(
         "report notes can hold at most {MAX_NOTE_LINES} lines above and {MAX_NOTE_LINES} below the table ({} asked for)",
@@ -1194,6 +1320,45 @@ mod tests {
             .to_string();
         assert!(e.contains("looks like data"), "{e}");
         assert_eq!(wide.total_rows(), 5);
+    }
+
+    #[test]
+    fn total_rows_found_checked_and_not_mistaken() {
+        let read = crate::value::ReadOptions::default();
+        let p = Progress::new();
+        // A true total.
+        let d = doc(b"name,amount,n\nann,1.25,2\nbo,2.50,3\nTotal:,3.75,5\n");
+        let t = d.find_total_row(true, read, &p).unwrap().unwrap();
+        assert_eq!(
+            (t.row, t.count, t.label.as_str(), t.adds_up),
+            (3, 1, "Total:", true)
+        );
+        assert_eq!(t.checks.len(), 2);
+        assert_eq!(t.checks[0].sum.as_deref(), Some("3.75"));
+        // Wrong numbers: says which column does not add up.
+        let d = doc(b"name,amount,n\nann,1.25,2\nbo,2.50,3\nGrand total,3.80,5\n,,\n");
+        let t = d.find_total_row(true, read, &p).unwrap().unwrap();
+        assert_eq!((t.row, t.count), (3, 2));
+        assert!(!t.adds_up);
+        assert!(!t.checks[0].matches && t.checks[1].matches);
+        assert_eq!(t.checks[0].sum.as_deref(), Some("3.75"));
+        // A person whose last name is Total, numbers elsewhere blank: no.
+        let d = doc(b"first,last,amount\nann,Lee,1\n,Total,\n");
+        assert_eq!(d.find_total_row(true, read, &p).unwrap(), None);
+        // A first cell "Total" over text only: no number cell, no.
+        let d = doc(b"name,city\nann,Oslo\nTotal,all\n");
+        assert_eq!(d.find_total_row(true, read, &p).unwrap(), None);
+        // A non-numeric column beside a numeric one: only number cells are checked.
+        let d = doc(b"name,city,n\nann,Oslo,1\nbo,Rome,2\nSUM,-,3\n");
+        let t = d.find_total_row(true, read, &p).unwrap().unwrap();
+        assert!(t.adds_up && t.checks.len() == 1 && t.checks[0].col == 2);
+        // Further up than the last 5 rows: not looked at.
+        let d = doc(b"n\n1\nTotal,1\n2\n3\n4\n5\n6\n");
+        assert_eq!(d.find_total_row(true, read, &p).unwrap(), None);
+        // Not while rows are hidden.
+        let mut d = doc(b"name,amount\nann,1\nbo,2\nTotal,3\n");
+        d.hide_rows(1, 1).unwrap();
+        assert_eq!(d.find_total_row(true, read, &p).unwrap(), None);
     }
 
     #[test]

@@ -1002,7 +1002,14 @@ everything is also in command search.
   many rows were set aside, never their text; its dry run lists the lines, and
   it stops when a row to set aside has more fields than the title row. Export,
   Append, Join and Combine use only the table and say that the notes are not
-  included.
+  included. When a file opens with a total line among its last 5 rows (its
+  first filled cell is Total, Grand total, Subtotal or Sum, and it has a
+  number), a bar says so and whether the rows above add up to it, naming any
+  column that does not, with both figures. **Set aside** keeps it below the
+  table; **Delete** is offered only when the numbers add up; **Keep** leaves it.
+  Nothing happens without a click, each is one undo step, the bar is not shown
+  while rows are hidden, and it asks once per file per session (Data › **Look
+  for a total row at the end** asks again).
 
   ![The Report notes panel: a report title and date set aside above the table, a total line below](docs/screenshots/report-notes.png)
 - **Data checks** per column or row: required, number (with limits, whole
