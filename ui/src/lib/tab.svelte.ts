@@ -1,7 +1,7 @@
 // One open document as the UI sees it: engine info, selection, view
 // settings (header row, frozen panes, column widths) and its cell cache.
 
-import { placeCheck } from "./m8";
+import { placeCheck, shiftChecks } from "./m8";
 import type { DiskNote } from "./disk";
 import type { Check, FindSpec } from "./backend";
 import type { Highlight } from "./views";
@@ -436,6 +436,26 @@ export class Tab {
    *  (replay the moves), otherwise a new change (forget undone moves). */
   redoing = 0;
 
+  /** Data check rules as they were before and after each engine step that put in or took out
+   *  columns (by the undo position it made): Undo puts the rules back as they were (a rule
+   *  dropped with a deleted column comes back), Redo moves them again. */
+  private ruleShifts: { pos: number; before: Check[]; after: Check[] }[] = [];
+
+  /** `count` columns were just put in at `at` (or, with a negative count, taken out from
+   *  `at`; the change is already in `info`): the widths and formats and the data check rules
+   *  follow. How many rules used a deleted column and were dropped. */
+  shiftCols(at: number, count: number): number {
+    this.columns.shift(at, count);
+    if (!this.checks.length) return 0;
+    const before = this.checks;
+    const r = shiftChecks(before, at, count);
+    this.checks = r.checks;
+    this.checkVersion++;
+    this.ruleShifts.push({ pos: this.info.history_pos, before, after: r.checks });
+    if (this.ruleShifts.length > MAX_UNDO) this.ruleShifts.shift();
+    return r.dropped;
+  }
+
   /** Columns were just moved (the change is already in `info`). */
   noteColMove(at: number, count: number, to: number): void {
     this.followMove(at, count, to);
@@ -712,11 +732,22 @@ export class Tab {
     if (after < before) {
       // Only undo lowers the position: take back every move undone, newest first.
       for (const m of this.colMoves.filter((x) => x.pos > after && x.pos <= before).reverse()) this.followMove(m.to, m.count, m.at);
+      const undone = this.ruleShifts.filter((x) => x.pos > after && x.pos <= before);
+      if (undone.length) {
+        this.checks = undone[0]!.before;
+        this.checkVersion++;
+      }
     } else if (after > before && this.redoing > 0) {
       for (const m of this.colMoves.filter((x) => x.pos > before && x.pos <= after)) this.followMove(m.at, m.count, m.to);
+      const redone = this.ruleShifts.filter((x) => x.pos > before && x.pos <= after);
+      if (redone.length) {
+        this.checks = redone.at(-1)!.after;
+        this.checkVersion++;
+      }
     } else if (after > before) {
       // A new change: moves that could have been redone are gone.
       this.colMoves = this.colMoves.filter((x) => x.pos <= before);
+      this.ruleShifts = this.ruleShifts.filter((x) => x.pos <= before);
     }
     if (after > before && this.redoing === 0) {
       // A new change ends the redo of look changes too, and takes the look
