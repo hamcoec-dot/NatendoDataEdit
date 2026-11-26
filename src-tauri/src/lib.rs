@@ -1222,21 +1222,46 @@ async fn cleaner_save(
 /// checked as it is read. `None` if cancelled.
 #[tauri::command]
 async fn cleaner_open(window: WebviewWindow) -> CmdResult<Option<natendo_engine::clean::Cleaner>> {
-    use natendo_engine::clean::{Cleaner, MAX_CLEANER_BYTES};
+    blocking(move || Ok(pick_cleaner(&window)?.map(|(c, _)| c))).await
+}
+
+/// A cleaner and the name of the file it was read from.
+#[derive(serde::Serialize)]
+struct NamedCleaner {
+    cleaner: natendo_engine::clean::Cleaner,
+    file: String,
+}
+
+/// [`cleaner_open`] with the file's name (no folder), for the clean matrix.
+#[tauri::command]
+async fn cleaner_open_named(window: WebviewWindow) -> CmdResult<Option<NamedCleaner>> {
     blocking(move || {
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("Open cleaner")
-            .add_filter("Natendo cleaner", &[CLEANER_EXT])
-            .add_filter("All files", &["*"])
-            .set_parent(&window)
-            .pick_file()
-        else {
-            return Ok(None);
-        };
-        let bytes = extras::read_capped(&path, MAX_CLEANER_BYTES as u64, "a cleaner file")?;
-        Ok(Some(Cleaner::from_json(&bytes)?))
+        Ok(pick_cleaner(&window)?.map(|(cleaner, path)| NamedCleaner {
+            cleaner,
+            file: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        }))
     })
     .await
+}
+
+fn pick_cleaner(
+    window: &WebviewWindow,
+) -> CmdResult<Option<(natendo_engine::clean::Cleaner, std::path::PathBuf)>> {
+    use natendo_engine::clean::{Cleaner, MAX_CLEANER_BYTES};
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Open cleaner")
+        .add_filter("Natendo cleaner", &[CLEANER_EXT])
+        .add_filter("All files", &["*"])
+        .set_parent(window)
+        .pick_file()
+    else {
+        return Ok(None);
+    };
+    let bytes = extras::read_capped(&path, MAX_CLEANER_BYTES as u64, "a cleaner file")?;
+    Ok(Some((Cleaner::from_json(&bytes)?, path)))
 }
 
 /// The extension of cleaner files.
@@ -4367,6 +4392,7 @@ pub fn run() {
             clean_preview_page,
             cleaner_save,
             cleaner_open,
+            cleaner_open_named,
             export_book,
             export_file,
             export_text,

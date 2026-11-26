@@ -4,6 +4,7 @@
 // behave the same at the command level.
 
 import type { GapReport, GapsSpec } from "./gaps";
+import type { CleanMatrix, MatrixPreview, NamedCleaner } from "./matrix";
 import { COLUMNS_CHANGED } from "./ragged";
 import { joinPreview } from "./repair";
 import { mockDrill, mockItems, mockPivot, type ItemList, type PivotField, type PivotGrid, type PivotSpec } from "./pivot";
@@ -2524,6 +2525,40 @@ export class MockBackend implements Backend {
     return out;
   }
 
+  async cleanerOpenNamed(): Promise<NamedCleaner | null> {
+    const cleaner = await this.cleanerOpen();
+    return cleaner && { cleaner, file: "tidy-names.ndclean" };
+  }
+
+  async cleanMatrixPreview(doc: number, spec: CleanMatrix): Promise<MatrixPreview> {
+    return this.matrixRun(this.get(doc), spec).preview;
+  }
+
+  private matrixRun(d: ReturnType<MockBackend["get"]>, spec: CleanMatrix): { preview: MatrixPreview; cells: [number, number, string][] } {
+    const rows = this.rowCount(d);
+    if (rows > 100_000) throw err("too_large", "the browser preview cleans at most 100,000 rows");
+    const protectedCols = d.info.protected ?? [];
+    const preview: MatrixPreview = { columns: [], examples: [] };
+    const cells: [number, number, string][] = [];
+    for (const e of [...spec.entries].sort((a, b) => a.col - b.col)) {
+      const column = { col: e.col, changed: 0, protected: 0, left: 0, other_order: 0, homoglyph_cells: 0 };
+      let shown = 0;
+      for (let r = spec.skip_first ? 1 : 0; r < rows; r++) {
+        const before = this.value(d, r, e.col);
+        const after = runCleaner({ version: 1, name: "", steps: e.steps }, before, r);
+        if (after === before) continue;
+        if (protectedCols.includes(e.col)) column.protected++;
+        else {
+          column.changed++;
+          cells.push([r, e.col, after]);
+        }
+        if (shown++ < 3) preview.examples.push({ row: r, number: r, col: e.col, before, after });
+      }
+      preview.columns.push(column);
+    }
+    return { preview, cells };
+  }
+
   async cleanerOpen(): Promise<Cleaner | null> {
     return this.savedCleaner ?? { version: 1, name: "Tidy names", steps: [{ tool: "spaces", how: "collapse" }, { tool: "case", to: "title" }] };
   }
@@ -2580,6 +2615,11 @@ export class MockBackend implements Backend {
         }
         if (s.keep_first && rows > 0) keep.add(this.rowId(d, 0));
         return this.report(this.setView(d, keep, { columns: [], keep_first: s.keep_first }), { rows: shown });
+      }
+      case "clean_matrix": {
+        const found = this.matrixRun(d, op.spec);
+        const info = found.cells.length ? await this.setCells(doc, found.cells) : this.refresh(d);
+        return this.report(info, { cells: found.cells.length, left: 0 });
       }
       case "show_gap_rows": {
         const found = this.gaps(doc, op.spec).beside;
