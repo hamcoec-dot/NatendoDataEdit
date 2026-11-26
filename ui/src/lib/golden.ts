@@ -110,8 +110,8 @@ export function notes(s: GoldenSummary): string[] {
   if (c.review) out.push(`${n(c.review, "row")} left unmerged for you to review.`);
   if (c.unmerged_pairs) out.push(`${n(c.unmerged_pairs, "accepted pair")} not merged.`);
   if (c.skipped) out.push(`${n(c.skipped, "cluster")} you chose not to merge.`);
-  if (c.hidden) out.push(`${n(c.hidden, "hidden row")} were not matched and are kept as they are.`);
-  if (s.never_offered) out.push(`${n(s.never_offered, "pair")} above the score were never listed on the match screen, so nobody has checked those people.`);
+  if (c.hidden) out.push(`${n(c.hidden, "hidden row")} ${c.hidden === 1 ? "was" : "were"} not matched and ${c.hidden === 1 ? "is kept as it is" : "are kept as they are"}.`);
+  if (s.never_offered) out.push(`${n(s.never_offered, "pair")} above the score ${s.never_offered === 1 ? "was" : "were"} never listed on the match screen, so nobody has checked those people.`);
   return out;
 }
 
