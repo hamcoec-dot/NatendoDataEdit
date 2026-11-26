@@ -1009,7 +1009,8 @@ everything is also in command search.
   (SUM, COUNT, COUNTA, COUNTBLANK, DISTINCT, MIN, MAX and AVERAGE, each of one
   column; a `]` in a title is written twice, as in `[Votes]]]`). An `=` or `<>`
   compares within a tolerance you pick: an amount (half a cent, 0.005, unless
-  you change it) or a percent of the larger figure. Each shows passed or
+  you change it) or a percent of the larger figure (a percent of 0 is 0, so a
+  relative tolerance allows no difference when both figures are 0 or one is). Each shows passed or
   failed with what the table has and what was wanted; one whose other file is
   not open does not run and says so. Data > Table checks (also on the column
   right-click menu) opens them; they are kept with the tab and in the rules
