@@ -5,6 +5,8 @@
   // failing rows first, or add a "Check result" column. The patterns are
   // the Data checks' pattern checks, so they are kept with views and the
   // other kinds of checks are left as they are.
+  import { hiddenRows, sortWords } from "./shown.svelte";
+  import HiddenNote from "./HiddenNote.svelte";
   import { untrack } from "svelte";
   import { backend, errorText, type Check, type CheckReport, type CheckSpec } from "./backend";
   import FormShell from "./FormShell.svelte";
@@ -20,7 +22,7 @@
     onApply: (checks: Check[]) => void;
     /** Show failing (or passing) rows; `only`: one column's checks. */
     onShow: (spec: CheckSpec, passing: boolean) => void;
-    onSortFailing: (spec: CheckSpec) => void;
+    onSortFailing: (spec: CheckSpec, scope: "all" | "shown") => void;
     onResultColumn: (spec: CheckSpec) => void;
     onClose: () => void;
   }
@@ -33,6 +35,8 @@
   let report = $state<CheckReport | null>(null);
   let problem = $state("");
   let running = $state(false);
+  /** "Put failing rows first" moves hidden rows too (offered only while some are hidden). */
+  let sortAll = $state(false);
   /** Which column the show/sort buttons use: -1 any column. */
   let which = $state(-1);
 
@@ -111,9 +115,14 @@
   <div class="actions">
     <button type="button" disabled={!usable} onclick={() => onShow(spec(), false)}>Show rows that fail</button>
     <button type="button" disabled={!usable} onclick={() => onShow(spec(), true)}>Show rows that pass</button>
-    <button type="button" disabled={!usable} onclick={() => onSortFailing(spec())}>Put failing rows first</button>
+    <button type="button" disabled={!usable} onclick={() => onSortFailing(spec(), hiddenRows.hidden && !sortAll ? "shown" : "all")}>Put failing rows first</button>
     <button type="button" disabled={!usable} onclick={() => onResultColumn(spec())}>Add a "Check result" column</button>
   </div>
+  {#if hiddenRows.hidden}
+    <label class="row"><input type="checkbox" bind:checked={sortAll} /> Put failing rows first among all rows, including hidden ones</label>
+    {#if !sortAll}<p class="note">{sortWords(hiddenRows.hidden, hiddenRows.total)}</p>{/if}
+    <HiddenNote kind="empty" />
+  {/if}
   {#snippet buttons()}
     <button type="button" class="primary" data-enter disabled={!filled || running} onclick={() => void check()}>{running ? "Checking…" : "Check now"}</button>
     <button type="button" onclick={onClose}>Close</button>

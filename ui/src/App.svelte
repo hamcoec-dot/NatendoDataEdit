@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hiddenRows, hiddenWords, kindOfOp } from "./lib/shown.svelte";
   import { forgetHeaders, recallColumnTypes, recallHeader, rememberColumnTypes, rememberedHeaders, rememberHeader, type TypeMemory } from "./lib/headerMemory";
 import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type ColumnType } from "./lib/readers";
   import { sessionToOffer } from "./lib/sessionOffer";
@@ -359,7 +360,13 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     return r;
   }
 
+  /** What to add to the next status line about hidden rows (set when an operation ran with some hidden). */
+  let hiddenAfter = "";
   function say(text: string): void {
+    if (hiddenAfter) {
+      text = text ? `${text} ${hiddenAfter}` : hiddenAfter;
+      hiddenAfter = "";
+    }
     if (rowNote) {
       text = text ? `${text} ${rowNote}` : rowNote;
       rowNote = "";
@@ -2669,11 +2676,14 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     // What can't be seen isn't touched: hidden columns are passed over.
     const hide = hiddenColsOf(t);
     if (hide.length && (op.op === "paste" || op.op === "fill" || op.op === "fill_rect")) op.spec.skip_cols = hide;
+    // Counted before the run: what is said afterwards is what the dialog said.
+    const about = hiddenNoteFor(op);
     try {
       t.whatNext = label.toLowerCase();
       t.wideNext = true;
       const rep = await runJob(label, () => backend().dataOp(t.id, op));
       if (!rep) return null;
+      hiddenAfter = about;
       if (rep.info) {
         t.update(rep.info, true);
         noteProtected(rep.info);
@@ -2686,6 +2696,17 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       t.whatNext = null;
       t.wideNext = false;
     }
+  }
+
+  /** The words about hidden rows for one operation ("" when none are hidden or it only acts on shown rows). */
+  function hiddenNoteFor(op: DataOp): string {
+    const { hidden, total } = hiddenRows;
+    if (op.op === "compute" && op.spec.target === null) {
+      if (!hidden) return "";
+      return op.spec.hidden === false ? hiddenWords("empty", hidden, total) : "Including hidden rows: they were filled too.";
+    }
+    const kind = kindOfOp(op.op);
+    return kind ? hiddenWords(kind, hidden, total) : "";
   }
 
   const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
@@ -5700,6 +5721,14 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     return shown && shown !== String(c + 1) ? shown.slice(0, 60) : `Column ${c + 1}`;
   }
 
+  // The counts the dialogs' notes about hidden rows use.
+  $effect(() => {
+    const i = tab?.info;
+    const titles = tab?.header ? 1 : 0;
+    hiddenRows.total = i ? Math.max(0, i.total_rows - titles) : 0;
+    hiddenRows.hidden = i ? Math.max(0, i.total_rows - i.rows) : 0;
+  });
+
   async function sortRows(spec: SortSpec): Promise<void> {
     const t = tab;
     if (await applyJob("Sorting", (x) => backend().sortRows(x.id, spec))) {
@@ -5708,14 +5737,15 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         t.sortAt = t.info.history_pos;
         t.bump();
       }
-      say("Sorted. Undo (Ctrl+Z) puts the rows back.");
+      const kept = spec.scope === "shown" && hiddenRows.hidden;
+      say(kept ? `Sorted the shown rows; ${plural(hiddenRows.hidden, "hidden row")} stayed in place. Undo (Ctrl+Z) puts the rows back.` : "Sorted. Undo (Ctrl+Z) puts the rows back.");
     }
   }
 
   function sortByColumn(descending: boolean, col = tab?.cell.col ?? 0): void {
     const t = tab;
     if (!t) return;
-    void sortRows({ keys: [{ col, descending, kind: "auto", match_case: false }], keep_first: t.header });
+    void sortRows({ keys: [{ col, descending, kind: "auto", match_case: false }], keep_first: t.header, scope: rowsHidden(t) ? "shown" : "all" });
   }
 
   function openSortDialog(): void {
@@ -7288,11 +7318,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     void tick().then(() => grid?.focus());
   }
 
-  async function sortFailing(spec: CheckSpec): Promise<void> {
+  async function sortFailing(spec: CheckSpec, scope: "all" | "shown"): Promise<void> {
     fieldCheckOpen = false;
-    const rep = await runOp({ op: "sort_problems", spec }, "Checking");
+    const rep = await runOp({ op: "sort_problems", spec, scope }, "Checking");
     if (!rep) return;
-    say(rep.groups ? `Put the ${plural(rep.groups, "row")} that fail first (in their order). Undo (Ctrl+Z) takes it back.` : "No row fails, so the order stays.");
+    const kept = scope === "shown" && hiddenRows.hidden ? ` Only the shown rows moved; ${plural(hiddenRows.hidden, "hidden row")} stayed in place.` : "";
+    say(rep.groups ? `Put the ${plural(rep.groups, "row")} that fail first (in their order).${kept} Undo (Ctrl+Z) takes it back.` : "No row fails, so the order stays.");
     void tick().then(() => grid?.focus());
   }
 
@@ -8851,7 +8882,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     checks={tab.checks}
     onApply={(c) => keepChecks(c, true)}
     onShow={(s, passing) => void showProblems(s, passing)}
-    onSortFailing={(s) => void sortFailing(s)}
+    onSortFailing={(s, scope) => void sortFailing(s, scope)}
     onResultColumn={(s) => void addCheckColumn(s)}
     onClose={() => { fieldCheckOpen = false; grid?.focus(); }}
   />
