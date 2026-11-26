@@ -23,6 +23,7 @@ pub mod clean;
 pub mod colcompare;
 pub mod coltotals;
 pub mod coltype;
+pub mod combine;
 pub mod counts;
 pub mod crypt;
 pub mod datescan;

@@ -3679,6 +3679,68 @@ export class MockBackend implements Backend {
     throw err("invalid", "the browser preview cannot read files; the desktop app does");
   }
 
+  /** The browser preview's made-up files for the column map. */
+  private combineHeads: import("./backend").FileHead[] = [
+    { name: "january.csv", titles: ["Cust_ID", "Name", "Precinct 1"], cols: 3, rows_est: 3, whole: true, preview: [["101", "Ann Example", "P1"], ["102", "Bo Sample", "P2"]] },
+    { name: "february.csv", titles: ["Name", "CustID", "Precinct 2", "Notes"], cols: 4, rows_est: 2, whole: true, preview: [["Cy Made-up", "103", "P3", "new"]] },
+  ];
+  private combineSaved: import("./backend").CombinePlan | null = null;
+
+  private combineSuggest(plan: import("./backend").CombinePlan): import("./backend").CombineSuggestion[] {
+    const tidy = (t: string) => t.toLowerCase().replace(/[\s_.-]/g, "");
+    const out: import("./backend").CombineSuggestion[] = [];
+    for (let a = 0; a < plan.titles.length; a++)
+      for (let b = a + 1; b < plan.titles.length; b++)
+        if (tidy(plan.titles[a] ?? "") === tidy(plan.titles[b] ?? "") && !plan.files.some((m) => m.includes(a) && m.includes(b)))
+          out.push({ keep: a, merge: b, why: { kind: "tidied" }, keep_samples: ["101", "102"], merge_samples: ["103"] });
+    return out;
+  }
+
+  async combinePick(): Promise<import("./backend").CombineStart | null> {
+    this.calls.push("combinePick");
+    const plan = { titles: ["Cust_ID", "Name", "Precinct 1", "CustID", "Precinct 2", "Notes"], files: [[0, 1, 2], [1, 3, 4, 5]] };
+    return { token: 1, files: this.combineHeads, plan, suggestions: this.combineSuggest(plan) };
+  }
+
+  async combineCheck(_token: number, plan: import("./backend").CombinePlan): Promise<import("./backend").CombineChecked> {
+    const { compactPlan } = await import("./combineMap");
+    const p = compactPlan(plan);
+    for (const m of p.files) {
+      const used = m.filter((x) => x !== null);
+      if (new Set(used).size !== used.length) throw err("invalid", "two columns of one file go to one column: one would overwrite the other");
+    }
+    return { plan: p, suggestions: this.combineSuggest(p) };
+  }
+
+  async combineRefresh(): Promise<import("./backend").CombineStart> {
+    return (await this.combinePick()) as import("./backend").CombineStart;
+  }
+
+  async combineRun(_token: number, plan: import("./backend").CombinePlan, source: boolean): Promise<DocInfo> {
+    this.calls.push(`combineRun:${plan.titles.join("|")}:${source}`);
+    const { landed } = await import("./combineMap");
+    const rows: string[][] = [[...(source ? ["Source file"] : []), ...plan.titles]];
+    this.combineHeads.forEach((h, f) => landed(plan, this.combineHeads, f).forEach((r) => rows.push([...(source ? [h.name] : []), ...r])));
+    const info = this.make("Combined (2 files)", rows.length, rows[0]?.length ?? 0);
+    const nd = this.get(info.id);
+    rows.forEach((line, i) => line.forEach((v, c) => nd.edits.set(`${i}:${c}`, v)));
+    nd.clean = -1;
+    return this.refresh(nd);
+  }
+
+  async combineCancel(): Promise<void> {}
+
+  async combineSaveMapping(_token: number, plan: import("./backend").CombinePlan, _extras?: import("./backend").CombineExtras): Promise<boolean> {
+    this.combineSaved = JSON.parse(JSON.stringify(plan)) as import("./backend").CombinePlan;
+    return true;
+  }
+
+  async combineLoadMapping(): Promise<import("./backend").CombineFit | null> {
+    const plan = this.combineSaved;
+    if (!plan) return null;
+    return { plan, suggestions: this.combineSuggest(plan), missing: [], extras: [], problems: [], file_name_column: false, extras_mode: "add" };
+  }
+
   async showInFolder(): Promise<void> {
     throw err("invalid", "the browser preview has no folders; the desktop app does");
   }

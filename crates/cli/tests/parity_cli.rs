@@ -696,3 +696,104 @@ fn secrets_never_come_from_arguments_and_come_one_way_only() {
     assert!(!std::fs::read_to_string(&out).unwrap().contains("Ann Lee"));
     assert_eq!(run(&["clean", &plain, &a, "-o", &d.path("c2.csv")]).0, 2);
 }
+
+#[test]
+fn cat_with_a_column_map_gives_the_apps_rows_and_refuses_what_it_cannot_decide() {
+    use natendo_engine::combine::{Extras, SavedColumn, SavedMapping, MAPPING_KIND};
+    let d = Folder::new("cat-map");
+    let a = d.write("a.csv", "Cust_ID,Name,Precinct 1\r\n1,Ann,P1\r\n");
+    let b = d.write("b.csv", "Name,CustID,Precinct 2,Notes\r\nBo,2,P2,new\r\n");
+    let map = SavedMapping {
+        kind: MAPPING_KIND.into(),
+        version: 1,
+        tool: "t".into(),
+        header: true,
+        file_name_column: false,
+        extras: Extras::Add,
+        columns: vec![
+            SavedColumn {
+                title: "Cust_ID".into(),
+                from: vec!["CustID".into()],
+            },
+            SavedColumn {
+                title: "Name".into(),
+                from: vec![],
+            },
+            SavedColumn {
+                title: "Precinct 1".into(),
+                from: vec![],
+            },
+            SavedColumn {
+                title: "Precinct 2".into(),
+                from: vec![],
+            },
+        ],
+    };
+    let m = d.path("m.ndcombine");
+    std::fs::write(&m, map.to_json()).unwrap();
+    let out = d.path("out.csv");
+    let (code, v) = json(&["cat", &a, &b, "-o", &out, "--mapping", &m]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["fit"]["extras"].as_array().unwrap().len(), 1, "{v}");
+    // The app path: the same map fitted and combined by the engine.
+    let docs = [open(&a), open(&b)];
+    let rows: Vec<Vec<String>> = docs.iter().map(|x| x.row_values(0).unwrap()).collect();
+    let mut fit = map.apply(&rows);
+    fit.plan.compact();
+    let tables: Vec<(String, &Document)> = docs.iter().map(|x| (String::new(), x)).collect();
+    let spec = natendo_engine::tools::Combine {
+        header: true,
+        by_title: true,
+        source: false,
+    };
+    let want =
+        natendo_engine::tools::combine_with_plan(&tables, &fit.plan, &spec, &Progress::new())
+            .unwrap()
+            .into_document()
+            .unwrap();
+    let got = open(&out);
+    assert_eq!(got.row_count(), want.row_count());
+    for r in 0..got.row_count() {
+        assert_eq!(
+            got.row_values(r).unwrap(),
+            want.row_values(r).unwrap(),
+            "row {r}"
+        );
+    }
+    assert_eq!(
+        got.row_values(0).unwrap(),
+        ["Cust_ID", "Name", "Precinct 1", "Precinct 2", "Notes"]
+    );
+    // --strict: an extra column (or a missing one) is exit 2, and nothing is written.
+    let strict = d.path("strict.csv");
+    let (code, _, err) = run(&["cat", &a, &b, "-o", &strict, "--mapping", &m, "--strict"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--strict") && err.contains("Notes"), "{err}");
+    assert!(d.clean_of("strict.csv"));
+    // Two columns of one file matching one map column: never guessed.
+    let c = d.write("c.csv", "Cust_ID,CustID\r\n1,2\r\n");
+    let (code, _, err) = run(&["cat", &a, &c, "-o", &strict, "--mapping", &m]);
+    assert_eq!(code, 2);
+    assert!(err.contains("c.csv") && err.contains("both go to"), "{err}");
+    assert!(d.clean_of("strict.csv"));
+    // --plan writes nothing and is one JSON value, with the suggestion.
+    let (code, v) = json(&["cat", &a, &b, "--plan", "--by-name"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["titles"][3], "CustID");
+    assert_eq!(v["suggestions"][0]["why"]["kind"], "tidied");
+    assert_eq!(
+        v["suggestions"].as_array().unwrap().len(),
+        1,
+        "Precinct 1 / 2 are not suggested: {v}"
+    );
+    // A bad map file.
+    let bad = d.write("bad.ndcombine", "{\"kind\":\"other\"}");
+    assert_eq!(
+        run(&["cat", &a, &b, "-o", &out, "--overwrite", "--mapping", &bad]).0,
+        2
+    );
+    assert_eq!(
+        run(&["cat", &a, &b, "-o", &out, "--overwrite", "--strict"]).0,
+        2
+    );
+}

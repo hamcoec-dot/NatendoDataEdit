@@ -112,6 +112,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import NotesDialog from "./lib/NotesDialog.svelte";
   import WatchDialog from "./lib/WatchDialog.svelte";
   import ReceiptDialog from "./lib/ReceiptDialog.svelte";
+  import CombineMapper from "./lib/CombineMapper.svelte";
   import { streetSummary } from "./lib/streets";
   import PrintDialog from "./lib/PrintDialog.svelte";
   import OptionsDialog from "./lib/OptionsDialog.svelte";
@@ -161,6 +162,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   let saveAsReq = $state<{ sample: string[][]; done: (o: SaveAsOptions | null, receipt?: ReceiptAsk | null) => void } | null>(null);
   /** Tools > Verify a receipt is open. */
   let receiptOpen = $state(false);
+  /** Combine with a column map: the picked files' heads, and the file-name column choice. */
+  let combineMap = $state<{ start: import("./lib/backend").CombineStart; source: boolean; header: boolean } | null>(null);
   let exportOpen = $state(false);
   let importing = $state<ImportStart | null>(null);
   /** What the last import kept exactly (counts and column names only), for the command of that name. */
@@ -4741,6 +4744,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     try {
       if (r.combine) {
         const spec = r.combine;
+        if (spec.header && spec.by_title) {
+          // By title: show the column map first.
+          const start = await backend().combinePick(spec);
+          if (start) combineMap = { start, source: spec.source, header: spec.header };
+          return;
+        }
         const d = await backend().combineFiles(spec);
         if (!d) return;
         addTab(d, false);
@@ -9284,6 +9293,27 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   <WatchDialog onClose={() => { watchOpen = false; grid?.focus(); }} />
 {/if}
 
+{#if combineMap}
+  {@const cm = combineMap}
+  <CombineMapper
+    start={cm.start}
+    source={cm.source}
+    onDone={(d) => {
+      // Read before the map closes: `cm` follows `combineMap`, which is null after.
+      const header = cm.header;
+      combineMap = null;
+      addTab(d, false);
+      const nt = tabs[tabs.length - 1];
+      if (nt) {
+        nt.header = header;
+        nt.headerTouched = true;
+        nt.bump();
+      }
+      say(`Combined into a new table of ${plural(Math.max(0, d.rows - 1), "row")}. It is not saved yet (Ctrl+S).`);
+    }}
+    onClose={() => { combineMap = null; grid?.focus(); }}
+  />
+{/if}
 {#if receiptOpen}
   <ReceiptDialog onClose={() => { receiptOpen = false; grid?.focus(); }} />
 {/if}

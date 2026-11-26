@@ -1014,6 +1014,122 @@ async fn combine_files(
     .await
 }
 
+/// Combine with a column map: pick the files (system dialog) and read their heads. `None` if cancelled.
+#[tauri::command]
+async fn combine_pick(
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    spec: natendo_engine::tools::Combine,
+) -> CmdResult<Option<docs::CombineStart>> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        let Some(paths) = rfd::FileDialog::new()
+            .set_title("Choose the files to combine")
+            .add_filter("Text tables", &["csv", "tsv", "tab", "txt", "psv", "dat"])
+            .add_filter("All files", &["*"])
+            .set_parent(&window)
+            .pick_files()
+        else {
+            return Ok(None);
+        };
+        docs.combine_start(paths, &spec).map(Some)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn combine_check(
+    docs: DocsState<'_>,
+    token: u64,
+    plan: natendo_engine::combine::CombinePlan,
+) -> CmdResult<docs::CombineChecked> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.combine_check(token, plan)).await
+}
+
+#[tauri::command]
+async fn combine_refresh(docs: DocsState<'_>, token: u64) -> CmdResult<docs::CombineStart> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.combine_refresh(token)).await
+}
+
+#[tauri::command]
+async fn combine_run(
+    docs: DocsState<'_>,
+    token: u64,
+    plan: natendo_engine::combine::CombinePlan,
+    source: bool,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.combine_run(token, plan, source)).await
+}
+
+#[tauri::command]
+async fn combine_cancel(docs: DocsState<'_>, token: u64) -> CmdResult<()> {
+    docs.inner().combine_cancel(token);
+    Ok(())
+}
+
+/// Save the column map (titles only) where the person picks. `false` if cancelled.
+#[tauri::command]
+async fn combine_save_mapping(
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    token: u64,
+    plan: natendo_engine::combine::CombinePlan,
+    extras: natendo_engine::combine::Extras,
+) -> CmdResult<bool> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        let bytes = docs.combine_mapping(token, &plan, extras)?;
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Save the column map")
+            .set_file_name("column map.ndcombine")
+            .add_filter("Column maps", &["ndcombine"])
+            .set_parent(&window)
+            .save_file()
+        else {
+            return Ok(false);
+        };
+        docs.check_writable(&path)?;
+        natendo_engine::save::write_atomic(&path, |w| {
+            use std::io::Write;
+            Ok(w.write_all(&bytes)?)
+        })?;
+        Ok(true)
+    })
+    .await
+}
+
+/// Load a saved column map and fit it to the picked files. `None` if cancelled.
+#[tauri::command]
+async fn combine_load_mapping(
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    token: u64,
+) -> CmdResult<Option<docs::CombineFit>> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Use a saved column map")
+            .add_filter("Column maps", &["ndcombine"])
+            .set_parent(&window)
+            .pick_file()
+        else {
+            return Ok(None);
+        };
+        let size = std::fs::metadata(&path)
+            .map_err(natendo_engine::Error::from)?
+            .len();
+        if size > natendo_engine::combine::MAX_MAPPING_BYTES as u64 {
+            return Err(CmdError::new("invalid", "a column map is at most 1 MB"));
+        }
+        let bytes = std::fs::read(&path).map_err(natendo_engine::Error::from)?;
+        docs.combine_apply_mapping(token, &bytes).map(Some)
+    })
+    .await
+}
+
 /// Show the document's file selected in File Explorer.
 #[tauri::command]
 async fn show_in_folder(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
@@ -4853,6 +4969,13 @@ pub fn run() {
             private_state,
             find_private,
             save_safe_copy,
+            combine_pick,
+            combine_check,
+            combine_refresh,
+            combine_run,
+            combine_cancel,
+            combine_save_mapping,
+            combine_load_mapping,
             label_sheets,
             disk_check,
             disk_compare,

@@ -469,6 +469,49 @@ export interface Combine {
   by_title: boolean;
   source: boolean;
 }
+/** The first rows of a picked file (its name only, never its folder). */
+export interface FileHead {
+  name: string;
+  titles: string[];
+  cols: number;
+  rows_est: number;
+  /** The whole file was read (rows_est is exact). */
+  whole: boolean;
+  preview: string[][];
+}
+/** Where each column of each file goes: an output column, or null (left out). */
+export interface CombinePlan {
+  titles: string[];
+  files: (number | null)[][];
+}
+export type CombineWhy = { kind: "tidied" } | { kind: "similar"; score: number };
+export interface CombineSuggestion {
+  keep: number;
+  merge: number;
+  why: CombineWhy;
+  keep_samples: string[];
+  merge_samples: string[];
+}
+export interface CombineStart {
+  token: number;
+  files: FileHead[];
+  plan: CombinePlan;
+  suggestions: CombineSuggestion[];
+}
+export interface CombineChecked {
+  plan: CombinePlan;
+  suggestions: CombineSuggestion[];
+}
+export type CombineExtras = "add" | "leave_out";
+export interface CombineFit extends CombineChecked {
+  /** [file, output] the file has nothing for. */
+  missing: [number, number][];
+  /** [file, column] the map does not name. */
+  extras: [number, number][];
+  problems: { file: number; columns: number[]; what: string }[];
+  file_name_column: boolean;
+  extras_mode: CombineExtras;
+}
 
 // ---- sort, filter, find (shapes match the engine's) ----
 
@@ -1721,6 +1764,16 @@ export interface Backend {
   splitToFiles(doc: number, spec: SplitParts, replace: boolean): Promise<SplitReport | null>;
   /** Shows the Open dialog for several files; null when cancelled. */
   combineFiles(spec: Combine): Promise<DocInfo | null>;
+  /** Combine with a column map: pick the files and read their first rows (null: cancelled). */
+  combinePick(spec: Combine): Promise<CombineStart | null>;
+  combineCheck(token: number, plan: CombinePlan): Promise<CombineChecked>;
+  combineRefresh(token: number): Promise<CombineStart>;
+  /** Open the files fully, check they still fit the map, and combine into a new tab. */
+  combineRun(token: number, plan: CombinePlan, source: boolean): Promise<DocInfo>;
+  combineCancel(token: number): Promise<void>;
+  /** Save the map (titles only); false: cancelled. */
+  combineSaveMapping(token: number, plan: CombinePlan, extras: CombineExtras): Promise<boolean>;
+  combineLoadMapping(token: number): Promise<CombineFit | null>;
   /** Show the file selected in File Explorer. */
   showInFolder(doc: number): Promise<void>;
   /** The first changes a cleaner would make. */
@@ -2371,6 +2424,27 @@ class TauriBackend implements Backend {
   }
   combineFiles(spec: Combine) {
     return call<DocInfo | null>("combine_files", { spec });
+  }
+  combinePick(spec: Combine) {
+    return call<CombineStart | null>("combine_pick", { spec });
+  }
+  combineCheck(token: number, plan: CombinePlan) {
+    return call<CombineChecked>("combine_check", { token, plan });
+  }
+  combineRefresh(token: number) {
+    return call<CombineStart>("combine_refresh", { token });
+  }
+  combineRun(token: number, plan: CombinePlan, source: boolean) {
+    return call<DocInfo>("combine_run", { token, plan, source });
+  }
+  combineCancel(token: number) {
+    return call<void>("combine_cancel", { token });
+  }
+  combineSaveMapping(token: number, plan: CombinePlan, extras: CombineExtras) {
+    return call<boolean>("combine_save_mapping", { token, plan, extras });
+  }
+  combineLoadMapping(token: number) {
+    return call<CombineFit | null>("combine_load_mapping", { token });
   }
   showInFolder(doc: number) {
     return call<void>("show_in_folder", { doc });

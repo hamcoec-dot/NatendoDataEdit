@@ -71,6 +71,8 @@ const ALLOWED: Record<string, number> = {
   // The percent typed in the relationship scanner.
   "./RelationsDialog.svelte": 1,
   "./SetsDialog.svelte": 2,
+  // Which file column is picked in a column-map drop-down (a column number).
+  "./CombineMapper.svelte": 1,
   // What the person typed in a dialog field, or an id, a row or column number, an offset or a size.
   "../App.svelte": 14,
   "./ChecksDialog.svelte": 2,

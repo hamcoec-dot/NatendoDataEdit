@@ -90,6 +90,8 @@ const USAGE: &str = "usage: natendo-cli --version
        natendo-cli slice <in> -o <out> --rows <first>-<last>
        natendo-cli split <in> -o <folder> (--rows N | --by <col>) [--to csv|tsv]
        natendo-cli cat <in> <in> ... -o <out> [--by-name]
+       natendo-cli cat <in> <in> ... -o <out> --mapping <map.ndcombine> [--strict]   (a column map saved in Combine)
+       natendo-cli cat <in> <in> ... --plan [--by-name | --mapping <map>] [--json]    (how the columns line up; writes nothing)
            (the toolkit also takes --no-header, --sheet N, --to <format>, --overwrite and --json;
             columns go by title or by number from 1)
        natendo-cli pivot <layout.ndpivot> <in> -o <out> [--to <format>] [--no-header] [--overwrite]

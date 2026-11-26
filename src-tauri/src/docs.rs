@@ -1852,6 +1852,8 @@ pub struct Docs {
     key_sets: Mutex<Vec<(String, Arc<KeySet>)>>,
     /// What the last save with a receipt said about its receipt, by tab (read once by the window).
     receipt_notes: Mutex<HashMap<u32, String>>,
+    /// The files picked for Combine with a column map (their paths stay here; the window gets names and heads).
+    combine: Mutex<Option<CombineSession>>,
     /// Whether a path is in private file mode (set when the app starts;
     /// the recent list keeps the private files and folders).
     private_check: Mutex<Option<PrivateCheck>>,
@@ -8490,6 +8492,192 @@ impl Docs {
         })
     }
 
+    /// Combine with a column map, step 1: read each picked file's head (its first rows only), and the automatic
+    /// column map (today's Combine) with suggestions. The paths stay here, under a token.
+    pub fn combine_start(&self, paths: Vec<PathBuf>, spec: &Combine) -> CmdResult<CombineStart> {
+        use natendo_engine::combine::{auto_plan, head_of, suggest};
+        if paths.is_empty() || paths.len() > MAX_COMBINE {
+            return Err(CmdError::new(
+                "bad_request",
+                format!("combine 1 to {MAX_COMBINE} files"),
+            ));
+        }
+        if !spec.header || !spec.by_title {
+            return Err(CmdError::new(
+                "bad_request",
+                "the column map is for files with titles, matched by title",
+            ));
+        }
+        combine_size_check(&paths)?;
+        let mut heads = Vec::with_capacity(paths.len());
+        let mut stamps = Vec::with_capacity(paths.len());
+        for p in &paths {
+            stamps.push(file_stamp(p)?);
+            heads.push(head_of(p, true).map_err(|e| {
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                CmdError::new("invalid", format!("{name}: {e}"))
+            })?);
+        }
+        let rows: Vec<Vec<String>> = heads.iter().map(|h| h.titles.clone()).collect();
+        let plan = auto_plan(&rows, true);
+        let suggestions = suggest(&plan, &heads);
+        static TOKENS: AtomicU64 = AtomicU64::new(1);
+        let token = TOKENS.fetch_add(1, Ordering::Relaxed);
+        let start = CombineStart {
+            token,
+            files: heads.clone(),
+            plan,
+            suggestions,
+        };
+        *self.combine.lock().unwrap_or_else(|p| p.into_inner()) = Some(CombineSession {
+            token,
+            paths,
+            stamps,
+            heads,
+            spec: spec.clone(),
+        });
+        Ok(start)
+    }
+
+    fn combine_session<T>(
+        &self,
+        token: u64,
+        f: impl FnOnce(&CombineSession) -> CmdResult<T>,
+    ) -> CmdResult<T> {
+        let s = self.combine.lock().unwrap_or_else(|p| p.into_inner());
+        match s.as_ref() {
+            Some(s) if s.token == token => f(s),
+            _ => Err(CmdError::new(
+                "invalid",
+                "those files are no longer picked: choose them again",
+            )),
+        }
+    }
+
+    /// Check a column map changed by hand (empty columns taken out) and suggest merges for it.
+    pub fn combine_check(&self, token: u64, mut plan: CombinePlan) -> CmdResult<CombineChecked> {
+        self.combine_session(token, |s| {
+            plan.compact();
+            let widths: Vec<usize> = s.heads.iter().map(|h| h.cols as usize).collect();
+            plan.check(&widths)?;
+            let suggestions = natendo_engine::combine::suggest(&plan, &s.heads);
+            Ok(CombineChecked { plan, suggestions })
+        })
+    }
+
+    /// Read the picked files' heads again (after a file changed), keeping the token.
+    pub fn combine_refresh(&self, token: u64) -> CmdResult<CombineStart> {
+        let (paths, spec) =
+            self.combine_session(token, |s| Ok((s.paths.clone(), s.spec.clone())))?;
+        let mut start = self.combine_start(paths, &spec)?;
+        // Same picked files, same token.
+        if let Some(s) = self
+            .combine
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+        {
+            s.token = token;
+        }
+        start.token = token;
+        Ok(start)
+    }
+
+    /// A saved column map of `plan` (titles only, never paths, names or values).
+    pub fn combine_mapping(
+        &self,
+        token: u64,
+        plan: &CombinePlan,
+        extras: natendo_engine::combine::Extras,
+    ) -> CmdResult<Vec<u8>> {
+        self.combine_session(token, |s| {
+            let widths: Vec<usize> = s.heads.iter().map(|h| h.cols as usize).collect();
+            plan.check(&widths)?;
+            let rows: Vec<Vec<String>> = s.heads.iter().map(|h| h.titles.clone()).collect();
+            Ok(
+                natendo_engine::combine::SavedMapping::of_plan(plan, &rows, extras, s.spec.source)
+                    .to_json(),
+            )
+        })
+    }
+
+    /// Fit a saved column map to the picked files.
+    pub fn combine_apply_mapping(&self, token: u64, bytes: &[u8]) -> CmdResult<CombineFit> {
+        let m = natendo_engine::combine::SavedMapping::from_json(bytes)?;
+        self.combine_session(token, |s| {
+            let rows: Vec<Vec<String>> = s.heads.iter().map(|h| h.titles.clone()).collect();
+            let mut fit = m.apply(&rows);
+            fit.plan.compact();
+            let suggestions = natendo_engine::combine::suggest(&fit.plan, &s.heads);
+            Ok(CombineFit {
+                fit,
+                suggestions,
+                file_name_column: m.file_name_column,
+                extras_mode: m.extras,
+            })
+        })
+    }
+
+    pub fn combine_cancel(&self, token: u64) {
+        let mut s = self.combine.lock().unwrap_or_else(|p| p.into_inner());
+        if s.as_ref().is_some_and(|s| s.token == token) {
+            *s = None;
+        }
+    }
+
+    /// Combine with a column map, last step: open each file fully, check it is still what its head showed (M1:
+    /// the same file, the same titles, no wider row), and stack the rows as `plan` says into a new tab. A file
+    /// that changed gives `combine_stale` and nothing is combined: look at the map again.
+    pub fn combine_run(&self, token: u64, plan: CombinePlan, source: bool) -> CmdResult<DocInfo> {
+        let (paths, stamps, heads, mut spec) = self.combine_session(token, |s| {
+            Ok((
+                s.paths.clone(),
+                s.stamps.clone(),
+                s.heads.clone(),
+                s.spec.clone(),
+            ))
+        })?;
+        spec.source = source;
+        let widths: Vec<usize> = heads.iter().map(|h| h.cols as usize).collect();
+        plan.check(&widths)?;
+        let stale = |m: String| CmdError::new("combine_stale", m);
+        combine_size_check(&paths)?;
+        let mut docs = Vec::with_capacity(paths.len());
+        for ((p, stamp), head) in paths.iter().zip(&stamps).zip(&heads) {
+            if file_stamp(p)? != *stamp {
+                return Err(stale(format!(
+                    "{} changed after it was picked: look at the column map again",
+                    head.name
+                )));
+            }
+            let mut d = Document::open(p, OpenOptions::default())?;
+            while !d.index_step(64 << 20)? {}
+            natendo_engine::combine::still_fits(head, &d, true, &Progress::new())
+                .map_err(|e| stale(e.to_string()))?;
+            if file_stamp(p)? != *stamp {
+                return Err(stale(format!(
+                    "{} changed while it was read: look at the column map again",
+                    head.name
+                )));
+            }
+            docs.push((head.name.clone(), d));
+        }
+        let refs: Vec<(String, &Document)> = docs.iter().map(|(n, d)| (n.clone(), d)).collect();
+        let table =
+            natendo_engine::tools::combine_with_plan(&refs, &plan, &spec, &Progress::new())?;
+        drop(refs);
+        drop(docs);
+        let (nid, _) = self.insert(table.into_document()?, false)?;
+        self.set_title_of(nid, format!("Combined ({} files)", paths.len()));
+        let ps: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        self.inherit_private(nid, &[], &ps);
+        self.combine_cancel(token);
+        self.info(nid)
+    }
+
     /// Stack several files (picked in a native dialog) into a new tab.
     pub fn combine_files(&self, paths: &[PathBuf], spec: &Combine) -> CmdResult<DocInfo> {
         if paths.is_empty() || paths.len() > MAX_COMBINE {
@@ -8498,26 +8686,7 @@ impl Docs {
                 format!("combine 1 to {MAX_COMBINE} files"),
             ));
         }
-        // The result cannot be larger than a new table may be, so files that
-        // together are larger are refused before any is read (review M1).
-        let mut bytes = 0u64;
-        for p in paths {
-            bytes = bytes.saturating_add(
-                std::fs::metadata(p)
-                    .map_err(natendo_engine::Error::from)?
-                    .len(),
-            );
-        }
-        if bytes > natendo_engine::reshape::MAX_TABLE_BYTES as u64 {
-            return Err(CmdError::new(
-                "too_large",
-                format!(
-                    "these files hold {} MB together; at most {} MB can be combined into one new table",
-                    bytes >> 20,
-                    natendo_engine::reshape::MAX_TABLE_BYTES >> 20
-                ),
-            ));
-        }
+        combine_size_check(paths)?;
         let mut docs = Vec::with_capacity(paths.len());
         for p in paths {
             let mut d = Document::open(p, OpenOptions::default())?;
@@ -9497,6 +9666,73 @@ pub mod golden;
 #[path = "docs_patch.rs"]
 pub mod patching;
 
+use natendo_engine::combine::{CombinePlan, FileHead, Suggestion};
+
+/// Picked files for Combine with a column map.
+struct CombineSession {
+    token: u64,
+    paths: Vec<PathBuf>,
+    /// Each file's size and time at the pick (M1).
+    stamps: Vec<(u64, Option<std::time::SystemTime>)>,
+    heads: Vec<FileHead>,
+    spec: Combine,
+}
+
+/// What the mapper opens with.
+#[derive(Debug, Clone, Serialize)]
+pub struct CombineStart {
+    pub token: u64,
+    /// Names, titles and first rows (never paths).
+    pub files: Vec<FileHead>,
+    pub plan: CombinePlan,
+    pub suggestions: Vec<Suggestion>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CombineChecked {
+    pub plan: CombinePlan,
+    pub suggestions: Vec<Suggestion>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CombineFit {
+    #[serde(flatten)]
+    pub fit: natendo_engine::combine::Fit,
+    pub suggestions: Vec<Suggestion>,
+    pub file_name_column: bool,
+    /// What the map does with columns it does not name.
+    pub extras_mode: natendo_engine::combine::Extras,
+}
+
+fn file_stamp(p: &Path) -> CmdResult<(u64, Option<std::time::SystemTime>)> {
+    let m = std::fs::metadata(p).map_err(natendo_engine::Error::from)?;
+    Ok((m.len(), m.modified().ok()))
+}
+
+/// The result cannot be larger than a new table may be, so files that together
+/// are larger are refused before any is read (review M1 of item 1).
+fn combine_size_check(paths: &[PathBuf]) -> CmdResult<()> {
+    let mut bytes = 0u64;
+    for p in paths {
+        bytes = bytes.saturating_add(
+            std::fs::metadata(p)
+                .map_err(natendo_engine::Error::from)?
+                .len(),
+        );
+    }
+    if bytes > natendo_engine::reshape::MAX_TABLE_BYTES as u64 {
+        return Err(CmdError::new(
+            "too_large",
+            format!(
+                "these files hold {} MB together; at most {} MB can be combined into one new table",
+                bytes >> 20,
+                natendo_engine::reshape::MAX_TABLE_BYTES >> 20
+            ),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9523,6 +9759,64 @@ mod tests {
         let p = dir.join(name);
         std::fs::write(&p, body).unwrap();
         p
+    }
+
+    #[test]
+    fn combine_with_a_column_map_checks_the_files_again_before_combining() {
+        let a = tmp("cmap-a-Zqx.csv", b"Cust_ID,Name\r\n1,Ann\r\n");
+        let b = tmp("cmap-b-Zqx.csv", b"Name,CustID\r\nBo,2\r\n");
+        let docs = Docs::default();
+        let spec = Combine {
+            header: true,
+            by_title: true,
+            source: false,
+        };
+        let start = docs
+            .combine_start(vec![a.clone(), b.clone()], &spec)
+            .unwrap();
+        // The window gets names and heads, never a folder.
+        let json = serde_json::to_string(&start).unwrap();
+        let folder = a.parent().unwrap().to_string_lossy().replace('\\', "\\\\");
+        assert!(!json.contains(&folder), "{json}");
+        assert_eq!(start.plan.titles, ["Cust_ID", "Name", "CustID"]);
+        assert_eq!(start.suggestions.len(), 1);
+        let mut plan = start.plan.clone();
+        plan.merge(0, 2).unwrap();
+        let checked = docs.combine_check(start.token, plan.clone()).unwrap();
+        assert!(checked.suggestions.is_empty());
+        // A plan putting two columns of one file together is refused.
+        let mut bad = plan.clone();
+        bad.files[1] = vec![Some(0), Some(0)];
+        assert!(docs.combine_check(start.token, bad).is_err());
+        // The saved map holds titles only.
+        let saved = docs
+            .combine_mapping(start.token, &plan, natendo_engine::combine::Extras::Add)
+            .unwrap();
+        let text = String::from_utf8(saved.clone()).unwrap();
+        assert!(!text.contains("Zqx") && !text.contains("Ann"), "{text}");
+        let fit = docs.combine_apply_mapping(start.token, &saved).unwrap();
+        assert_eq!(fit.fit.plan, plan);
+        // A file changed after the pick: refused, nothing combined, then fine after a refresh.
+        std::fs::write(&b, b"Name,CustID,Extra\r\nBo,2,x\r\nCy,3,y\r\n").unwrap();
+        let e = docs
+            .combine_run(start.token, plan.clone(), true)
+            .unwrap_err();
+        assert_eq!(e.kind, "combine_stale", "{}", e.message);
+        assert!(e.message.contains("cmap-b-Zqx.csv"), "{}", e.message);
+        let again = docs.combine_refresh(start.token).unwrap();
+        assert_eq!(again.token, start.token);
+        let mut plan = again.plan.clone();
+        let ci = plan.titles.iter().position(|t| t == "CustID").unwrap() as u32;
+        plan.merge(0, ci).unwrap();
+        let info = docs.combine_run(start.token, plan, true).unwrap();
+        wait(&docs, info.id);
+        let rows: Vec<Vec<String>> = (0..4)
+            .map(|r| docs.get(info.id).unwrap().read().row_values(r).unwrap())
+            .collect();
+        assert_eq!(rows[0], ["Source file", "Cust_ID", "Name", "Extra"]);
+        assert_eq!(rows[2], ["cmap-b-Zqx.csv", "2", "Bo", "x"]);
+        // The picked files are let go after combining.
+        assert!(docs.combine_check(start.token, again.plan).is_err());
     }
 
     fn wait(docs: &Docs, id: u32) -> DocInfo {

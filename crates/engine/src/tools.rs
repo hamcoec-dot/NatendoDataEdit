@@ -1831,18 +1831,12 @@ impl TitleUnion {
     }
 }
 
-/// The output columns' titles, and for each table where its columns go.
-/// Kept apart from the row loop in [`combine`], which stays fast that way.
-#[inline(never)]
-#[allow(clippy::type_complexity)]
-fn plan_columns(
+/// Each table's title row (blank titles when `header` is off), as wide as the table.
+pub(crate) fn title_rows(
     tables: &[(String, &Document)],
     header: bool,
-    by_title: bool,
-) -> Result<(Vec<String>, Vec<Vec<usize>>), Error> {
-    let mut union = TitleUnion::default();
-    let mut titles: Vec<String> = Vec::new();
-    let mut maps: Vec<Vec<usize>> = Vec::with_capacity(tables.len());
+) -> Result<Vec<Vec<String>>, Error> {
+    let mut rows = Vec::with_capacity(tables.len());
     for (_, d) in tables {
         d.ready_for_bulk()?;
         let w = d.col_count() as usize;
@@ -1852,28 +1846,14 @@ fn plan_columns(
             Vec::new()
         };
         row0.resize(w, String::new());
-        if by_title {
-            maps.push(union.add(&row0));
-        } else {
-            for (c, t) in row0.iter().enumerate().skip(titles.len()) {
-                titles.push(if t.is_empty() {
-                    format!("Column {}", c + 1)
-                } else {
-                    t.clone()
-                });
-            }
-            maps.push((0..w).collect());
-        }
+        rows.push(row0);
     }
-    if by_title {
-        titles = union.into_titles();
-    }
-    Ok((titles, maps))
+    Ok(rows)
 }
 
 /// `Source file`, numbered when a column already has that title.
 #[inline(never)]
-fn source_title(titles: &[String]) -> String {
+pub(crate) fn source_title(titles: &[String]) -> String {
     let taken: HashSet<String> = titles.iter().map(|t| t.trim().to_lowercase()).collect();
     let mut name = "Source file".to_string();
     let mut n = 2u32;
@@ -1884,7 +1864,8 @@ fn source_title(titles: &[String]) -> String {
     name
 }
 
-/// Stack the shown rows of `tables` (name, table) into a new table.
+/// Stack the shown rows of `tables` (name, table) into a new table: columns by
+/// title ([`TitleUnion`]) or by place, as [`crate::combine::auto_plan`] lines them up.
 pub fn combine(
     tables: &[(String, &Document)],
     spec: &Combine,
@@ -1894,10 +1875,47 @@ pub fn combine(
         return Err(bad(format!("combine 1 to {MAX_COMBINE} files")));
     }
     let by_title = spec.by_title && spec.header;
-    let (titles, maps) = plan_columns(tables, spec.header, by_title)?;
-    if titles.len() > crate::reshape::MAX_PIVOT_COLS {
-        return Err(too_big());
+    let rows = title_rows(tables, spec.header)?;
+    let plan = crate::combine::auto_plan(&rows, by_title);
+    combine_with_plan(tables, &plan, spec, progress)
+}
+
+/// Stack the shown rows of `tables` with each file's columns going where
+/// `plan` says (a column with `None` is left out). The plan is checked first.
+pub fn combine_with_plan(
+    tables: &[(String, &Document)],
+    plan: &crate::combine::CombinePlan,
+    spec: &Combine,
+    progress: &Progress,
+) -> Result<Table, Error> {
+    if tables.is_empty() || tables.len() > MAX_COMBINE {
+        return Err(bad(format!("combine 1 to {MAX_COMBINE} files")));
     }
+    let widths: Vec<usize> = tables.iter().map(|(_, d)| d.col_count() as usize).collect();
+    plan.check(&widths)?;
+    // Each file's (column, output column) pairs, the left-out columns skipped.
+    let maps: Vec<Vec<(usize, usize)>> = plan
+        .files
+        .iter()
+        .map(|m| {
+            m.iter()
+                .enumerate()
+                .filter_map(|(k, to)| to.map(|to| (k, to as usize)))
+                .collect()
+        })
+        .collect();
+    stack_rows(tables, &plan.titles, &maps, spec, progress)
+}
+
+/// The row loop of [`combine_with_plan`], kept apart so it stays fast.
+#[inline(never)]
+fn stack_rows(
+    tables: &[(String, &Document)],
+    titles: &[String],
+    maps: &[Vec<(usize, usize)>],
+    spec: &Combine,
+    progress: &Progress,
+) -> Result<Table, Error> {
     let width = titles.len() + usize::from(spec.source);
     let total: u64 = tables.iter().map(|(_, d)| d.row_count()).sum();
     if total.saturating_mul(width as u64) > MAX_TABLE_CELLS {
@@ -1909,13 +1927,13 @@ pub fn combine(
     let mut rows = 0u64;
     if spec.header {
         if spec.source {
-            line.push(source_title(&titles));
+            line.push(source_title(titles));
         }
         line.extend(titles.iter().cloned());
         push_line(&mut out, &line);
         rows += 1;
     }
-    for ((name, d), map) in tables.iter().zip(&maps) {
+    for ((name, d), map) in tables.iter().zip(maps) {
         let all: Vec<u32> = (0..d.col_count()).collect();
         let reader = Cols::new(d, &all);
         let range = d.data_rows(spec.header);
@@ -1929,7 +1947,7 @@ pub fn combine(
             if spec.source {
                 line[0] = name.clone();
             }
-            for (k, &to) in map.iter().enumerate() {
+            for &(k, to) in map {
                 line[off + to] = reader.get(&buf, k).to_string();
             }
             push_line(&mut out, &line);

@@ -1161,6 +1161,19 @@ everything is also in command search.
   **combine many files into one**, matching columns by title or by position.
   By title, no column is lost when a file repeats a title: the repeats pair in
   order as `Note`, `Note (2)`.
+- **Combine with a column map:** combining by title first shows how the
+  files' columns line up (only their first rows are read for it): one row per
+  combined column, one drop-down per file, a preview of each file's first rows
+  as they will land, and the columns that go nowhere. Titles that are probably
+  one column (`Cust_ID`, `cust id`, `CustID`, or `CustomerID` in about the same
+  place) are suggested with a few values from each side, and merged only when
+  you choose (`Address Line 1` and `Address Line 2`, which differ only in a
+  number, never are). **Reset to automatic** goes back to plain Combine by
+  title. **Save map** writes a `.ndcombine` file of column titles only (no
+  folder, file name or value) for next month's files, and **Use a saved map**
+  fits it to new files, asking where it cannot decide. Before combining, each
+  file is checked again: if it changed since it was picked, or has a row wider
+  than its first rows showed, nothing is combined and the map is shown again.
 - **Append** the rows of another file.
 - **CSV export safety** (File > Options, or command search): a spreadsheet
   can run a CSV cell that starts with `=`, `+`, `-` or `@` as a formula. With
@@ -1606,6 +1619,8 @@ natendo-cli sample data.csv -o out.csv --rows 500 --seed 7 # or --percent 5, --e
 natendo-cli slice data.csv -o out.csv --rows 1001-2000     # with the title row
 natendo-cli split data.csv -o parts --by county            # or --rows 50000
 natendo-cli cat jan.csv feb.csv mar.csv -o q1.csv --by-name
+natendo-cli cat apr.csv may.csv -o q2.csv --mapping monthly.ndcombine --strict  # a column map saved in Combine
+natendo-cli cat apr.csv may.csv --plan --by-name     # how the columns line up, with suggestions; writes nothing
 natendo-cli compare old.csv new.csv --key ID -o differences.csv --fail-on-diff   # exit 1 when they differ
 natendo-cli match voters.csv mailed.csv --field "Name=Full name:name" --field "Born:exact" -o pairs.csv
 natendo-cli lookalikes data.csv --column City --method both    # Smith / Smyth / SMITH

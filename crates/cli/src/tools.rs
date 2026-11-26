@@ -1099,12 +1099,12 @@ fn write_by_name(
     w: &mut Rows,
     d: &Document,
     head: u64,
-    map: &[usize],
+    map: &[Option<u32>],
     width: usize,
     input: &str,
 ) -> Result<(), String> {
     // A file whose columns already are the output's needs no moving.
-    let as_is = map.len() == width && map.iter().enumerate().all(|(i, &j)| i == j);
+    let as_is = map.len() == width && map.iter().enumerate().all(|(i, j)| *j == Some(i as u32));
     for r in head..d.row_count() {
         let row = d.row_values(r).map_err(|e| e.to_string())?;
         if as_is && row.len() == width {
@@ -1113,8 +1113,11 @@ fn write_by_name(
         }
         let mut cells = vec![String::new(); width];
         for (i, v) in row.into_iter().enumerate() {
-            if let Some(&j) = map.get(i) {
-                cells[j] = v;
+            if let Some(j) = map.get(i) {
+                // A column the map leaves out.
+                if let Some(j) = j {
+                    cells[*j as usize] = v;
+                }
             } else if !v.is_empty() {
                 return Err(format!(
                     "{input}: row {} has a value beyond its last column",
@@ -1147,25 +1150,51 @@ fn title_row(d: &Document) -> Result<Vec<String>, String> {
 /// [`cat`], keeping at most `most_held` input bytes open between the two
 /// passes of `--by-name`; `between` runs between them (tests).
 fn cat_holding(args: &[&str], most_held: u64, between: &dyn Fn()) -> Result<(), String> {
-    let o = opts(args, &[], &["--by-name"])?;
+    let o = opts(args, &["--mapping"], &["--by-name", "--strict", "--plan"])?;
     if o.plain.len() < 2 {
         return Err("give two or more files to stack".into());
     }
     if o.plain.len() > MAX_CAT_FILES {
         return Err(format!("stack at most {MAX_CAT_FILES} files at once"));
     }
-    let out = out_of(&o)?;
-    let path = Path::new(out.path);
-    if o.plain.iter().any(|i| same_file(i, path)) {
-        return Err("write to a different file than the inputs".into());
+    let mapping = match o.get("--mapping") {
+        Some(m) => {
+            if !o.header() {
+                return Err("a column map is for files that start with a row of titles".into());
+            }
+            let bytes = crate::safe::read_small(
+                m,
+                natendo_engine::combine::MAX_MAPPING_BYTES as u64,
+                "a column map",
+            )?;
+            Some(
+                natendo_engine::combine::SavedMapping::from_json(&bytes)
+                    .map_err(|e| format!("{m}: {e}"))?,
+            )
+        }
+        None => None,
+    };
+    if o.has("--strict") && mapping.is_none() {
+        return Err("--strict goes with --mapping".into());
     }
-    let sep = sep_of(&o, out.path)?;
-    let by_name = o.has("--by-name") && o.header();
+    let plan_only = o.has("--plan");
+    if plan_only && !(o.has("--by-name") || mapping.is_some()) {
+        return Err("--plan shows how columns line up by name: add --by-name or --mapping".into());
+    }
+    let out = if plan_only { None } else { Some(out_of(&o)?) };
+    if let Some(out) = &out {
+        let path = Path::new(out.path);
+        if o.plain.iter().any(|i| same_file(i, path)) {
+            return Err("write to a different file than the inputs".into());
+        }
+    }
+    let by_name = (o.has("--by-name") || mapping.is_some()) && o.header();
     let sheet = sheet(&o)?;
     // By name, the output has every file's columns, so all title rows are
     // read first. Files are kept open up to a size; larger sets are read again.
     let mut union = TitleUnion::default();
-    let mut maps: Vec<Vec<usize>> = Vec::new();
+    let mut maps: Vec<Vec<Option<u32>>> = Vec::new();
+    let mut heads: Vec<natendo_engine::combine::FileHead> = Vec::new();
     let mut kept: Vec<Option<Document>> = Vec::new();
     // Each file's titles as the column maps were made from them.
     let mut seen: Vec<Vec<String>> = Vec::new();
@@ -1174,7 +1203,10 @@ fn cat_holding(args: &[&str], most_held: u64, between: &dyn Fn()) -> Result<(), 
         for input in &o.plain {
             let d = load(input, sheet)?;
             let t = title_row(&d)?;
-            maps.push(union.add(&t));
+            maps.push(union.add(&t).into_iter().map(|i| Some(i as u32)).collect());
+            if plan_only {
+                heads.push(head_of_doc(input, &d, &t)?);
+            }
             if union.len() > MAX_CAT_COLS {
                 return Err(format!(
                     "{input}: more than {MAX_CAT_COLS} different columns"
@@ -1186,7 +1218,90 @@ fn cat_holding(args: &[&str], most_held: u64, between: &dyn Fn()) -> Result<(), 
         }
     }
     between();
-    let titles = union.into_titles();
+    let mut titles = union.into_titles();
+    let mut fit_report = json!(null);
+    if let Some(m) = &mapping {
+        // The titles come from the files being stacked, so the map cannot drift from them.
+        let mut fit = m.apply(&seen);
+        fit.plan.compact();
+        if let Some(p) = fit.problems.first() {
+            return Err(format!(
+                "{}: {}; the column map cannot decide (nothing was written)",
+                o.plain[p.file], p.what
+            ));
+        }
+        let name = |f: usize| o.plain[f];
+        let missing: Vec<String> = fit
+            .missing
+            .iter()
+            .map(|&(f, c)| format!("{} has no \"{}\"", name(f), m.columns[c as usize].title))
+            .collect();
+        let extras: Vec<String> = fit
+            .extras
+            .iter()
+            .map(|&(f, c)| format!("{}: \"{}\" is not in the map", name(f), seen[f][c as usize]))
+            .collect();
+        if o.has("--strict") && !(missing.is_empty() && extras.is_empty()) {
+            return Err(format!(
+                "the files do not fit the column map exactly (--strict; nothing was written): {}",
+                missing
+                    .iter()
+                    .chain(&extras)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+        if !o.has("--json") {
+            for line in missing.iter().chain(&extras) {
+                eprintln!("note: {line}");
+            }
+        }
+        fit_report = json!({ "missing": missing, "extras": extras });
+        titles = fit.plan.titles;
+        maps = fit.plan.files;
+    }
+    if plan_only {
+        let plan = natendo_engine::combine::CombinePlan {
+            titles: titles.clone(),
+            files: maps.clone(),
+        };
+        let suggestions = natendo_engine::combine::suggest(&plan, &heads);
+        let mut text = format!("{} columns: {}", titles.len(), titles.join(", "));
+        for (f, map) in maps.iter().enumerate() {
+            let left = map.iter().filter(|m| m.is_none()).count();
+            text += &format!(
+                "\n{}: {} columns{}",
+                o.plain[f],
+                map.len(),
+                if left > 0 {
+                    format!(", {left} left out")
+                } else {
+                    String::new()
+                }
+            );
+        }
+        for s in &suggestions {
+            text += &format!(
+                "\nsuggestion: \"{}\" and \"{}\" may be one column",
+                titles[s.keep as usize], titles[s.merge as usize]
+            );
+        }
+        done(
+            &o,
+            text,
+            json!({
+                "titles": titles,
+                "files": o.plain.iter().zip(&maps).map(|(n, m)| json!({ "file": n, "map": m })).collect::<Vec<_>>(),
+                "suggestions": suggestions,
+                "fit": fit_report,
+            }),
+        );
+        return Ok(());
+    }
+    let out = out.ok_or("give the output file with -o")?;
+    let path = Path::new(out.path);
+    let sep = sep_of(&o, out.path)?;
     let mut w = Rows::create(path, sep, out.overwrite)?;
     if by_name && !titles.is_empty() {
         w.row(&titles)?;
@@ -1233,12 +1348,35 @@ fn cat_holding(args: &[&str], most_held: u64, between: &dyn Fn()) -> Result<(), 
         }
     }
     let n = w.finish()?;
-    done(
-        &o,
-        format!("saved {n} rows to {}", out.path),
-        json!({"rows": n}),
-    );
+    let mut extra = json!({"rows": n});
+    if mapping.is_some() {
+        extra["fit"] = fit_report;
+    }
+    done(&o, format!("saved {n} rows to {}", out.path), extra);
     Ok(())
+}
+
+/// The head `--plan` suggests from: the file's titles and first rows.
+fn head_of_doc(
+    input: &str,
+    d: &Document,
+    titles: &[String],
+) -> Result<natendo_engine::combine::FileHead, String> {
+    let rows = d.row_count();
+    let preview = (1..rows.min(1 + natendo_engine::combine::PREVIEW_ROWS as u64))
+        .map(|r| d.row_values(r).map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    Ok(natendo_engine::combine::FileHead {
+        name: Path::new(input)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        titles: titles.to_vec(),
+        cols: d.col_count(),
+        rows_est: rows.saturating_sub(1),
+        whole: true,
+        preview,
+    })
 }
 
 #[cfg(test)]
@@ -1327,6 +1465,53 @@ end,7
         // A file held open is the one the map was made from.
         write();
         cat_holding(&args, MAX_CAT_HELD, &|| {}).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The column map is fitted to the titles of the files being stacked, and a
+    /// file read again must still have them (it cannot drift from the map).
+    #[test]
+    fn cat_with_a_column_map_uses_the_streamed_files_titles() {
+        let d = dir("cat-map");
+        let (a, b, o, m) = (
+            d.join("a.csv"),
+            d.join("b.csv"),
+            d.join("o.csv"),
+            d.join("m.ndcombine"),
+        );
+        std::fs::write(&a, "Cust_ID,Name\r\n1,Ann\r\n").unwrap();
+        std::fs::write(&b, "Name,CustID\r\nBo,2\r\n").unwrap();
+        let map = natendo_engine::combine::SavedMapping {
+            kind: natendo_engine::combine::MAPPING_KIND.into(),
+            version: 1,
+            tool: "t".into(),
+            header: true,
+            file_name_column: false,
+            extras: natendo_engine::combine::Extras::Add,
+            columns: vec![
+                natendo_engine::combine::SavedColumn {
+                    title: "Cust_ID".into(),
+                    from: vec!["CustID".into()],
+                },
+                natendo_engine::combine::SavedColumn {
+                    title: "Name".into(),
+                    from: vec![],
+                },
+            ],
+        };
+        std::fs::write(&m, map.to_json()).unwrap();
+        let (a2, b2, o2, m2) = (s(&a), s(&b), s(&o), s(&m));
+        let args = [&a2[..], &b2, "-o", &o2, "--mapping", &m2, "--overwrite"];
+        cat_holding(&args, 0, &|| {}).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&o).unwrap(),
+            "Cust_ID,Name\r\n1,Ann\r\n2,Bo\r\n"
+        );
+        let e = cat_holding(&args, 0, &|| {
+            std::fs::write(&b, "Full name,CustID\r\nBo,2\r\n").unwrap()
+        })
+        .unwrap_err();
+        assert!(e.contains("changed while it was being combined"), "{e}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
