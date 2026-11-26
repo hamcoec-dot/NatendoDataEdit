@@ -295,3 +295,36 @@ fn report_table_and_cancel() {
         Err(Error::Cancelled)
     ));
 }
+
+#[test]
+fn files_and_a_guarded_report() {
+    let dir = std::env::temp_dir().join(format!("nde-patch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("fix.ndpatch");
+    let patch = make(
+        "id,n
+=1+1,a
+",
+        "id,n
+=1+1,b
+",
+    );
+    patch.save(&file, None).unwrap();
+    assert!(!Patch::is_protected(&file).unwrap());
+    assert_eq!(Patch::load(&file, None).unwrap(), patch);
+    patch
+        .save(&file, Some(&Secret::new("a long made-up phrase")))
+        .unwrap();
+    assert!(Patch::is_protected(&file).unwrap());
+    let (_, r) = doc("id,n
+=1+1,a
+")
+    .plan_patch(&patch, &Progress::new())
+    .unwrap();
+    let csv = dir.join("report.csv");
+    r.save_csv(&csv).unwrap();
+    let text = std::fs::read_to_string(&csv).unwrap();
+    assert!(text.contains("'=1+1"), "{text}");
+    assert_eq!(r.table().unwrap().rows, 2);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

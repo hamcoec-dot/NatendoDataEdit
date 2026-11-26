@@ -7,14 +7,18 @@
 //! that is neither the old one nor already the new one.
 
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Progress};
+use crate::export::{write_atomic, ExportReport};
 use crate::hashing::{check_seal, parse_strict, seal, SealKind};
 use crate::join::{norm_key, JoinSpec};
 use crate::privacy::Secret;
 use crate::reshape::{push_line, too_big, RowPlan, Table, MAX_TABLE_BYTES};
+use crate::scan::guard_formula;
 use crate::updates::pair_columns;
 use crate::Error;
 
@@ -201,6 +205,29 @@ impl Patch {
         }
     }
 
+    /// Write the patch to `path` (a temp file beside it, moved into place
+    /// when complete).
+    pub fn save(&self, path: &Path, phrase: Option<&Secret>) -> Result<(), Error> {
+        let bytes = self.to_bytes(phrase)?;
+        write_atomic(path, |w| {
+            w.write_all(&bytes)?;
+            Ok(ExportReport::default())
+        })?;
+        Ok(())
+    }
+
+    /// [`Patch::from_bytes`] of a file.
+    pub fn load(path: &Path, phrase: Option<&Secret>) -> Result<Patch, Error> {
+        Patch::from_bytes(&read_patch(path)?, phrase)
+    }
+
+    /// Whether the file needs a phrase.
+    pub fn is_protected(path: &Path) -> Result<bool, Error> {
+        let mut head = Vec::new();
+        std::fs::File::open(path)?.take(64).read_to_end(&mut head)?;
+        Ok(crate::crypt::is_encrypted(&head))
+    }
+
     /// Read a patch file. Its seal is checked before any entry is read.
     pub fn from_bytes(data: &[u8], phrase: Option<&Secret>) -> Result<Patch, Error> {
         let plain;
@@ -226,6 +253,20 @@ impl Patch {
         patch.check()?;
         Ok(patch)
     }
+}
+
+/// A patch file's bytes, refused when larger than any patch.
+fn read_patch(path: &Path) -> Result<Vec<u8>, Error> {
+    // Room for what encrypting adds.
+    let most = MAX_PATCH_BYTES as u64 + (1 << 20);
+    let mut data = Vec::new();
+    std::fs::File::open(path)?
+        .take(most + 1)
+        .read_to_end(&mut data)?;
+    if data.len() as u64 > most {
+        return Err(bad("this file is too large to be a patch"));
+    }
+    Ok(data)
 }
 
 /// A made patch, and the columns it had to leave out.
@@ -521,10 +562,32 @@ impl PatchReport {
         self.conflicts + self.not_found + self.twice + self.protected + self.missing_column
     }
 
+    /// Write the lines as CSV, with texts a spreadsheet would run as a
+    /// formula guarded.
+    pub fn save_csv(&self, path: &Path) -> Result<(), Error> {
+        let bytes = self.lines_table(true)?.bytes;
+        write_atomic(path, |w| {
+            w.write_all(&bytes)?;
+            Ok(ExportReport::default())
+        })?;
+        Ok(())
+    }
+
     /// The lines as a table: what happens, which kind, the key, the column.
     pub fn table(&self) -> Result<Table, Error> {
+        self.lines_table(false)
+    }
+
+    fn lines_table(&self, guard: bool) -> Result<Table, Error> {
+        let safe = |s: &str| -> String {
+            if guard {
+                guard_formula(s).into_owned()
+            } else {
+                s.to_string()
+            }
+        };
         let mut head = vec!["Outcome".to_string(), "Kind".to_string()];
-        head.extend(self.keys.iter().cloned());
+        head.extend(self.keys.iter().map(|k| safe(k)));
         head.push("Column".into());
         let cols = head.len();
         let mut out = Vec::new();
@@ -536,8 +599,8 @@ impl PatchReport {
                 EntryKind::Remove => "remove",
             };
             let mut cells = vec![l.outcome.words().to_string(), kind.to_string()];
-            cells.extend(l.key.iter().cloned());
-            cells.push(l.column.clone());
+            cells.extend(l.key.iter().map(|k| safe(k)));
+            cells.push(safe(&l.column));
             push_line(&mut out, &cells);
             if out.len() > MAX_TABLE_BYTES {
                 return Err(too_big());
