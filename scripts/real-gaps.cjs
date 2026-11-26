@@ -203,10 +203,10 @@ const proof = async () => {
   await cmd(m, "Find gaps in a sequence");
   await dlg.waitFor({ timeout: 8000 });
   await dlg.getByRole("radio", { name: "Dates" }).check();
-  await dlg.getByLabel("Column", { exact: true }).selectOption("1");
-  ok(await waitFor(async () => /2 missing in 2 ranges/.test(await body(m))), "the date audit answers");
+  await dlg.getByRole("combobox").first().selectOption("1");
+  ok(await waitFor(async () => /2 missing in 1 range/.test(await body(m))), "the date audit answers");
   t = await body(m);
-  ok(/2026-01-04 \(1 missing\)/.test(t) && /2026-01-05 \(1 missing\)/.test(t), "the missing days, the ambiguous one not read");
+  ok(/2026-01-04 to 2026-01-05 \(2 missing\)/.test(t), "the missing days: the ambiguous 01/04/2026 fills neither");
   ok(/1 ambiguous date not read \(file row 5\)/.test(t) && /1 repeated date/.test(t), "the ambiguous row and the repeat are said");
   await m.screenshot({ path: path.join(evidence, "gaps-dates.png") });
   await dlg.getByLabel("Start at (optional)").fill("01/01/2026");
