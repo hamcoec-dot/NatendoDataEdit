@@ -193,3 +193,36 @@ fn cat_by_name_gives_what_combine_gives() {
         );
     }
 }
+
+#[test]
+fn validate_finds_rows_that_repeat_several_columns_together() {
+    let d = Folder::new("key");
+    let a = d.write(
+        "a.csv",
+        "first,last,city\r\nAnn,Lee,Rome\r\nAnn,Lee,Oslo\r\nann,Lee,Rome\r\n",
+    );
+    let both = d.write(
+        "both.json",
+        r#"{"checks":[{"column":"first","also_columns":["city"],"kind":{"type":"unique"}}]}"#,
+    );
+    let (code, v) = json(&["validate", a.as_str(), "--checks", both.as_str()]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["problems"], 2, "{v}");
+    assert_eq!(v["listed"][0]["value"], "Ann | Rome", "{v}");
+    let clean = d.write(
+        "clean.json",
+        r#"{"checks":[{"column":"city","also_columns":[1, "LAST"],"kind":{"type":"unique","match_case":true}}]}"#,
+    );
+    let (code, v) = json(&["validate", a.as_str(), "--checks", clean.as_str()]);
+    assert_eq!(code, 0, "{v}");
+    for bad in [
+        r#"{"checks":[{"column":"first","also_columns":["nope"],"kind":{"type":"unique"}}]}"#,
+        r#"{"checks":[{"column":"first","also_columns":["city"],"kind":{"type":"required"}}]}"#,
+        r#"{"checks":[{"column":"first","also_columns":"city","kind":{"type":"unique"}}]}"#,
+        r#"{"checks":[{"column":"first","also_columns":["first"],"kind":{"type":"unique"}}]}"#,
+    ] {
+        let f = d.write("bad.json", bad);
+        let (code, _) = run(&["validate", a.as_str(), "--checks", f.as_str()]);
+        assert_eq!(code, 2, "{bad}");
+    }
+}

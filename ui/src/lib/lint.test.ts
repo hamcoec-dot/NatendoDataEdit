@@ -23,6 +23,7 @@ describe("rules say what they are", () => {
     expect(describeCheck(c({ type: "number", min: 1, max: 9, whole: true }))).toBe("Whole number from 1 to 9");
     expect(describeCheck(c({ type: "date_iso" }))).toBe("Date written YYYY-MM-DD");
     expect(describeCheck(c({ type: "unique", match_case: false }))).toBe("Unique (no repeats)");
+    expect(describeCheck(c({ type: "unique", match_case: false, also: [2] }))).toBe("Unique together with 1 other column (no repeats)");
     expect(describeCheck(c({ type: "required" }, "  "))).toBe("Required (not blank)");
   });
   it("reads dates written year-month-day as the engine does", () => {

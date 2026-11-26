@@ -974,6 +974,13 @@ everything is also in command search.
   numbers), date (with limits), length, from a list, pattern, no repeats, or
   your own expression. Cells that fail are marked; show only the rows with
   problems. Checks are saved with views and can run from the command line.
+- **No repeats across several columns:** a "No repeats" rule can also be unique
+  together with up to 7 more columns (Also unique together with, in the Data
+  checks dialog), so first name + last name + date of birth may not repeat
+  while each alone may. Two rows are repeats only when every key column
+  matches; a row blank in all of them passes. A repeated row marks every key
+  cell. Select the columns and use Data > No repeats across these columns
+  together (also on the column right-click menu) to make one in a step.
 - **Rules with names, a wavy underline and Jump to next problem:** the Data
   checks dialog takes several rules per column, each with an optional name
   ("5-digit ZIP"), ready-made rules for the column you are in (5 digits, no
@@ -1500,8 +1507,11 @@ file pairs in order (`Note`, `Note (2)`), and blank titles match by position.
 
 A checks file is what Data > Data checks > Save writes, for example
 `{"checks": [{"column": "Email", "kind": {"type": "pattern", "pattern": {"text": "[^@]+@[^@]+", "kind": "regex"}}}]}`.
-Kinds: `required`, `number`, `date`, `length`, `list`, `pattern`, `unique`,
-`expression`.
+Kinds: `required`, `number`, `date`, `date_iso`, `length`, `list`, `pattern`,
+`unique`, `expression`. A `unique` check can name the other columns of its key
+with `"also_columns": ["Last", "Born"]` (titles, or numbers from 1), for
+example `{"column": "First", "also_columns": ["Last"], "kind": {"type": "unique"}}`;
+at most 8 columns in all.
 
 ## Agent link
 

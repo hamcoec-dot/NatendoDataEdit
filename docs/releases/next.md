@@ -20,3 +20,4 @@
 - **Find relationships:** Data > Find relationships shows which columns settle which, which are one to one or blank together, and the rows that break each.
 - **Totals row:** View > Totals row pins one total per column under the table, over the rows shown. Columns of IDs and codes are counted, not added.
 - **Outside changes:** a banner says when another program changes or deletes an open file, with Reload, Compare with disk and Ignore.
+- **No repeats across several columns:** a data check can say that two or more columns together may not repeat (first + last name + date of birth), with every key cell of a repeated row marked. Data > No repeats across these columns together makes one from the selected columns; `natendo-cli validate` reads it with `"also_columns"`.

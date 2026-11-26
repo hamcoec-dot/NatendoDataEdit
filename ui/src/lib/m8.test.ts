@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { columnRef, defaultPage, describeCheck, expandTabs, guessStarts, newCheck, printHtml, splitFixed, toggleStart, toJsPattern, LOG_PRESETS } from "./m8";
+import { columnRef, defaultPage, describeCheck, expandTabs, guessStarts, newCheck, placeCheck, printHtml, splitFixed, toggleStart, toJsPattern, LOG_PRESETS } from "./m8";
 import { mockEval } from "./mockexpr";
 
 describe("fixed width", () => {
@@ -68,5 +68,20 @@ describe("printing", () => {
     const evil = printHtml(null, [], { ...p, title: '"; } </style><script>x</script>' }, "Arial");
     expect(evil).not.toContain("</style><script>");
     expect(printHtml(null, [], { ...p, page_numbers: false, title: "" }, "Arial")).not.toContain("<thead>");
+  });
+});
+
+describe("unique rules over several columns", () => {
+  const rule = { col: 0, kind: { type: "unique" as const, match_case: false, also: [2, 3] } };
+  it("names every key column", () => {
+    expect(describeCheck(rule, ["First", "Last", "City", "Zip"])).toBe("First: no repeated values together with City, Zip");
+    expect(describeCheck(newCheck("unique", 1), ["First", "Last"])).toBe("Last: no repeated values");
+  });
+  it("moves every key column with a column move, and drops the rule when one is gone", () => {
+    const swap = (k: number): number => [3, 2, 1, 0][k]!;
+    expect(placeCheck(rule, swap)).toEqual({ col: 3, kind: { type: "unique", match_case: false, also: [1, 0] } });
+    expect(placeCheck(rule, (k) => (k === 3 ? null : k))).toBeNull();
+    expect(placeCheck({ col: null, kind: { type: "expression", expr: "[a]" } }, () => null)).toEqual({ col: null, kind: { type: "expression", expr: "[a]" } });
+    expect(placeCheck(newCheck("required", 1), (k) => k + 1)).toEqual({ col: 2, kind: { type: "required" } });
   });
 });
