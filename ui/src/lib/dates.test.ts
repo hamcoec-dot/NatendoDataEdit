@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DateScan } from "./backend";
-import { datePill, dateSummary, dateTip, dateWhy } from "./dates";
+import { datePill, dateReadings, dateSummary, dateTip, dateWhy, firstChoice, reviewSpec } from "./dates";
 
 const scan = (p: Partial<DateScan>) =>
   ({ looked: 10, rows: 10, blank: 0, iso: 0, written: 0, month_first_only: 0, day_first_only: 0, ambiguous: 0, same_either: 0, compact: 0, compact_numbers: 0, not_date: 0, two_digit_year: 0, set_order: null, other_order: 0, ...p }) as DateScan;
@@ -29,3 +29,29 @@ describe("date radar", () => {
     expect(datePill(scan({ ambiguous: 340 }))).toBe("Ambiguous dates: 340");
   });
 });
+
+describe("the review screen's rules", () => {
+  it("opens on leave, and on nothing when the column gives no clue", () => {
+    expect(firstChoice(scan({ ambiguous: 3 }))).toBe("");
+    expect(firstChoice(scan({ ambiguous: 3, day_first_only: 1 }))).toBe("leave");
+    expect(firstChoice(scan({}))).toBe("leave");
+    expect(firstChoice(scan({ set_order: "dmy" }))).toBe("dmy");
+  });
+
+  it("offers both readings, with the engine's two-digit years", () => {
+    expect(dateReadings(" 03/04/2026 ")).toEqual({ mdy: "2026-03-04", dmy: "2026-04-03" });
+    expect(dateReadings("4-7-29")).toEqual({ mdy: "2029-04-07", dmy: "2029-07-04" });
+    expect(dateReadings("4.7.30")?.mdy).toBe("1930-04-07");
+    expect(dateReadings("03/04/2026 14:00")).toBeNull();
+  });
+
+  it("always writes the choice into the step; nothing picked or typed each leaves them", () => {
+    for (const [choice, ambiguous] of [["", "leave"], ["leave", "leave"], ["each", "leave"], ["mdy", "mdy"], ["dmy", "dmy"]] as const) {
+      const spec = reviewSpec(2, true, choice, false, false);
+      expect(spec.cleaner.steps[0]).toEqual({ tool: "dates", format: "yyyy-mm-dd", ambiguous, review: { compact: false, two_digit: false } });
+      expect(spec.scope).toEqual({ kind: "columns", cols: [2] });
+      expect(spec.skip_first).toBe(true);
+    }
+  });
+});
+

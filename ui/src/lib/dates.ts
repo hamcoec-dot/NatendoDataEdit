@@ -2,12 +2,46 @@
 // Which cells are ambiguous is the engine's answer (datescan.rs).
 
 import type { DateScan } from "./backend";
+import type { CleanSpec } from "./clean";
 import type { ColumnType } from "./readers";
 
 /** Rows counted first; the rest only when asked. */
 export const DATE_SAMPLE = 200_000;
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/** The rule for two-digit years, as the engine has it (value.rs TWO_DIGIT_YEARS). */
+export const TWO_DIGIT_RULE = "00 to 29 are 2000 to 2029, 30 to 99 are 1930 to 1999";
+
+/** What the person picked for the dates both orders can read ("" nothing yet). */
+export type DateChoice = "" | "leave" | "mdy" | "dmy" | "each";
+
+/** Whether the column itself says nothing about the order of its ambiguous dates. */
+export const noClue = (s: DateScan): boolean => !s.set_order && s.ambiguous > 0 && !s.month_first_only && !s.day_first_only;
+
+/** The choice the review screen opens with: leave them, or nothing when the column gives no clue. */
+export const firstChoice = (s: DateScan): DateChoice => (s.set_order ?? (noClue(s) ? "" : "leave"));
+
+/** The two readings of an ambiguous date as year-month-day (null: not one of the plain forms). */
+export function dateReadings(value: string): { mdy: string; dmy: string } | null {
+  const m = /^\s*(\d{1,2})[-/. ,]+(\d{1,2})[-/. ,]+(\d{2}|\d{4})\s*$/.exec(value);
+  if (!m) return null;
+  const [, a = "", b = "", y = ""] = m;
+  const year = y.length === 4 ? y : (y <= "29" ? "20" : "19") + y;
+  const two = (v: string) => v.padStart(2, "0");
+  return { mdy: `${year}-${two(a)}-${two(b)}`, dmy: `${year}-${two(b)}-${two(a)}` };
+}
+
+/** The Clean step the review screen runs: the dates it can read become year-month-day. */
+export function reviewSpec(col: number, header: boolean, choice: DateChoice, compact: boolean, twoDigit: boolean): CleanSpec {
+  const ambiguous = choice === "mdy" || choice === "dmy" ? choice : "leave";
+  return {
+    cleaner: { version: 1, name: "", steps: [{ tool: "dates", format: "yyyy-mm-dd", ambiguous, review: { compact, two_digit: twoDigit } }] },
+    scope: { kind: "columns", cols: [col] },
+    skip_first: header,
+    read: { decimal_comma: false, date_order: ambiguous === "dmy" ? "dmy" : "mdy" },
+  };
+}
 
 /** What an amber cell could mean: "03/04/2026 could be 4 March or 3 April". */
 export function dateTip(value: string): string {

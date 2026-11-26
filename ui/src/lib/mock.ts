@@ -4,6 +4,7 @@
 // behave the same at the command level.
 
 import type { GapReport, GapsSpec } from "./gaps";
+import { dateReadings } from "./dates";
 import { COLUMNS_CHANGED } from "./ragged";
 import { joinPreview } from "./repair";
 import { mockDrill, mockItems, mockPivot, type ItemList, type PivotField, type PivotGrid, type PivotSpec } from "./pivot";
@@ -758,6 +759,15 @@ export class MockBackend implements Backend {
     const d = this.get(doc);
     const out: number[] = [];
     for (let r = Math.max(row, keepFirst ? 1 : 0); r < Math.min(row + rows, this.rowCount(d)); r++) if (this.twoWays(d, r, col)) out.push(r);
+    return out;
+  }
+  async dateList(doc: number, col: number, keepFirst: boolean): Promise<[number, number, string][]> {
+    const d = this.get(doc);
+    const out: [number, number, string][] = [];
+    for (let r = keepFirst ? 1 : 0; r < Math.min(this.rowCount(d), 5_000) && out.length < 500; r++) {
+      if (!this.twoWays(d, r, col)) continue;
+      out.push([r, r, this.value(d, this.rowId(d, r), col)]);
+    }
     return out;
   }
   async dateFind(doc: number, col: number, keepFirst: boolean, from: number, forward: boolean): Promise<number | null> {
@@ -2007,7 +2017,20 @@ export class MockBackend implements Backend {
     return copy();
   }
 
+  /** The date review step in the stand-in: slash dates and year-month-day only (null: left as typed). */
+  private reviewedDate(v: string, ambiguous: "leave" | "mdy" | "dmy"): string | null {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v.trim()) || !v.trim()) return v;
+    const two = dateReadings(v);
+    if (!two) return null;
+    const real = (iso: string) => Number(iso.slice(5, 7)) <= 12;
+    if (real(two.mdy) && real(two.dmy) && two.mdy !== two.dmy) return ambiguous === "leave" ? null : two[ambiguous];
+    return real(two.mdy) ? two.mdy : real(two.dmy) ? two.dmy : null;
+  }
+
   private planClean(d: MockDoc, spec: CleanSpec, maxRows: number) {
+    const step = spec.cleaner.steps[0];
+    const review = step?.tool === "dates" && step.review ? step : null;
+    let left = 0;
     const { r0, r1, cols } = this.area(d, { pattern: { text: "", kind: "plain", match_case: false, whole_cell: false }, scope: spec.scope, skip_first: spec.skip_first });
     const changes: [number, number, string][] = [];
     const preview: CleanPreview["changes"] = [];
@@ -2015,25 +2038,30 @@ export class MockBackend implements Backend {
     for (let r = r0; r < end; r++)
       for (const c of cols) {
         const v = this.value(d, r, c);
-        const out = runCleaner(spec.cleaner, v, r - r0);
+        let out: string;
+        if (review) {
+          const date = this.reviewedDate(v, review.ambiguous ?? "leave");
+          if (date === null) left++;
+          out = date ?? v;
+        } else out = runCleaner(spec.cleaner, v, r - r0);
         if (out === v) continue;
         changes.push([r, c, out]);
         if (preview.length < 50) preview.push({ row: r, number: this.pos(d, r), col: c, before: v, after: out });
       }
-    return { changes, preview, rows: end - r0, more: end < r1 };
+    return { changes, preview, rows: end - r0, more: end < r1, left };
   }
 
   async cleanPreview(doc: number, spec: CleanSpec, now: number): Promise<CleanPreview> {
     void now;
     const p = this.planClean(this.get(doc), spec, 20_000);
-    return { changes: p.preview, rows: p.rows, changed: p.changes.length, left: 0, more: p.more };
+    return { changes: p.preview, rows: p.rows, changed: p.changes.length, left: p.left, more: p.more };
   }
 
   async cleanPreviewPage(doc: number, spec: CleanSpec, now: number, offset: number, want: number): Promise<CleanPreview> {
     void now;
     const p = this.planClean(this.get(doc), spec, 1_000_000_000);
     const homoglyph_cells = p.changes.filter(([r, c]) => scanGremlins(this.value(this.get(doc), r, c)).some((g) => g.kind === "homoglyph")).length;
-    return { changes: p.preview.slice(offset, offset + want), rows: p.rows, changed: p.changes.length, left: 0, more: false, homoglyph_cells };
+    return { changes: p.preview.slice(offset, offset + want), rows: p.rows, changed: p.changes.length, left: p.left, more: false, homoglyph_cells };
   }
 
   /** The browser stand-in's X-ray: every cell of the shown data rows through the same character table. */
@@ -2565,10 +2593,11 @@ export class MockBackend implements Backend {
     const allCols = Array.from({ length: this.colCount(d) }, (_, i) => i);
     switch (op.op) {
       case "clean": {
-        const p = this.planClean(d, op.spec, 100_000);
+        const first = op.spec.cleaner.steps[0];
+        const p = this.planClean(d, op.spec, first?.tool === "dates" && first.review ? 1_000_000_000 : 100_000);
         if (p.more) throw err("too_large", "the browser preview cleans at most 100,000 rows");
         const info = p.changes.length ? await this.setCells(doc, p.changes) : this.refresh(d);
-        return this.report(info, { cells: p.changes.length, left: 0 });
+        return this.report(info, { cells: p.changes.length, left: p.left });
       }
       case "compute": {
         const names = allCols.map((c) => (op.spec.keep_first ? this.value(d, 0, c) : "") || `Column ${c + 1}`);
