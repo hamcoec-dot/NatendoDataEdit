@@ -6414,7 +6414,7 @@ impl Docs {
         let keys = match &op {
             DataOp::ShowProblems { spec, .. }
             | DataOp::SortProblems { spec, .. }
-            | DataOp::CheckColumn { spec, .. } => self.key_bindings(id, spec)?,
+            | DataOp::CheckColumn { spec, .. } => self.keys_in_job(id, spec)?,
             _ => Vec::new(),
         };
         // LOOKUP tables of a computed column, copied out the same way.
@@ -7131,7 +7131,15 @@ impl Docs {
     /// rule does not run and says to close one), its column by title. Read from the tab's
     /// shown data rows and kept while the tab is unchanged. A rule on this tab's own column
     /// reads this tab (call before taking this tab's lock).
-    pub fn key_bindings(&self, id: u32, spec: &CheckSpec) -> CmdResult<Vec<KeyBinding>> {
+    /// Each "value must exist in" rule's set: kept ones from the cache, others read now with
+    /// `build`'s progress (cancelled: nothing is kept). With `build` `None` (screen marks)
+    /// nothing is read: a rule without a kept set is left out.
+    pub fn key_bindings(
+        &self,
+        id: u32,
+        spec: &CheckSpec,
+        build: Option<&Progress>,
+    ) -> CmdResult<Vec<KeyBinding>> {
         if !spec
             .checks
             .iter()
@@ -7211,9 +7219,13 @@ impl Docs {
                 .iter()
                 .find(|(k, _)| *k == name)
                 .map(|(_, s)| s.clone());
-            let set = match hit {
-                Some(s) => s,
-                None => {
+            let set = match (hit, build) {
+                (Some(s), _) => s,
+                (None, None) => {
+                    out.push(KeyBinding::None);
+                    continue;
+                }
+                (None, Some(progress)) => {
                     let budget = key_sets_budget();
                     let mut s = KeySet::build(
                         &d,
@@ -7222,7 +7234,7 @@ impl Docs {
                         *match_case,
                         *trim,
                         budget,
-                        &Progress::new(),
+                        progress,
                     )?;
                     s.source.doc = other;
                     s.source.table = table.trim().to_string();
@@ -7249,19 +7261,40 @@ impl Docs {
         Ok(out)
     }
 
-    /// `spec` with its "value must exist in" rules' tables filled in.
-    fn with_keys(&self, id: u32, spec: &CheckSpec) -> CmdResult<CheckSpec> {
+    /// `spec` with its "value must exist in" rules' tables filled in (see [`Docs::key_bindings`]).
+    fn with_keys(
+        &self,
+        id: u32,
+        spec: &CheckSpec,
+        build: Option<&Progress>,
+    ) -> CmdResult<CheckSpec> {
         let mut s = spec.clone();
-        s.keys = self.key_bindings(id, spec)?;
+        s.keys = self.key_bindings(id, spec, build)?;
         Ok(s)
+    }
+
+    /// [`Docs::key_bindings`] in a job of its own on tab `id` (progress and Cancel), for
+    /// steps whose own job starts later.
+    fn keys_in_job(&self, id: u32, spec: &CheckSpec) -> CmdResult<Vec<KeyBinding>> {
+        if !spec
+            .checks
+            .iter()
+            .any(|c| matches!(c.kind, CheckKind::ForeignKey { .. }))
+        {
+            return Ok(Vec::new());
+        }
+        let entry = self.get(id)?;
+        let job = entry.start("Reading the other table")?;
+        self.key_bindings(id, spec, Some(&job.progress))
     }
 
     /// Run data checks over the shown rows (a job: progress and Cancel).
     pub fn run_checks(&self, id: u32, spec: &CheckSpec) -> CmdResult<CheckReport> {
         let key = serde_json::to_string(&spec.checks).unwrap_or_default();
-        let spec = &self.with_keys(id, spec)?;
         let entry = self.get(id)?;
         let job = entry.start("Checking")?;
+        // Other tables are read inside the job (before this tab's read lock is taken).
+        let spec = &self.with_keys(id, spec, Some(&job.progress))?;
         let d = entry.read();
         let r = d.run_checks(spec, &job.progress)?;
         *entry.checks.lock().unwrap_or_else(|p| p.into_inner()) =
@@ -7626,7 +7659,8 @@ impl Docs {
         spec: &CheckSpec,
     ) -> CmdResult<Vec<CheckMark>> {
         let key = serde_json::to_string(&spec.checks).unwrap_or_default();
-        let spec = &self.with_keys(id, spec)?;
+        // Drawn often: only sets already kept are used, never read here.
+        let spec = &self.with_keys(id, spec, None)?;
         let entry = self.get(id)?;
         let d = entry.read();
         let last = entry.checks.lock().unwrap_or_else(|p| p.into_inner());
@@ -7651,9 +7685,9 @@ impl Docs {
         skip_cols: &[u32],
     ) -> CmdResult<natendo_engine::validate::JumpResult> {
         let key = serde_json::to_string(&spec.checks).unwrap_or_default();
-        let spec = &self.with_keys(id, spec)?;
         let entry = self.get(id)?;
         let job = entry.start("Looking for the next problem")?;
+        let spec = &self.with_keys(id, spec, Some(&job.progress))?;
         let d = entry.read();
         let repeats: Vec<(u32, Vec<u64>)> = {
             let last = entry.checks.lock().unwrap_or_else(|p| p.into_inner());
@@ -8479,11 +8513,11 @@ impl Docs {
         id: u32,
         mut spec: natendo_engine::special::SpecialSpec,
     ) -> CmdResult<natendo_engine::special::SpecialCells> {
-        if let natendo_engine::special::SpecialKind::Problems { checks } = &mut spec.kind {
-            checks.keys = self.key_bindings(id, checks)?;
-        }
         let entry = self.get(id)?;
         let job = entry.start("Looking")?;
+        if let natendo_engine::special::SpecialKind::Problems { checks } = &mut spec.kind {
+            checks.keys = self.key_bindings(id, checks, Some(&job.progress))?;
+        }
         let d = entry.read();
         // Failing cells: the repeats of the last check run, when it ran the
         // same checks on this version of the table.
@@ -13589,11 +13623,39 @@ mod key_binding_tests {
         assert_eq!(r.per_check, vec![1]);
         assert_eq!(r.tables[0].source.doc, prec);
         // The set is kept while the other tab is unchanged, and read again after an edit.
-        let a = docs.key_bindings(voters, &spec).unwrap();
-        let b = docs.key_bindings(voters, &spec).unwrap();
+        let go = Progress::new();
+        let a = docs.key_bindings(voters, &spec, Some(&go)).unwrap();
+        let b = docs.key_bindings(voters, &spec, Some(&go)).unwrap();
         assert_eq!(a, b, "the same set, not read twice");
+        assert!(!docs
+            .check_marks(voters, 0, 4, 0, 2, &spec)
+            .unwrap()
+            .is_empty());
         docs.set_cells(prec, vec![(2, 0, "P9".into())]).unwrap();
-        let c = docs.key_bindings(voters, &spec).unwrap();
+        // Screen marks never read the changed table: the rule is left out until Check now.
+        assert_eq!(
+            docs.key_bindings(voters, &spec, None).unwrap(),
+            vec![KeyBinding::None]
+        );
+        let marks = docs.check_marks(voters, 0, 4, 0, 2, &spec).unwrap();
+        assert!(marks.is_empty(), "{marks:?}");
+        assert_eq!(
+            docs.key_sets.lock().unwrap().len(),
+            1,
+            "nothing read for marks"
+        );
+        // A cancelled read fails and keeps nothing.
+        let stop = Progress::new();
+        stop.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let e = docs.key_bindings(voters, &spec, Some(&stop)).unwrap_err();
+        assert!(format!("{e:?}").to_lowercase().contains("cancel"), "{e:?}");
+        assert_eq!(
+            docs.key_sets.lock().unwrap().len(),
+            1,
+            "a cancelled read is not kept"
+        );
+        let c = docs.key_bindings(voters, &spec, Some(&go)).unwrap();
         assert_ne!(a, c);
         assert_eq!(
             docs.key_sets.lock().unwrap().len(),

@@ -3,7 +3,8 @@
 //! Lines: a one-column unique rule on the ids (the reference), reading the ids into a
 //! key set, a run with a fresh set (read + check), a run with a set read before (the
 //! app keeps it while the other table is unchanged), and the same older rules with and
-//! without the rule.
+//! without the rule, and an allowed-values rule (100,000 values) on the same column in
+//! place of the kept-set rule (the Reviewer's reference for a kept set: at most 1.1x).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -40,8 +41,16 @@ fn main() {
     let fk = r#"{"col":0,"kind":{"type":"foreign_key","table":"t","column":"id"}}"#;
     let older = r#"{"col":1,"kind":{"type":"required"}},{"col":4,"kind":{"type":"number","min":0,"max":500}}"#;
     let unique = spec(r#"[{"col":0,"kind":{"type":"unique"}}]"#, vec![]);
-    let (mut uq, mut build, mut fresh, mut kept, mut without, mut with) =
-        (vec![], vec![], vec![], vec![], vec![], vec![]);
+    let values: Vec<String> = (1..=100_000).map(|i| i.to_string()).collect();
+    let list = spec(
+        &format!(
+            r#"[{{"col":0,"kind":{{"type":"list","values":{}}}}}]"#,
+            serde_json::to_string(&values).expect("values")
+        ),
+        vec![],
+    );
+    let (mut uq, mut build, mut fresh, mut kept, mut without, mut with, mut listed) =
+        (vec![], vec![], vec![], vec![], vec![], vec![], vec![]);
     let read = || {
         Arc::new(KeySet::build(&d, 0, true, false, true, u64::MAX, &Progress::new()).expect("set"))
     };
@@ -85,8 +94,12 @@ fn main() {
         )
         .expect("with");
         with.push(ms(t));
+        let t = Instant::now();
+        d.run_checks(&list, &p).expect("list");
+        listed.push(ms(t));
         drop(s);
     }
+    let listed = median(listed);
     let (uq, build, fresh, kept, without, with) = (
         median(uq),
         median(build),
@@ -96,10 +109,11 @@ fn main() {
         median(with),
     );
     println!(
-        "{} rows, {} distinct keys, medians of {runs}: unique {uq:.0} ms; read the key set {build:.0} ms; value-must-exist with a fresh set {fresh:.0} ms ({:.2}x unique); with a kept set {kept:.0} ms; older rules {without:.0} ms, older rules + value-must-exist (kept set) {with:.0} ms ({:.3}x)",
+        "{} rows, {} distinct keys, medians of {runs}: unique {uq:.0} ms; read the key set {build:.0} ms; value-must-exist with a fresh set {fresh:.0} ms ({:.2}x unique); with a kept set {kept:.0} ms; older rules {without:.0} ms, older rules + value-must-exist (kept set) {with:.0} ms ({:.3}x); allowed values (100k) {listed:.0} ms, kept set / allowed values {:.2}x",
         d.row_count() - 1,
         set.len(),
         fresh / uq,
-        with / without
+        with / without,
+        kept / listed
     );
 }

@@ -5,8 +5,10 @@
 //! way of comparing, while that table is unchanged).
 
 use std::collections::HashSet;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
 use std::sync::Arc;
+
+use siphasher::sip128::{Hasher128, SipHasher13};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -37,7 +39,8 @@ pub struct KeySource {
     pub hidden: u64,
 }
 
-/// The set's own hasher: its keys are already hashes, so their low bits are used as they are.
+/// The set's own hasher: its keys are already hashes under a key chosen at random for each
+/// set, so their low bits are used as they are (a file cannot pick values that collide).
 #[derive(Default)]
 struct Pass(u64);
 
@@ -57,40 +60,40 @@ impl Hasher for Pass {
 
 type Set = HashSet<u128, BuildHasherDefault<Pass>>;
 
-/// A value's 128-bit hash (two differently seeded SipHashes), compared as the rule asks:
-/// outer spaces left out with `trim`, any case with `match_case` off. ASCII text is
-/// lower-cased byte by byte (the same text `to_lowercase` gives) with no copy made.
-fn value_hash(v: &str, match_case: bool, trim: bool) -> u128 {
+/// A random key for one set's hashes.
+fn random_key() -> (u64, u64) {
+    let s = std::collections::hash_map::RandomState::new();
+    (s.hash_one(0x5a_u8), s.hash_one(0xa5_u8))
+}
+
+/// A value's 128-bit keyed hash (one SipHash-1-3 pass), compared as the rule asks: outer
+/// spaces left out with `trim`, any case with `match_case` off. ASCII text is lower-cased
+/// byte by byte (the same text `to_lowercase` gives) with no copy made.
+fn value_hash(key: (u64, u64), v: &str, match_case: bool, trim: bool) -> u128 {
     let v = if trim { v.trim() } else { v };
-    let mut a = std::collections::hash_map::DefaultHasher::new();
-    let mut b = std::collections::hash_map::DefaultHasher::new();
-    0x5a_u8.hash(&mut b);
-    let mut feed = |bytes: &[u8]| {
-        a.write(bytes);
-        b.write(bytes);
-    };
+    let mut h = SipHasher13::new_with_keys(key.0, key.1);
     if match_case {
-        feed(v.as_bytes());
+        h.write(v.as_bytes());
     } else if v.is_ascii() {
         let mut low = [0u8; 64];
         for part in v.as_bytes().chunks(64) {
             for (o, c) in low.iter_mut().zip(part) {
                 *o = c.to_ascii_lowercase();
             }
-            feed(&low[..part.len()]);
+            h.write(&low[..part.len()]);
         }
     } else {
-        feed(v.to_lowercase().as_bytes());
+        h.write(v.to_lowercase().as_bytes());
     }
-    a.write_u8(0xff);
-    b.write_u8(0xff);
-    (u128::from(a.finish()) << 64) | u128::from(b.finish())
+    h.write_u8(0xff);
+    h.finish128().as_u128()
 }
 
 /// A column's values, hashed.
 #[derive(Debug)]
 pub struct KeySet {
     set: Set,
+    key: (u64, u64),
     match_case: bool,
     trim: bool,
     pub source: KeySource,
@@ -118,6 +121,7 @@ impl KeySet {
             ));
         }
         let reader = Cols::new(other, &[col]);
+        let key = random_key();
         progress.start(n);
         // Hashed in parallel, then put in one set (its keys need no hashing again).
         let parts: Vec<Vec<u128>> = (0..n.div_ceil(CHUNK))
@@ -132,7 +136,7 @@ impl KeySet {
                     reader.read(other, id, &mut buf);
                     let v = reader.get(&buf, 0);
                     if !v.trim().is_empty() {
-                        out.push(value_hash(v, match_case, trim));
+                        out.push(value_hash(key, v, match_case, trim));
                     }
                 }
                 progress.step(e - s)?;
@@ -148,6 +152,7 @@ impl KeySet {
         }
         Ok(KeySet {
             set,
+            key,
             match_case,
             trim,
             source: KeySource {
@@ -163,7 +168,7 @@ impl KeySet {
     /// Whether `v` is among the values (compared the way the set was built).
     pub fn has(&self, v: &str) -> bool {
         self.set
-            .contains(&value_hash(v, self.match_case, self.trim))
+            .contains(&value_hash(self.key, v, self.match_case, self.trim))
     }
 
     /// Distinct values held.
@@ -206,5 +211,41 @@ impl PartialEq for KeyBinding {
             (KeyBinding::Missing(a), KeyBinding::Missing(b)) => a == b,
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::OpenOptions;
+
+    #[test]
+    fn each_set_has_its_own_random_key_and_finds_its_own_values() {
+        let d = Document::from_bytes(
+            b"code\nP1\nP2\n p3 \n".to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        let p = Progress::new();
+        let a = KeySet::build(&d, 0, true, false, true, u64::MAX, &p).unwrap();
+        let b = KeySet::build(&d, 0, true, false, true, u64::MAX, &p).unwrap();
+        assert_ne!(a.key, b.key);
+        assert_ne!(
+            value_hash(a.key, "P1", false, true),
+            value_hash(b.key, "P1", false, true)
+        );
+        assert_ne!(a.set, b.set, "the same values hash differently in each set");
+        for s in [&a, &b] {
+            assert_eq!(s.len(), 3);
+            assert!(s.has("p1") && s.has(" P2") && s.has("P3"));
+            assert!(!s.has("P4") && !s.has("code"));
+        }
+        // Lower-casing in parts gives the same hash as lower-casing the whole value.
+        let long = "AbC".repeat(50);
+        assert_eq!(
+            value_hash(a.key, &long, false, false),
+            value_hash(a.key, &long.to_lowercase(), true, false)
+        );
     }
 }
