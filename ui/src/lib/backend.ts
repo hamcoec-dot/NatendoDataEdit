@@ -368,6 +368,19 @@ export interface RowText {
   no_previous: string;
   note_keys: number[];
 }
+/** One row "Fix all like this" would change: its cells afterwards. */
+export interface ShapeRow {
+  id: number;
+  file_row: number;
+  cells: string[];
+}
+/** The rows with the same number of fields as a repaired one. */
+export interface SameShape {
+  revision: number;
+  total: number;
+  hidden: number;
+  first: ShapeRow[];
+}
 export interface RaggedList {
   /** Row ids in table order. */
   ids: number[];
@@ -1453,6 +1466,12 @@ export interface Backend {
   cellText(doc: number, row: number, col: number): Promise<{ text: string; truncated: boolean }>;
   raggedList(doc: number, keepFirst: boolean): Promise<RaggedList>;
   rowText(doc: number, row: number | null, rowId: number | null, keepFirst: boolean): Promise<RowText>;
+  sameShape(doc: number, keepFirst: boolean, fields: number, groups: number[]): Promise<SameShape>;
+  /** "Fix all like this": the rows changed and the document's facts. */
+  fixAll(doc: number, keepFirst: boolean, revision: number, fields: number, groups: number[], skip: number[]): Promise<[number, DocInfo]>;
+  /** Empty, untitled columns past the usual number (0: none), and the revision looked at. */
+  emptyExtraColumns(doc: number, keepFirst: boolean): Promise<[number, number]>;
+  removeEmptyExtraColumns(doc: number, keepFirst: boolean, revision: number): Promise<DocInfo>;
   /** A shown row's fields and the usual number. */
   rowWidth(doc: number, row: number): Promise<[number, number]>;
   repairRow(doc: number, rowId: number, revision: number, repair: RowRepair): Promise<DocInfo>;
@@ -1951,6 +1970,18 @@ class TauriBackend implements Backend {
   }
   rowText(doc: number, row: number | null, rowId: number | null, keepFirst: boolean) {
     return call<RowText>("row_text", { doc, row, rowId, keepFirst });
+  }
+  sameShape(doc: number, keepFirst: boolean, fields: number, groups: number[]) {
+    return call<SameShape>("same_shape", { doc, keepFirst, fields, groups });
+  }
+  fixAll(doc: number, keepFirst: boolean, revision: number, fields: number, groups: number[], skip: number[]) {
+    return call<[number, DocInfo]>("fix_all", { doc, keepFirst, revision, fields, groups, skip });
+  }
+  emptyExtraColumns(doc: number, keepFirst: boolean) {
+    return call<[number, number]>("empty_extra_columns", { doc, keepFirst });
+  }
+  removeEmptyExtraColumns(doc: number, keepFirst: boolean, revision: number) {
+    return call<DocInfo>("remove_empty_extra_columns", { doc, keepFirst, revision });
   }
   rowWidth(doc: number, row: number) {
     return call<[number, number]>("row_width", { doc, row });
@@ -2621,6 +2652,8 @@ let instance: Backend | null = null;
 export const WRITE_METHODS: readonly string[] = [
   "setCells",
   "repairRow",
+  "fixAll",
+  "removeEmptyExtraColumns",
   "encodingApply",
   "fillCells",
   "fillAreas",

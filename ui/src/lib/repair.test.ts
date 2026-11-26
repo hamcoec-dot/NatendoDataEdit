@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NextRow, RowText } from "./backend";
-import { groups, joinPreview, nextNotes, nextPreview, noteWarning, previousNotes, rowHeading, stepRow } from "./repair";
+import { groups, joinPreview, nextNotes, nextPreview, noteWarning, previousNotes, rowHeading, sameShapeWords, stepRow } from "./repair";
 
 describe("repair bar", () => {
   const fields = ["1", "Smith", " John", "Rome"];
@@ -28,6 +28,10 @@ describe("repair bar", () => {
     expect(noteWarning(["1", "Os", "x"], ["1", "Os", "x"], [2], title)).toBe("");
     expect(noteWarning(["1", "ann", "Os"], ["1", "ann", "Oslo"], [2], title)).toContain("matched on city, and this repair changes city");
     expect(noteWarning(["1", "a"], ["1", "b"], [], title)).toBe("");
+  });
+  it("offers to fix the rows of the same shape, saying how many are hidden", () => {
+    expect(sameShapeWords(1, 0, 4)).toBe("1 other row has the same shape (4 fields).");
+    expect(sameShapeWords(211, 3, 15)).toBe("211 other rows have the same shape (15 fields); 3 of them are not on screen.");
   });
   it("names the row", () => {
     expect(rowHeading({ file_row: 2, row: 1, width: 4, usual: 3 } as RowText)).toBe("Row 2 of the file: 4 fields, usual 3.");

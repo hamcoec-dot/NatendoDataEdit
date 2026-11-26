@@ -8059,6 +8059,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         start={repairFrom.row}
         onGo={(row) => grid?.select({ row, col: tab!.cell.col }, { row, col: tab!.cell.col })}
         onDone={(info, what) => { tab!.update(info, true); say(`${what} Undo (Ctrl+Z) takes it back.`); }}
+        job={(label, call) => runJob(label, call)}
         onReopenLines={() => { repairFrom = null; void reopenLineByLine(); }}
         onClose={() => { repairFrom = null; void tick().then(() => grid?.focus()); }}
       />

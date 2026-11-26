@@ -21,6 +21,8 @@ const NOT_WRITES = [
   "raggedList",
   "rowText",
   "rowWidth",
+  "sameShape",
+  "emptyExtraColumns",
   "checkpointAdd",
   "checkpointRemove",
   "appInfo",

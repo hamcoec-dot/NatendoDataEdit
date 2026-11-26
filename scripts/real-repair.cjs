@@ -206,6 +206,46 @@ const proof = async () => {
   const joined = fs.readFileSync(broken, "utf8");
   ok(joined === ["id,name,city", "1,ann,Oslo", "2,bo,Rome", "3,cy,Lima", ""].join("\r\n"), `saved: ${JSON.stringify(joined)}`);
 
+  // Fix all like this, then the emptied column: four rows with a comma in the name.
+  const many = path.join(OUT, "many.csv");
+  const rows = ["id,name,city", "1,Smith, John,Rome", "2,ann,Oslo", "3,Doe, Jane,Lima", "4,bo,Rome", "5,Roe, Bo,Kiel", "6,cy,Turin", "7,eve,Lyon", "8,Poe, Al,Bern", "9,dee,Oslo", ""];
+  fs.writeFileSync(many, rows.join("\r\n"));
+  const mf = await start([many]);
+  await waitFor(async () => (await invoke(mf, "doc_info", { doc: 1 })).indexed, 60000, 300);
+  await sleep(1000);
+  await dismiss(mf);
+  const yes3 = mf.getByRole("button", { name: "Yes, column names" });
+  if (await yes3.isVisible().catch(() => false)) await yes3.click();
+  await sleep(400);
+  const said2 = (id) => mf.getByTestId(id).textContent().then((t) => (t || "").replace(/\s+/g, " ").trim());
+  await mf.getByRole("button", { name: "Repair…" }).click();
+  await mf.getByTestId("repair-heading").waitFor({ timeout: 8000 });
+  await sleep(500);
+  await mf.getByRole("button", { name: "Join fields 2 and 3" }).click();
+  await mf.getByTestId("repair").getByRole("button", { name: "Apply" }).click();
+  await mf.getByTestId("repair-offer").waitFor({ timeout: 10000 });
+  ok(/3 other rows have the same shape \(4 fields\)/.test(await said2("repair-offer")), await said2("repair-offer"));
+  ok(/Row 4 of the file/.test(await said2("repair-heading")), `on to the next ragged row: ${await said2("repair-heading")}`);
+  await mf.getByRole("button", { name: "Fix all like this…" }).click();
+  await mf.screenshot({ path: path.join(evidence, "repair-fixall.png") });
+  await mf.getByRole("button", { name: "Fix 3 rows" }).click();
+  await mf.getByTestId("repair-extra").waitFor({ timeout: 10000 });
+  const names = (await invoke(mf, "checkpoint_list", { doc: 1 })).map((c) => c.name);
+  ok(names.includes("Before Fix all like this"), `automatic checkpoint: ${names.join(", ")}`);
+  await mf.getByRole("button", { name: "Remove the empty last column" }).click();
+  await sleep(900);
+  const facts = await invoke(mf, "doc_info", { doc: 1 });
+  ok(facts.cols === 3 && !facts.column_changes, `3 columns, no column change: ${facts.cols}`);
+  ok((await invoke(mf, "checkpoint_list", { doc: 1 })).some((c) => c.name === "Before removing the empty column"), "checkpoint before removing the column");
+  const book = await invoke(mf, "recipe_of", { doc: 1, header: true, name: "r" }).catch(() => null);
+  if (book) ok(JSON.stringify(book).includes("join_fields") && !JSON.stringify(book).includes("Doe"), `recipe holds counts only: ${JSON.stringify(book.steps).slice(0, 160)}`);
+  else info("recipe_of is not a command by that name; recipe content is covered by the shell test");
+  await invoke(mf, "save", { doc: 1, saveAs: false, overwriteChanged: true, allowLossy: false });
+  await sleep(800);
+  const fixedText = fs.readFileSync(many, "utf8");
+  const expected = rows.join("\r\n").replace(/(\d),(Smith|Doe|Roe|Poe), (\w+),/g, '$1,"$2, $3",');
+  ok(fixedText === expected, `saved: ${JSON.stringify(fixedText)}`);
+
   // A stray quote read as text, and reopening the saved file.
   const quoted = path.join(OUT, "quote.csv");
   fs.writeFileSync(quoted, ["a,b,c", '1,"x, y",3', "4,5,6", "7,8,9", ""].join("\r\n"));

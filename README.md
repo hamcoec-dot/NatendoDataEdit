@@ -870,7 +870,12 @@ everything is also in command search.
   stray quote mark as ordinary text. A warning says when a row's note is matched
   on a column the repair changes. Each repair is one undo step; Up and Down
   walk the ragged rows. The text shown is cut at 64 KB, and nothing about it is
-  stored.
+  stored. After a join, when other rows have the same number of fields, **Fix
+  all like this** lists them (hidden ones are counted; the first 20 can be
+  unticked) and joins the same fields in all, in one undo step, after an
+  automatic checkpoint; recipes record only the counts and places, and run only
+  on files with the same usual number of fields. When the extra column is then
+  empty and untitled, **Remove the empty last column** takes it away.
 
   ![The repair bar: a name with an unescaped comma, two fields marked to be joined](docs/screenshots/repair-bar.png)
 - **Data checks** per column or row: required, number (with limits, whole

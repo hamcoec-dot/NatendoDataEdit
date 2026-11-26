@@ -3,8 +3,8 @@
   // boundaries to click, and what the row will be. Join fields, join with the next row of the file, or read a quote
   // mark as text; each is one undo step. Previous and Next walk the ragged rows by their ids.
   import { tick, untrack } from "svelte";
-  import { backend, errorText, type Between, type DocInfo, type RowRepair, type RowText } from "./backend";
-  import { joinPreview, groups, nextNotes, nextPreview, noteWarning, previousNotes, rowHeading, stepRow } from "./repair";
+  import { backend, errorText, type Between, type DocInfo, type RowRepair, type RowText, type SameShape } from "./backend";
+  import { joinPreview, groups, nextNotes, nextPreview, noteWarning, previousNotes, rowHeading, sameShapeWords, stepRow } from "./repair";
   import type { Tab } from "./tab.svelte";
 
   interface Props {
@@ -18,8 +18,10 @@
     onDone: (info: DocInfo, what: string) => void;
     onReopenLines: () => void;
     onClose: () => void;
+    /** Run a long call as a job with progress and Stop (null: stopped). */
+    job: <T>(label: string, call: () => Promise<T>) => Promise<T | null>;
   }
-  let { tab, titles, start, onGo, onDone, onReopenLines, onClose }: Props = $props();
+  let { tab, titles, start, onGo, onDone, onReopenLines, onClose, job }: Props = $props();
 
   /** Fields drawn at once. */
   const MAX_DRAWN = 200;
@@ -34,6 +36,70 @@
   let busy = $state(false);
   let box: HTMLElement | undefined = $state();
   let seq = 0;
+
+  /** After one join: the other rows of the same shape, offered to be fixed together. */
+  let offer = $state<{ fields: number; groups: number[]; same: SameShape } | null>(null);
+  let listing = $state(false);
+  let unticked = $state<Set<number>>(new Set());
+  /** Empty columns past the usual number that could go (0: none), and the revision looked at. */
+  let extra = $state<{ count: number; revision: number }>({ count: 0, revision: 0 });
+
+  /** Look for rows of the same shape after a join, and whether the extra column is empty now. */
+  async function afterRepair(shape: { fields: number; groups: number[] } | null): Promise<void> {
+    offer = null;
+    listing = false;
+    unticked = new Set();
+    try {
+      if (shape && shape.fields !== (tab.info.usual_fields ?? 0)) {
+        const same = await job("Looking for rows of the same shape", () => backend().sameShape(tab.id, tab.header, shape.fields, shape.groups));
+        if (same?.total) offer = { ...shape, same };
+      }
+      const e = await job("Looking at the extra column", () => backend().emptyExtraColumns(tab.id, tab.header));
+      extra = e ? { count: e[0], revision: e[1] } : { count: 0, revision: 0 };
+    } catch (e) {
+      problem = errorText(e);
+    }
+  }
+
+  async function fixAll(): Promise<void> {
+    const o = offer;
+    if (!o || busy) return;
+    busy = true;
+    problem = "";
+    try {
+      const done = await job("Fixing rows", () => backend().fixAll(tab.id, tab.header, o.same.revision, o.fields, $state.snapshot(o.groups), [...unticked]));
+      if (!done) return;
+      onDone(done[1], `Joined the fields in ${done[0].toLocaleString()} ${done[0] === 1 ? "row" : "rows"}.`);
+      await afterRepair(null);
+      const found = await list();
+      if (found.length) await show({ id: found[0]! });
+      else row = null;
+    } catch (e) {
+      problem = errorText(e);
+      offer = null;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function removeExtra(): Promise<void> {
+    if (busy) return;
+    busy = true;
+    problem = "";
+    try {
+      const info = await job("Removing the empty column", () => backend().removeEmptyExtraColumns(tab.id, tab.header, extra.revision));
+      if (!info) return;
+      onDone(info, "Removed the empty column.");
+      extra = { count: 0, revision: 0 };
+      offer = null;
+      await list();
+      if (row) await show({ id: row.id });
+    } catch (e) {
+      problem = errorText(e);
+    } finally {
+      busy = false;
+    }
+  }
 
   const separator = $derived(tab.info.delimiter ?? ",");
   const at = $derived(row ? ids.indexOf(row.id) : -1);
@@ -96,14 +162,16 @@
     box?.focus();
   }
 
-  // Opened for this file; another file means another list.
+  // Opened for this file; another file means another list. (Derived values: an effect runs again only when they
+  // change, not whenever the tab is handed down anew, which would take the bar back to the row it was opened on.)
+  const file = $derived(tab.id);
   $effect(() => {
-    void tab.id;
+    void file;
     untrack(() => void open(start));
   });
   // The table changed elsewhere (an edit, undo, another window): read the row again.
+  const revision = $derived(`${tab.info.history_pos}/${tab.info.data_revision}`);
   $effect(() => {
-    const revision = `${tab.info.history_pos}/${tab.info.data_revision}`;
     void revision;
     untrack(() => {
       if (row && !busy) void list().then(() => row && show({ id: row.id }));
@@ -147,6 +215,7 @@
       const to = found.includes(r.id) ? r.id : stepRow(found, r.id, place, 1);
       if (to !== null) await show({ id: to });
       else row = null;
+      await afterRepair(repair.kind === "join" ? { fields: r.width, groups: repair.groups } : null);
     } catch (e) {
       problem = errorText(e);
     } finally {
@@ -245,6 +314,29 @@
       <span class="muted">Up and Down: other rows. Left and Right, then Space: join or split. Enter applies, Esc closes.</span>
     </div>
   {/if}
+  {#if offer}
+    <div class="offer" data-testid="repair-offer">
+      <div class="actions">
+        <span>{sameShapeWords(offer.same.total, offer.same.hidden, offer.fields)}</span>
+        {#if !listing}<button type="button" onclick={() => (listing = true)}>Fix all like this…</button>{/if}
+      </div>
+      {#if listing}
+        <p class="note">The same fields are joined in each. Untick any of the first {offer.same.first.length.toLocaleString()} to leave it as it is.</p>
+        <ul>
+          {#each offer.same.first as r (r.id)}
+            <li><label><input type="checkbox" checked={!unticked.has(r.id)} onchange={(e) => { const n = new Set(unticked); if (e.currentTarget.checked) n.delete(r.id); else n.add(r.id); unticked = n; }} /> {r.file_row ? `Row ${r.file_row.toLocaleString()}` : "Added row"}: {r.cells.map(shown).join(" ┊ ")}</label></li>
+          {/each}
+        </ul>
+        <button type="button" class="primary" disabled={busy || offer.same.total - unticked.size < 1} onclick={() => void fixAll()}>Fix {(offer.same.total - unticked.size).toLocaleString()} {offer.same.total - unticked.size === 1 ? "row" : "rows"}</button>
+      {/if}
+    </div>
+  {/if}
+  {#if extra.count}
+    <div class="actions" data-testid="repair-extra">
+      <span>{extra.count === 1 ? "The column past the usual number is empty and has no title." : `The ${extra.count} columns past the usual number are empty and have no titles.`}</span>
+      <button type="button" disabled={busy} onclick={() => void removeExtra()}>{extra.count === 1 ? "Remove the empty last column" : "Remove the empty columns"}</button>
+    </div>
+  {/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
 </section>
 
@@ -270,4 +362,6 @@
   th, td { border: 1px solid var(--border); padding: 1px 8px; text-align: left; white-space: pre; font-weight: normal; }
   th { opacity: 0.7; }
   .problem { color: var(--danger, #b00020); }
+  .offer { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 4px; }
+  ul { list-style: none; padding: 0; margin: 4px 0; max-height: 10em; overflow: auto; white-space: nowrap; }
 </style>

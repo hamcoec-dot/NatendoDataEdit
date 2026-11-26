@@ -100,6 +100,37 @@ const url = process.argv[3] || "http://localhost:5301";
   await p.keyboard.press("Escape");
   await p.waitForTimeout(300);
   ok((await p.getByTestId("repair").count()) === 0, "Esc closes the bar");
+  // Fix all like this: two long rows of one shape; a join on one offers the other, unticking is passed on.
+  await p.evaluate(() => {
+    const t = window.__nde.tab;
+    t.update(window.__nde.backend.markRagged(t.id, [], [9, 11, 13], t.info.cols), true);
+    t.bump();
+  });
+  await select(9);
+  await run("data.repairRow");
+  await p.getByRole("button", { name: "Join fields 1 and 2" }).click();
+  await apply.click();
+  await p.getByTestId("repair-offer").waitFor({ timeout: 5000 });
+  ok(/2 other rows have the same shape \(8 fields\)\./.test(await text("repair-offer")), `the other rows are offered (${(await text("repair-offer")).slice(0, 70)})`);
+  ok(/Row 12 of the file/.test(await text("repair-heading")), `opened on a chosen row, it still moves on to the next one (${await text("repair-heading")})`);
+  await p.getByRole("button", { name: "Fix all like this…" }).click();
+  await p.getByTestId("repair-offer").getByRole("checkbox").first().uncheck();
+  if (out) await p.screenshot({ path: path.join(out, "repair-fixall.png") });
+  await p.getByRole("button", { name: "Fix 1 row" }).click();
+  await p.waitForTimeout(800);
+  const fixed = await p.evaluate(() => window.__nde.backend.calls.filter((c) => c.startsWith("fixAll:")).pop() || "");
+  ok(/^fixAll:8:\[2,1,1,1,1,1,1\]:skip=\[11\]:true$/.test(fixed), `fix all asks for the shape and the unticked row (${fixed})`);
+  ok((await p.getByTestId("repair-extra").count()) === 0, "no column offer while a long row is left");
+  await p.getByRole("button", { name: "Join fields 1 and 2" }).click();
+  await apply.click();
+  await p.getByTestId("repair-extra").waitFor({ timeout: 5000 });
+  await p.getByRole("button", { name: "Remove the empty last column" }).click();
+  await p.waitForTimeout(600);
+  ok((await p.evaluate(() => window.__nde.backend.calls.includes("removeEmptyExtraColumns"))) && (await p.getByTestId("repair-extra").count()) === 0, "the empty column is removed when asked");
+  await p.getByTestId("repair").focus();
+  await p.keyboard.press("Escape");
+  await p.waitForTimeout(300);
+
   // After a column change the command is greyed with the reason.
   await p.evaluate(async () => {
     const t = window.__nde.tab;

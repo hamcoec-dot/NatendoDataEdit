@@ -69,4 +69,33 @@ fn main() {
     )
     .unwrap();
     println!("join with the next row: {:.3} ms", ms(t));
+    // "Fix all like this" on 10,000 rows of one shape, in a file of 1,000,000.
+    let many = std::path::Path::new(&path).with_file_name("fixall-1m.csv");
+    if !many.exists() {
+        use std::io::Write;
+        let mut w = std::io::BufWriter::new(std::fs::File::create(&many).unwrap());
+        for r in 0..1_000_000u32 {
+            let n = if r % 100 == 7 { 15 } else { 14 };
+            let row: Vec<String> = (0..n).map(|c| format!("v{}", (r + c) % 9973)).collect();
+            writeln!(w, "{}", row.join(",")).unwrap();
+        }
+    }
+    for round in 0..3 {
+        let mut d = Document::open_indexed(&many, OpenOptions::default(), None).unwrap();
+        let t = Instant::now();
+        let same = d.same_shape(true, 15, &[1, 2], &Progress::new()).unwrap();
+        let looked = ms(t);
+        let t = Instant::now();
+        let n = d
+            .fix_all(true, same.revision, 15, &[1, 2], &[], &Progress::new())
+            .unwrap();
+        let fixed = ms(t);
+        let t = Instant::now();
+        d.empty_extra_columns(true, &Progress::new());
+        println!(
+            "round {round}: same shape {looked:.1} ms ({} rows); fix all {fixed:.1} ms ({n} rows); look at the extra column {:.1} ms",
+            same.total,
+            ms(t)
+        );
+    }
 }

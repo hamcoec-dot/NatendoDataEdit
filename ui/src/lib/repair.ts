@@ -53,6 +53,12 @@ export function noteWarning(before: readonly string[], after: readonly string[],
   return `This row's note is matched on ${keys.map(title).join(", ")}, and this repair changes ${changed.map(title).join(", ")}: the note will no longer match the row.`;
 }
 
+/** What "Fix all like this" offers. */
+export function sameShapeWords(total: number, hidden: number, fields: number): string {
+  const rows = `${total.toLocaleString()} other ${total === 1 ? "row has" : "rows have"} the same shape (${fields.toLocaleString()} fields)`;
+  return hidden ? `${rows}; ${hidden.toLocaleString()} of them ${hidden === 1 ? "is" : "are"} not on screen.` : `${rows}.`;
+}
+
 /** The line about the row itself. */
 export function rowHeading(t: RowText): string {
   const which = t.file_row ? `Row ${t.file_row.toLocaleString()} of the file` : "A row added by hand";

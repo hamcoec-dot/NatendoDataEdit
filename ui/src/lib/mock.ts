@@ -4,6 +4,7 @@
 // behave the same at the command level.
 
 import { COLUMNS_CHANGED } from "./ragged";
+import { joinPreview } from "./repair";
 import { mockDrill, mockItems, mockPivot, type ItemList, type PivotField, type PivotGrid, type PivotSpec } from "./pivot";
 import { isIsoDate, shapeRegex } from "./lint";
 import { shapeOf } from "./insights";
@@ -49,7 +50,7 @@ import { encodeViewport, decodeViewport, type ViewportData } from "./binary";
 import { parseTsv, toTsv } from "./tsv";
 import { runCleaner, type Cleaner, type CleanPreview, type CleanSpec } from "./clean";
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, Summary, View } from "./views";
-import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, Written, TableReport, RaggedList, RowText, RowRepair, Totals } from "./backend";
+import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, Written, TableReport, RaggedList, RowText, RowRepair, SameShape, Totals } from "./backend";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
@@ -798,6 +799,36 @@ export class MockBackend implements Backend {
       this.fakeRagged.set(doc, after);
       return () => void this.fakeRagged.set(doc, before);
     });
+  }
+
+  /** The stand-in's "Fix all like this": the other long rows share a long row's shape. */
+  async sameShape(doc: number, _keepFirst: boolean, fields: number, groups: number[]): Promise<SameShape> {
+    const d = this.get(doc);
+    if (fields === (d.info.usual_fields || d.info.cols)) throw err("invalid", "rows with the usual number of fields are never changed together");
+    const m = this.fakeRagged.get(doc) ?? { short: [], long: [] };
+    const ids = m.long.filter((id) => this.fields(d, doc, id).length === fields);
+    return { revision: d.undo.length, total: ids.length, hidden: 0, first: ids.slice(0, 20).map((id) => ({ id, file_row: id + 1, cells: joinPreview(this.fields(d, doc, id), new Set(groups.flatMap((g, i) => (g > 1 ? [groups.slice(0, i).reduce((a, b) => a + b, 0)] : []))), ",") })) };
+  }
+  async fixAll(doc: number, keepFirst: boolean, revision: number, fields: number, groups: number[], skip: number[]): Promise<[number, DocInfo]> {
+    const d = this.get(doc);
+    if (revision !== d.undo.length) throw err("invalid", "the table changed since the row was read; look again");
+    this.calls.push(`fixAll:${fields}:${JSON.stringify(groups)}:skip=${JSON.stringify(skip)}:${keepFirst}`);
+    const before = this.fakeRagged.get(doc) ?? { short: [], long: [] };
+    const fixed = new Set(before.long.filter((id) => !skip.includes(id) && this.fields(d, doc, id).length === fields));
+    const after = { short: before.short, long: before.long.filter((id) => !fixed.has(id)) };
+    const info = this.push(d, () => {
+      this.fakeRagged.set(doc, after);
+      return () => void this.fakeRagged.set(doc, before);
+    });
+    return [fixed.size, info];
+  }
+  async emptyExtraColumns(doc: number): Promise<[number, number]> {
+    const m = this.fakeRagged.get(doc);
+    return [m && !m.long.length ? 1 : 0, this.get(doc).undo.length];
+  }
+  async removeEmptyExtraColumns(doc: number): Promise<DocInfo> {
+    this.calls.push("removeEmptyExtraColumns");
+    return this.refresh(this.get(doc));
   }
 
   async newDocument(): Promise<DocInfo> {
