@@ -121,6 +121,10 @@ const url = process.argv[3] || "http://localhost:5301";
   ok(JSON.stringify(after) === JSON.stringify(["03/04/2026", "2026-04-25", "2026-07-04"]), `apply: the untyped one stays, the clear and the typed ones change (${JSON.stringify(after)})`);
   const said = ((await p.textContent("footer.status")) || "").replace(/\s+/g, " ");
   ok(/converted/.test(said) && /typed cell/.test(said), `the note says what changed (${said.slice(0, 120)})`);
+  await run("edit.undo");
+  await p.waitForTimeout(800);
+  const back = [await col5(1), await col5(2), await col5(6)];
+  ok(JSON.stringify(back) === JSON.stringify(["03/04/2026", "25/04/2026", "04/07/2026"]), `one undo restores the clear and the typed cells (${JSON.stringify(back)})`);
   await run("data.dateMarksOff");
   // Greyed on a Text column.
   await select(1, 1);

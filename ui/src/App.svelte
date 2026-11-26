@@ -7323,20 +7323,17 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
 
-  /** Run what the review screen chose: the clear dates as one undo step, typed ones as another. */
+  /** Run what the review screen chose: the clear dates and the typed ones, one undo step. */
   async function applyDateReview(done: DateReviewDone): Promise<void> {
     const open = dateReview;
     dateReview = null;
     const t = tab;
     if (!t || !open || t.id !== open.doc) return;
-    const rep = await runOp({ op: "clean", spec: done.spec, now: localNow() }, "Converting dates");
+    const cells = done.typed.map(([row, text]): [number, number, string] => [row, open.col, text]);
+    const rep = await runOp({ op: "clean", spec: done.spec, now: localNow(), typed: cells }, "Converting dates");
     if (rep) {
-      let typed = 0;
+      const typed = cells.length;
       try {
-        if (done.typed.length) {
-          t.update(await backend().setCells(t.id, done.typed.map(([row, text]) => [row, open.col, text])), true);
-          typed = done.typed.length;
-        }
         if (done.remember) t.update(await backend().setColumnType(t.id, open.col, { date: done.remember }), true);
       } catch (e) {
         say(errorText(e));
@@ -7344,9 +7341,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       }
       const left = rep.left ?? 0;
       say(
-        `Dates: ${plural(rep.cells, "cell")} converted` +
+        `Dates: ${plural(rep.cells - typed, "cell")} converted` +
           (typed ? `, ${plural(typed, "typed cell")} set` : "") +
-          `.${left - typed > 0 ? ` ${plural(left - typed, "cell")} left as typed; the ones that could be read two ways stay amber.` : ""} Undo with Ctrl+Z${typed ? " (twice for both)" : ""}.`,
+          `.${left - typed > 0 ? ` ${plural(left - typed, "cell")} left as typed; the ones that could be read two ways stay amber.` : ""} Undo with Ctrl+Z.`,
       );
     }
     void tick().then(() => grid?.focus());
