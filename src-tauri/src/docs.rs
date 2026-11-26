@@ -11,6 +11,7 @@
 //! lock between steps so the first screen can be drawn while a big file is
 //! still being read.
 
+use natendo_engine::gaps::{GapReport, GapsSpec};
 use natendo_engine::document::since::SincePlan;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -416,6 +417,9 @@ pub struct Entry {
     /// The last data-check run: the checks (as JSON), the document revision
     /// and, per unique check, the rows whose value repeats.
     checks: Mutex<Option<LastChecks>>,
+    /// The last gap audit, with the revision it read (for "show the rows
+    /// next to each gap").
+    gaps: Mutex<Option<(u64, Arc<GapReport>)>>,
     /// The quick totals being worked out for the selection, if any: a newer
     /// selection or any change cancels them.
     totals: Mutex<Option<Arc<Progress>>>,
@@ -778,6 +782,10 @@ pub enum DataOp {
     ShowShape {
         spec: natendo_engine::profile::ShapeFilter,
     },
+    /// Show only the rows next to the gaps the last audit of `spec` found.
+    ShowGapRows {
+        spec: GapsSpec,
+    },
     /// Put the rows that fail the checks first.
     SortProblems {
         spec: CheckSpec,
@@ -904,6 +912,10 @@ pub enum TableOp {
     /// A sample of rows.
     Sample {
         spec: Sample,
+    },
+    /// A gap audit's summary and missing ranges.
+    Gaps {
+        spec: GapsSpec,
     },
     /// Each value of one to three columns with its count (the counts tab).
     Counts {
@@ -1330,6 +1342,9 @@ fn recipe_step(op: &DataOp) -> Logged {
         }
         DataOp::ShowRagged { .. } => {
             return Logged::LeftOut("showing ragged rows (a view, not a change)".into())
+        }
+        DataOp::ShowGapRows { .. } => {
+            return Logged::LeftOut("showing the rows next to gaps (a view, not a change)".into())
         }
         DataOp::CompareShow { .. } => {
             return Logged::LeftOut(
@@ -1831,6 +1846,7 @@ impl Docs {
             locked: AtomicBool::new(false),
             peeking: AtomicBool::new(false),
             checks: Mutex::new(None),
+            gaps: Mutex::new(None),
             totals: Mutex::new(None),
             find_count: Mutex::new(None),
             ghost_count: Mutex::new(None),
@@ -5908,9 +5924,10 @@ impl Docs {
             DataOp::FillExample { .. } => "Filling by example",
             DataOp::Compute { .. } => "Computing",
             // Showing rows changes no data, so a locked file allows it.
-            DataOp::ShowProblems { .. } | DataOp::ShowRagged { .. } | DataOp::ShowShape { .. } => {
-                "Filtering"
-            }
+            DataOp::ShowProblems { .. }
+            | DataOp::ShowRagged { .. }
+            | DataOp::ShowShape { .. }
+            | DataOp::ShowGapRows { .. } => "Filtering",
             DataOp::CompareShow { .. } | DataOp::CompareColumn { .. } => "Comparing",
             DataOp::FormulaFilter { .. } => "Filtering",
             DataOp::SortProblems { .. } | DataOp::CheckColumn { .. } => "Checking",
@@ -6067,6 +6084,19 @@ impl Docs {
                     Planned::Rows(d.plan_show_problems(&rep, spec.keep_first, *passing)?)
                 }
                 DataOp::ShowShape { spec } => Planned::Rows(d.plan_shape_filter(spec, p)?),
+                DataOp::ShowGapRows { spec } => {
+                    let last = entry.gaps.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                    let report = last
+                        .filter(|(rev, r)| *rev == d.revision() && r.spec() == spec)
+                        .map(|(_, r)| r)
+                        .ok_or_else(|| {
+                            CmdError::new(
+                                "changed",
+                                "the table changed since the audit: run the audit again",
+                            )
+                        })?;
+                    Planned::Rows(d.plan_show_gaps(&report)?)
+                }
                 DataOp::ShowRagged { pick, keep_first } => {
                     let found = d.ragged_rows(*keep_first, p)?;
                     groups.set(found.short);
@@ -6613,6 +6643,16 @@ impl Docs {
         Ok(r)
     }
 
+    /// Find the numbers missing from a column (a job: progress and Cancel).
+    pub fn gap_audit(&self, id: u32, spec: &GapsSpec) -> CmdResult<Arc<GapReport>> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for gaps")?;
+        let d = entry.read();
+        let r = Arc::new(d.gap_audit(spec, &job.progress)?);
+        *entry.gaps.lock().unwrap_or_else(|p| p.into_inner()) = Some((d.revision(), r.clone()));
+        Ok(r)
+    }
+
     /// X-ray the shown rows of `cols` (none: every column) for gremlins: a job with progress and Cancel.
     /// Only counts and row numbers come back, never a value.
     pub fn xray_report(
@@ -6960,6 +7000,15 @@ impl Docs {
                     t
                 }
                 TableOp::Counts { spec } => d.counts_table(spec, &job.progress)?.0,
+                TableOp::Gaps { spec } => {
+                    let names = d.expr_names(spec.keep_first);
+                    let titles: Vec<String> = spec
+                        .series
+                        .iter()
+                        .map(|&c| names.get(c as usize).cloned().unwrap_or_default())
+                        .collect();
+                    d.gap_audit(spec, &job.progress)?.table(&titles)?
+                }
                 TableOp::Compare { .. } => unreachable!("handled above"),
             }
         };
@@ -6993,6 +7042,7 @@ impl Docs {
                 None => format!("Sample ({stem})"),
             },
             TableOp::Counts { .. } => format!("Counts ({stem})"),
+            TableOp::Gaps { .. } => format!("Gaps ({stem})"),
             TableOp::Compare { other, .. } => format!("Compare {stem} with {}", self.stem(*other)),
         };
         self.set_title_of(nid, title);

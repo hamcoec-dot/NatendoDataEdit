@@ -8,6 +8,7 @@ use std::path::Path;
 
 use natendo_engine::counts::CountsSpec;
 use natendo_engine::expr::ComputeSpec;
+use natendo_engine::gaps::{GapsSpec, Pattern};
 use natendo_engine::profile::ProfileSpec;
 use natendo_engine::recipe::RecipeOp;
 use natendo_engine::reshape::Duplicates;
@@ -415,6 +416,84 @@ pub fn count(args: &[&str]) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// A shape typed as its label (`INV-#####`): the last run of `#` is the
+/// number, padded with zeros when it is longer than one.
+fn shape_from(label: &str) -> Result<Pattern, String> {
+    let end = label
+        .rfind('#')
+        .ok_or("--shape takes a shape with # for the number, like INV-#####")?
+        + 1;
+    let from = label[..end].trim_end_matches('#').len();
+    let width = (end - from) as u32;
+    Ok(Pattern {
+        prefix: label[..from].to_string(),
+        suffix: label[end..].to_string(),
+        width: if width > 1 { width } else { 0 },
+    })
+}
+
+/// `gaps <in> --column <c>`: the numbers missing from a column. `Ok(false)`
+/// with `--fail-on-gap` and at least one gap.
+pub fn gaps(args: &[&str], json_out: bool) -> Result<bool, String> {
+    let o = opts(
+        args,
+        &["--column", "--series", "--digits", "--shape", "--from", "--to"],
+        &["--each-shape", "--fail-on-gap"],
+    )?;
+    let input = one_input(&o)?;
+    let d = load(input, sheet(&o)?)?;
+    let header = o.header();
+    let col = col_of(&d, header, o.get("--column").ok_or("give --column")?)?;
+    let series = o
+        .values
+        .iter()
+        .filter(|(n, _)| *n == "--series")
+        .map(|(_, v)| col_of(&d, header, v))
+        .collect::<Result<Vec<_>, _>>()?;
+    let run = match o.get("--digits") {
+        Some(v) => Some(
+            v.parse::<u32>()
+                .ok()
+                .and_then(|n| n.checked_sub(1))
+                .ok_or("--digits takes which run of digits, counted from the right, from 1")?,
+        ),
+        None => None,
+    };
+    let spec = GapsSpec {
+        col,
+        series: series.clone(),
+        keep_first: header,
+        run,
+        pattern: o.get("--shape").map(shape_from).transpose()?,
+        each_shape: o.has("--each-shape"),
+        start: o.get("--from").unwrap_or_default().to_string(),
+        end: o.get("--to").unwrap_or_default().to_string(),
+    };
+    let r = d
+        .gap_audit(&spec, &Progress::new())
+        .map_err(|e| e.to_string())?;
+    if json_out {
+        print_json(&serde_json::to_value(&r).map_err(|e| e.to_string())?);
+    } else {
+        if let Some(p) = &r.pattern {
+            println!("shape {}", p.label());
+        }
+        println!(
+            "{} rows, {} different numbers, {} missing in {} ranges",
+            r.rows, r.distinct, r.missing, r.range_total
+        );
+        println!(
+            "{} repeated numbers, {} drops in file order, {} of another shape, {} blank",
+            r.duplicate_values, r.drops, r.other_shape, r.blank
+        );
+        if r.looks_like_amounts {
+            println!("note: this column looks like amounts, not IDs");
+        }
+        print!("{}", r.copy_text());
+    }
+    Ok(!(o.has("--fail-on-gap") && r.range_total > 0))
 }
 
 /// `sample <in> -o <out> (--rows N | --percent P | --every N) [--seed S]`.
