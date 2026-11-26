@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use natendo_engine::dbf::{self, DbfInfo, Sidecars};
 use natendo_engine::import::{self, ImportFormat, ImportInfo, ImportOptions};
 use natendo_engine::sheet::SheetStats;
 use natendo_engine::Progress;
@@ -33,7 +34,56 @@ struct Session {
     /// The file it came from (none for the clipboard).
     path: Option<std::path::PathBuf>,
     data: Vec<u8>,
+    /// dBase: the files beside the table.
+    beside: Option<Arc<Sidecars>>,
     progress: Mutex<Option<Arc<Progress>>>,
+}
+
+impl Session {
+    /// The options with the session's own files filled in.
+    fn with(&self, opts: &ImportOptions) -> ImportOptions {
+        ImportOptions {
+            beside: self.beside.clone(),
+            ..opts.clone()
+        }
+    }
+}
+
+/// What the import screen says about a dBase table: counts, the encoding and
+/// why, the coordinate system and the warnings (field names and counts only).
+fn dbf_summary(info: &DbfInfo, warnings: &[String]) -> String {
+    let mut s = format!(
+        "{}, {}. Text is read as {} ({}).",
+        count_of(info.records, "record", "records"),
+        count_of(u64::from(info.fields), "field", "fields"),
+        info.encoding,
+        info.rule
+    );
+    if !info.projection.is_empty() {
+        s.push_str(&format!(" Coordinate system: {}", info.projection));
+        s.push('.');
+    }
+    for w in warnings {
+        let mut c = w.chars();
+        if let Some(first) = c.next() {
+            s.push(' ');
+            s.extend(first.to_uppercase());
+            s.push_str(c.as_str());
+            s.push('.');
+        }
+    }
+    s
+}
+
+/// Size and time of a file, to notice a program writing it while it is read.
+fn stamps(path: &Path) -> Vec<Option<(u64, std::time::SystemTime)>> {
+    [path.to_path_buf(), path.with_extension("dbt")]
+        .iter()
+        .map(|p| {
+            let m = std::fs::metadata(p).ok()?;
+            Some((m.len(), m.modified().ok()?))
+        })
+        .collect()
 }
 
 /// Rows looked at to count what the "exactly as written" guards did (a bigger file says "in the first N rows").
@@ -169,6 +219,9 @@ pub struct ImportStart {
     pub id: u32,
     pub name: String,
     pub info: ImportInfo,
+    /// Said above the import screen's options (why this file opened).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 #[derive(Default)]
@@ -202,6 +255,7 @@ impl Imports {
         ext: Option<String>,
         path: Option<std::path::PathBuf>,
         data: Vec<u8>,
+        beside: Option<Arc<Sidecars>>,
     ) -> CmdResult<ImportStart> {
         let info = import::inspect(&data, ext.as_deref(), None)?;
         let mut map = self.map();
@@ -219,14 +273,25 @@ impl Imports {
                 ext,
                 path,
                 data,
+                beside,
                 progress: Mutex::new(None),
             }),
         );
-        Ok(ImportStart { id, name, info })
+        Ok(ImportStart {
+            id,
+            name,
+            info,
+            note: String::new(),
+        })
     }
 
     /// Read a file the user picked (never a path from the webview).
     pub fn open_path(&self, path: &Path) -> CmdResult<ImportStart> {
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase());
+        let table = ext.as_deref() == Some("dbf");
+        let before = table.then(|| stamps(path));
         let f = std::fs::File::open(path).map_err(|e| CmdError::new("error", e.to_string()))?;
         let mut data = Vec::new();
         f.take(MAX_IMPORT_BYTES + 1)
@@ -242,10 +307,17 @@ impl Imports {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Imported".into());
-        let ext = path
-            .extension()
-            .map(|e| e.to_string_lossy().to_ascii_lowercase());
-        self.start(name, ext, Some(path.to_path_buf()), data)
+        let beside = table.then(|| {
+            let mut side = Sidecars::beside(path);
+            if before != Some(stamps(path)) {
+                side.problems.push(
+                    "the file changed while it was being read: close it in the program writing it and open it again"
+                        .into(),
+                );
+            }
+            Arc::new(side)
+        });
+        self.start(name, ext, Some(path.to_path_buf()), data, beside)
     }
 
     /// Clipboard text, sent by the UI (capped).
@@ -256,7 +328,7 @@ impl Imports {
                 "the clipboard holds too much text",
             ));
         }
-        self.start("Clipboard".into(), None, None, text.into_bytes())
+        self.start("Clipboard".into(), None, None, text.into_bytes(), None)
     }
 
     /// What the source holds with another format chosen.
@@ -274,6 +346,25 @@ impl Imports {
         let format = opts
             .format
             .unwrap_or_else(|| import::guess(s.ext.as_deref(), &s.data));
+        if format == ImportFormat::Dbf {
+            let opts = s.with(opts);
+            let none = Sidecars::default();
+            let side = opts.beside.as_deref().unwrap_or(&none);
+            let info = dbf::inspect(&s.data, side, &opts.dbf)?;
+            let (_, st) = import::import_report(
+                &s.data,
+                s.ext.as_deref(),
+                &opts,
+                Some(NOTES_ROWS),
+                &Progress::new(),
+            )?;
+            return Ok(ImportNotes {
+                summary: dbf_summary(&info, &st.warnings),
+                scanned_rows: info.records.min(NOTES_ROWS),
+                all_scanned: info.records < NOTES_ROWS,
+                ..Default::default()
+            });
+        }
         if format != ImportFormat::Spreadsheet {
             return Ok(ImportNotes::default());
         }
@@ -303,7 +394,7 @@ impl Imports {
         let t = import::import(
             &s.data,
             s.ext.as_deref(),
-            opts,
+            &s.with(opts),
             Some(PREVIEW_ROWS),
             &Progress::new(),
         )?;
@@ -335,7 +426,8 @@ impl Imports {
             let doc = if format == ImportFormat::Delimited {
                 import::delimited(&s.data, s.ext.as_deref())?
             } else {
-                import::import(&s.data, s.ext.as_deref(), opts, None, &progress)?.into_document()?
+                import::import(&s.data, s.ext.as_deref(), &s.with(opts), None, &progress)?
+                    .into_document()?
             };
             Ok::<_, CmdError>(doc)
         })();
@@ -399,6 +491,7 @@ mod tests {
             padded_applied: 4,
             padded_left: 1,
             kept_columns: vec![0, 1],
+            warnings: Vec::new(),
         };
         let names: Vec<String> = ["Account", "ZIP", "Name"]
             .iter()

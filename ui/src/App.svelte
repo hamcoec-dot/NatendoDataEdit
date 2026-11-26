@@ -285,6 +285,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** Save encrypted over this file (Save on a tab from an encrypted file). */
   let encryptSame = $state<string | null>(null);
   let sqliteMode = $state<"save" | "open" | null>(null);
+  /** The database an Open, drop or double-click chose, for the table list. */
+  let sqliteStart = $state<Opened["sqlite"] | null>(null);
   let notesRow = $state<number | null>(null);
   let watchOpen = $state(false);
   let recipeFilesOpen = $state(false);
@@ -752,6 +754,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (o?.doc) addTab(o.doc);
     else if (o?.import) importing = o.import;
     else if (o?.zip) zipPick = o.zip;
+    else if (o?.sqlite) {
+      // A database or GeoPackage: the table list, with this file already chosen.
+      sqliteStart = o.sqlite;
+      sqliteMode = "open";
+    }
     if (o) void loadRecent();
   }
 
@@ -804,7 +811,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         return "open";
       }
       opened(o);
-      return o.import || o.zip ? "import" : o.doc ? "opened" : "failed";
+      return o.import || o.zip || o.sqlite ? "import" : o.doc ? "opened" : "failed";
     } catch (e) {
       say(errorText(e));
       void loadRecent();
@@ -1406,6 +1413,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         void backend().importClose(s.id).catch(() => {});
       }
       if (!d && o?.zip) say(`${o.zip.name} holds ${o.zip.entries.length} tables: open the one you want with File › Open first, then pick it here.`);
+      if (!d && o?.sqlite) say("That is a database: open the table you want with File › Open first, then pick it here.");
       if (!d) return null;
       addTab(d);
       const nt = tabs[tabs.length - 1]!;
@@ -6128,7 +6136,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "file.recent", label: "Open &recent…", keys: ["Ctrl+Shift+O"], run: () => void loadRecent().then(() => (recentOpen = true)) },
     { id: "file.openEncrypted", label: "Open an &encrypted file…", run: () => { encryptMode = "open"; } },
     { id: "file.saveEncrypted", label: "Save an encr&ypted copy…", run: () => { encryptMode = "save"; }, enabled: ready },
-    { id: "file.openSqlite", label: "Open a table from a &database…", run: () => { sqliteMode = "open"; } },
+    { id: "file.openSqlite", label: "Open a table from a &database or GeoPackage…", run: () => { sqliteStart = null; sqliteMode = "open"; } },
     { id: "file.saveSqlite", label: "Save as a table in a data&base…", run: () => { sqliteMode = "save"; }, enabled: ready },
     { id: "file.save", label: "&Save", keys: ["Ctrl+S", "Shift+F12"], run: () => void save(false), enabled: ready },
     { id: "file.saveAs", label: "Save &As…", keys: ["F12"], run: () => void save(true), enabled: ready },
@@ -8802,13 +8810,14 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 {#if sqliteMode}
   <SqliteDialog
     mode={sqliteMode}
+    start={sqliteStart}
     doc={tab?.id ?? null}
     docName={tab?.info.name ?? ""}
     header={tab?.header ?? true}
     filtered={!!tab && tab.info.rows < tab.info.total_rows}
     onSaved={(n) => { sqliteMode = null; say(`Saved ${plural(n, "row")} to the database.`); grid?.focus(); }}
-    onOpened={(info, note) => { sqliteMode = null; addTab(info, true); say(`Opened the table in a new tab.${note ? ` ${note}` : ""} Save it as a file with File ▸ Save as, or back to a database with File ▸ Save as a table in a database.`); }}
-    onClose={() => { sqliteMode = null; grid?.focus(); }}
+    onOpened={(info, note) => { sqliteMode = null; sqliteStart = null; addTab(info, true); say(`Opened the table in a new tab.${note ? ` ${note}` : ""} Save it as a file with File ▸ Save as, or back to a database with File ▸ Save as a table in a database.`); }}
+    onClose={() => { sqliteMode = null; sqliteStart = null; grid?.focus(); }}
   />
 {/if}
 

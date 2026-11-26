@@ -4893,7 +4893,8 @@ impl Docs {
     /// them as binary numbers, so trailing zeros were lost inside the database); empty when none.
     pub fn open_sqlite_report(&self, path: &Path, table: &str) -> CmdResult<(DocInfo, String)> {
         let progress = Progress::new();
-        let (doc, decimal) = natendo_engine::sqlite::read_table_report(path, table, &progress)?;
+        let opened = natendo_engine::sqlite::read_table_report(path, table, &progress)?;
+        let (doc, decimal, geometry) = (opened.doc, opened.decimal, opened.geometry);
         let names = doc.row_values(0).unwrap_or_default();
         let note = if decimal.is_empty() {
             String::new()
@@ -4919,6 +4920,17 @@ impl Docs {
                 if decimal.len() == 1 { "Column" } else { "Columns" },
                 list.join(", ")
             )
+        };
+        // Shapes left out are named, so nobody thinks the file has none.
+        let note = if geometry.is_empty() {
+            note
+        } else {
+            let shapes = format!(
+                "Geometry column{} {} not shown.",
+                if geometry.len() == 1 { "" } else { "s" },
+                geometry.join(", ")
+            );
+            format!("{shapes} {note}").trim_end().to_string()
         };
         let name = path
             .file_name()

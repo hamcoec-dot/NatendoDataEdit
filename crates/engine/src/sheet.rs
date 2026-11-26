@@ -65,6 +65,9 @@ pub struct SheetStats {
     pub padded_left: u64,
     /// Columns where a guard kept a cell exactly (big whole numbers or padded cells), sorted.
     pub kept_columns: Vec<u32>,
+    /// dBase tables: what could not be read as stored (field names and counts).
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 impl SheetStats {

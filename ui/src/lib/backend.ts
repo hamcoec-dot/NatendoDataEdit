@@ -1352,7 +1352,7 @@ export interface XrayReport {
   columns: { col: number; cells: number; kinds: [string, number][] }[];
 }
 
-export type ImportFormat = "spreadsheet" | "json" | "xml" | "html" | "markdown" | "delimited" | "fixed_width" | "pattern";
+export type ImportFormat = "spreadsheet" | "json" | "xml" | "html" | "markdown" | "delimited" | "fixed_width" | "pattern" | "dbf";
 export type Unmatched = "join" | "row" | "skip";
 export interface ImportOptions {
   format: ImportFormat | null;
@@ -1367,6 +1367,14 @@ export interface ImportOptions {
   unmatched?: Unmatched;
   /** Numbers shown with a zero-padding format (00123): true writes them padded, false/absent keeps the number. */
   pad_zeros?: boolean | null;
+  /** dBase tables. */
+  dbf?: DbfOptions;
+}
+export interface DbfOptions {
+  /** An encoding label; empty: from the .cpg file, the table's own code, or a guess. */
+  encoding: string;
+  fid: "off" | "from0" | "from1";
+  show_deleted: boolean;
 }
 /** What the "exactly as written" import guards did: counts and column names only, never cell values. */
 export interface ImportNotes {
@@ -1398,6 +1406,8 @@ export interface ImportStart {
   id: number;
   name: string;
   info: ImportInfo;
+  /** Why this file opened (a shapefile opens its attribute table). */
+  note?: string;
 }
 /** What Open did: a document, or a file for the import screen. */
 export interface Opened {
@@ -1405,6 +1415,8 @@ export interface Opened {
   import: ImportStart | null;
   /** A zip file holding several tables: pick which to open. */
   zip?: ZipList;
+  /** A database or GeoPackage: its path and tables, to pick from. */
+  sqlite?: [string, import("./sqlite").DbTable[]];
 }
 export interface ZipList {
   token: number;

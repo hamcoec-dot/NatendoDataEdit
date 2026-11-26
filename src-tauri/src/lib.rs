@@ -78,10 +78,12 @@ async fn blocking<T: Send + 'static>(
 
 const FILE_TYPES: &[&str] = &["csv", "tsv", "tab", "txt", "psv", "dat", "ssv"];
 const SHEET_TYPES: &[&str] = &["xlsx", "xlsm", "ods"];
+/// A shapefile opens its attribute table.
+const SHAPE_TYPES: &[&str] = &["shp"];
 /// Zipped and gzipped tables (opened without unpacking to disk).
 const PACKED_TYPES: &[&str] = &["gz", "zip"];
 const OTHER_TYPES: &[&str] = &[
-    "json", "jsonl", "ndjson", "xml", "html", "htm", "md", "log", "prn", "fwf",
+    "json", "jsonl", "ndjson", "xml", "html", "htm", "md", "log", "prn", "fwf", "dbf",
 ];
 
 fn is_import_type(path: &std::path::Path) -> bool {
@@ -99,6 +101,24 @@ struct Opened {
     /// A zip file holding several tables: pick which to open.
     #[serde(skip_serializing_if = "Option::is_none")]
     zip: Option<zips::ZipList>,
+    /// A database or GeoPackage: pick which table to open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sqlite: Option<(String, Vec<natendo_engine::sqlite::DbTable>)>,
+}
+
+fn is_database(path: &std::path::Path) -> bool {
+    path.extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .is_some_and(|e| natendo_engine::sqlite::OPENED_EXTENSIONS.contains(&e.as_str()))
+}
+
+/// The tables of the database at `path`, which becomes the picked one.
+fn pick_database(
+    path: &std::path::Path,
+) -> CmdResult<(String, Vec<natendo_engine::sqlite::DbTable>)> {
+    let list = natendo_engine::sqlite::tables(path)?;
+    *SQLITE_PICKED.lock().unwrap_or_else(|p| p.into_inner()) = Some(path.to_path_buf());
+    Ok((path.display().to_string(), list))
 }
 
 /// Open a path the shell chose (dialog, recent list, folder listing):
@@ -119,18 +139,57 @@ fn open_any(
             "this file is encrypted: open it with File > Open an encrypted file, which asks for its password",
         ));
     }
-    let opened = if zips::is_zip_path(path) {
+    // A shapefile's parts open its attribute table.
+    if let Some(table) = natendo_engine::dbf::shapefile_table(path) {
+        let mut start = imports.open_path(&table)?;
+        let name = |p: &std::path::Path| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        start.note = format!(
+            "Opened {} (the attribute table of {}); the shapes are not shown.",
+            name(&table),
+            name(&path.with_extension("shp"))
+        );
+        recent.add(&table);
+        return Ok(Opened {
+            doc: None,
+            import: Some(start),
+            zip: None,
+            sqlite: None,
+        });
+    }
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("shp"))
+    {
+        return Err(CmdError::new(
+            "error",
+            "this shapefile has no .dbf file beside it, so there is no attribute table to show",
+        ));
+    }
+    let opened = if is_database(path) {
+        Opened {
+            doc: None,
+            import: None,
+            zip: None,
+            sqlite: Some(pick_database(path)?),
+        }
+    } else if zips::is_zip_path(path) {
         // A zip of tables: one opens at once; several are listed to pick.
         match zips::ZIPS.list(path)? {
             zips::Listed::One(name) => Opened {
                 doc: zips::ZIPS.open_entry(docs, path, &name)?.into_iter().next(),
                 import: None,
                 zip: None,
+                sqlite: None,
             },
             zips::Listed::Many(list) => Opened {
                 doc: None,
                 import: None,
                 zip: Some(list),
+                sqlite: None,
             },
         }
     } else if is_import_type(path) {
@@ -138,6 +197,7 @@ fn open_any(
             doc: None,
             import: Some(imports.open_path(path)?),
             zip: None,
+            sqlite: None,
         }
     } else {
         let info = docs.open_path(path, false)?;
@@ -145,6 +205,7 @@ fn open_any(
             doc: Some(info),
             import: None,
             zip: None,
+            sqlite: None,
         }
     };
     recent.add(path);
@@ -390,6 +451,7 @@ async fn open_recent(
                 doc: Some(docs.info(doc)?),
                 import: None,
                 zip: None,
+                sqlite: None,
             });
         }
         let r = open_any(&docs, &imports, &recent, &path);
@@ -543,6 +605,7 @@ async fn session_open(
                 doc: Some(docs.info(doc)?),
                 import: None,
                 zip: None,
+                sqlite: None,
             },
             None => open_any(&docs, &imports, &recent, &path)?,
         };
@@ -1042,6 +1105,8 @@ async fn open_file(
             .chain(SHEET_TYPES)
             .chain(OTHER_TYPES)
             .chain(PACKED_TYPES)
+            .chain(SHAPE_TYPES)
+            .chain(natendo_engine::sqlite::OPENED_EXTENSIONS)
             .copied()
             .collect();
         let Some(path) = rfd::FileDialog::new()
@@ -1050,6 +1115,11 @@ async fn open_file(
             .add_filter("Delimited text", FILE_TYPES)
             .add_filter("Spreadsheets", SHEET_TYPES)
             .add_filter("Zipped tables (.gz, .zip)", PACKED_TYPES)
+            .add_filter(
+                "Databases and GeoPackages",
+                natendo_engine::sqlite::OPENED_EXTENSIONS,
+            )
+            .add_filter("Shapefile attribute tables (.dbf, .shp)", &["dbf", "shp"])
             .add_filter("All files", &["*"])
             .set_parent(&window)
             .pick_file()
@@ -1633,6 +1703,7 @@ async fn open_folder_hit(
                 doc: Some(docs.info(id)?),
                 import: None,
                 zip: None,
+                sqlite: None,
             });
         }
         open_any(&docs, &imports, &recent, &path)
@@ -1738,9 +1809,7 @@ async fn sqlite_pick(
         else {
             return Ok(None);
         };
-        let list = natendo_engine::sqlite::tables(&path)?;
-        *SQLITE_PICKED.lock().unwrap_or_else(|p| p.into_inner()) = Some(path.clone());
-        Ok(Some((path.display().to_string(), list)))
+        pick_database(&path).map(Some)
     })
     .await
 }

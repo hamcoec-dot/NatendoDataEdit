@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use natendo_engine::dbf::Sidecars;
 use natendo_engine::export::{ExportFormat, ExportOptions};
 use natendo_engine::expr::ComputeSpec;
 use natendo_engine::import::{self, ImportOptions};
@@ -82,7 +83,7 @@ fn ext_of(p: &str) -> Option<String> {
 
 const IMPORT_TYPES: &[&str] = &[
     "xlsx", "xlsm", "ods", "json", "jsonl", "ndjson", "geojson", "xml", "html", "htm", "md",
-    "markdown", "log", "prn", "fwf",
+    "markdown", "log", "prn", "fwf", "dbf",
 ];
 
 /// Open any table file: delimited text directly, other formats by import.
@@ -98,10 +99,16 @@ pub(crate) fn load(path: &str, sheet: u32) -> Result<Document, String> {
     let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     let opts = ImportOptions {
         part: sheet,
+        beside: (ext.as_deref() == Some("dbf"))
+            .then(|| std::sync::Arc::new(Sidecars::beside(Path::new(path)))),
         ..Default::default()
     };
-    let t = import::import(&data, ext.as_deref(), &opts, None, &Progress::new())
+    let (t, st) = import::import_report(&data, ext.as_deref(), &opts, None, &Progress::new())
         .map_err(|e| format!("{path}: {e}"))?;
+    // Standard error, so the output (and --json) stays clean.
+    for w in st.warnings {
+        eprintln!("{path}: {w}");
+    }
     t.into_document().map_err(|e| format!("{path}: {e}"))
 }
 

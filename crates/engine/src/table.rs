@@ -46,6 +46,11 @@ impl Sink {
         self.out.reserve(n.min(self.room()));
     }
 
+    /// This table is a preview: it takes a limited number of rows.
+    pub fn is_preview(&self) -> bool {
+        self.limit.is_some()
+    }
+
     /// The preview limit is reached; readers may stop.
     pub fn full(&self) -> bool {
         self.limit.is_some_and(|l| self.rows >= l)
@@ -74,6 +79,27 @@ impl Sink {
     /// `n` empty rows.
     pub fn empty_rows(&mut self, n: u64) {
         self.pending = self.pending.saturating_add(n);
+    }
+
+    /// One empty row that is data: written now, not held back as padding.
+    pub fn blank_row(&mut self) -> Result<(), Error> {
+        if self.full() {
+            return Ok(());
+        }
+        let n = self.pending.saturating_add(1);
+        if self.cells.saturating_add(n) > MAX_TABLE_CELLS
+            || self.out.len() as u64 + 2 * n > MAX_TABLE_BYTES as u64
+        {
+            return Err(too_big());
+        }
+        let n = self.take(n);
+        for _ in 0..n {
+            self.out.extend_from_slice(b"\r\n");
+        }
+        self.rows += n;
+        self.cells += n;
+        self.pending = 0;
+        Ok(())
     }
 
     /// One row; trailing empty cells are dropped.

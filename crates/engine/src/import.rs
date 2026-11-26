@@ -6,11 +6,13 @@
 //! same caps as pivot (50M cells, 1 GiB of text).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::dbf::{DbfInfo, DbfOptions, Sidecars};
 use crate::document::{Document, OpenOptions, Progress};
 use crate::encoding;
 use crate::reshape::Table;
@@ -43,6 +45,8 @@ pub enum ImportFormat {
     FixedWidth,
     /// Lines cut by a pattern (log files).
     Pattern,
+    /// A dBase table (a shapefile's attributes).
+    Dbf,
 }
 
 /// What the import screen can choose from.
@@ -69,6 +73,12 @@ pub struct ImportOptions {
     pub pattern: String,
     /// Pattern: lines that do not fit.
     pub unmatched: crate::logs::Unmatched,
+    /// dBase: encoding, record numbers, deleted records.
+    pub dbf: DbfOptions,
+    /// dBase: the files beside the table (set by whoever opened the file,
+    /// never by the webview).
+    #[serde(skip)]
+    pub beside: Option<Arc<Sidecars>>,
 }
 
 /// What a source holds, for the import screen.
@@ -87,6 +97,8 @@ pub struct ImportInfo {
     pub lines: Vec<String>,
     /// Pattern: the preset that fits best (its pattern).
     pub pattern: String,
+    /// dBase: records, encoding and warnings.
+    pub dbf: Option<DbfInfo>,
 }
 
 /// Guess the format from a file extension and the first bytes.
@@ -100,6 +112,7 @@ pub fn guess(ext: Option<&str>, data: &[u8]) -> ImportFormat {
         "md" | "markdown" => return ImportFormat::Markdown,
         "prn" | "fwf" => return ImportFormat::FixedWidth,
         "log" => return ImportFormat::Pattern,
+        "dbf" => return ImportFormat::Dbf,
         _ => {}
     }
     if crate::zipread::is_zip(data) {
@@ -212,6 +225,13 @@ pub fn inspect(
                 .to_string();
             info.lines = crate::fixed::ruler_lines(&text);
         }
+        ImportFormat::Dbf => {
+            info.dbf = Some(crate::dbf::inspect(
+                data,
+                &Sidecars::default(),
+                &Default::default(),
+            )?);
+        }
         ImportFormat::Json | ImportFormat::Delimited => {}
     }
     Ok(info)
@@ -293,6 +313,16 @@ pub fn import_report(
                 };
                 crate::logs::read(&text, pattern, opts.unmatched, &mut sink)?;
             }
+        }
+        ImportFormat::Dbf => {
+            let none = Sidecars::default();
+            let beside = opts.beside.as_deref().unwrap_or(&none);
+            let warnings = crate::dbf::read(data, beside, &opts.dbf, &mut sink, progress)?;
+            let stats = SheetStats {
+                warnings,
+                ..Default::default()
+            };
+            return Ok((sink.finish(), stats));
         }
         ImportFormat::Delimited => {
             // A preview reads only the start of the text.

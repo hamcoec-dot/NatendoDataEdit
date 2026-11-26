@@ -995,6 +995,22 @@ everything is also in command search.
   ![The import screen: long numbers kept exactly, one question about leading zeros](docs/screenshots/import-exact.png)
 - **SQLite:** open a table or view from a SQLite database (read-only), or
   save the table into a new or existing database.
+- **Shapefile attribute tables:** open a `.dbf` file (dBase III, IV or 7, or
+  Visual FoxPro), or a shapefile's `.shp`, `.shx`, `.prj` or `.cpg`, which
+  opens the `.dbf` beside it; the shapes are not shown. The import screen
+  picks the text encoding (from the `.cpg` file, the table's own code, or a
+  guess), says which of those it used, and lets you change it. A record number
+  column, **FID**, counted from 0 as GIS programs number shapes (or from 1, or
+  left out), lets you join your edits back to the shapes. Records marked as
+  deleted are left out unless you ask for them. Numbers come through as the
+  text in the file, memo text is read from the `.dbt` file, and the `.dbf`
+  itself is never written: edit here, export a CSV, and join it on FID in your
+  GIS program.
+
+  ![The import screen of a made-up .dbf: why it opened, the encoding and the rule that chose it, the record number column](docs/screenshots/import-dbf.png)
+- **GeoPackage:** open a `.gpkg` file to pick one of its layers or attribute
+  tables. Shapes (geometry columns) are not read; a note names the ones left
+  out. The file is only read, and nothing is created beside it.
 - **JSON Lines** (`.jsonl`, `.ndjson`): open them (one record per line, read
   as it streams) and export to them, the format web tools and databases use
   for logs and records.
@@ -1443,6 +1459,13 @@ request must carry the key. Requests are one JSON object per line:
 ```
 
 ## Known limits
+
+- A `.dbf` file is read, never written. FoxPro memo files (`.fpt`) are not
+  read, and of the old DOS code pages only 437, 850 and 866 are.
+- GeoPackage shapes are not shown, and a GeoPackage is never written.
+- A database or GeoPackage with unsaved changes in its `-wal` or `-journal`
+  file is not opened (reading it could create or change files beside it):
+  close it in the other program first.
 
 - The installer is not code-signed (needs a certificate), so SmartScreen warns.
 - Windows only for now.
