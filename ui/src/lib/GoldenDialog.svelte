@@ -141,11 +141,11 @@
     {#if needsDate}
       <label class="row">Date column <select bind:value={dateCol}><option value={null}>choose…</option>{#each titles as t, c (c)}<option value={c}>{t}</option>{/each}</select></label>
       {#if rules.includes("newest")}<label class="row"><input type="checkbox" bind:checked={blankCounts} /> A newer blank replaces an older value</label>{/if}
-      <p class="note">A date that could be read two ways (03/04/2026), has a two-digit year or cannot be read keeps the first value, and the cell is highlighted.</p>
+      <p class="note">On equal dates the first row in the table wins. If any date in a cluster can be read two ways (03/04/2026), has a two-digit year or cannot be read, the first value is kept and the cell is highlighted.</p>
     {/if}
   </details>
   <label class="row">Name merged rows by <select bind:value={idCol}><option value={null}>row number in the file</option>{#each titles as t, c (c)}<option value={c}>{t}</option>{/each}</select></label>
-  <p class="note">The new columns Merged_IDs (the main row first) and Merged_Count say which rows became which. They are as private as the column you name them by.</p>
+  <p class="note">The new columns Merged_IDs (the main row first, then in the table's order) and Merged_Count say which rows became which. "row 5" is the fifth line of the file, counting the title row. Merged_IDs is only as sensitive as the column you name the rows by.</p>
   <label class="row">Largest cluster to merge <input type="number" min="2" max="100" bind:value={maxCluster} /> rows</label>
   <label class="row"><input type="checkbox" bind:checked={requireAll} /> Only merge clusters where every pair was accepted</label>
   <p class="note">Match people lists one pair for each later row, so with this ticked only clusters of two rows merge; larger ones are left for review.</p>

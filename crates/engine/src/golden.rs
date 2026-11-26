@@ -142,6 +142,8 @@ pub enum Reason {
     TooLarge,
     /// "Only merge clusters where every pair was accepted" is ticked.
     NotAllPairs,
+    /// Paired only with rows that did not stay in a cluster of its own.
+    PartnerUnderReview,
 }
 
 impl Reason {
@@ -151,6 +153,7 @@ impl Reason {
             Reason::HubUnderReview => "its cluster's main row needs review",
             Reason::TooLarge => "cluster larger than the limit",
             Reason::NotAllPairs => "not every pair in the cluster was accepted",
+            Reason::PartnerUnderReview => "the row it was paired with needs review",
         }
     }
 }
@@ -327,6 +330,15 @@ fn shapes(pairs: &[(u32, u32)], max: usize, require_all: bool) -> Shapes {
             hub_only: !among,
         });
     }
+    // No paired row is dropped without a word: one that ends in no merged
+    // cluster and has no other reason is listed too.
+    let listed: HashSet<u32> = out.review.iter().map(|r| r.0).collect();
+    out.review.extend(
+        order
+            .iter()
+            .filter(|r| !merged.contains_key(r) && !listed.contains(r))
+            .map(|&r| (r, Reason::PartnerUnderReview)),
+    );
     out.unmerged_pairs = edges
         .iter()
         .filter(|(a, b)| match (merged.get(a), merged.get(b)) {
