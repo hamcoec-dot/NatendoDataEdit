@@ -64,6 +64,7 @@ const url = process.argv[3] || "http://localhost:5301";
 
   await run("data.splitColumn");
   ok(/This changes all [\d,]+ rows, including 3 hidden ones, because the source column is changed too\./.test(await note()), `Split column says it changes every row (${await note()})`);
+  ok((await dialog.getByTestId("hidden-pill").textContent().catch(() => "")) === "Including hidden rows", "with an amber pill in the dialog");
   if (out) await p.screenshot({ path: path.join(out, "shown-split.png") });
   await close();
 
