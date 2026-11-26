@@ -135,6 +135,19 @@ interface MockDoc {
   hidden: Set<number> | null;
 }
 
+interface MockPatch {
+  keys: number[];
+  columns: string[];
+  spec: import("./patch").PatchSpec;
+  changes: { key: string[]; cells: [number, string, string][] }[];
+  adds: string[][];
+  removes: string[][];
+}
+
+function patchKey(parts: string[], spec: import("./patch").PatchSpec): string {
+  return parts.map((v) => (spec.trim ? v.trim() : v)).map((v) => (spec.match_case ? v : v.toLowerCase())).join("\u001f");
+}
+
 /** A JavaScript RegExp for a pattern (the browser stub only; the real app
  *  uses the engine's linear-time matcher). */
 /** \t \n \r \\ \u{..} as the characters they name (Find's "Escapes"). */
@@ -4221,6 +4234,161 @@ export class MockBackend implements Backend {
   }
   async pickEncrypted(): Promise<string | null> {
     return "C:\\Data\\voters.ndenc";
+  }
+  /** The browser preview's patch files: kept in memory by name. */
+  private patches = new Map<string, { patch: MockPatch; phrase: string | null }>();
+  private patchRuns = new Map<number, { patch: MockPatch; revision: number }>();
+  /** The file the next "Choose" or "Save" returns. */
+  patchFile = "C:\\Data\\fix.ndpatch";
+
+  async patchPickSave(): Promise<string | null> {
+    return this.patchFile;
+  }
+  async patchPick(): Promise<string | null> {
+    return this.patchFile;
+  }
+  async patchProtected(path: string): Promise<boolean> {
+    const kept = this.patches.get(path);
+    if (!kept) throw err("io", "the file was not found");
+    return !!kept.phrase;
+  }
+  async patchMake(a: number, b: number, spec: import("./patch").PatchSpec, path: string, phrase: string | null): Promise<import("./patch").PatchSaved> {
+    this.calls.push("patchMake");
+    const da = this.get(a);
+    const db = this.get(b);
+    const row = (d: MockDoc, r: number, cols: number[]) => cols.map((c) => this.value(d, r, c));
+    const all = (d: MockDoc) => Array.from({ length: this.colCount(d) }, (_, c) => c);
+    const titlesA = row(da, 0, all(da));
+    const titlesB = row(db, 0, all(db));
+    const there = titlesA.map((t) => titlesB.indexOf(t));
+    const here = all(da).filter((c) => there[c]! >= 0);
+    const leftOut = [...titlesA.filter((t) => !titlesB.includes(t)), ...titlesB.filter((t) => !titlesA.includes(t))];
+    if (leftOut.length && !spec.leave_out) throw err("invalid", `only one table has these columns: ${leftOut.join(", ")}. Leave them out of the patch, or add them to the other table first`);
+    const keyAt = spec.keys.map((k) => here.indexOf(k));
+    const index = (d: MockDoc, cols: number[], which: string) => {
+      const m = new Map<string, string[]>();
+      for (let r = 1; r < this.rowCount(d); r++) {
+        const v = row(d, r, cols);
+        const k = patchKey(keyAt.map((i) => v[i]!), spec);
+        if (m.has(k)) throw err("invalid", `row ${r + 1} of the ${which} table repeats an earlier key: a patch needs each key once`);
+        m.set(k, v);
+      }
+      return m;
+    };
+    const older = index(da, here, "older");
+    const newer = index(db, here.map((c) => there[c]!), "newer");
+    const patch: MockPatch = { keys: keyAt, columns: here.map((c) => titlesA[c]!), spec, changes: [], adds: [], removes: [] };
+    for (const [k, v] of older) {
+      const w = newer.get(k);
+      if (!w) patch.removes.push(v);
+      else {
+        const cells = v.flatMap((old, i) => (!keyAt.includes(i) && old !== w[i] ? [[i, old, w[i]!] as [number, string, string]] : []));
+        if (cells.length) patch.changes.push({ key: keyAt.map((i) => v[i]!), cells });
+      }
+    }
+    for (const [k, w] of newer) if (!older.has(k)) patch.adds.push(w);
+    if (!patch.changes.length && !patch.adds.length && !patch.removes.length) throw err("invalid", "the tables have no differences to save");
+    this.patches.set(path, { patch, phrase });
+    return { changes: patch.changes.length, cells: patch.changes.reduce((s, c) => s + c.cells.length, 0), adds: patch.adds.length, removes: patch.removes.length, left_out: leftOut, protected: !!phrase };
+  }
+  /** What a patch does to a tab (the rows shown: the desktop app takes every row). */
+  private planPatch(d: MockDoc, patch: MockPatch) {
+    const cols = this.colCount(d);
+    const titles = Array.from({ length: cols }, (_, c) => this.value(d, 0, c));
+    const place = patch.columns.map((t) => titles.indexOf(t));
+    const noKey = patch.keys.find((k) => place[k]! < 0);
+    if (noKey !== undefined) throw err("invalid", `this table has no column titled "${patch.columns[noKey]}", which the patch finds rows by`);
+    const rows = new Map<string, number[]>();
+    for (let r = 1; r < this.rowCount(d); r++) {
+      const k = patchKey(patch.keys.map((i) => this.value(d, r, place[i]!)), patch.spec);
+      rows.set(k, [...(rows.get(k) ?? []), r]);
+    }
+    const report: import("./patch").PatchReport = { will_apply: 0, already: 0, conflicts: 0, not_found: 0, twice: 0, protected: 0, missing_column: 0, cells: 0, added: 0, removed: 0, missing: patch.columns.filter((_, i) => place[i]! < 0), extra: titles.filter((_, c) => !place.includes(c)), keys: patch.keys.map((k) => patch.columns[k]!), lines: [], lines_total: 0 };
+    const count = { will_apply: "will_apply", already_applied: "already", conflict: "conflicts", key_not_found: "not_found", key_twice: "twice", protected: "protected", missing_column: "missing_column" } as const;
+    const line = (outcome: import("./patch").PatchOutcome, kind: "change" | "add" | "remove", key: string[], column = "") => {
+      report[count[outcome]]++;
+      if (outcome === "will_apply") report[kind === "change" ? "cells" : kind === "add" ? "added" : "removed"]++;
+      report.lines.push({ outcome, kind, key, column });
+      report.lines_total++;
+    };
+    const same = (r: number, v: string[]) => place.every((c, i) => c < 0 || this.value(d, r, c) === v[i]);
+    const set: [number, number, string][] = [];
+    const gone: number[] = [];
+    const added: string[][] = [];
+    for (const ch of patch.changes) {
+      const at = rows.get(patchKey(ch.key, patch.spec)) ?? [];
+      for (const [i, old, now] of ch.cells) {
+        const c = place[i]!;
+        const v = c >= 0 && at.length === 1 ? this.value(d, at[0]!, c) : "";
+        const o = c < 0 ? "missing_column" : !at.length ? "key_not_found" : at.length > 1 ? "key_twice" : v === now ? "already_applied" : v !== old ? "conflict" : d.protectedPhys?.has(this.physCol(d, c)) ? "protected" : "will_apply";
+        if (o === "will_apply") set.push([at[0]!, c, now]);
+        line(o, "change", ch.key, patch.columns[i]!);
+      }
+    }
+    const whole = !report.missing.length;
+    for (const v of patch.removes) {
+      const key = patch.keys.map((i) => v[i]!);
+      const at = rows.get(patchKey(key, patch.spec)) ?? [];
+      const o = !at.length ? "already_applied" : at.length > 1 ? "key_twice" : !whole ? "missing_column" : same(at[0]!, v) ? "will_apply" : "conflict";
+      if (o === "will_apply") gone.push(at[0]!);
+      line(o, "remove", key);
+    }
+    for (const v of patch.adds) {
+      const key = patch.keys.map((i) => v[i]!);
+      const at = rows.get(patchKey(key, patch.spec)) ?? [];
+      const o = at.length > 1 ? "key_twice" : !whole ? "missing_column" : !at.length ? "will_apply" : same(at[0]!, v) ? "already_applied" : "conflict";
+      if (o === "will_apply") added.push(Array.from({ length: cols }, (_, c) => v[place.indexOf(c)] ?? ""));
+      line(o, "add", key);
+    }
+    return { report, set, gone, added };
+  }
+  async patchPreview(doc: number, path: string, phrase: string | null): Promise<import("./patch").PatchPreview> {
+    this.calls.push("patchPreview");
+    this.patchRuns.delete(doc);
+    const kept = this.patches.get(path);
+    if (!kept) throw err("io", "the file was not found");
+    if (kept.phrase && kept.phrase !== phrase) throw err("invalid", "wrong password, or the file was changed or damaged");
+    const d = this.get(doc);
+    const { report } = this.planPatch(d, kept.patch);
+    this.patchRuns.set(doc, { patch: kept.patch, revision: d.undo.length });
+    return { report, private: !!kept.phrase };
+  }
+  async patchApply(doc: number): Promise<import("./patch").PatchApplied & { info: DocInfo }> {
+    this.calls.push("patchApply");
+    const run = this.patchRuns.get(doc);
+    const d = this.get(doc);
+    if (!run) throw err("invalid", "choose the patch file again");
+    if (run.revision !== d.undo.length) throw err("changed", "the table changed since the dry run, so nothing was applied. Run the dry run again");
+    const { report, set, gone, added } = this.planPatch(d, run.patch);
+    this.patchRuns.delete(doc);
+    const info = this.push(d, () => {
+      const order = this.orderOf(d);
+      const before = [...order];
+      const writes: [string, string][] = set.map(([r, c, v]) => [`${this.rowId(d, r)}:${this.physCol(d, c)}`, v]);
+      const drop = new Set(gone.map((r) => this.pos(d, r)));
+      const ids = added.map(() => d.nextNew--);
+      added.forEach((v, n) => v.forEach((x, c) => writes.push([`${ids[n]}:${this.physCol(d, c)}`, x])));
+      const old = writes.map(([k, v]) => {
+        const prev = d.edits.get(k);
+        d.edits.set(k, v);
+        return [k, prev] as const;
+      });
+      order.splice(0, order.length, ...before.filter((_, p) => !drop.has(p)), ...ids);
+      return () => {
+        order.splice(0, order.length, ...before);
+        for (const [k, prev] of old.reverse()) {
+          if (prev === undefined) d.edits.delete(k);
+          else d.edits.set(k, prev);
+        }
+      };
+    });
+    return { info, cells: report.cells, added: report.added, removed: report.removed };
+  }
+  async patchReportSave(): Promise<string | null> {
+    return "C:\\Data\\patch report.csv";
+  }
+  async patchClose(doc: number): Promise<void> {
+    this.patchRuns.delete(doc);
   }
   async openEncrypted(): Promise<DocInfo> {
     throw err("invalid", "the browser preview cannot open encrypted files");

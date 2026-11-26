@@ -2112,7 +2112,7 @@ async fn patch_pick_save(
         let base = docs.info(doc)?.name;
         let stem = base.rsplit_once('.').map_or(base.as_str(), |(b, _)| b);
         let mut dialog = rfd::FileDialog::new()
-            .set_title("Save the differences as a patch")
+            .set_title("Save changes as a patch")
             .set_file_name(format!("{stem}.ndpatch"))
             .add_filter("Natendo patch", &["ndpatch"])
             .set_parent(&window);

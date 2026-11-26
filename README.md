@@ -1020,6 +1020,26 @@ everything is also in command search.
   one of the tabs and they say "out of date: compare again". Up to 1,000,000
   differing rows are listed (the counts are always exact). Comparing a tab
   with itself gives all rows the same. The result of a private file is private.
+- **Save changes as a patch** (Data > Save changes as a patch, or right-click one of the compared tabs): writes what changed from the
+  first file to the second, found by the key columns, as a `.ndpatch` file.
+  **A patch contains your data** (old and new values, and whole added and
+  removed rows), so the screen offers to protect it with a phrase every time,
+  ticked when a table is private or came from an encrypted file. Every row
+  counts, hidden ones too. Each key must be there once in each table, and a
+  column only one table has stops the patch unless you tick to leave such
+  columns out. A patch is **tamper-evident, not signed**: its checksum catches
+  damage and edits, but not someone who rewrites the checksum too.
+- **Apply a patch** (Data > Apply a patch): a dry run first shows what would
+  change and what would be left alone, and the list can be saved as CSV. A
+  value changes only if it still holds the patch's old value; one that already
+  holds the new value counts as applied, and anything else is a conflict and
+  stays. A row is removed only if it still equals the removed row, and added
+  only if its key is not there. Keys follow the patch's own capitals and spaces
+  rules. Columns are found by title; columns the patch does not know are not
+  compared, and added rows get them blank. Protected columns are left alone.
+  Apply is one undo step, refused if the table changed since the dry run.
+  Applying a protected or private patch turns private file mode on for the
+  tab. Patches are never written on their own, logged or put into recipes.
 - **Check fields with patterns:** one simple screen with a pattern box next to
   each column and ready-made patterns (e-mail, ZIP, phone, web address,
   letters, digits). Then show the rows that fail or pass, put failing rows
@@ -1488,11 +1508,19 @@ natendo-cli sets voters.csv:ID mailed.csv:ID returned.csv:ID    # keys by slice
 natendo-cli sets voters.csv:ID returned.csv:ID --slice a,!b -o not-returned.csv
 natendo-cli gaps data.csv --column Invoice --fail-on-gap     # missing numbers; exit 1 when there are any
 natendo-cli gaps data.csv --column Date --dates --step business
+natendo-cli patch create old.csv new.csv --key ID -o fix.ndpatch --phrase-file phrase.txt
+natendo-cli patch apply fix.ndpatch data.csv -o fixed.csv --phrase-file phrase.txt   # --dry-run to look first
 natendo-cli sample data.csv -o out.csv --rows 500 --seed 7 # or --percent 5, --every 10
 natendo-cli slice data.csv -o out.csv --rows 1001-2000     # with the title row
 natendo-cli split data.csv -o parts --by county            # or --rows 50000
 natendo-cli cat jan.csv feb.csv mar.csv -o q1.csv --by-name
 ```
+
+`patch create` protects the patch with a phrase read from standard input
+(`--phrase-stdin`) or a file (`--phrase-file`), never from the command line;
+`--plain` writes it unprotected. `patch apply` never writes over a file it
+reads, and exits with 1 when something could not be applied (a conflict, a
+missing key or column).
 
 `cat --by-name` keeps every column of every file, as the app's Combine does:
 titles match ignoring case and spaces at the ends, a title repeated within one

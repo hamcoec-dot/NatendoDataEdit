@@ -322,6 +322,8 @@ export class Tab {
   dateMarks = new Set<number>();
   dateVersion = $state(0);
   diffOn = $state(false);
+  /** The comparison by key this tab belongs to, to save it as a patch. */
+  patchFrom = $state<{ a: number; b: number; keys: number[]; match_case: boolean; trim: boolean } | null>(null);
   diffMarks = new Map<string, number>();
   diffOutOfDate = $state(false);
   diffVersion = $state(0);

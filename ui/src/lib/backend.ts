@@ -1845,6 +1845,20 @@ export interface Backend {
   /** Pick an encrypted file (null: cancelled), then open it. */
   pickEncrypted(): Promise<string | null>;
   openEncrypted(password: string): Promise<DocInfo>;
+  /** Where to save a patch (Save dialog; null: cancelled). */
+  patchPickSave(doc: number): Promise<string | null>;
+  /** Write the differences from tab `a` to the newer tab `b` (a job on `a`). `plain`: the user chose no phrase. */
+  patchMake(a: number, b: number, spec: import("./patch").PatchSpec, path: string, phrase: string | null, plain: boolean): Promise<import("./patch").PatchSaved>;
+  /** Pick a patch file (null: cancelled). */
+  patchPick(): Promise<string | null>;
+  patchProtected(path: string): Promise<boolean>;
+  /** The dry run of a patch file on a tab (a job). */
+  patchPreview(doc: number, path: string, phrase: string | null): Promise<import("./patch").PatchPreview>;
+  /** Apply the last dry run as one undo step. */
+  patchApply(doc: number): Promise<import("./patch").PatchApplied & { info: DocInfo }>;
+  /** Save the dry run's lines as CSV (Save dialog; null: cancelled). */
+  patchReportSave(doc: number): Promise<string | null>;
+  patchClose(doc: number): Promise<void>;
   /** Pick a database file: its path and tables (null: cancelled). */
   sqlitePick(): Promise<[string, import("./sqlite").DbTable[]] | null>;
   /** Open a table of the picked database in a new tab. */
@@ -2589,6 +2603,30 @@ class TauriBackend implements Backend {
   pickEncrypted() {
     return call<string | null>("pick_encrypted");
   }
+  patchPickSave(doc: number) {
+    return call<string | null>("patch_pick_save", { doc });
+  }
+  patchMake(a: number, b: number, spec: import("./patch").PatchSpec, path: string, phrase: string | null, plain: boolean) {
+    return call<import("./patch").PatchSaved>("patch_make", { a, b, spec, path, phrase, plain });
+  }
+  patchPick() {
+    return call<string | null>("patch_pick");
+  }
+  patchProtected(path: string) {
+    return call<boolean>("patch_protected", { path });
+  }
+  patchPreview(doc: number, path: string, phrase: string | null) {
+    return call<import("./patch").PatchPreview>("patch_preview", { doc, path, phrase });
+  }
+  patchApply(doc: number) {
+    return call<import("./patch").PatchApplied & { info: DocInfo }>("patch_apply", { doc });
+  }
+  patchReportSave(doc: number) {
+    return call<string | null>("patch_report_save", { doc });
+  }
+  patchClose(doc: number) {
+    return call<void>("patch_close", { doc });
+  }
   openEncrypted(password: string) {
     return call<DocInfo>("open_encrypted", { password });
   }
@@ -2807,7 +2845,7 @@ export const WRITE_METHODS: readonly string[] = [
   "tidyTitles",
   "setFirstRowCell",
   "setColumnNames",
-  "updatesAccept",
+  "updatesAccept", "patchApply",
   "matchAccept",
   "recipeRun",
   "stepsGoto",

@@ -66,6 +66,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import RelationsDialog from "./lib/RelationsDialog.svelte";
   import type { Finding, RelationsReport, RelationsSpec } from "./lib/relations";
   import SetsDialog, { type SetsTab } from "./lib/SetsDialog.svelte";
+  import PatchDialog from "./lib/PatchDialog.svelte";
+  import { appliedText } from "./lib/patch";
   import type { SetsRun, SetsSpec } from "./lib/sets";
   import CleanMatrixDialog from "./lib/CleanMatrixDialog.svelte";
   import type { CleanMatrix, MatrixPreview } from "./lib/matrix";
@@ -3570,6 +3572,73 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
 
+  // ---- patch files ----
+  type PatchSave = NonNullable<import("svelte").ComponentProps<typeof PatchDialog>["save"]>;
+  let patchAsk = $state<{ save: PatchSave | null; apply: { doc: number; name: string } | null } | null>(null);
+
+  /** Save the differences of the comparison the current tab belongs to. */
+  async function openPatchSave(): Promise<void> {
+    const f = tab?.patchFrom;
+    if (!f) {
+      say("First compare two tables by key (Data > Compare files).");
+      return;
+    }
+    const a = tabs.find((t) => t.id === f.a);
+    const b = tabs.find((t) => t.id === f.b);
+    if (!a || !b) {
+      say("A compared tab was closed: compare the files again.");
+      return;
+    }
+    const secret = (await sensitive(a)) || (await sensitive(b));
+    patchAsk = {
+      apply: null,
+      save: {
+        a: a.id,
+        b: b.id,
+        aName: a.info.name,
+        bName: b.info.name,
+        keys: f.keys.map((c) => columnTitle(a, c)),
+        spec: { keys: [...f.keys], match_case: f.match_case, trim: f.trim, leave_out: false },
+        sensitive: secret,
+      },
+    };
+  }
+
+  function openPatchApply(): void {
+    const t = tab;
+    if (!t || writeBlocked(t)) return;
+    patchAsk = { save: null, apply: { doc: t.id, name: t.info.name } };
+  }
+
+  /** Apply the dry run; a refusal is returned in words. */
+  async function applyPatch(): Promise<string> {
+    const doc = patchAsk?.apply?.doc;
+    const t = tab;
+    if (doc === undefined || !t || t.id !== doc) return "Open the table again and choose the patch.";
+    try {
+      let done: import("./lib/patch").PatchApplied | null = null;
+      const ok = await applyJob("Applying the patch", async (x) => {
+        const r = await backend().patchApply(x.id);
+        done = r;
+        return r.info;
+      });
+      if (!ok || !done) return "";
+      t.private = await backend().privateState(t.id);
+      closePatch();
+      say(appliedText(done));
+      return "";
+    } catch (e) {
+      return errorText(e);
+    }
+  }
+
+  function closePatch(): void {
+    const doc = patchAsk?.apply?.doc;
+    patchAsk = null;
+    if (doc !== undefined) void backend().patchClose(doc).catch(() => {});
+    grid?.focus();
+  }
+
   // ---- relationships between columns ----
   let relationsAsk = $state<{ titles: string[] } | null>(null);
 
@@ -4633,6 +4702,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         t.diffOn = true;
         t.diffVersion++;
         const other = tabs.find((x) => x.id === dreq.other);
+        // The comparison all three tabs can save as a patch.
+        const from = { a: t.id, b: dreq.other, keys: dreq.spec.keys, match_case: dreq.spec.match_case, trim: dreq.spec.trim };
+        if (dreq.spec.keep_first) for (const x of [t, other, nt]) if (x) x.patchFrom = from;
         if (other) {
           other.diffOn = true;
           other.diffVersion++;
@@ -6460,6 +6532,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.compareCols", label: "Compare t&wo columns…", run: openCompareCols, enabled: ready },
     { id: "data.gaps", label: "Find gaps in a sequence…", run: openGaps, enabled: ready },
     { id: "data.relations", label: "Find relationships…", run: openRelations, enabled: ready },
+    { id: "data.patchSave", label: "Save changes as a patch…", run: () => void openPatchSave(), enabled: () => ready() && !!tab?.patchFrom },
+    { id: "data.patchApply", label: "Apply a patch…", run: openPatchApply, enabled: ready },
     { id: "data.compareLists", label: "Compare lists…", run: openSets, enabled: ready },
     {
       id: "format.protectCols",
@@ -6758,7 +6832,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
         "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
-        "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.compareLists", "data.gaps", "data.relations", "-",
+        "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.compareLists", "data.gaps", "data.relations", "data.patchSave", "data.patchApply", "-",
         "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",
         "find.find", "find.replace", "find.batch", "find.next", "find.prev", "find.ghosts",
       ],
@@ -6792,7 +6866,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   const contextItems: Record<string, string[]> = {
     totals: [...TOTAL_CHOICES.map(([c]) => `view.total.${c}`), "view.total.auto", "-", "view.copyTotal", "view.copyTotals", "-", "view.totalsRow"],
-    tab: ["file.save", "file.saveAs", "-", "data.compareLists", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
+    tab: ["file.save", "file.saveAs", "-", "data.compareLists", "data.patchSave", "data.patchApply", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
@@ -9360,6 +9434,19 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     onTable={(id, saveIt) => openSetsTab(() => backend().setsTable(id), true, id, saveIt)}
     onCopy={(t) => void copySets(t)}
     onClose={(id) => { setsAsk = null; if (id !== null) void backend().setsClose(id).catch(() => {}); grid?.focus(); }}
+  />
+{/if}
+{#if patchAsk && tab}
+  {@const p = patchAsk}
+  <PatchDialog
+    save={p.save}
+    apply={p.apply}
+    run={runJob}
+    onCancelRun={cancelJob}
+    onSaved={(m) => { patchAsk = null; say(m); grid?.focus(); }}
+    onApply={applyPatch}
+    onSaveReport={async () => { const to = p.apply ? await backend().patchReportSave(p.apply.doc) : null; return to ? `Report saved to ${to}.` : ""; }}
+    onClose={closePatch}
   />
 {/if}
 {#if relationsAsk && tab}
