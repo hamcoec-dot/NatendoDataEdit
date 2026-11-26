@@ -663,6 +663,7 @@ impl Entry {
 #[derive(Debug, Clone, Serialize)]
 pub struct SidecarRules {
     pub checks: Vec<natendo_engine::validate::Check>,
+    pub table_checks: Vec<natendo_engine::tablecheck::TableCheck>,
     /// Rules left out because their column or pattern did not fit this table.
     pub skipped: usize,
     pub keep_first: bool,
@@ -1872,6 +1873,28 @@ const MAX_JOIN_LISTS: usize = 4;
 const MAX_LOOKUP_TABLES: usize = 8;
 /// Most value sets kept for "value must exist in" rules.
 const MAX_KEY_SETS: usize = 8;
+
+/// The one open tab called `table` (or that without its extension), the way LOOKUP finds
+/// tabs: else why not ("open X", or two tabs with that name).
+fn tab_named(names: &[(u32, String)], table: &str) -> Result<u32, String> {
+    let want = table.trim().to_lowercase();
+    let hits: Vec<u32> = names
+        .iter()
+        .filter(|(_, n)| {
+            let n = n.to_lowercase();
+            n == want || n.rsplit_once('.').is_some_and(|(stem, _)| stem == want)
+        })
+        .map(|(i, _)| *i)
+        .collect();
+    match hits.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(format!("open {}", table.trim())),
+        _ => Err(format!(
+            "two open files are called {}: close one",
+            table.trim()
+        )),
+    }
+}
 
 /// Memory all kept value sets may hold together: a quarter of the computer's memory, at most 2 GB.
 fn key_sets_budget() -> u64 {
@@ -7153,11 +7176,7 @@ impl Docs {
         {
             return Ok(Vec::new());
         }
-        let names: Vec<(u32, String)> = self
-            .ids()
-            .into_iter()
-            .filter_map(|i| self.info(i).ok().map(|n| (i, n.name)))
-            .collect();
+        let names = self.tab_names();
         let mut out = Vec::with_capacity(spec.checks.len());
         for c in &spec.checks {
             let CheckKind::ForeignKey {
@@ -7171,26 +7190,10 @@ impl Docs {
                 out.push(KeyBinding::None);
                 continue;
             };
-            let want = table.trim().to_lowercase();
-            let hits: Vec<u32> = names
-                .iter()
-                .filter(|(_, n)| {
-                    let n = n.to_lowercase();
-                    n == want || n.rsplit_once('.').is_some_and(|(stem, _)| stem == want)
-                })
-                .map(|(i, _)| *i)
-                .collect();
-            let other = match hits.as_slice() {
-                [one] => *one,
-                [] => {
-                    out.push(KeyBinding::Missing(format!("open {}", table.trim())));
-                    continue;
-                }
-                _ => {
-                    out.push(KeyBinding::Missing(format!(
-                        "two open files are called {}: close one",
-                        table.trim()
-                    )));
+            let other = match tab_named(&names, table) {
+                Ok(i) => i,
+                Err(why) => {
+                    out.push(KeyBinding::Missing(why));
                     continue;
                 }
             };
@@ -7267,7 +7270,44 @@ impl Docs {
         Ok(out)
     }
 
-    /// `spec` with its "value must exist in" rules' tables filled in (see [`Docs::key_bindings`]).
+    /// Each open tab's id and name.
+    fn tab_names(&self) -> Vec<(u32, String)> {
+        self.ids()
+            .into_iter()
+            .filter_map(|i| self.info(i).ok().map(|n| (i, n.name)))
+            .collect()
+    }
+
+    /// For each "as many rows as" table check, the shown data rows of the open tab it names
+    /// (its first row holds titles; tab `id` itself follows its own setting).
+    pub fn table_rows(&self, id: u32, spec: &CheckSpec) -> Vec<Option<Result<u64, String>>> {
+        use natendo_engine::tablecheck::TableCheckKind;
+        if !spec
+            .table_checks
+            .iter()
+            .any(|c| matches!(c.kind, TableCheckKind::RowCountSameAs { .. }))
+        {
+            return Vec::new();
+        }
+        let names = self.tab_names();
+        spec.table_checks
+            .iter()
+            .map(|c| {
+                let TableCheckKind::RowCountSameAs { table } = &c.kind else {
+                    return None;
+                };
+                Some(tab_named(&names, table).and_then(|other| {
+                    let entry = self.get(other).map_err(|e| e.message.clone())?;
+                    let d = entry.read();
+                    let keep_first = if other == id { spec.keep_first } else { true };
+                    let n = d.row_count();
+                    Ok(n - u64::from(keep_first && n > 0))
+                }))
+            })
+            .collect()
+    }
+
+    /// `spec` with its "value must exist in" rules' tables and "as many rows as" counts filled in (see [`Docs::key_bindings`]).
     fn with_keys(
         &self,
         id: u32,
@@ -7276,6 +7316,7 @@ impl Docs {
     ) -> CmdResult<CheckSpec> {
         let mut s = spec.clone();
         s.keys = self.key_bindings(id, spec, build)?;
+        s.table_rows = self.table_rows(id, spec);
         Ok(s)
     }
 
@@ -7733,6 +7774,7 @@ impl Docs {
         let loaded = file.resolve(&entry.read());
         Ok(Some(SidecarRules {
             checks: loaded.checks,
+            table_checks: loaded.table_checks,
             skipped: loaded.skipped,
             keep_first: loaded.keep_first,
             file: side
@@ -7749,6 +7791,7 @@ impl Docs {
         &self,
         id: u32,
         checks: Vec<natendo_engine::validate::Check>,
+        table_checks: Vec<natendo_engine::tablecheck::TableCheck>,
         keep_first: bool,
     ) -> CmdResult<String> {
         use natendo_engine::checkfile::{checks_path, ChecksFile};
@@ -7775,7 +7818,7 @@ impl Docs {
         }
         let side = checks_path(&path);
         let entry = self.get(id)?;
-        let file = ChecksFile::for_rules(&entry.read(), &checks, keep_first);
+        let file = ChecksFile::for_checks(&entry.read(), &checks, &table_checks, keep_first);
         file.save(&side).map_err(|e| {
             CmdError::new(
                 "invalid",
@@ -10714,19 +10757,21 @@ Ann
         let ia = docs.open_path(&a, false).unwrap().id;
         wait(&docs, ia);
         assert!(docs.checks_sidecar_load(ia).unwrap().is_none());
-        let name = docs.checks_sidecar_keep(ia, rules.clone(), true).unwrap();
+        let name = docs
+            .checks_sidecar_keep(ia, rules.clone(), vec![], true)
+            .unwrap();
         assert_eq!(name, "lint_a.csv.ndchecks");
         let got = docs.checks_sidecar_load(ia).unwrap().unwrap();
         assert_eq!((got.checks.len(), got.skipped), (1, 0));
         let text = std::fs::read_to_string(a.with_file_name(&name)).unwrap();
         assert!(!text.contains("Ann"));
         // No rules removes it.
-        docs.checks_sidecar_keep(ia, vec![], true).unwrap();
+        docs.checks_sidecar_keep(ia, vec![], vec![], true).unwrap();
         assert!(docs.checks_sidecar_load(ia).unwrap().is_none());
         // A private tab (private file mode) is refused.
         docs.set_private(ia, true).unwrap();
         let e = docs
-            .checks_sidecar_keep(ia, rules.clone(), true)
+            .checks_sidecar_keep(ia, rules.clone(), vec![], true)
             .unwrap_err();
         assert!(e.message.contains("private"), "{}", e.message);
         assert!(!a.with_file_name("lint_a.csv.ndchecks").exists());
@@ -10743,7 +10788,7 @@ Bob
         let folder = b.clone();
         docs.set_private_check(Arc::new(move |p: &Path| p == folder.as_path()));
         let e = docs
-            .checks_sidecar_keep(ib, rules.clone(), true)
+            .checks_sidecar_keep(ib, rules.clone(), vec![], true)
             .unwrap_err();
         assert!(e.message.contains("private"), "{}", e.message);
         docs.set_private_check(Arc::new(|_: &Path| false));
@@ -10756,11 +10801,15 @@ Bob
             .unwrap()
             .id;
         wait(&docs, ie);
-        assert!(docs.checks_sidecar_keep(ie, rules.clone(), true).is_err());
+        assert!(docs
+            .checks_sidecar_keep(ie, rules.clone(), vec![], true)
+            .is_err());
         assert!(!b.with_file_name("lint_b.ndenc.ndchecks").exists());
         // An unsaved tab has no place to keep them.
         let n = docs.new_document().unwrap().id;
-        assert!(docs.checks_sidecar_keep(n, rules.clone(), true).is_err());
+        assert!(docs
+            .checks_sidecar_keep(n, rules.clone(), vec![], true)
+            .is_err());
         // A place that cannot be written gives a clear message, not a crash.
         let c = tmp(
             "lint_c.csv",
@@ -10771,7 +10820,9 @@ Cy
         let ic = docs.open_path(&c, false).unwrap().id;
         wait(&docs, ic);
         std::fs::create_dir(c.with_file_name("lint_c.csv.ndchecks")).unwrap();
-        let e = docs.checks_sidecar_keep(ic, rules, true).unwrap_err();
+        let e = docs
+            .checks_sidecar_keep(ic, rules, vec![], true)
+            .unwrap_err();
         assert!(e.message.contains("could not be saved"), "{}", e.message);
     }
 
@@ -13582,6 +13633,68 @@ mod key_binding_tests {
             keep_first: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn table_checks_count_the_rows_of_the_open_tab_they_name_and_are_kept_beside_the_file() {
+        use natendo_engine::tablecheck::{Compare, TableCheck, TableCheckKind};
+        let docs = Docs::default();
+        let votes = open(
+            &docs,
+            &file(
+                "tc",
+                "votes.csv",
+                "p,early,day,total\r\nA,1,2,3\r\nB,4,5,9\r\n",
+            ),
+        );
+        let same = |table: &str| TableCheck {
+            name: None,
+            kind: TableCheckKind::RowCountSameAs {
+                table: table.into(),
+            },
+        };
+        let spec = CheckSpec {
+            keep_first: true,
+            table_checks: vec![
+                same("roster"),
+                same("votes"),
+                TableCheck {
+                    name: Some("Adds up".into()),
+                    kind: TableCheckKind::Aggregate {
+                        expr: "SUM([early]) + SUM([day]) = SUM([total])".into(),
+                        tolerance: Default::default(),
+                    },
+                },
+            ],
+            ..Default::default()
+        };
+        // Not open: that one does not run; its own file counts its own rows.
+        let r = docs.run_checks(votes, &spec).unwrap();
+        let oks: Vec<Option<bool>> = r.table.iter().map(|x| x.ok).collect();
+        assert_eq!(oks, vec![None, Some(true), Some(true)]);
+        assert_eq!(r.table[0].why.as_deref(), Some("open roster"));
+        let roster = open(&docs, &file("tc", "roster.csv", "p\r\nA\r\nB\r\nC\r\n"));
+        let r = docs.run_checks(votes, &spec).unwrap();
+        assert_eq!(r.table[0].ok, Some(false));
+        assert_eq!(r.table[0].expected, "3 rows, as roster has");
+        // Kept beside the file with the rules, and read back.
+        let tc = vec![TableCheck {
+            name: None,
+            kind: TableCheckKind::RowCount {
+                compare: Compare::AtLeast,
+                value: 1,
+            },
+        }];
+        docs.checks_sidecar_keep(votes, vec![], tc.clone(), true)
+            .unwrap();
+        let back = docs.checks_sidecar_load(votes).unwrap().unwrap();
+        assert_eq!(back.table_checks, tc);
+        assert!(back.checks.is_empty());
+        docs.checks_sidecar_keep(votes, vec![], vec![], true)
+            .unwrap();
+        assert!(docs.checks_sidecar_load(votes).unwrap().is_none());
+        docs.close(roster);
+        docs.close(votes);
     }
 
     #[test]

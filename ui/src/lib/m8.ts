@@ -2,7 +2,7 @@
 // columns and printing. Pure functions, unit-tested; the engine does the
 // real work on files.
 
-import type { Check, CheckKind, PageSetup, Paper } from "./backend";
+import type { Check, CheckKind, Compare, PageSetup, Paper, TableCheck, TableCheckKind } from "./backend";
 
 // ---- fixed width ----
 
@@ -283,6 +283,85 @@ export const FUNCTIONS: { name: string; hint: string }[] = [
 export function columnRef(title: string, index: number): string {
   return title.trim() && !title.includes("]") && title === title.trim() ? `[${title}]` : `[#${index + 1}]`;
 }
+
+/** A column in a table check's formula: its title in brackets (a `]` in it written twice),
+ *  or its number when the title is blank, has spaces at the ends or starts with #. */
+export function tableColRef(title: string, index: number): string {
+  return title && title === title.trim() && !title.startsWith("#") ? `[${title.replaceAll("]", "]]")}]` : `[#${index + 1}]`;
+}
+
+/** A table check after its column moved (`place` gives the new place; null or undefined: gone). */
+export function placeTableCheck(c: TableCheck, place: (k: number) => number | null | undefined): TableCheck | null {
+  const k = c.kind;
+  if (k.type !== "no_blanks" && k.type !== "distinct") return c;
+  const col = place(k.col);
+  return col === null || col === undefined || col < 0 ? null : { ...c, kind: { ...k, col } };
+}
+
+/** Table checks after `count` columns were put in at `at` (or taken out, with a negative
+ *  count): the same as [`shiftChecks`]. A formula names its columns by title, so it stays. */
+export function shiftTableChecks(checks: TableCheck[], at: number, count: number): { checks: TableCheck[]; dropped: number } {
+  const place = (c: number): number | null => {
+    if (c < at) return c;
+    if (count >= 0) return c + count;
+    return c < at - count ? null : c + count;
+  };
+  let dropped = 0;
+  const out = checks.flatMap((c) => {
+    const k = placeTableCheck(c, place);
+    if (k === null) dropped++;
+    return k === null ? [] : [k];
+  });
+  return { checks: out, dropped };
+}
+
+const COMPARE_WORDS: Record<Compare, string> = { equals: "exactly", at_least: "at least", at_most: "at most" };
+
+/** A table check in words (its name when it has one). */
+export function describeTableCheck(c: TableCheck, titles: string[], tolerance = true): string {
+  if (c.name?.trim()) return c.name.trim();
+  const k = c.kind;
+  const title = (x: number): string => titles[x] || `Column ${x + 1}`;
+  switch (k.type) {
+    case "row_count":
+      return `Rows: ${COMPARE_WORDS[k.compare]} ${k.value.toLocaleString()}`;
+    case "row_count_same_as":
+      return `As many rows as ${k.table || "another file"}`;
+    case "no_blanks":
+      return `No blanks in ${title(k.col)}`;
+    case "distinct":
+      return `${COMPARE_WORDS[k.compare]} ${k.value.toLocaleString()} different values in ${title(k.col)}`;
+    case "aggregate": {
+      const t = k.tolerance ?? { kind: "absolute", value: 0.005 };
+      return tolerance ? `${k.expr || "(no formula)"} (within ${t.kind === "relative" ? `${t.value * 100}%` : t.value})` : k.expr || "(no formula)";
+    }
+  }
+}
+
+/** A new table check of a kind, on column `col` where it reads one. */
+export function newTableCheck(type: TableCheckKind["type"], col: number): TableCheck {
+  switch (type) {
+    case "row_count":
+      return { kind: { type, compare: "at_least", value: 1 } };
+    case "row_count_same_as":
+      return { kind: { type, table: "" } };
+    case "no_blanks":
+      return { kind: { type, col } };
+    case "distinct":
+      return { kind: { type, col, compare: "at_most", value: 10 } };
+    case "aggregate":
+      return { kind: { type, expr: "", tolerance: { kind: "absolute", value: 0.005 } } };
+  }
+}
+
+/** The table check kinds, as the dialog lists them. */
+export const TABLE_CHECK_KINDS: { type: TableCheckKind["type"]; label: string }[] = [
+  { type: "row_count", label: "Number of rows" },
+  { type: "row_count_same_as", label: "As many rows as another file" },
+  { type: "no_blanks", label: "No blank cells in a column" },
+  { type: "distinct", label: "Number of different values" },
+  { type: "aggregate", label: "Totals that must add up (formula)" },
+];
 
 /** Local date and time as days since 1970 (for TODAY and NOW). */
 export function localDays(d = new Date()): number {

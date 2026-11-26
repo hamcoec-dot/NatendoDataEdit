@@ -294,3 +294,60 @@ fn validate_reads_other_tables_for_value_must_exist_rules() {
         assert_eq!(code, 2, "{extra:?}");
     }
 }
+
+#[test]
+fn validate_runs_table_checks() {
+    let d = Folder::new("tc");
+    let votes = d.write(
+        "votes.csv",
+        "precinct,early,day,total\r\nP1,10,5,15\r\nP2,20,7,27\r\nP3,1,1,3\r\n",
+    );
+    let roster = d.write("roster.csv", "precinct\r\nP1\r\nP2\r\nP3\r\n");
+    let file = |checks: &str| format!(r#"{{"checks":[],"table_checks":[{checks}]}}"#);
+    let adds = r#"{"name":"Totals add up","kind":{"type":"aggregate","expr":"SUM([early]) + SUM([day]) = SUM([total])"}}"#;
+    let blanks = r#"{"kind":{"type":"no_blanks","column":"total"}}"#;
+    let same = r#"{"kind":{"type":"row_count_same_as","table":"roster"}}"#;
+    let t = format!("roster={roster}");
+    // 15 + 27 + 2 is 44, the totals say 45: exit 1, reported by name.
+    let c = d.write("c.json", &file(&format!("{adds},{blanks},{same}")));
+    let (code, v) = json(&[
+        "validate",
+        votes.as_str(),
+        "--checks",
+        c.as_str(),
+        "--table",
+        t.as_str(),
+    ]);
+    assert_eq!(code, 1, "{v}");
+    let tc = &v["table_checks"];
+    assert_eq!(tc[0]["name"], "Totals add up");
+    assert_eq!(tc[0]["ok"], false);
+    assert_eq!(tc[0]["actual"], "44");
+    assert_eq!(tc[1]["ok"], true);
+    assert_eq!(tc[2]["ok"], true);
+    assert_eq!(v["problems"], 0);
+    // Within a relative tolerance of 5%: exit 0.
+    let loose = adds.replace(
+        r#""}}"#,
+        r#"","tolerance":{"kind":"relative","value":0.05}}}"#,
+    );
+    let c2 = d.write("c2.json", &file(&loose));
+    let (code, v) = json(&["validate", votes.as_str(), "--checks", c2.as_str()]);
+    assert_eq!(code, 0, "{v}");
+    // Exit 2: an "as many rows as" table not given, a column not there, a bad formula,
+    // a negative tolerance.
+    for bad in [
+        same.to_string(),
+        r#"{"kind":{"type":"no_blanks","column":"nope"}}"#.to_string(),
+        r#"{"kind":{"type":"aggregate","expr":"SUM([total]"}}"#.to_string(),
+        r#"{"kind":{"type":"aggregate","expr":"[total] = 1"}}"#.to_string(),
+        adds.replace(
+            r#""}}"#,
+            r#"","tolerance":{"kind":"absolute","value":-1}}}"#,
+        ),
+    ] {
+        let c3 = d.write("c3.json", &file(&bad));
+        let (code, out) = run(&["validate", votes.as_str(), "--checks", c3.as_str()]);
+        assert_eq!(code, 2, "{bad}: {out}");
+    }
+}

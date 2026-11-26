@@ -4105,10 +4105,12 @@ async fn checks_sidecar_keep(
     docs: DocsState<'_>,
     doc: u32,
     checks: Vec<natendo_engine::validate::Check>,
+    table_checks: Option<Vec<natendo_engine::tablecheck::TableCheck>>,
     keep_first: bool,
 ) -> CmdResult<String> {
     let docs = docs.inner().clone();
-    blocking(move || docs.checks_sidecar_keep(doc, checks, keep_first)).await
+    let table_checks = table_checks.unwrap_or_default();
+    blocking(move || docs.checks_sidecar_keep(doc, checks, table_checks, keep_first)).await
 }
 
 /// Compare two tabs by key and open the differences.

@@ -125,7 +125,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { autosaveDue, type RecoveryItem, type Suggestion, type Suggestions, type VersionItem } from "./lib/m9";
   import { BASIC_KEYS, cleanFormat, defaultFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat } from "./lib/m9";
   import { defaultPage, newCheck, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS } from "./lib/m8";
-  import type { Check, CheckSpec, ComputeSpec, PageSetup } from "./lib/backend";
+  import type { Check, CheckSpec, ComputeSpec, PageSetup, TableCheck } from "./lib/backend";
   import { exportDefaults } from "./lib/transfer";
   import { cleanShortcuts, matchColumns, safeFont, MAX_VIEWS, sessionView, type RecentItem, type Shortcuts, type View } from "./lib/views";
 
@@ -282,6 +282,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** What the expression screen is for while open. */
   let computeMode = $state<"compute" | "change" | "filter">("compute");
   let checksOpen = $state(false);
+  /** The checks dialog opens with its table checks in view. */
+  let checksAtTable = $state(false);
   /** X-ray: what this screen shows (cells and columns with a gremlin), and the report dialog. */
   let xrayNow = $state<{ cells: number; cols: number } | null>(null);
   let xrayOpen = $state(false);
@@ -5095,11 +5097,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   function clearChecks(): void {
     const t = tab;
-    if (!t || !t.checks.length) {
+    if (!t || (!t.checks.length && !t.tableChecks.length)) {
       say("There are no data checks here.");
       return;
     }
-    keepChecks([], false);
+    keepChecks([], false, []);
     say("Removed every data check from this tab.");
   }
 
@@ -5684,6 +5686,13 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     t.checksMarked = true;
     t.checkVersion++;
     t.bump();
+    checksOpen = true;
+  }
+
+  /** Table checks (row count, no blanks, totals that add up): the checks dialog opens on them. */
+  function openTableChecks(): void {
+    if (!tab) return;
+    checksAtTable = true;
     checksOpen = true;
   }
 
@@ -6482,11 +6491,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.checks", label: "Data checks (&validation)…", run: () => { checksOpen = true; }, enabled: ready },
     { id: "data.existsCheck", label: "Check that values exist in another file…", run: addExistsCheck, enabled: ready },
     { id: "data.uniqueTogether", label: "No repeats across these columns together…", run: addUniqueTogether, enabled: ready },
+    { id: "data.tableChecks", label: "Table checks (row count, totals that add up)…", run: openTableChecks, enabled: ready },
     { id: "data.typeRule", label: "Data rule from this column's type (must read as a number or date)", run: addTypeRule, enabled: ready },
     { id: "data.fieldCheck", label: "Check &fields with patterns…", run: () => { fieldCheckOpen = true; }, enabled: ready },
     { id: "data.nextProblem", label: "Jump to &next problem", keys: ["F7"], run: () => void jumpProblem(false), enabled: ready },
     { id: "data.prevProblem", label: "Jump to &previous problem", keys: ["Shift+F7"], run: () => void jumpProblem(true), enabled: ready },
-    { id: "data.checkNow", label: "Check the whole table &now", run: () => { const t = tab; if (t) void checkNow(t); }, enabled: () => ready() && !!tab?.checks.length },
+    { id: "data.checkNow", label: "Check the whole table &now", run: () => { const t = tab; if (t) void checkNow(t); }, enabled: () => ready() && !!(tab?.checks.length || tab?.tableChecks.length) },
     { id: "data.diffNext", label: "Compared files: &next change", keys: ["Alt+F7"], run: () => void jumpDiff(false), enabled: () => !!tab?.diffOn },
     { id: "data.diffPrev", label: "Compared files: &previous change", keys: ["Alt+Shift+F7"], run: () => void jumpDiff(true), enabled: () => !!tab?.diffOn },
     { id: "data.diffClear", label: "Compared files: &clear the colours", run: () => void clearDiff(), enabled: () => !!tab?.diffOn },
@@ -6919,7 +6929,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "data.repairRow", "data.ragged", "data.raggedShort", "data.raggedLong", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
-        "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.uniqueTogether", "data.existsCheck", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
+        "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.compareLists", "data.gaps", "data.relations", "data.patchSave", "data.patchApply", "-",
         "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",
@@ -6959,7 +6969,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -7367,10 +7377,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     void tick().then(() => grid?.focus());
   }
 
-  function keepChecks(checks: Check[], mark: boolean): void {
+  function keepChecks(checks: Check[], mark: boolean, tableChecks?: TableCheck[]): void {
     const t = tab;
     if (!t) return;
     t.checks = checks;
+    if (tableChecks) t.tableChecks = tableChecks;
     t.checksMarked = mark && checks.length > 0;
     t.checkVersion++;
     t.bump();
@@ -7378,21 +7389,27 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   /** The rules as a spec (what the engine runs). */
   function ruleSpec(t: Tab): CheckSpec {
-    return { checks: $state.snapshot(t.checks) as Check[], keep_first: t.header, read: READ, now: localDays() };
+    return { checks: $state.snapshot(t.checks) as Check[], keep_first: t.header, read: READ, now: localDays(), table_checks: $state.snapshot(t.tableChecks) as TableCheck[] };
   }
 
   /** Run the rules over the whole table once (a job with progress and Cancel) and keep the figures. */
   async function checkNow(t: Tab): Promise<boolean> {
-    if (!t.checks.length) return false;
+    if (!t.checks.length && !t.tableChecks.length) return false;
     try {
       const rep = await runJob("Checking", () => backend().runChecks(t.id, ruleSpec(t)));
       if (!rep) return false;
-      t.lastRun = { rules: t.checks.length, problems: rep.problems, revision: t.info.data_revision };
+      const table = rep.table ?? [];
+      const failed = table.filter((r) => r.ok !== true);
+      t.lastRun = { rules: t.checks.length, problems: rep.problems, revision: t.info.data_revision, tableFailed: failed.length };
       t.checkVersion++;
       t.bump();
       // A "value must exist in" rule whose file is not open did not run: say so, never a clean count alone.
       const skipped = rep.not_run ?? [];
       if (skipped.length) say(`${skipped.length === 1 ? "1 rule" : `${skipped.length} rules`} did not run: ${skipped[0]!.why}.`);
+      else if (failed.length) {
+        const f = failed[0]!;
+        say(`${plural(failed.length, "table check")} did not pass: ${f.name}: ${f.ok === null ? `did not run (${f.why ?? ""})` : `${f.actual}, wanted ${f.expected}`}.`);
+      } else if (table.length) say(`${plural(table.length, "table check")} passed; ${plural(rep.problems, "problem")} in the rows.`);
       return true;
     } catch (e) {
       say(errorText(e));
@@ -7499,8 +7516,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   async function loadSidecar(t: Tab): Promise<void> {
     try {
       const s = await backend().checksSidecarLoad(t.id);
-      if (!s || !s.checks.length || t.checks.length) return;
+      if (!s || (!s.checks.length && !s.table_checks?.length) || t.checks.length || t.tableChecks.length) return;
       t.checks = s.checks;
+      t.tableChecks = s.table_checks ?? [];
       t.checksMarked = true;
       t.checkVersion++;
       t.rulesNote = `Loaded ${s.checks.length === 1 ? "1 rule" : `${s.checks.length} rules`} from ${s.file}${s.skipped ? ` (${s.skipped} did not fit this table)` : ""}`;
@@ -8775,11 +8793,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       <span class={tab.diffOutOfDate ? "msg" : "muted"} title="Compared by key (Tools > Compare). Alt+F7 next difference, Alt+Shift+F7 previous.">{tab.diffOutOfDate ? "Differences out of date: compare again" : "Differences marked"}</span>
       <button type="button" class="small" title="Take the colours off the compared tabs" onclick={() => void clearDiff()}>Clear</button>
     {/if}
-    {#if tab && tab.checks.length}
+    {#if tab && (tab.checks.length || tab.tableChecks.length)}
       {@const note = problemNote(tab)}
       {#if note}<span class="msg" title="The rule this cell breaks (F7 jumps to the next problem)">{note}</span>{/if}
       <span class="muted" title={tab.rulesNote || "How many rules are set and how many problems the last full check found. F7 jumps to the next problem."}>
-        {plural(tab.checks.length, "rule")}{#if tab.lastRun}, {plural(tab.lastRun.problems, "problem")}{#if tab.lastRun.revision !== tab.info.data_revision} (not current){/if}{/if}
+        {#if tab.checks.length}{plural(tab.checks.length, "rule")}{:else}{plural(tab.tableChecks.length, "table check")}{/if}{#if tab.lastRun}, {plural(tab.lastRun.problems, "problem")}{#if tab.lastRun.tableFailed}, {plural(tab.lastRun.tableFailed, "table check")} not passed{/if}{#if tab.lastRun.revision !== tab.info.data_revision} (not current){/if}{/if}
       </span>
       {#if !tab.lastRun || tab.lastRun.revision !== tab.info.data_revision}<button type="button" class="small" title="Run the rules over the whole table" onclick={() => { const t = tab; if (t) void checkNow(t); }}>Check now</button>{/if}
     {/if}
@@ -9374,13 +9392,15 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     col={tab.cell.col}
     header={tab.header}
     checks={tab.checks}
+    tableChecks={tab.tableChecks}
+    focusTable={checksAtTable}
     marked={tab.checksMarked}
     onApply={keepChecks}
     rulesFile={tab.rulesNote ? tab.rulesNote.replace(/^Loaded .* from /, "").replace(/ \(.*$/, "") : ""}
     others={tabs.map((o) => ({ id: o.id, name: o.info.name, titles: shownTitles(o), data_revision: o.info.data_revision ?? 0 }))}
     onGoto={(row, col) => { const t = tab; if (t) grid?.select({ row, col: col ?? t.cell.col }); }}
     onShowProblems={(s) => void showProblems(s)}
-    onClose={() => { checksOpen = false; grid?.focus(); }}
+    onClose={() => { checksOpen = false; checksAtTable = false; grid?.focus(); }}
   />
 {/if}
 

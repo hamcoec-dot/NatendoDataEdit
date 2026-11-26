@@ -1000,6 +1000,20 @@ everything is also in command search.
   and Show only rows with problems, Sort, the check column, Go To Special and
   F7 wait until it can run instead of looking clean. Data > Check that values
   exist in another file (also on the column right-click menu) starts one.
+- **Table checks:** rules about the table as a whole, run with the other rules
+  by Run checks and Check now, over the rows shown: how many rows there are
+  (exactly, at least, at most), as many rows as another open file, no blank
+  cell in a column, how many different values a column holds, and totals
+  that must add up, written as a formula over whole-column figures such as
+  `SUM([Early]) + SUM([Election day]) = SUM([Total])` or `MAX([Age]) <= 120`
+  (SUM, COUNT, COUNTA, COUNTBLANK, DISTINCT, MIN, MAX and AVERAGE, each of one
+  column; a `]` in a title is written twice, as in `[Votes]]]`). An `=` or `<>`
+  compares within a tolerance you pick: an amount (half a cent, 0.005, unless
+  you change it) or a percent of the larger figure. Each shows passed or
+  failed with what the table has and what was wanted; one whose other file is
+  not open does not run and says so. Data > Table checks (also on the column
+  right-click menu) opens them; they are kept with the tab and in the rules
+  file beside the table (Keep these rules with the file), not in views.
 - **Rules with names, a wavy underline and Jump to next problem:** the Data
   checks dialog takes several rules per column, each with an optional name
   ("5-digit ZIP"), ready-made rules for the column you are in (5 digits, no
@@ -1593,6 +1607,16 @@ given, or a `--table` no rule reads, stops with exit code 2, so a script never
 passes because a rule did not run. With `--json`, `foreign_keys` gives each such
 rule's missing count; note that `--json` output contains cell values (the first
 1,000 problems).
+
+A checks file can also hold `"table_checks"`, rules about the whole table:
+`{"type": "row_count", "compare": "equals", "value": 500}` (or `at_least`,
+`at_most`), `{"type": "row_count_same_as", "table": "roster"}` (the file given
+with `--table roster=...`), `{"type": "no_blanks", "column": "Total"}`,
+`{"type": "distinct", "column": "Party", "compare": "at_most", "value": 5}`, and
+`{"type": "aggregate", "expr": "SUM([Early]) + SUM([Day]) = SUM([Total])"}`, each
+as `{"name": "...", "kind": {...}}`. With `--json`, `table_checks` gives each
+one's `ok`, `actual` and `expected`; a failed one exits with 1, one that could
+not run with 2.
 
 ## Agent link
 

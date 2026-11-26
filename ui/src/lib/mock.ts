@@ -17,6 +17,8 @@ import type {
   JumpResult,
   RuleSuggestion,
   SidecarRules,
+  TableCheck,
+  TableResult,
   AppInfo,
   Backend,
   Change,
@@ -5045,7 +5047,76 @@ export class MockBackend implements Backend {
       const why = o === "two" ? `two open files are called ${c.kind.table}: close one` : o === "none" ? `open ${c.kind.table}` : `${c.kind.table} has no column ${c.kind.column}`;
       (rep.not_run ??= []).push({ check: i, why });
     });
+    if (spec.table_checks?.length) rep.table = this.tableChecks(d, spec);
     return rep;
+  }
+  /** Table checks, as the engine runs them (formulas: sums of figures and numbers on each side of one comparison). */
+  private tableChecks(d: MockDoc, spec: CheckSpec): TableResult[] {
+    const first = spec.keep_first ? 1 : 0;
+    const n = Math.max(0, this.rowCount(d) - first);
+    const names = this.names(d, spec.keep_first);
+    const cells = (c: number): string[] => Array.from({ length: n }, (_, k) => this.value(d, k + first, c));
+    const nums = (c: number): number[] => cells(c).filter((v) => v.trim() !== "" && Number.isFinite(Number(v))).map(Number);
+    const words = { equals: "exactly", at_least: "at least", at_most: "at most" } as const;
+    const holds = (cmp: keyof typeof words, a: number, b: number): boolean => (cmp === "equals" ? a === b : cmp === "at_least" ? a >= b : a <= b);
+    const distinct = (c: number): number => new Set(cells(c).map((v) => v.trim()).filter(Boolean)).size;
+    const figure = (fn: string, ref: string): number | null => {
+      const t = ref.replace(/]]/g, "]");
+      const c = t.startsWith("#") ? Number(t.slice(1)) - 1 : names.findIndex((x) => x.toLowerCase() === t.toLowerCase());
+      if (c < 0 || c >= names.length || !Number.isInteger(c)) throw err("invalid", `there is no column named [${t}]`);
+      const v = nums(c);
+      switch (fn) {
+        case "SUM": return v.reduce((a, b) => a + b, 0);
+        case "COUNT": return v.length;
+        case "COUNTA": return cells(c).filter((x) => x.trim()).length;
+        case "COUNTBLANK": return cells(c).filter((x) => !x.trim()).length;
+        case "DISTINCT": return distinct(c);
+        case "MIN": return v.length ? Math.min(...v) : null;
+        case "MAX": return v.length ? Math.max(...v) : null;
+        default: return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+      }
+    };
+    const side = (s: string): number | null => {
+      let total = 0;
+      for (const m of s.matchAll(/([+-]?)\s*(?:([A-Za-z]+)\(\[((?:[^\]]|\]\])*)\]\)|(\d+(?:\.\d+)?))/g)) {
+        const v = m[2] ? figure(m[2].toUpperCase(), m[3]!) : Number(m[4]);
+        if (v === null) return null;
+        total += m[1] === "-" ? -v : v;
+      }
+      return total;
+    };
+    return (spec.table_checks ?? []).map((c, check) => {
+      const name = c.name?.trim() || "";
+      const r: TableResult = { check, name, ok: null, actual: "", expected: "" };
+      const k = c.kind;
+      if (k.type === "row_count") Object.assign(r, { ok: holds(k.compare, n, k.value), actual: `${n} rows`, expected: `${words[k.compare]} ${k.value}`, name: name || `Rows: ${words[k.compare]} ${k.value}` });
+      else if (k.type === "row_count_same_as") {
+        const o = this.fkDoc(k.table);
+        r.name = name || `As many rows as ${k.table}`;
+        if (o === "none") r.why = `open ${k.table}`;
+        else if (o === "two") r.why = `two open files are called ${k.table}: close one`;
+        else {
+          const m = Math.max(0, this.rowCount(o) - 1);
+          Object.assign(r, { ok: n === m, actual: `${n} rows`, expected: `${m} rows, as ${k.table} has` });
+        }
+      } else if (k.type === "no_blanks") {
+        const blank = cells(k.col).filter((v) => !v.trim()).length;
+        Object.assign(r, { ok: blank === 0, actual: `${blank} blank cells`, expected: "no blank cells", name: name || `No blanks in ${names[k.col] ?? ""}` });
+      } else if (k.type === "distinct") {
+        const v = distinct(k.col);
+        Object.assign(r, { ok: holds(k.compare, v, k.value), actual: `${v} different values`, expected: `${words[k.compare]} ${k.value}`, name: name || `${words[k.compare]} ${k.value} different values in ${names[k.col] ?? ""}` });
+      } else {
+        const tol = k.tolerance ?? { kind: "absolute" as const, value: 0.005 };
+        const close = (a: number, b: number): boolean => Math.abs(a - b) <= (tol.kind === "absolute" ? tol.value : tol.value * Math.max(Math.abs(a), Math.abs(b)));
+        const m = /^(.*?)(<>|<=|>=|=|<|>)(.*)$/.exec(k.expr);
+        if (!m) throw err("invalid", "a table check needs a comparison, like SUM([A]) = SUM([B])");
+        const [a, b] = [side(m[1]!), side(m[3]!)];
+        const op = m[2]!;
+        const ok = a !== null && b !== null && (op === "=" ? close(a, b) : op === "<>" ? !close(a, b) : op === "<" ? a < b : op === ">" ? a > b : op === "<=" ? a <= b || close(a, b) : a >= b || close(a, b));
+        Object.assign(r, { ok, actual: a === null ? "no value" : String(a), expected: `${op} ${b === null ? "no value" : b}`, name: name || k.expr });
+      }
+      return r;
+    });
   }
   async checkMarks(doc: number, row: number, rows: number, col: number, cols: number, spec: CheckSpec): Promise<CheckMark[]> {
     const d = this.get(doc);
@@ -5068,7 +5139,7 @@ export class MockBackend implements Backend {
     return out;
   }
   /** Rules kept beside a file, by document. */
-  sidecars = new Map<number, { checks: Check[]; keep_first: boolean }>();
+  sidecars = new Map<number, { checks: Check[]; keep_first: boolean; table_checks?: TableCheck[] }>();
   async nextProblem(doc: number, row: number, col: number, backward: boolean, skipCols: number[], spec: CheckSpec): Promise<JumpResult> {
     this.calls.push("nextProblem");
     const d = this.get(doc);
@@ -5113,11 +5184,11 @@ export class MockBackend implements Backend {
   async checksSidecarLoad(doc: number): Promise<SidecarRules | null> {
     this.calls.push("checksSidecarLoad");
     const s = this.sidecars.get(doc);
-    return s ? { checks: s.checks, skipped: 0, keep_first: s.keep_first, file: "mock.csv.ndchecks" } : null;
+    return s ? { checks: s.checks, table_checks: s.table_checks ?? [], skipped: 0, keep_first: s.keep_first, file: "mock.csv.ndchecks" } : null;
   }
-  async checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean): Promise<string> {
+  async checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean, tableChecks: TableCheck[] = []): Promise<string> {
     this.calls.push("checksSidecarKeep");
-    if (checks.length) this.sidecars.set(doc, { checks, keep_first: keepFirst });
+    if (checks.length || tableChecks.length) this.sidecars.set(doc, { checks, keep_first: keepFirst, table_checks: tableChecks });
     else this.sidecars.delete(doc);
     return "mock.csv.ndchecks";
   }

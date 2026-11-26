@@ -584,6 +584,14 @@ fn read_checks(path: &str, d: &Document, header: bool) -> Result<CheckSpec, Stri
     }
     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
     let mut v: Value = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+    let names = d.expr_names(header);
+    let table_checks = match &mut v {
+        Value::Object(o) => match o.remove("table_checks") {
+            Some(tc) => read_table_checks(path, tc, &names)?,
+            None => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
     let list = match &mut v {
         Value::Array(a) => a,
         Value::Object(o) => match o.get_mut("checks") {
@@ -595,23 +603,11 @@ fn read_checks(path: &str, d: &Document, header: bool) -> Result<CheckSpec, Stri
     if list.len() > MAX_CHECKS {
         return Err(format!("{path}: at most {MAX_CHECKS} checks"));
     }
-    let names = d.expr_names(header);
     for c in list.iter_mut() {
         let Value::Object(o) = c else {
             return Err(format!("{path}: each check is an object"));
         };
-        let find = |col: &Value| -> Result<u64, String> {
-            match col {
-                Value::Number(n) => n.as_u64().and_then(|n| n.checked_sub(1)),
-                Value::String(s) => names
-                    .iter()
-                    .position(|t| t == s)
-                    .or_else(|| names.iter().position(|t| t.eq_ignore_ascii_case(s)))
-                    .map(|i| i as u64),
-                _ => None,
-            }
-            .ok_or_else(|| format!("{path}: no column {col}"))
-        };
+        let find = |col: &Value| find_column(path, col, &names);
         if let Some(col) = o.remove("column") {
             let n = find(&col)?;
             o.insert("col".into(), json!(n));
@@ -642,12 +638,57 @@ fn read_checks(path: &str, d: &Document, header: bool) -> Result<CheckSpec, Stri
     }
     let checks = serde_json::from_value(Value::Array(std::mem::take(list)))
         .map_err(|e| format!("{path}: {e}"))?;
-    Ok(CheckSpec {
+    let spec = CheckSpec {
         checks,
         keep_first: header,
         now: natendo_engine::clean::now_utc(),
+        table_checks,
         ..Default::default()
-    })
+    };
+    natendo_engine::validate::check_spec(&spec).map_err(|e| format!("{path}: {e}"))?;
+    Ok(spec)
+}
+
+/// A checks file's column: a title (exact, else any case) or a number from 1.
+fn find_column(path: &str, col: &Value, names: &[String]) -> Result<u64, String> {
+    match col {
+        Value::Number(n) => n.as_u64().and_then(|n| n.checked_sub(1)),
+        Value::String(s) => names
+            .iter()
+            .position(|t| t == s)
+            .or_else(|| names.iter().position(|t| t.eq_ignore_ascii_case(s)))
+            .map(|i| i as u64),
+        _ => None,
+    }
+    .filter(|&n| (n as usize) < names.len())
+    .ok_or_else(|| format!("{path}: no column {col}"))
+}
+
+/// `"table_checks": [...]`: each `{"name"?, "kind": {...}}` as the app keeps them, with a
+/// `"column"` (title or number from 1) in the kind of a no-blanks or distinct check.
+fn read_table_checks(
+    path: &str,
+    mut v: Value,
+    names: &[String],
+) -> Result<Vec<natendo_engine::tablecheck::TableCheck>, String> {
+    let Value::Array(list) = &mut v else {
+        return Err(format!("{path}: \"table_checks\" is a list"));
+    };
+    if list.len() > natendo_engine::tablecheck::MAX_TABLE_CHECKS {
+        return Err(format!(
+            "{path}: at most {} table checks",
+            natendo_engine::tablecheck::MAX_TABLE_CHECKS
+        ));
+    }
+    for c in list.iter_mut() {
+        if let Some(Value::Object(k)) = c.get_mut("kind") {
+            if let Some(col) = k.remove("column") {
+                let n = find_column(path, &col, names)?;
+                k.insert("col".into(), json!(n));
+            }
+        }
+    }
+    serde_json::from_value(v).map_err(|e| format!("{path}: table checks: {e}"))
 }
 
 /// Most `--table` files for one run.
@@ -786,10 +827,49 @@ fn bind_tables(
         set.source.column = titles[col].clone();
         keys.push(KeyBinding::Ready(Arc::new(set)));
     }
+    // "As many rows as" table checks: shown data rows of the file given (titles in its first row).
+    let mut rows = Vec::with_capacity(spec.table_checks.len());
+    for (i, c) in spec.table_checks.iter().enumerate() {
+        let natendo_engine::tablecheck::TableCheckKind::RowCountSameAs { table } = &c.kind else {
+            rows.push(None);
+            continue;
+        };
+        let n = match tables
+            .iter()
+            .position(|(n, _)| n.eq_ignore_ascii_case(table.trim()))
+        {
+            Some(k) => {
+                used[k] = true;
+                match loaded.iter().find(|(n, _)| n == &tables[k].0) {
+                    Some((_, o)) => o.row_count().saturating_sub(1),
+                    None => {
+                        let o = load(tables[k].1, 0)?;
+                        let n = o.row_count().saturating_sub(1);
+                        loaded.push((tables[k].0.clone(), o));
+                        n
+                    }
+                }
+            }
+            None if is_input(table) => {
+                let n = d.row_count();
+                n - u64::from(spec.keep_first && n > 0)
+            }
+            None => {
+                return Err(format!(
+                    "table check {} reads the table {}: give it with --table {}=<file>",
+                    i + 1,
+                    table.trim(),
+                    table.trim()
+                ))
+            }
+        };
+        rows.push(Some(Ok(n)));
+    }
     if let Some(k) = used.iter().position(|u| !u) {
         return Err(format!("--table {} is not read by any rule", tables[k].0));
     }
     spec.keys = keys;
+    spec.table_rows = rows;
     Ok(())
 }
 
@@ -809,6 +889,27 @@ pub fn validate(args: &[&str], json_out: bool) -> Result<bool, String> {
     if let Some(n) = r.not_run.first() {
         return Err(format!("rule {} did not run: {}", n.check + 1, n.why));
     }
+    if let Some(t) = r.table.iter().find(|t| t.ok.is_none()) {
+        return Err(format!(
+            "table check {} did not run: {}",
+            t.check + 1,
+            t.why.as_deref().unwrap_or("")
+        ));
+    }
+    let table_ok = r.table.iter().all(|t| t.ok == Some(true));
+    let table: Vec<Value> = r
+        .table
+        .iter()
+        .map(|t| {
+            json!({
+                "check": t.check + 1,
+                "name": t.name,
+                "ok": t.ok,
+                "actual": t.actual,
+                "expected": t.expected,
+            })
+        })
+        .collect();
     let names = d.expr_names(a.header);
     let foreign: Vec<Value> = r
         .tables
@@ -842,6 +943,7 @@ pub fn validate(args: &[&str], json_out: bool) -> Result<bool, String> {
             "per_check": r.per_check,
             "listed": problems,
             "foreign_keys": foreign,
+            "table_checks": table,
         }));
     } else {
         println!(
@@ -863,6 +965,20 @@ pub fn validate(args: &[&str], json_out: bool) -> Result<bool, String> {
                 p.value.escape_debug()
             );
         }
+        for t in &r.table {
+            println!(
+                "  table check {} {}: {}: {} (wanted {})",
+                t.check + 1,
+                if t.ok == Some(true) {
+                    "passed"
+                } else {
+                    "FAILED"
+                },
+                t.name,
+                t.actual,
+                t.expected
+            );
+        }
     }
-    Ok(r.problems == 0)
+    Ok(r.problems == 0 && table_ok)
 }

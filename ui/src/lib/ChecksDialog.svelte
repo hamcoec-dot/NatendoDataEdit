@@ -4,10 +4,10 @@
   // the grid and the table can show only rows with problems. Checks are
   // kept with views and can be saved to a file the command line reads.
   import { untrack } from "svelte";
-  import { backend, errorText, type Check, type CheckKind, type CheckReport, type CheckSpec, type RuleSuggestion } from "./backend";
+  import { backend, errorText, type Check, type CheckKind, type CheckReport, type CheckSpec, type Compare, type RuleSuggestion, type TableCheck, type TableCheckKind } from "./backend";
   import FormShell from "./FormShell.svelte";
   import AllNone from "./AllNone.svelte";
-  import { CHECK_KINDS, CHECK_PATTERNS, describeCheck, localDays, newCheck } from "./m8";
+  import { CHECK_KINDS, CHECK_PATTERNS, TABLE_CHECK_KINDS, describeCheck, describeTableCheck, localDays, newCheck, newTableCheck, tableColRef } from "./m8";
 
   interface Props {
     doc: number;
@@ -15,9 +15,13 @@
     col: number;
     header: boolean;
     checks: Check[];
+    /** Rules about the whole table. */
+    tableChecks?: TableCheck[];
     marked: boolean;
     /** Keep these checks on the tab (and mark problems when `mark`). */
-    onApply: (checks: Check[], mark: boolean) => void;
+    onApply: (checks: Check[], mark: boolean, tableChecks: TableCheck[]) => void;
+    /** Open with the table checks in view (and one added when there are none). */
+    focusTable?: boolean;
     onGoto: (row: number, col: number | null) => void;
     onShowProblems: (spec: CheckSpec) => void;
     onClose: () => void;
@@ -26,7 +30,7 @@
     /** The open files (this one too), for "value must exist in" rules: name, column titles, data revision. */
     others?: { id: number; name: string; titles: string[]; data_revision: number }[];
   }
-  let { doc, titles, col, header, checks, marked, onApply, onGoto, onShowProblems, onClose, rulesFile = "", others = [] }: Props = $props();
+  let { doc, titles, col, header, checks, tableChecks = [], marked, onApply, onGoto, onShowProblems, onClose, rulesFile = "", others = [], focusTable = false }: Props = $props();
   /** A table a rule read has changed since the run (its result is out of date). */
   const stale = (u: { doc: number; data_revision: number }): boolean => {
     const o = others.find((x) => x.id === u.doc);
@@ -34,6 +38,38 @@
   };
 
   let list = $state<Check[]>(untrack(() => structuredClone($state.snapshot(checks))));
+  let tlist = $state<TableCheck[]>(untrack(() => {
+    const t = structuredClone($state.snapshot(tableChecks)) as TableCheck[];
+    return focusTable && !t.length ? [newTableCheck("aggregate", col)] : t;
+  }));
+  /** Most table checks (the engine's MAX_TABLE_CHECKS). */
+  const MAX_TABLE = 50;
+  function addTable(): void {
+    if (tlist.length < MAX_TABLE) tlist = [...tlist, newTableCheck("row_count", col)];
+  }
+  function setTableKind(i: number, type: TableCheckKind["type"]): void {
+    tlist[i] = { name: tlist[i]?.name ?? null, ...newTableCheck(type, col) };
+    report = null;
+  }
+  /** Put a column's figure into a formula (title in brackets, a `]` written twice). */
+  function insertFigure(i: number, fn: string, x: number): void {
+    const k = tlist[i]?.kind;
+    if (k?.type !== "aggregate") return;
+    const part = `${fn}(${tableColRef(titles[x] ?? "", x)})`;
+    k.expr = k.expr.trim() ? `${k.expr.trimEnd()} ${part}` : part;
+    report = null;
+  }
+  const COMPARES: { v: Compare; label: string }[] = [
+    { v: "equals", label: "exactly" },
+    { v: "at_least", label: "at least" },
+    { v: "at_most", label: "at most" },
+  ];
+  const FIGURES = ["SUM", "COUNT", "COUNTA", "COUNTBLANK", "DISTINCT", "MIN", "MAX", "AVERAGE"];
+  const whole = (s: string): number => Math.max(0, Math.floor(numOrNull(s) ?? 0));
+  let tableEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    if (focusTable && tableEl) untrack(() => tableEl?.scrollIntoView({ block: "nearest" }));
+  });
   let mark = $state(untrack(() => marked || checks.length === 0));
   let report = $state<CheckReport | null>(null);
   let problem = $state("");
@@ -83,8 +119,9 @@
 
   async function keep(): Promise<void> {
     try {
-      const name = await backend().checksSidecarKeep(doc, spec().checks, header);
-      kept = list.length ? `Kept in ${name}.` : "No rules, so the file beside the table was removed.";
+      const s = spec();
+      const name = await backend().checksSidecarKeep(doc, s.checks, header, s.table_checks);
+      kept = list.length || tlist.length ? `Kept in ${name}.` : "No rules, so the file beside the table was removed.";
       problem = "";
     } catch (e) {
       problem = errorText(e);
@@ -92,9 +129,10 @@
   }
   function forget(): void {
     list = [];
+    tlist = [];
     report = null;
     suggestions = null;
-    onApply([], false);
+    onApply([], false, []);
     kept = "Rules forgotten. A rules file beside the table is untouched: Keep with no rules removes it.";
   }
 
@@ -123,16 +161,19 @@
       const also = c.kind.also.filter((a) => a !== c.col);
       return { ...c, kind: also.length ? { ...c.kind, also } : { type: "unique" as const, match_case: c.kind.match_case } };
     });
-    return { checks, keep_first: header, read: { decimal_comma: false, date_order: "mdy" }, now: localDays() };
+    const table_checks = $state.snapshot(tlist) as TableCheck[];
+    return { checks, keep_first: header, read: { decimal_comma: false, date_order: "mdy" }, now: localDays(), table_checks };
   }
+  const anything = $derived(list.length > 0 || tlist.length > 0);
 
   async function run(): Promise<void> {
-    if (!list.length || running) return;
+    if (!anything || running) return;
     running = true;
     problem = "";
     try {
-      report = await backend().runChecks(doc, spec());
-      onApply(spec().checks, mark);
+      const s = spec();
+      report = await backend().runChecks(doc, s);
+      onApply(s.checks, mark, s.table_checks ?? []);
     } catch (e) {
       report = null;
       problem = errorText(e);
@@ -256,6 +297,64 @@
       <button type="button" onclick={() => void suggest()} disabled={suggesting}>{suggesting ? "Looking…" : "Suggest rules from this data"}</button>
     </div>
   </div>
+  <div class="checks table-checks" bind:this={tableEl} aria-label="Table checks">
+    <p class="sub">Table checks: rules about the whole table (counted over the rows shown).</p>
+    {#each tlist as c, i (i)}
+      {@const r = report?.table?.find((x) => x.check === i)}
+      <div class="check">
+        <select aria-label="Table check" value={c.kind.type} onchange={(e) => setTableKind(i, (e.currentTarget as HTMLSelectElement).value as TableCheckKind["type"])}>
+          {#each TABLE_CHECK_KINDS as k (k.type)}<option value={k.type}>{k.label}</option>{/each}
+        </select>
+        <input type="text" class="name" aria-label="Table check name" placeholder="name (optional)" maxlength="100" value={c.name ?? ""} oninput={(e) => (c.name = e.currentTarget.value.trim() ? e.currentTarget.value : null)} />
+        {#if c.kind.type === "row_count"}
+          {@const k = c.kind}
+          <select aria-label="Compare" bind:value={k.compare}>{#each COMPARES as o (o.v)}<option value={o.v}>{o.label}</option>{/each}</select>
+          <input type="text" aria-label="Rows" value={k.value} oninput={(e) => (k.value = whole(e.currentTarget.value))} /> rows
+        {:else if c.kind.type === "row_count_same_as"}
+          {@const k = c.kind}
+          <select aria-label="File with as many rows" value={k.table} onchange={(e) => { k.table = (e.currentTarget as HTMLSelectElement).value; report = null; }}>
+            <option value="">Open file…</option>
+            {#if k.table && !others.some((o) => o.name === k.table)}<option value={k.table}>{k.table} (not open)</option>{/if}
+            {#each others as o (o.id)}{#if o.id !== doc}<option value={o.name}>{o.name}</option>{/if}{/each}
+          </select>
+        {:else if c.kind.type === "no_blanks"}
+          {@const k = c.kind}
+          <select aria-label="Column with no blanks" bind:value={k.col}>{#each titles as t, x (x)}<option value={x}>{t || `Column ${x + 1}`}</option>{/each}</select>
+        {:else if c.kind.type === "distinct"}
+          {@const k = c.kind}
+          <select aria-label="Compare" bind:value={k.compare}>{#each COMPARES as o (o.v)}<option value={o.v}>{o.label}</option>{/each}</select>
+          <input type="text" aria-label="Different values" value={k.value} oninput={(e) => (k.value = whole(e.currentTarget.value))} /> different values in
+          <select aria-label="Column to count values in" bind:value={k.col}>{#each titles as t, x (x)}<option value={x}>{t || `Column ${x + 1}`}</option>{/each}</select>
+        {:else if c.kind.type === "aggregate"}
+          {@const k = c.kind}
+          {@const tol = k.tolerance ?? { kind: "absolute" as const, value: 0.005 }}
+          <input class="grow mono" type="text" aria-label="Formula" placeholder="like SUM([Early]) + SUM([Election day]) = SUM([Total])" bind:value={k.expr} spellcheck="false" />
+          <select aria-label="Put in a column's figure" value="" onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) { const [fn, x] = v.split(":"); insertFigure(i, fn!, numOrNull(x ?? "") ?? 0); } (e.currentTarget as HTMLSelectElement).value = ""; }}>
+            <option value="">Put in…</option>
+            {#each FIGURES as fn (fn)}
+              <optgroup label={fn}>{#each titles as t, x (x)}<option value={`${fn}:${x}`}>{fn}({t || `Column ${x + 1}`})</option>{/each}</optgroup>
+            {/each}
+          </select>
+          <label class="row">equal within
+            <input type="text" aria-label="Tolerance" value={tol.kind === "relative" ? +(tol.value * 100).toPrecision(12) : tol.value}
+              oninput={(e) => { const n = Math.max(0, numOrNull(e.currentTarget.value) ?? 0); k.tolerance = { kind: tol.kind, value: tol.kind === "relative" ? n / 100 : n }; }} />
+          </label>
+          <select aria-label="Tolerance kind" value={tol.kind} onchange={(e) => { const kind = (e.currentTarget as HTMLSelectElement).value as "absolute" | "relative"; k.tolerance = kind === "relative" ? { kind, value: 0.0001 } : { kind, value: 0.005 }; }}>
+            <option value="absolute">as an amount</option>
+            <option value="relative">percent of the larger</option>
+          </select>
+        {/if}
+        {#if r}
+          {#if r.ok === null}<span class="count bad" title={r.why ?? ""}>not run</span>
+          {:else}<span class="count" class:bad={!r.ok} title={`${r.actual}; wanted ${r.expected}`}>{r.ok ? "passed" : "failed"}</span>{/if}
+        {/if}
+        <button type="button" class="x" aria-label="Remove this table check" onclick={() => { tlist = tlist.filter((_, x) => x !== i); report = null; }}>×</button>
+      </div>
+    {/each}
+    <div class="check">
+      <button type="button" onclick={addTable} disabled={tlist.length >= MAX_TABLE}>Add a table check</button>
+    </div>
+  </div>
   {#if suggestions?.length}
     <div class="suggest" aria-label="Suggested rules">
       {#each suggestions as s, i (i)}
@@ -265,12 +364,15 @@
     </div>
   {/if}
   {#if rulesFile}<p class="note">These rules were read from {rulesFile} beside the table.</p>{/if}
-  <p class="note">Blank cells pass every check except "Must not be blank". Checks are kept with saved views.</p>
+  <p class="note">Blank cells pass every check except "Must not be blank". Checks are kept with saved views; table checks are kept with the tab and the rules file, not with views.</p>
   <label class="row"><input type="checkbox" bind:checked={mark} /> Mark problem cells on the grid</label>
   {#if report}
-    <p class={report.problems || report.not_run?.length ? "problem" : "good"}>
+    {#if list.length}<p class={report.problems || report.not_run?.length ? "problem" : "good"}>
       {report.checked.toLocaleString()} rows checked: {report.problems ? `${report.rows.toLocaleString()} with problems (${report.problems.toLocaleString()} in all)` : report.not_run?.length ? "no problems found by the rules that ran" : "no problems"}.
-    </p>
+    </p>{/if}
+    {#each report.table ?? [] as r (r.check)}
+      <p class={r.ok ? "good" : "problem"}>Table check {r.check + 1}, {describeTableCheck(tlist[r.check] ?? { kind: { type: "row_count", compare: "equals", value: 0 } }, titles, false)}: {r.ok === null ? `did not run: ${r.why ?? ""}` : `${r.ok ? "passed" : "failed"}: ${r.actual}${r.ok ? "" : ` (wanted ${r.expected})`}`}.</p>
+    {/each}
     {#each report.not_run ?? [] as n (n.check)}
       <p class="problem">Rule {n.check + 1} did not run: {n.why}. Its rows were not checked by it, so Show only rows with problems waits until it can run.</p>
     {/each}
@@ -295,13 +397,13 @@
   {#if kept}<p class="good">{kept}</p>{/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#snippet buttons()}
-    <button type="button" class="primary" onclick={() => void run()} disabled={!list.length || running}>{running ? "Checking…" : "Run checks"}</button>
+    <button type="button" class="primary" onclick={() => void run()} disabled={!anything || running}>{running ? "Checking…" : "Run checks"}</button>
     <button type="button" onclick={() => onShowProblems(spec())} disabled={!list.length}>Show only rows with problems</button>
-    <button type="button" onclick={() => { onApply(spec().checks, mark); onClose(); }}>Keep and close</button>
+    <button type="button" onclick={() => { const s = spec(); onApply(s.checks, mark, s.table_checks ?? []); onClose(); }}>Keep and close</button>
     <button type="button" onclick={() => void open()}>Open…</button>
     <button type="button" onclick={() => void save()} disabled={!list.length}>Save…</button>
     <button type="button" title="Writes the rules to a small file beside this file (never the table's cells: only the names, patterns and lists you typed). Not for private or encrypted files." onclick={() => void keep()}>Keep these rules with the file</button>
-    <button type="button" onclick={forget} disabled={!list.length}>Forget these rules</button>
+    <button type="button" onclick={forget} disabled={!anything}>Forget these rules</button>
     <button type="button" onclick={onClose}>Cancel</button>
   {/snippet}
 </FormShell>
@@ -313,6 +415,11 @@
     gap: 6px;
     max-height: 40vh;
     overflow: auto;
+  }
+  .table-checks {
+    max-height: 30vh;
+    border-top: 1px solid var(--border);
+    padding-top: 6px;
   }
   .check {
     display: flex;

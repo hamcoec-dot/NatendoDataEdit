@@ -1,9 +1,9 @@
 // One open document as the UI sees it: engine info, selection, view
 // settings (header row, frozen panes, column widths) and its cell cache.
 
-import { placeCheck, shiftChecks } from "./m8";
+import { placeCheck, placeTableCheck, shiftChecks, shiftTableChecks } from "./m8";
 import type { DiskNote } from "./disk";
-import type { Check, FindSpec } from "./backend";
+import type { Check, FindSpec, TableCheck } from "./backend";
 import type { Highlight } from "./views";
 import type { ColumnScale } from "./m10";
 import type { SortSpec } from "./backend";
@@ -18,6 +18,15 @@ import { single, type Selection, rectOf, type Rect, type Cell, activeOf, MAX_ARE
 export const DISPLAY_CHARS = 512;
 /** Undo steps the engine keeps (engine MAX_UNDO). */
 const MAX_UNDO = 10_000;
+/** An engine step that put in (or took out) columns: where, how many, and the rules and table
+ *  checks it dropped with where they stood (Undo puts them back). */
+type RuleShift = {
+  pos: number;
+  at: number;
+  count: number;
+  dropped: { index: number; check: Check }[];
+  droppedTable: { index: number; check: TableCheck }[];
+};
 /** Undo steps kept for changes to how the table looks (widths and so on). */
 const MAX_VIEW_STEPS = 1_000;
 /** About this much memory may hold looks kept for undo; past it the oldest
@@ -39,6 +48,7 @@ export interface ViewLook {
   /** Custom row heights (shared by reference while unchanged). */
   rows: RowHeightSnap;
   checks: Check[];
+  tableChecks: TableCheck[];
   /** What the columns hold (the engine keeps them; Undo puts them back). */
   types: ColumnTypes;
 }
@@ -245,6 +255,8 @@ export class Tab {
   notesVersion = 0;
   /** Data checks (kept with views) and whether problems are marked. */
   checks = $state<Check[]>([]);
+  /** Rules about the whole table (row count, no blanks, totals that add up), run with the rules. */
+  tableChecks = $state<TableCheck[]>([]);
   checksMarked = $state(false);
   /** Cells with a problem on screen ("row:col", or "row:*" for a row rule) -> the number of the rule
    *  that marks it. Kept apart from `marks` (colours), so nothing else can collide with it. */
@@ -252,7 +264,7 @@ export class Tab {
   /** Bumped when `problems` is replaced (the status line reads it). */
   problemsVersion = $state(0);
   /** The last full run of the rules: how many rules and problems, and the data it ran on. */
-  lastRun = $state<{ rules: number; problems: number; revision: number | undefined } | null>(null);
+  lastRun = $state<{ rules: number; problems: number; revision: number | undefined; tableFailed?: number } | null>(null);
   /** Said in the status line when rules were read from a file beside the table. */
   rulesNote = $state("");
   /** "Show my edits": cells that differ from the file get a corner mark. */
@@ -424,7 +436,7 @@ export class Tab {
   private lastPos = -1;
   /** What the parts of `lastView` were copied from (to tell cheaply whether
    *  they changed: these lists are replaced, never changed in place). */
-  private lastRefs: { cols: string; highlights: unknown; scales: unknown; checks: unknown; sort: unknown } | null = null;
+  private lastRefs: { cols: string; highlights: unknown; scales: unknown; checks: unknown; tableChecks: unknown; sort: unknown } | null = null;
   /** Memory held by looks kept for undo (roughly), and each look's share
    *  (counted down once when a step holding it is let go; a look still
    *  shared by a later step is then undercounted, which only lets a little
@@ -441,13 +453,16 @@ export class Tab {
   /** Each engine step that put in or took out columns (by the undo position it made), and the
    *  rules it dropped (with where they stood): Undo moves the rules back the other way and puts
    *  the dropped ones back, Redo moves them again. Rules added or changed since are kept. */
-  private ruleShifts: { pos: number; at: number; count: number; dropped: { index: number; check: Check }[] }[] = [];
+  private ruleShifts: RuleShift[] = [];
 
-  /** Undo one column shift on the rules as they are now. */
-  private unshiftRules(s: { at: number; count: number; dropped: { index: number; check: Check }[] }): void {
+  /** Undo one column shift on the rules (and table checks) as they are now. */
+  private unshiftRules(s: RuleShift): void {
     const back = shiftChecks(this.checks, s.at, -s.count).checks;
     for (const d of s.dropped) back.splice(Math.min(d.index, back.length), 0, d.check);
     this.checks = back;
+    const tback = shiftTableChecks(this.tableChecks, s.at, -s.count).checks;
+    for (const d of s.droppedTable) tback.splice(Math.min(d.index, tback.length), 0, d.check);
+    this.tableChecks = tback;
     this.checkVersion++;
   }
 
@@ -456,18 +471,25 @@ export class Tab {
    *  follow. How many rules used a deleted column and were dropped. */
   shiftCols(at: number, count: number): number {
     this.columns.shift(at, count);
-    if (!this.checks.length) return 0;
+    if (!this.checks.length && !this.tableChecks.length) return 0;
     const before = this.checks;
     const r = shiftChecks(before, at, count);
     const dropped: { index: number; check: Check }[] = [];
     before.forEach((c, index) => {
       if (shiftChecks([c], at, count).dropped) dropped.push({ index, check: c });
     });
+    const tbefore = this.tableChecks;
+    const tr = shiftTableChecks(tbefore, at, count);
+    const droppedTable: { index: number; check: TableCheck }[] = [];
+    tbefore.forEach((c, index) => {
+      if (shiftTableChecks([c], at, count).dropped) droppedTable.push({ index, check: c });
+    });
     this.checks = r.checks;
+    this.tableChecks = tr.checks;
     this.checkVersion++;
-    this.ruleShifts.push({ pos: this.info.history_pos, at, count, dropped });
+    this.ruleShifts.push({ pos: this.info.history_pos, at, count, dropped, droppedTable });
     if (this.ruleShifts.length > MAX_UNDO) this.ruleShifts.shift();
-    return r.dropped;
+    return r.dropped + tr.dropped;
   }
 
   /** Columns were just moved (the change is already in `info`). */
@@ -495,8 +517,9 @@ export class Tab {
       this.scales = this.scales.map((s) => ({ ...s, col: place(s.col) }));
       this.ranges.clear();
     }
-    if (this.checks.length) {
+    if (this.checks.length || this.tableChecks.length) {
       this.checks = this.checks.map((k) => placeCheck(k, place) ?? k);
+      this.tableChecks = this.tableChecks.map((k) => placeTableCheck(k, place) ?? k);
       this.checkVersion++;
     }
     if (this.filter) this.filter = { ...this.filter, columns: this.filter.columns.map((f) => ({ ...f, col: place(f.col) })) };
@@ -529,6 +552,7 @@ export class Tab {
       same(refs.highlights, this.highlights) &&
       same(refs.scales, this.scales) &&
       same(refs.checks, this.checks) &&
+      same(refs.tableChecks, this.tableChecks) &&
       same(refs.sort, this.sort) &&
       last.look.banded === this.banded &&
       last.look.divider === this.divider &&
@@ -553,13 +577,14 @@ export class Tab {
       rowLines: this.rowLines,
       rows: this.rowHeights.snapshot(),
       checks: copy<Check[]>(!refs || !same(refs.checks, this.checks), last?.look.checks, this.checks),
+      tableChecks: copy<TableCheck[]>(!refs || !same(refs.tableChecks, this.tableChecks), last?.look.tableChecks, this.tableChecks),
       types,
     };
     if (colsChanged) bytes += cols.length * 2;
     // The heights are shared by reference unless they changed: count them once.
     if (!last || !sameRows(last.look.rows, look.rows)) bytes += this.rowHeights.bytes;
     const sort = copy<SortSpec | null>(!refs || !same(refs.sort, this.sort), last?.sort, this.sort);
-    this.lastRefs = { cols, highlights: this.highlights, scales: this.scales, checks: this.checks, sort: this.sort };
+    this.lastRefs = { cols, highlights: this.highlights, scales: this.scales, checks: this.checks, tableChecks: this.tableChecks, sort: this.sort };
     this.lookSize.set(look, bytes);
     this.noteLookBytes(bytes);
     return { look, sort };
@@ -689,6 +714,7 @@ export class Tab {
       this.sort = s.sort ? structuredClone(s.sort) : null;
     } else {
       this.checks = structuredClone(l.checks);
+      this.tableChecks = structuredClone(l.tableChecks ?? []);
       this.checkVersion++;
     }
     this.baseline();
@@ -751,6 +777,7 @@ export class Tab {
       for (const m of this.colMoves.filter((x) => x.pos > before && x.pos <= after)) this.followMove(m.at, m.count, m.to);
       for (const s of this.ruleShifts.filter((x) => x.pos > before && x.pos <= after)) {
         this.checks = shiftChecks(this.checks, s.at, s.count).checks;
+        this.tableChecks = shiftTableChecks(this.tableChecks, s.at, s.count).checks;
         this.checkVersion++;
       }
     } else if (after > before) {

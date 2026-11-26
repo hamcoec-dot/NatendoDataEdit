@@ -209,6 +209,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "data checks": ["data.checks", "data.unmarkChecks", "data.clearChecks"],
   "no repeats across several columns": ["data.uniqueTogether", "data.checks"],
   "values that must exist in another file": ["data.existsCheck", "data.checks"],
+  "table checks": ["data.tableChecks", "data.checks", "data.checkNow"],
   "rules with names a wavy underline and jump to next problem": ["data.nextProblem", "data.prevProblem", "data.checkNow", "data.checks", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "data.patternCheck"],
   "compare two files by key": ["tools.compare", "data.diffNext", "data.diffPrev", "data.diffClear"],
   "save changes as a patch": ["data.patchSave"],

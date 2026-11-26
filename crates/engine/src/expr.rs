@@ -186,6 +186,36 @@ impl PartialEq for Lookups {
     }
 }
 
+/// A whole-column figure a table check reads: `SUM([Amount])` and the like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Agg {
+    /// The sum of the numbers.
+    Sum,
+    /// Cells holding a number.
+    Count,
+    /// Cells that are not blank.
+    CountA,
+    /// Blank cells.
+    CountBlank,
+    /// Different values (blank left out).
+    Distinct,
+    Min,
+    Max,
+    Average,
+}
+
+/// The aggregate functions a table check may use, by name.
+pub const AGGREGATES: [(&str, Agg); 8] = [
+    ("SUM", Agg::Sum),
+    ("COUNT", Agg::Count),
+    ("COUNTA", Agg::CountA),
+    ("COUNTBLANK", Agg::CountBlank),
+    ("DISTINCT", Agg::Distinct),
+    ("MIN", Agg::Min),
+    ("MAX", Agg::Max),
+    ("AVERAGE", Agg::Average),
+];
+
 /// A parsed expression.
 #[derive(Debug)]
 pub struct Expr {
@@ -193,6 +223,20 @@ pub struct Expr {
     /// Logical columns read, in the order `Node::Col` numbers them.
     cols: Vec<u32>,
     lookups: Vec<LookupRef>,
+    /// A table check's figures (see [`Expr::parse_table`]); there `Node::Col` numbers these.
+    aggs: Vec<(Agg, u32)>,
+}
+
+/// What a table check's expression came to: whether it holds, and for a comparison its two
+/// sides (`None`: not a number, like the average of no numbers).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableEval {
+    pub ok: bool,
+    pub left: Option<f64>,
+    pub right: Option<f64>,
+    /// The comparison, written as in the expression ("=", "<=", ...); empty when the
+    /// expression is not a comparison.
+    pub op: &'static str,
 }
 
 /// Where an expression runs: the row's cells, where each of the
@@ -405,6 +449,8 @@ struct Parser<'n> {
     max_nodes: usize,
     depth: usize,
     lookups: Vec<LookupRef>,
+    /// A table check: columns only inside aggregates, which are numbered here.
+    table: Option<Vec<(Agg, u32)>>,
 }
 
 impl Parser<'_> {
@@ -529,8 +575,57 @@ impl Parser<'_> {
         Ok(())
     }
 
+    /// A table check's aggregate: `NAME(` was read; one column in brackets and `)` follow.
+    fn aggregate(&mut self, agg: Agg, name: &str, at: usize) -> Result<Node, Error> {
+        let col = match self.toks.get(self.pos).cloned() {
+            Some((Tok::Col(c), _)) => c,
+            _ => {
+                return Err(bad(
+                    &format!("{name} takes one column, like {name}([Amount])"),
+                    at,
+                ))
+            }
+        };
+        self.pos += 1;
+        if self.peek() != Some(&Tok::Close) {
+            return Err(bad(
+                &format!("{name} takes one column, like {name}([Amount])"),
+                self.at(),
+            ));
+        }
+        self.pos += 1;
+        let col = self.column_number(&col, at)?;
+        let aggs = self.table.as_mut().expect("a table check");
+        let k = match aggs.iter().position(|&x| x == (agg, col)) {
+            Some(k) => k,
+            None => {
+                aggs.push((agg, col));
+                aggs.len() - 1
+            }
+        };
+        self.node(Node::Col(k))
+    }
+
     fn column(&mut self, name: &str, at: usize) -> Result<Node, Error> {
-        let col = if let Some(n) = name.strip_prefix('#') {
+        if self.table.is_some() {
+            return Err(bad(
+                &format!("a table check reads a column only inside SUM, COUNT, COUNTA, COUNTBLANK, DISTINCT, MIN, MAX or AVERAGE, like SUM([{name}])"),
+                at,
+            ));
+        }
+        let col = self.column_number(name, at)?;
+        let k = match self.cols.iter().position(|&c| c == col) {
+            Some(k) => k,
+            None => {
+                self.cols.push(col);
+                self.cols.len() - 1
+            }
+        };
+        self.node(Node::Col(k))
+    }
+
+    fn column_number(&self, name: &str, at: usize) -> Result<u32, Error> {
+        Ok(if let Some(n) = name.strip_prefix('#') {
             match n.trim().parse::<u32>() {
                 Ok(k) if k >= 1 && (k as usize) <= self.names.len() => k - 1,
                 _ => return Err(bad(&format!("there is no column {name}"), at)),
@@ -545,15 +640,7 @@ impl Parser<'_> {
             i as u32
         } else {
             return Err(bad(&format!("there is no column named [{name}]"), at));
-        };
-        let k = match self.cols.iter().position(|&c| c == col) {
-            Some(k) => k,
-            None => {
-                self.cols.push(col);
-                self.cols.len() - 1
-            }
-        };
-        self.node(Node::Col(k))
+        })
     }
 
     fn atom(&mut self) -> Result<Node, Error> {
@@ -587,6 +674,12 @@ impl Parser<'_> {
                             at,
                         )),
                     };
+                }
+                if self.table.is_some() {
+                    if let Some(&(_, agg)) = AGGREGATES.iter().find(|a| a.0 == upper) {
+                        self.pos += 1;
+                        return self.aggregate(agg, &upper, at);
+                    }
                 }
                 let Some(&(_, f, min, max)) = FUNCS.iter().find(|f| f.0 == upper) else {
                     return Err(bad(&format!("unknown function {name}"), at));
@@ -700,6 +793,94 @@ impl Expr {
         Self::parse_within(src, names, MAX_EXPR_CHARS, MAX_NODES)
     }
 
+    /// Parse a table check: a formula over whole-column figures, like
+    /// `SUM([Votes]) = COUNT([Voter ID]) * 2` or `MAX([Age]) <= 120`. A column may be
+    /// read only inside one of [`AGGREGATES`], and only as a single column in brackets
+    /// (no expression, no nested aggregate). See [`Expr::aggregates`], [`Expr::eval_table`].
+    pub fn parse_table(src: &str, names: &[String]) -> Result<Expr, Error> {
+        Self::parse_with(src, names, MAX_EXPR_CHARS, MAX_NODES, true)
+    }
+
+    /// The figures a table check needs, in the order [`Expr::eval_table`] takes them.
+    pub fn aggregates(&self) -> &[(Agg, u32)] {
+        &self.aggs
+    }
+
+    /// Work out a table check from its figures (`None`: no value, like the average of no
+    /// numbers). A top-level `=` or `<>` compares within `close` (the check's tolerance).
+    pub fn eval_table(
+        &self,
+        figures: &[Option<f64>],
+        close: impl Fn(f64, f64) -> bool,
+    ) -> TableEval {
+        let cells: Vec<Cow<'_, str>> = figures
+            .iter()
+            .map(|f| match f {
+                Some(v) if v.is_finite() => Cow::Owned(format!("{v:?}")),
+                _ => Cow::Borrowed(""),
+            })
+            .collect();
+        let slots: Vec<Option<usize>> = (0..cells.len()).map(Some).collect();
+        let types = vec![ColumnType::Number; cells.len()];
+        let ctx = Ctx {
+            cells: &cells,
+            slots: &slots,
+            row: 1,
+            now: 0.0,
+            read: ReadOptions::default(),
+            prev: None,
+            next: None,
+            refs: None,
+            types: &types,
+        };
+        let num = |n: &Node| match eval(n, &ctx) {
+            Value::Num(v) | Value::Date(v) => Some(v),
+            Value::Bool(b) => Some(f64::from(u8::from(b))),
+            _ => None,
+        };
+        if let Node::Bin(op, a, b) = &self.root {
+            let sign = match op {
+                Op::Eq => "=",
+                Op::Ne => "<>",
+                Op::Lt => "<",
+                Op::Le => "<=",
+                Op::Gt => ">",
+                Op::Ge => ">=",
+                _ => "",
+            };
+            if !sign.is_empty() {
+                let (l, r) = (num(a), num(b));
+                let ok = match (l, r) {
+                    (Some(x), Some(y)) => match op {
+                        Op::Eq => close(x, y),
+                        Op::Ne => !close(x, y),
+                        Op::Lt => x < y,
+                        Op::Le => x <= y || close(x, y),
+                        Op::Gt => x > y,
+                        _ => x >= y || close(x, y),
+                    },
+                    _ => false,
+                };
+                return TableEval {
+                    ok,
+                    left: l,
+                    right: r,
+                    op: sign,
+                };
+            }
+        }
+        let v = eval(&self.root, &ctx);
+        TableEval {
+            ok: matches!(to_bool(&v), Ok(true)),
+            left: match v {
+                Value::Num(x) => Some(x),
+                _ => None,
+            },
+            right: None,
+            op: "",
+        }
+    }
+
     /// [`Expr::parse`] with other limits: a cell formula's ranges are
     /// written out as their cells, so it may be far longer than anything
     /// typed (its cells are capped instead).
@@ -708,6 +889,16 @@ impl Expr {
         names: &[String],
         max_chars: usize,
         max_nodes: usize,
+    ) -> Result<Expr, Error> {
+        Self::parse_with(src, names, max_chars, max_nodes, false)
+    }
+
+    fn parse_with(
+        src: &str,
+        names: &[String],
+        max_chars: usize,
+        max_nodes: usize,
+        table: bool,
     ) -> Result<Expr, Error> {
         let n = src.chars().count();
         if n > max_chars {
@@ -730,6 +921,7 @@ impl Expr {
             max_nodes,
             depth: 0,
             lookups: Vec::new(),
+            table: table.then(Vec::new),
         };
         let root = p.compare()?;
         if p.pos < p.toks.len() {
@@ -739,6 +931,7 @@ impl Expr {
             root,
             cols: p.cols,
             lookups: p.lookups,
+            aggs: p.table.unwrap_or_default(),
         })
     }
 

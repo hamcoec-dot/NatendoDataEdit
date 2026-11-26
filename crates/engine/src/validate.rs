@@ -134,6 +134,13 @@ pub struct CheckSpec {
     /// filled in by the app (never saved or sent).
     #[serde(skip)]
     pub keys: Vec<KeyBinding>,
+    /// Rules about the table as a whole (row count, no blanks, totals that must add up).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub table_checks: Vec<crate::tablecheck::TableCheck>,
+    /// For each table check (by number), the shown data rows of the table an "as many rows
+    /// as" check names, filled in by the app (`None`: not that kind; `Err`: why not).
+    #[serde(skip)]
+    pub table_rows: Vec<Option<Result<u64, String>>>,
 }
 
 /// A rule that did not run, and why ("open precincts.csv").
@@ -187,6 +194,9 @@ pub struct CheckReport {
     /// The tables "value must exist in" rules read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tables: Vec<TableUsed>,
+    /// What each table check found.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub table: Vec<crate::tablecheck::TableResult>,
 }
 
 impl CheckReport {
@@ -762,6 +772,7 @@ impl Document {
                 rep.failing[(id >> 6) as usize] |= 1 << (id & 63);
             }
         }
+        rep.table = self.run_table_checks(spec, progress)?;
         Ok(rep)
     }
 
@@ -1357,6 +1368,7 @@ pub fn check_spec(spec: &CheckSpec) -> Result<(), Error> {
     if spec.checks.len() > MAX_CHECKS {
         return Err(Error::Invalid(format!("at most {MAX_CHECKS} checks")));
     }
+    crate::tablecheck::check_table_checks(&spec.table_checks)?;
     for c in &spec.checks {
         if c.name
             .as_deref()

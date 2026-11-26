@@ -1084,9 +1084,35 @@ export interface RuleSuggestion {
   why: string;
   share: number;
 }
+/** How a count compares with the number given. */
+export type Compare = "equals" | "at_least" | "at_most";
+/** How close two figures must be to count as equal: by an amount, or by a share of the larger one (0.01 is 1%). */
+export type Tolerance = { kind: "absolute"; value: number } | { kind: "relative"; value: number };
+/** A rule about the table as a whole. */
+export type TableCheckKind =
+  | { type: "row_count"; compare: Compare; value: number }
+  | { type: "row_count_same_as"; table: string }
+  | { type: "no_blanks"; col: number }
+  | { type: "distinct"; col: number; compare: Compare; value: number }
+  /** A formula over whole-column figures (SUM([A]) = SUM([B])); a top-level = or <> compares within the tolerance. */
+  | { type: "aggregate"; expr: string; tolerance?: Tolerance };
+export interface TableCheck {
+  name?: string | null;
+  kind: TableCheckKind;
+}
+/** What a table check found (`ok` null: it did not run, `why` says why). */
+export interface TableResult {
+  check: number;
+  name: string;
+  ok: boolean | null;
+  actual: string;
+  expected: string;
+  why?: string | null;
+}
 /** Rules read from a `.ndchecks` file beside the table. */
 export interface SidecarRules {
   checks: Check[];
+  table_checks?: TableCheck[];
   skipped: number;
   keep_first: boolean;
   file: string;
@@ -1096,6 +1122,8 @@ export interface CheckSpec {
   keep_first: boolean;
   read: ReadOptions;
   now: number;
+  /** Rules about the whole table, run with the rules. */
+  table_checks?: TableCheck[];
 }
 export interface Problem {
   row: number;
@@ -1113,6 +1141,8 @@ export interface CheckReport {
   not_run?: { check: number; why: string }[];
   /** The files "value must exist in" rules read: rows read, rows hidden (not read), revisions then. */
   tables?: { check: number; table: string; column: string; doc: number; revision: number; data_revision: number; rows: number; hidden: number }[];
+  /** What each table check found. */
+  table?: TableResult[];
 }
 /** A cell Replace all would change, as the grid shows it before the change. */
 export interface Ghost {
@@ -1959,7 +1989,7 @@ export interface Backend {
   /** The rules file beside the table, or null when there is none. */
   checksSidecarLoad(doc: number): Promise<SidecarRules | null>;
   /** Keep rules beside the file (an empty list removes the file); the file's name. */
-  checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean): Promise<string>;
+  checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean, tableChecks?: TableCheck[]): Promise<string>;
   /** What Replace all would make of the cells in a window (read-only; "busy" while a change runs). */
   replaceGhosts(doc: number, spec: FindSpec, replacement: string, row: number, rows: number, col: number, cols: number): Promise<GhostWindow>;
   /** How many cells Replace all would change (one count at a time per tab; cancelled by a newer one). */
@@ -2794,8 +2824,8 @@ class TauriBackend implements Backend {
   checksSidecarLoad(doc: number) {
     return call<SidecarRules | null>("checks_sidecar_load", { doc });
   }
-  checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean) {
-    return call<string>("checks_sidecar_keep", { doc, checks, keepFirst });
+  checksSidecarKeep(doc: number, checks: Check[], keepFirst: boolean, tableChecks?: TableCheck[]) {
+    return call<string>("checks_sidecar_keep", { doc, checks, keepFirst, tableChecks: tableChecks ?? [] });
   }
   replaceGhosts(doc: number, spec: FindSpec, replacement: string, row: number, rows: number, col: number, cols: number) {
     return call<GhostWindow>("replace_ghosts", { doc, spec, replacement, row, rows, col, cols });

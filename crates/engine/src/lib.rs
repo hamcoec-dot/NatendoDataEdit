@@ -82,6 +82,7 @@ pub mod streets;
 pub mod suggest;
 pub mod sysmem;
 pub mod table;
+pub mod tablecheck;
 pub mod tidy;
 pub mod titles;
 pub mod tools;

@@ -10,12 +10,13 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::document::Document;
+use crate::tablecheck::{TableCheck, TableCheckKind};
 use crate::validate::{check_spec, Check, CheckKind, CheckSpec};
 use crate::Error;
 
 /// The newest file version this release reads. Files are written as version 1 unless they
-/// use something version 1 does not have (a unique rule over several columns), so files
-/// without it stay byte-identical and readable by older releases.
+/// use something version 1 does not have (a unique rule over several columns, table
+/// checks), so files without it stay byte-identical and readable by older releases.
 pub const VERSION: u32 = 2;
 /// Largest rules file read, in bytes.
 pub const MAX_FILE_BYTES: u64 = 4 << 20;
@@ -37,6 +38,18 @@ pub struct StoredRule {
     pub also_titles: Vec<String>,
 }
 
+/// One table check as stored: a column it names by title too (a formula names its
+/// columns by title already).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredTableCheck {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub kind: TableCheckKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
 /// The file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +58,8 @@ pub struct ChecksFile {
     #[serde(default = "yes")]
     pub keep_first: bool,
     pub rules: Vec<StoredRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub table_checks: Vec<StoredTableCheck>,
 }
 
 fn yes() -> bool {
@@ -57,6 +72,14 @@ pub struct LoadedRules {
     pub checks: Vec<Check>,
     pub skipped: usize,
     pub keep_first: bool,
+    pub table_checks: Vec<TableCheck>,
+}
+
+fn table_col(k: &mut TableCheckKind) -> Option<&mut u32> {
+    match k {
+        TableCheckKind::NoBlanks { col } | TableCheckKind::Distinct { col, .. } => Some(col),
+        _ => None,
+    }
 }
 
 /// The rules file beside a table.
@@ -85,6 +108,14 @@ impl ChecksFile {
         let spec = CheckSpec {
             checks: f.rules.iter().map(|r| r.check()).collect(),
             keep_first: f.keep_first,
+            table_checks: f
+                .table_checks
+                .iter()
+                .map(|c| TableCheck {
+                    name: c.name.clone(),
+                    kind: c.kind.clone(),
+                })
+                .collect(),
             ..Default::default()
         };
         check_spec(&spec)?;
@@ -116,6 +147,16 @@ impl ChecksFile {
     /// The rules to store for `checks` on `doc` (titles from the table, so a reordered
     /// or newer copy of the file finds its columns again).
     pub fn for_rules(doc: &Document, checks: &[Check], keep_first: bool) -> ChecksFile {
+        Self::for_checks(doc, checks, &[], keep_first)
+    }
+
+    /// [`ChecksFile::for_rules`] with table checks too.
+    pub fn for_checks(
+        doc: &Document,
+        checks: &[Check],
+        table_checks: &[TableCheck],
+        keep_first: bool,
+    ) -> ChecksFile {
         let titles = doc.rule_titles(keep_first);
         let rules: Vec<StoredRule> = checks
             .iter()
@@ -138,7 +179,19 @@ impl ChecksFile {
                 },
             })
             .collect();
-        let version = if rules.iter().any(|r| !r.also_titles.is_empty()) {
+        let table_checks: Vec<StoredTableCheck> = table_checks
+            .iter()
+            .map(|c| {
+                let mut kind = c.kind.clone();
+                StoredTableCheck {
+                    name: c.name.clone(),
+                    title: table_col(&mut kind).and_then(|k| titles.get(*k as usize).cloned()),
+                    kind,
+                }
+            })
+            .collect();
+        let version = if !table_checks.is_empty() || rules.iter().any(|r| !r.also_titles.is_empty())
+        {
             2
         } else {
             1
@@ -147,6 +200,7 @@ impl ChecksFile {
             version,
             keep_first,
             rules,
+            table_checks,
         }
     }
 
@@ -194,16 +248,45 @@ impl ChecksFile {
             }
             checks.push(c);
         }
+        let names = doc.expr_names(self.keep_first);
+        let mut table_checks = Vec::new();
+        for s in &self.table_checks {
+            let mut kind = s.kind.clone();
+            let fits = match table_col(&mut kind) {
+                Some(col) => match find(&titles, s.title.as_ref(), Some(*col)) {
+                    Some(k) if k < doc.col_count() => {
+                        *col = k;
+                        true
+                    }
+                    _ => false,
+                },
+                None => match &kind {
+                    TableCheckKind::Aggregate { expr, .. } => {
+                        crate::expr::Expr::parse_table(expr, &names).is_ok()
+                    }
+                    _ => true,
+                },
+            };
+            if fits {
+                table_checks.push(TableCheck {
+                    name: s.name.clone(),
+                    kind,
+                });
+            } else {
+                skipped += 1;
+            }
+        }
         LoadedRules {
             checks,
             skipped,
             keep_first: self.keep_first,
+            table_checks,
         }
     }
 
     /// Write the file (a temp file moved into place); no rules removes it.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
-        if self.rules.is_empty() {
+        if self.rules.is_empty() && self.table_checks.is_empty() {
             match std::fs::remove_file(path) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
                 _ => return Ok(()),
@@ -444,6 +527,71 @@ mod tests {
         let old = br#"{"version":1,"keep_first":true,"rules":[{"col":0,"title":"first","kind":{"type":"unique","match_case":false}}]}"#;
         let f = ChecksFile::from_bytes(old).unwrap();
         assert_eq!(serde_json::to_vec(&f).unwrap(), old.to_vec());
+    }
+
+    #[test]
+    fn table_checks_are_kept_by_title_and_skipped_when_they_do_not_fit() {
+        use crate::tablecheck::{Compare, Tolerance};
+        let d = doc("id,votes,party\r\n1,5,R\r\n2,7,D\r\n");
+        let tc = vec![
+            TableCheck {
+                name: Some("Two rows".into()),
+                kind: TableCheckKind::RowCount {
+                    compare: Compare::Equals,
+                    value: 2,
+                },
+            },
+            TableCheck {
+                name: None,
+                kind: TableCheckKind::NoBlanks { col: 2 },
+            },
+            TableCheck {
+                name: None,
+                kind: TableCheckKind::Aggregate {
+                    expr: "SUM([votes]) = 12".into(),
+                    tolerance: Tolerance::Relative { value: 0.01 },
+                },
+            },
+        ];
+        let f = ChecksFile::for_checks(&d, &[], &tc, true);
+        assert_eq!(f.version, 2);
+        assert_eq!(f.table_checks[1].title.as_deref(), Some("party"));
+        let bytes = serde_json::to_vec_pretty(&f).unwrap();
+        let back = ChecksFile::from_bytes(&bytes).unwrap();
+        assert_eq!(back, f);
+        assert_eq!(back.resolve(&d).table_checks, tc);
+        // Columns moved: found by title. A column or a formula's column gone: skipped and counted.
+        let moved = doc("party,id,votes\r\nR,1,5\r\n");
+        let r = back.resolve(&moved);
+        assert_eq!(r.table_checks[1].kind, TableCheckKind::NoBlanks { col: 0 });
+        assert_eq!((r.table_checks.len(), r.skipped), (3, 0));
+        let gone = doc("id,count\r\n1,5\r\n");
+        let r = back.resolve(&gone);
+        assert_eq!((r.table_checks.len(), r.skipped), (1, 2));
+        // Without table checks the file stays version 1 and has no table_checks field.
+        let plain = ChecksFile::for_rules(&d, &rules_one(), true);
+        assert_eq!(plain.version, 1);
+        assert!(!String::from_utf8(serde_json::to_vec(&plain).unwrap())
+            .unwrap()
+            .contains("table_checks"));
+        // Bad table checks refuse the file: a negative tolerance, too many checks, an unknown field.
+        let bad = |s: &str| {
+            ChecksFile::from_bytes(
+                format!(r#"{{"version":2,"rules":[],"table_checks":[{s}]}}"#).as_bytes(),
+            )
+        };
+        assert!(bad(
+            r#"{"kind":{"type":"aggregate","expr":"1","tolerance":{"kind":"absolute","value":-1}}}"#
+        )
+        .is_err());
+        assert!(bad(r#"{"kind":{"type":"no_blanks","col":0},"extra":1}"#).is_err());
+        assert!(bad(
+            r#"{"kind":{"type":"aggregate","expr":"1","tolerance":{"kind":"sideways","value":1}}}"#
+        )
+        .is_err());
+        let many = vec![r#"{"kind":{"type":"no_blanks","col":0}}"#; 51].join(",");
+        assert!(bad(&many).is_err());
+        assert!(bad(r#"{"kind":{"type":"no_blanks","col":0}}"#).is_ok());
     }
 
     fn rules_one() -> Vec<Check> {
