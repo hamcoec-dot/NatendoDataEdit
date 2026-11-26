@@ -6874,6 +6874,14 @@ impl Docs {
             let titles = self.get(t)?.read().titles(&l.cols, l.header).join(" + ");
             out.push(format!("{} ({titles})", stems[i]));
         }
+        // Still alike (two files of one name, the same key titles): the
+        // list's letter tells them apart.
+        let alike = out.clone();
+        for (i, name) in out.iter_mut().enumerate() {
+            if alike.iter().filter(|n| **n == alike[i]).count() > 1 {
+                *name = format!("{name} [list {}]", char::from(b'A' + i as u8));
+            }
+        }
         Ok(out)
     }
 
@@ -12342,6 +12350,28 @@ B,y
             "not in the slice"
         );
         assert!(docs.sets_table(run.id).unwrap().rows > 3);
+        // Two files of one name: told apart by key titles, then by letter.
+        let again = open("sets-a.csv", b"id,n\r\n9,x\r\n");
+        let other = SetList {
+            cols: vec![1],
+            header: true,
+        };
+        let named = docs
+            .sets_run(a, &[a, again, a], &SetsSpec {
+                lists: vec![list.clone(), list.clone(), other],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            named.names,
+            [
+                "sets-a (id) [list A]",
+                "sets-a (id) [list B]",
+                "sets-a (n)"
+            ]
+        );
+        docs.close(again);
+        let run = docs.sets_run(a, &[a, b], &spec).unwrap();
         // A sort of the second list alone makes the result stale.
         let sort = SortSpec {
             keys: vec![natendo_engine::sort::SortKey {

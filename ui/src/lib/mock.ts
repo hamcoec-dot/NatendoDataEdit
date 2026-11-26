@@ -2585,7 +2585,8 @@ export class MockBackend implements Backend {
     const masks = keys.map((list) => list.map((k) => (k === null ? 0 : mask.get(k)!)));
     const slices = Array.from({ length: (1 << tabs.length) - 1 }, (_, j) => ({ mask: j + 1, keys: [...mask.values()].filter((m) => m === j + 1).length, rows: masks.map((l) => l.filter((m) => m === j + 1).length) }));
     const id = ++this.comparisons;
-    const names = tabs.map((t) => this.get(t).info.name.replace(/\.[A-Za-z0-9]{1,5}$/, ""));
+    const stems = tabs.map((t) => this.get(t).info.name.replace(/\.[A-Za-z0-9]{1,5}$/, ""));
+    const names = stems.map((n, i) => (stems.filter((x) => x === n).length > 1 ? `${n} [list ${String.fromCharCode(65 + i)}]` : n));
     const run: SetsRun = { id, names, report: { slices, lists: masks.map((l, i) => ({ rows: l.length, keys: new Set(keys[i]!.filter((k) => k !== null)).size, blank: l.filter((m) => !m).length })) } };
     this.compared.set(id, { tabs, at: this.stateOf(tabs), spec, run, masks });
     return JSON.parse(JSON.stringify(run)) as SetsRun;

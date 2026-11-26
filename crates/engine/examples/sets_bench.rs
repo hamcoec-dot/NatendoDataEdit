@@ -6,7 +6,8 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use natendo_engine::counts::CountsSpec;
-use natendo_engine::filter::{CmpOp, ColumnFilter, Condition, FilterSpec, Rule};
+use natendo_engine::filter::{ColumnFilter, FilterSpec, Rule};
+use natendo_engine::find::{FindSpec, Pattern, Scope};
 use natendo_engine::sets::{compare_lists, SetList, SetsBuilder, SetsSpec};
 use natendo_engine::{Document, OpenOptions, Progress};
 
@@ -102,45 +103,44 @@ fn main() {
             .max_by_key(|s| s.rows[0])
             .unwrap()
             .mask;
-        let filter = FilterSpec {
-            keep_first: true,
-            columns: vec![ColumnFilter {
-                col: 1,
-                rule: Rule::Values {
-                    values: (0..20).map(|w| w.to_string()).collect(),
-                    blanks: false,
-                },
-            }],
-            ..Default::default()
-        };
-        // A number filter on the same table, as `hot_bench` times it.
-        let number = FilterSpec {
-            keep_first: true,
-            columns: vec![ColumnFilter {
-                col: 1,
-                rule: Rule::Conditions {
-                    first: Condition::Number {
-                        op: CmpOp::Gt,
-                        value: 19.0,
-                    },
-                    second: None,
-                    or: false,
-                },
-            }],
-            ..Default::default()
-        };
-        let mut numbers = Duration::MAX;
-        for _ in 0..ROUNDS {
-            numbers = numbers.min(time(|| {
-                docs[0].plan_filter(&number, &Progress::new()).unwrap();
-            }));
-        }
-        println!("number filter on 1M rows {:.1} ms", ms(numbers));
-        let (mut open, mut filtered) = (Duration::MAX, Duration::MAX);
+        // Like for like: today's way to put the same number of rows in a new
+        // tab is to filter, copy the shown rows and open them.
+        let mut base = table(0, distinct);
+        let (mut open, mut today) = (Duration::MAX, Duration::MAX);
         let mut slice_rows = 0;
         for _ in 0..ROUNDS {
-            filtered = filtered.min(time(|| {
-                docs[0].plan_filter(&filter, &Progress::new()).unwrap();
+            // Rows are numbered 0 to 39 in turn: the wards below `wards`
+            // are as many rows as the slice holds.
+            let rows_in_slice = r.report.slices[usize::from(mask) - 1].rows[0];
+            let wards = (rows_in_slice * 40).div_ceil(ROWS);
+            let filter = FilterSpec {
+                keep_first: true,
+                columns: vec![ColumnFilter {
+                    col: 1,
+                    rule: Rule::Values {
+                        values: (0..wards).map(|w| w.to_string()).collect(),
+                        blanks: false,
+                    },
+                }],
+                ..Default::default()
+            };
+            let every = FindSpec {
+                pattern: Pattern {
+                    text: "V-".into(),
+                    ..Default::default()
+                },
+                scope: Scope::Columns { cols: vec![0] },
+                skip_first: true,
+                ..Default::default()
+            };
+            base.clear_filter();
+            let mut copied = 0;
+            today = today.min(time(|| {
+                let plan = base.plan_filter(&filter, &Progress::new()).unwrap();
+                base.apply_filter(plan).unwrap();
+                let t = base.matching_table(&every, &Progress::new()).unwrap();
+                copied = t.rows;
+                t.into_document().unwrap();
             }));
             open = open.min(time(|| {
                 let t = docs[0]
@@ -149,13 +149,16 @@ fn main() {
                 slice_rows = t.rows;
                 t.into_document().unwrap();
             }));
+            assert!(
+                copied.abs_diff(slice_rows) < ROWS / 30,
+                "{copied} {slice_rows}"
+            );
         }
         println!(
-            "open a slice of {slice_rows} rows {:.0} ms; a value filter on 1M rows {:.1} ms: ratio {:.2}; against the number filter {:.2} (gate 1.20)",
+            "open a slice of {slice_rows} rows {:.0} ms; filter, copy the shown rows and open them {:.0} ms: ratio {:.2} (gate 1.20)",
             ms(open),
-            ms(filtered),
-            ms(open) / ms(filtered),
-            ms(open) / ms(numbers)
+            ms(today),
+            ms(open) / ms(today)
         );
         let mut worst = Duration::ZERO;
         for part in 1..10 {

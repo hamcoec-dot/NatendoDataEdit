@@ -1,7 +1,7 @@
 <script lang="ts">
   // Data › Compare lists: 2 to 5 open tabs, a key in each, and how many keys
   // every combination of the lists shares. Any slice opens as a tab.
-  import { untrack } from "svelte";
+  import { tick as drawn, untrack } from "svelte";
   import AllNone from "./AllNone.svelte";
   import FormShell from "./FormShell.svelte";
   import { countsText, listsIn, MAX_LISTS, MAX_SET_KEYS, sliceName, type SetsRun, type SetsSpec } from "./sets";
@@ -49,6 +49,14 @@
   let ran = $state("");
   /** For each slice, whose rows to open ("k": just the keys). */
   let pick = $state<Record<number, string>>({});
+
+  let compareButton = $state<HTMLButtonElement>();
+  /** A refusal took the result (and the button pressed) away: keep the
+   *  keyboard inside the screen. */
+  function refused(): void {
+    result = null;
+    void drawn().then(() => compareButton?.focus());
+  }
 
   const tabOf = (id: number) => tabs.find((t) => t.id === id)!;
   const letter = (i: number) => String.fromCharCode(65 + i);
@@ -100,10 +108,10 @@
     const choice = pick[mask] ?? String(first);
     const keys = choice === "k";
     const list = keys ? first : Number(choice);
-    if (!(await onOpen(result.id, mask, list, keys, spec.lists[list]!.header))) result = null;
+    if (!(await onOpen(result.id, mask, list, keys, spec.lists[list]!.header))) refused();
   }
   async function table(save: boolean): Promise<void> {
-    if (result && !(await onTable(result.id, save))) result = null;
+    if (result && !(await onTable(result.id, save))) refused();
   }
   function close(): void {
     if (busy) onCancelRun();
@@ -184,7 +192,7 @@
     <button type="button" disabled={busy || stale} onclick={() => result && onCopy(countsText(result, empty))}>Copy counts</button>
     <button type="button" disabled={busy || stale} onclick={() => void table(false)}>Counts as a tab</button>
     <button type="button" disabled={busy || stale} onclick={() => void table(true)}>Save counts as CSV…</button>
-    <button type="button" class="primary" disabled={busy || !!problem} onclick={() => void compare()}>Compare</button>
+    <button type="button" class="primary" bind:this={compareButton} disabled={busy || !!problem} onclick={() => void compare()}>Compare</button>
   {/snippet}
 </FormShell>
 
