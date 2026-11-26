@@ -2615,6 +2615,8 @@ fn main() {
             .plan_updates(
                 &ups,
                 &UpdateChoice {
+                    cells_skip_hidden: false,
+                    removed_skip_hidden: false,
                     cells: all.clone(),
                     added: all.clone(),
                     removed: all,
@@ -2885,6 +2887,8 @@ fn main() {
             .plan_updates(
                 &ups,
                 &UpdateChoice {
+                    cells_skip_hidden: false,
+                    removed_skip_hidden: false,
                     cells: all.clone(),
                     added: all.clone(),
                     removed: all,

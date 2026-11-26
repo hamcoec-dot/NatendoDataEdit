@@ -8,12 +8,16 @@ export interface UpdateSpec {
 }
 
 export interface UpdateList {
-  cells: { row: number; col: number; old: string; new: string }[];
+  cells: { row: number; col: number; old: string; new: string; hidden?: boolean }[];
   cells_total: number;
   added: string[][];
   added_total: number;
   removed: number[];
   removed_total: number;
+  /** Which of the listed missing rows are hidden here, and how many hidden ones there are in all. */
+  removed_hidden?: boolean[];
+  cells_hidden_total?: number;
+  removed_hidden_total?: number;
   repeated_keys: number;
   /** Columns here the newer file lacks (never compared or changed). */
   here_only: string[];
@@ -32,6 +36,30 @@ export interface UpdateChoice {
   cells: Choice;
   added: Choice;
   removed: Choice;
+  /** A change to a hidden row is taken only when its number is in `picked`. */
+  cells_skip_hidden?: boolean;
+  removed_skip_hidden?: boolean;
+}
+
+/** Ticks of one kind of change: every one or none, those flipped from that, and whether hidden rows are held back
+ *  (then a hidden one is ticked only when flipped on). */
+export interface Ticks {
+  all: boolean;
+  skipHidden: boolean;
+  flips: Set<number>;
+}
+
+export const ticked = (t: Ticks, i: number, hidden: boolean): boolean => (t.skipHidden && hidden ? t.flips.has(i) : t.all !== t.flips.has(i));
+
+/** How many are ticked of `total`, `hidden` of them in hidden rows. `isHidden` is asked only of flipped items (all
+ *  of them listed). */
+export function tickedCount(t: Ticks, total: number, hidden: number, isHidden: (i: number) => boolean): number {
+  let n = t.all ? total - (t.skipHidden ? hidden : 0) : 0;
+  for (const i of t.flips) {
+    if (t.skipHidden && isHidden(i)) n += 1;
+    else n += t.all ? -1 : 1;
+  }
+  return n;
 }
 
 /** A choice from "take all" and the items flipped from it. */

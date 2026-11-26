@@ -1389,7 +1389,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   }
 
   function otherTables(): OtherTable[] {
-    return tabs.map((t) => ({ id: t.id, name: t.info.name, header: t.header, cols: t.info.cols }));
+    return tabs.map((t) => ({ id: t.id, name: t.info.name, header: t.header, cols: t.info.cols, hidden: t.info.total_rows - t.info.rows }));
   }
 
   /** Open a file for a join or append, staying on the current tab. */

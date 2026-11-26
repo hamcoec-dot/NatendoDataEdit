@@ -2117,6 +2117,22 @@ mod tests {
         assert!(a.plan_join(&src, &bad, &Progress::new()).is_err());
     }
 
+    /// The other table is read as shown: a key in one of its hidden rows is
+    /// no match (the screen says so).
+    #[test]
+    fn a_match_in_a_hidden_row_of_the_other_table_counts_as_no_match() {
+        let mut b = doc("id\r\n1\r\n3\r\n");
+        b.hide_rows(2, 1).unwrap(); // the 3
+        let mut a = doc("id,n\r\n1,a\r\n3,d\r\n");
+        let spec = JoinSpec {
+            write: JoinWrite::Nothing,
+            keep_rows: KeepRows::Matched,
+            ..base()
+        };
+        assert_eq!(join(&mut a, &b, &spec).removed, 1);
+        assert_eq!(all(&a), vec![vec!["id", "n"], vec!["1", "a"]]);
+    }
+
     #[test]
     fn keep_matched_or_unmatched_rows() {
         let a0 = "id,n\r\n1,a\r\n2,b\r\n,c\r\n3,d\r\n";

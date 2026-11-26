@@ -11,6 +11,8 @@ export interface OtherTable {
   name: string;
   header: boolean;
   cols: number;
+  /** Rows a filter or the person hid there (tools that read another tab pass them over). */
+  hidden?: number;
 }
 
 /** Encodings offered on Save As: engine names with a readable label. */

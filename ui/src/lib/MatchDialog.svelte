@@ -4,6 +4,7 @@
   // look like the same person; accept or reject them, then add a "Match
   // row" and "Match score" column (and columns brought in) for the
   // accepted ones.
+  import OtherHidden from "./OtherHidden.svelte";
   import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import { backend, errorText } from "./backend";
@@ -204,6 +205,7 @@
     {/if}
   {/if}
   {#if problem}<p class="warn">{problem}</p>{/if}
+  <OtherHidden table={list.find((o) => o.id === other)} />
   {#snippet buttons()}
     {#if !report}
       <button type="button" class="primary" data-enter disabled={!fields.length || running} onclick={() => void find()}>{running ? "Matching…" : "Find matches"}</button>

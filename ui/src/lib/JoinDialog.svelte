@@ -4,6 +4,7 @@
   // from another open tab or, for a join, a pasted list of keys. "Open a
   // file…" opens one first. Either is one undo step. A join shows the
   // first rows as they would look, with counts for the whole table.
+  import OtherHidden from "./OtherHidden.svelte";
   import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import { backend, errorText, type DataOp, type JoinPreview, type JoinSpec } from "./backend";
@@ -431,6 +432,7 @@
     <p class="note">The other table's rows are added at the end.</p>
   {/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
+  {#if !fromList || kind === "append"}<OtherHidden table={list.find((o) => o.id === other)} matching={kind === "join" && keepRows !== "all"} />{/if}
   {#snippet buttons()}
     <button type="button" class="primary" onclick={run}>{kind === "join" ? "Join" : "Append"}</button>
     <button type="button" onclick={onClose}>Cancel</button>
