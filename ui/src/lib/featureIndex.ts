@@ -257,6 +257,8 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "group figures": ["data.group"],
   "remove blank rows and columns": ["data.removeBlankRows", "data.removeBlankCols", "tools.deleteHidden", "tools.deleteHiddenCols", "tools.breaks", "view.divider"],
   "fill blank cells from above": ["tools.fillBlanks", "tools.countRepeats", "tools.blankRepeats"],
+  "fill down by group": ["tools.fillBlanks", "data.nextLeftBlank", "data.prevLeftBlank", "data.fillMarksOff"],
+  "stop fill at subtotal": ["tools.fillBlanks", "data.nextLeftBlank", "data.fillMarksOff"],
   // Pivot tables
   "pivot table builder": ["data.pivot"],
   "refresh": ["data.pivotRefresh"],

@@ -405,6 +405,12 @@ pub struct Entry {
     replace: Mutex<Option<(String, ReplacePlan)>>,
     /// Rows (ids) the last Replace all changed ("Show changed rows").
     changed_rows: Mutex<(u64, Vec<u32>)>,
+    /// Cells the last Fill blank cells left blank on purpose (its stops):
+    /// row id -> logical columns, marked amber until undo, Esc or the next fill.
+    fill_marks: Mutex<HashMap<u32, Vec<u32>>>,
+    /// The Fill blank cells dialog's count being worked out, if any: a newer
+    /// count, closing the dialog or any change stops it.
+    fill_count: Mutex<Option<Arc<Progress>>>,
     cancel: AtomicBool,
     /// Opened with quoted cells never spanning lines (cleared once a save
     /// has reloaded the file normally).
@@ -611,6 +617,14 @@ impl Entry {
 
     fn cancel_totals(&self) {
         if let Some(p) = self.totals.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            p.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(p) = self
+            .fill_count
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             p.cancel.store(true, Ordering::Relaxed);
         }
         self.column_totals
@@ -1711,6 +1725,9 @@ pub struct OpReport {
     pub examples: u64,
     /// Computed columns: cells that came out as error codes.
     pub errors: u64,
+    /// Fill blank cells with stops: cells marked amber (at most 100,000 of
+    /// `skipped`).
+    pub marked: u64,
 }
 
 /// Changes listed, and rows looked at, by a cleaner preview.
@@ -2032,6 +2049,8 @@ impl Docs {
             job: Mutex::new(None),
             replace: Mutex::new(None),
             changed_rows: Mutex::new((0, Vec::new())),
+            fill_marks: Mutex::new(HashMap::new()),
+            fill_count: Mutex::new(None),
             cancel: AtomicBool::new(false),
             line_by_line: AtomicBool::new(line_by_line),
             error: Mutex::new(None),
@@ -3625,6 +3644,87 @@ impl Docs {
 
     /// A total line among the last rows, and whether the rows above add up
     /// to it (`None`: none, or rows are hidden). Never waits behind a change.
+    /// The Fill blank cells dialog's count line (with stops): how many blanks
+    /// would be filled and how many left blank, in the first 200,000 shown
+    /// rows. A newer count, `fill_blanks_count_stop` or any change stops it.
+    pub fn fill_blanks_count(
+        &self,
+        id: u32,
+        spec: &natendo_engine::tools::FillBlanks,
+    ) -> CmdResult<natendo_engine::tools::FillCount> {
+        let entry = self.get(id)?;
+        let progress = Arc::new(Progress::new());
+        {
+            let mut slot = entry.fill_count.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(old) = slot.replace(progress.clone()) {
+                old.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(CmdError::new("busy", "the file is being changed"))
+            }
+        };
+        if entry.change_waiting() {
+            drop(d);
+            return Err(CmdError::new("busy", "the file is being changed"));
+        }
+        let r = d.count_fill_blanks(spec, &progress);
+        drop(d);
+        let mut slot = entry.fill_count.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.as_ref().is_some_and(|p| Arc::ptr_eq(p, &progress)) {
+            *slot = None;
+        }
+        Ok(r?)
+    }
+
+    /// Stop the dialog's count (the dialog closed).
+    pub fn fill_blanks_count_stop(&self, id: u32) -> CmdResult<()> {
+        let entry = self.get(id)?;
+        if let Some(p) = entry.fill_count.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            p.cancel.store(true, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// The cells marked as left blank by the last fill, among shown rows
+    /// `row..row + rows`.
+    pub fn fill_marks(&self, id: u32, row: u64, rows: u64) -> CmdResult<Vec<(u64, u32)>> {
+        let entry = self.get(id)?;
+        let marks = entry.fill_marks.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if marks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let d = entry.read();
+        Ok(d.marked_cells(&marks, row, rows.min(10_000)))
+    }
+
+    /// The next (or previous) marked cell from a shown row and column.
+    pub fn fill_marks_next(
+        &self,
+        id: u32,
+        row: u64,
+        col: u32,
+        back: bool,
+    ) -> CmdResult<Option<(u64, u32)>> {
+        let entry = self.get(id)?;
+        let marks = entry.fill_marks.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let d = entry.read();
+        Ok(d.next_marked(&marks, row, col, back))
+    }
+
+    /// Take the marks away (undo, Esc, a closed tab).
+    pub fn fill_marks_clear(&self, id: u32) -> CmdResult<()> {
+        self.get(id)?
+            .fill_marks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        Ok(())
+    }
+
     pub fn total_row(
         &self,
         id: u32,
@@ -5102,6 +5202,16 @@ impl Docs {
     /// Run a data operation as one undo step (or, for "show duplicates", a
     /// filter), computed under the read lock with progress and cancel.
     pub fn data_op(&self, id: u32, op: DataOp) -> CmdResult<OpReport> {
+        // A fill's guard column is recorded with its title, so a recipe finds it by title.
+        let op = match op {
+            DataOp::FillBlanks { mut spec } if spec.guard.is_some() && spec.keep_first => {
+                if let (Some(g), Ok(entry)) = (spec.guard, self.get(id)) {
+                    spec.guard_title = entry.read().titles(&[g], true).into_iter().next();
+                }
+                DataOp::FillBlanks { spec }
+            }
+            op => op,
+        };
         let logged = recipe_step(&op);
         // A paste of more than 1,000 cells also gets a checkpoint (a small one is as cheap to undo as to redo).
         let auto = match &op {
@@ -6672,6 +6782,8 @@ impl Docs {
             _ => None,
         };
         let join_report = std::cell::RefCell::new(None);
+        // Fill blank cells: the cells its stops left blank, to mark.
+        let fill_marks = std::cell::RefCell::new(None::<Vec<(u32, u32)>>);
         // Cleaners and fill by example: (left or missed, pattern, examples).
         let extra = std::cell::RefCell::new((0u64, None::<String>, 0u64));
         let errors = std::cell::Cell::new(0u64);
@@ -6821,7 +6933,11 @@ impl Docs {
                     groups.set(rep.rows);
                     Planned::Cols(d.plan_check_column(spec, &rep, title, p)?)
                 }
-                DataOp::FillBlanks { spec } => Planned::Rows(d.plan_fill_blanks(spec, p)?),
+                DataOp::FillBlanks { spec } => {
+                    let mut plan = d.plan_fill_blanks(spec, p)?;
+                    *fill_marks.borrow_mut() = Some(plan.take_marks());
+                    Planned::Rows(plan)
+                }
                 DataOp::CompareShow { spec } => Planned::Rows(d.plan_compare_show(spec, p)?),
                 DataOp::CompareColumn { spec } => Planned::Cols(d.plan_compare_column(spec, p)?),
                 DataOp::CountRepeats { spec } => Planned::Cols(d.plan_count_repeats(spec, p)?),
@@ -6867,6 +6983,7 @@ impl Docs {
                     r.rows = c.rows;
                     r.groups = c.groups;
                     r.left = c.unreadable;
+                    r.skipped = c.skipped;
                 }
                 Planned::Clean(c) => r.cells = c.changed,
                 Planned::Join(c) => r.cells = c.cells,
@@ -6936,6 +7053,18 @@ impl Docs {
             r.rows = j.added + j.extra_rows + j.removed;
             r.cols = j.cols;
             r.join = Some(j);
+        }
+        if let Some(marks) = fill_marks.into_inner() {
+            r.marked = marks.len() as u64;
+            let mut by_id: HashMap<u32, Vec<u32>> = HashMap::new();
+            for (id, c) in marks {
+                by_id.entry(id).or_default().push(c);
+            }
+            *self
+                .get(id)?
+                .fill_marks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = by_id;
         }
         let (left, pattern, examples) = extra.into_inner();
         r.left = r.left.max(left);

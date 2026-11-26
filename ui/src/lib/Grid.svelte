@@ -397,6 +397,8 @@
     void tab.diffVersion;
     void tab.dateCheck;
     void tab.dateVersion;
+    void tab.fillMarked;
+    void tab.fillVersion;
     void tab.busy;
     void tab.ghostVersion;
     void prefs.data.alignNumbers;
@@ -720,6 +722,7 @@
     wantGhosts(rows, cols);
     wantDiff(rows, cols);
     wantDates(rows);
+    wantFillMarks(rows);
     wantNotes(rows);
   }
 
@@ -854,6 +857,33 @@
         // A busy file, or a column that no longer reads as dates: nothing lit.
         if (dateKey === key) {
           t.dateMarks = new Set();
+          draw();
+        }
+      });
+  }
+
+  // ---- cells the last fill left blank on purpose (its stops) -----------------
+  let fillKey = "";
+  function wantFillMarks(rows: { frozen: Span; body: Span }): void {
+    if (!tab.fillMarked) {
+      if (tab.fillMarks.size) tab.fillMarks = new Set();
+      fillKey = "";
+      return;
+    }
+    const areas = [rows.frozen, rows.body].filter((a) => a.end > a.start);
+    const key = `${tab.id}|${tab.version}|${tab.info.data_revision}|${tab.fillVersion}|${areas.map((a) => `${a.start}-${a.end}`).join(",")}`;
+    if (key === fillKey) return;
+    fillKey = key;
+    const t = tab;
+    void Promise.all(areas.map((a) => backend().fillMarks(t.id, a.start, a.end - a.start)))
+      .then((all) => {
+        if (fillKey !== key) return;
+        t.fillMarks = new Set(all.flat().map(([r, c]) => `${r}:${c}`));
+        draw();
+      })
+      .catch(() => {
+        if (fillKey === key) {
+          t.fillMarks = new Set();
           draw();
         }
       });
@@ -1520,6 +1550,7 @@
     const diffOn = tab.diffOn && tab.diffMarks.size > 0;
     // (Read once: reactive state is not read for every cell.)
     const dateCol = tab.dateMarks.size ? (tab.dateCheck?.col ?? -1) : -1;
+    const fillOn = tab.fillMarked > 0 && tab.fillMarks.size > 0;
     // Long text that spills into the empty cells to its right, drawn after
     // every column (so the next cells' backgrounds don't cover it).
     const spills: { text: string; x: number; y: number; to: number; h: number; colour: string }[] = [];
@@ -1725,6 +1756,17 @@
           ctx.lineTo(x + cw - 1, y + side);
           ctx.closePath();
           ctx.fill();
+        }
+        if (fillOn && tab.fillMarks.has(`${r}:${c}`)) {
+          // Left blank by the fill's stops: amber, with a dashed edge so the mark does not rest on colour.
+          ctx.fillStyle = DATE_AMBER;
+          ctx.globalAlpha = 0.22;
+          ctx.fillRect(x, y, cw - 1, rh - 1);
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = DATE_AMBER;
+          ctx.setLineDash([3, 2]);
+          ctx.strokeRect(x + 1.5, y + 1.5, cw - 4, rh - 4);
+          ctx.setLineDash([]);
         }
         if (diffOn) {
           const dk = tab.diffMarks.get(`${r}:${c}`) ?? tab.diffMarks.get(`${r}:*`);
@@ -2586,6 +2628,8 @@
       const dm = !link && cellHit ? (tab.diffMarks.get(`${cellHit.row}:${cellHit.col}`) ?? tab.diffMarks.get(`${cellHit.row}:*`)) : undefined;
       if (dm !== undefined && !gh) rule = DIFF_TIPS[dm] ?? "";
       if (!link && !gh && cellHit && tab.dateCheck?.col === cellHit.col && tab.dateMarks.has(cellHit.row)) rule = dateTip(tab.cache.get(cellHit.row, cellHit.col) ?? "");
+      if (!link && !gh && cellHit && tab.fillMarked && tab.fillMarks.has(`${cellHit.row}:${cellHit.col}`))
+        rule = "Left blank on purpose by the fill's stops (F7: next one; Esc or Ctrl+Z takes the marks away)";
       tip = link ? `${link}\nCtrl+click to open` : gh ? `Replace all would change this cell:\n${tab.cache.get(cellHit!.row, cellHit!.col) ?? ""}\n\u2192 ${gh.after}${gh.cut ? "\u2026" : ""}` : rule;
       const seam = h.area === "row" ? seamAt(y, h.row) : null;
       if (seam) {

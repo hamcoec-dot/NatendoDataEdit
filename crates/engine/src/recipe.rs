@@ -358,7 +358,32 @@ impl RecipeOp {
                 spec.expr
             ),
             RecipeOp::Compute { spec } => format!("Computed column: {}", spec.expr),
-            RecipeOp::FillBlanks { .. } => "Fill blank cells".into(),
+            RecipeOp::FillBlanks { spec } => {
+                let mut stops = Vec::new();
+                if let Some(g) = spec.guard {
+                    stops.push(match &spec.guard_title {
+                        Some(t) if !t.trim().is_empty() => format!("rows with no \u{201c}{t}\u{201d}"),
+                        _ => format!("rows with column {} blank", g + 1),
+                    });
+                }
+                if spec.stop_blank_rows {
+                    stops.push("blank rows".to_string());
+                }
+                if spec.stop_total_rows {
+                    stops.push("total rows".to_string());
+                }
+                if !spec.has_stops() || stops.is_empty() {
+                    "Fill blank cells".into()
+                } else {
+                    let last = stops.pop().unwrap_or_default();
+                    let head = stops.join(", ");
+                    if head.is_empty() {
+                        format!("Fill blank cells, stopping at {last}")
+                    } else {
+                        format!("Fill blank cells, stopping at {head} and {last}")
+                    }
+                }
+            }
             RecipeOp::CountRepeats { .. } => "Count repeats".into(),
             RecipeOp::BlankRepeats { .. } => "Blank out repeats".into(),
             RecipeOp::Breaks { .. } => "Add breaks between groups".into(),
@@ -847,7 +872,17 @@ impl Document {
                 self.apply_cols(p)
             }
             RecipeOp::FillBlanks { spec } => {
-                let p = self.plan_fill_blanks(spec, progress)?;
+                // The guard column is found by its title (columns may be in another order).
+                let mut spec = spec.clone();
+                if let (Some(t), true) = (&spec.guard_title, spec.keep_first) {
+                    let titles = self.row_values(0).unwrap_or_default();
+                    let g = spec.guard.unwrap_or(0);
+                    spec.guard = Some(
+                        column_by_title(&titles, t, g, self.col_count())
+                            .ok_or_else(|| Error::Invalid(format!("no column titled \"{t}\"")))?,
+                    );
+                }
+                let p = self.plan_fill_blanks(&spec, progress)?;
                 self.apply_rows(p)
             }
             RecipeOp::CountRepeats { spec } => {
@@ -962,6 +997,49 @@ mod tests {
 
     fn doc(b: &str) -> Document {
         Document::from_bytes(b.as_bytes().to_vec(), OpenOptions::default(), Some("csv")).unwrap()
+    }
+
+    /// C5 review 6: the guard is named by title, found by title on replay
+    /// (columns in another order), and a missing title is refused.
+    #[test]
+    fn fill_guard_found_by_title() {
+        let spec = crate::tools::FillBlanks {
+            cols: vec![0],
+            guard: Some(1),
+            guard_title: Some("id".into()),
+            stop_total_rows: true,
+            spaces: true,
+            keep_first: true,
+            ..Default::default()
+        };
+        let step = RecipeOp::FillBlanks { spec };
+        assert_eq!(
+            step.describe(),
+            "Fill blank cells, stopping at rows with no \u{201c}id\u{201d} and total rows"
+        );
+        let p = Progress::new();
+        // Same order as recorded.
+        let mut d = doc("k,id\na,1\n,2\n,\n,3\n");
+        d.run_recipe_step(&step, 0.0, 0, &p).unwrap();
+        assert_eq!((0..5).map(|r| d.cell(r, 0).unwrap()).collect::<Vec<_>>(), ["k", "a", "a", "", ""]);
+        // Columns in another order: the guard follows its title, not its old place.
+        let mut d = doc("id,k\n1,a\n2,\n,\n3,\n");
+        let moved = RecipeOp::FillBlanks {
+            spec: crate::tools::FillBlanks {
+                cols: vec![1],
+                guard: Some(1),
+                guard_title: Some("ID ".into()),
+                spaces: true,
+                keep_first: true,
+                ..Default::default()
+            },
+        };
+        d.run_recipe_step(&moved, 0.0, 0, &p).unwrap();
+        assert_eq!((0..5).map(|r| d.cell(r, 1).unwrap()).collect::<Vec<_>>(), ["k", "a", "a", "", ""]);
+        // No such title: refused in the existing words.
+        let mut d = doc("k,code\na,1\n,2\n");
+        let e = d.run_recipe_step(&step, 0.0, 0, &p).err().unwrap().to_string();
+        assert!(e.contains("no column titled \"id\""), "{e}");
     }
 
     fn recipe() -> Recipe {

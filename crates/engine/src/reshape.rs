@@ -186,7 +186,14 @@ pub struct RowPlan {
     /// Keep newest / oldest: copies whose date could not be read (they are
     /// never the one kept unless no copy of the group has a date).
     pub unreadable: u64,
+    /// Fill blank cells with stops: blanks left blank on purpose by the stops.
+    pub skipped: u64,
+    /// Those cells (row id, logical column), at most [`MAX_FILL_MARKS`].
+    pub(crate) marks: Vec<(u32, u32)>,
 }
+
+/// Most cells left blank by the fill's stops that are listed for marking.
+pub const MAX_FILL_MARKS: usize = 100_000;
 
 impl RowPlan {
     pub(crate) fn new(d: &Document) -> RowPlan {
@@ -199,7 +206,15 @@ impl RowPlan {
             rows: 0,
             groups: 0,
             unreadable: 0,
+            skipped: 0,
+            marks: Vec::new(),
         }
+    }
+
+    /// The cells left blank by the fill's stops (row id, logical column), at
+    /// most [`MAX_FILL_MARKS`]; taken out of the plan.
+    pub fn take_marks(&mut self) -> Vec<(u32, u32)> {
+        std::mem::take(&mut self.marks)
     }
 
     pub fn is_empty(&self) -> bool {

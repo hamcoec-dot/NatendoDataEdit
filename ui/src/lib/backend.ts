@@ -313,6 +313,19 @@ export interface FillBlanks {
   from: FillFrom;
   spaces: boolean;
   keep_first: boolean;
+  /** Stop at rows where this column is blank (not a filled column). */
+  guard?: number | null;
+  /** Stop at rows where every cell is blank (hidden columns included). */
+  stop_blank_rows?: boolean;
+  /** Stop at total rows (first filled cell Total, Subtotal, Grand total or Sum, and a number cell). */
+  stop_total_rows?: boolean;
+}
+/** The Fill blank cells count line: in the first `counted` of `rows` shown rows. */
+export interface FillCount {
+  fill: number;
+  skipped: number;
+  counted: number;
+  rows: number;
 }
 export interface Repeats {
   cols: number[];
@@ -1467,6 +1480,8 @@ export interface OpReport {
   examples?: number;
   /** Computed columns: cells that came out as error codes. */
   errors?: number;
+  /** Fill blank cells with stops: cells marked amber (at most 100,000 of `skipped`). */
+  marked?: number;
 }
 
 /** How values are put in quotes on Save As. */
@@ -1702,6 +1717,16 @@ export interface Backend {
   reportNotes(doc: number): Promise<ReportNotes>;
   /** A total line among the last 5 rows (null: none, or rows are hidden), with its sums checked. */
   totalRow(doc: number, header: boolean, read: ReadOptions): Promise<TotalRow | null>;
+  /** Fill blank cells with stops: what Apply would fill and leave blank (first 200,000 shown rows). */
+  fillBlanksCount(doc: number, spec: FillBlanks): Promise<FillCount>;
+  /** Stop that count (the dialog closed). */
+  fillBlanksCountStop(doc: number): Promise<void>;
+  /** The cells the last fill left blank on purpose, among shown rows row..row+rows: [row, col]. */
+  fillMarks(doc: number, row: number, rows: number): Promise<[number, number][]>;
+  /** The next (or previous, `back`) such cell from a cell, going round; null when none is left. */
+  fillMarksNext(doc: number, row: number, col: number, back: boolean): Promise<[number, number] | null>;
+  /** Take those marks away. */
+  fillMarksClear(doc: number): Promise<void>;
   /** Put every report note back into the table (one undo step). */
   putBackNotes(doc: number): Promise<DocInfo>;
   /** Save the report notes, or leave them out (one undo step; nothing is lost). */
@@ -2273,6 +2298,21 @@ class TauriBackend implements Backend {
   }
   totalRow(doc: number, header: boolean, read: ReadOptions) {
     return call<TotalRow | null>("total_row", { doc, header, read });
+  }
+  fillBlanksCount(doc: number, spec: FillBlanks) {
+    return call<FillCount>("fill_blanks_count", { doc, spec });
+  }
+  fillBlanksCountStop(doc: number) {
+    return call<void>("fill_blanks_count_stop", { doc });
+  }
+  fillMarks(doc: number, row: number, rows: number) {
+    return call<[number, number][]>("fill_marks", { doc, row, rows });
+  }
+  fillMarksNext(doc: number, row: number, col: number, back: boolean) {
+    return call<[number, number] | null>("fill_marks_next", { doc, row, col, back });
+  }
+  fillMarksClear(doc: number) {
+    return call<void>("fill_marks_clear", { doc });
   }
   putBackNotes(doc: number) {
     return call<DocInfo>("put_back_notes", { doc });

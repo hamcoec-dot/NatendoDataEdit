@@ -3153,6 +3153,51 @@ async fn set_aside(
 }
 
 #[tauri::command]
+async fn fill_blanks_count(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::tools::FillBlanks,
+) -> CmdResult<natendo_engine::tools::FillCount> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.fill_blanks_count(doc, &spec)).await
+}
+
+#[tauri::command]
+async fn fill_blanks_count_stop(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.fill_blanks_count_stop(doc)).await
+}
+
+#[tauri::command]
+async fn fill_marks(
+    docs: DocsState<'_>,
+    doc: u32,
+    row: u64,
+    rows: u64,
+) -> CmdResult<Vec<(u64, u32)>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.fill_marks(doc, row, rows)).await
+}
+
+#[tauri::command]
+async fn fill_marks_next(
+    docs: DocsState<'_>,
+    doc: u32,
+    row: u64,
+    col: u32,
+    back: bool,
+) -> CmdResult<Option<(u64, u32)>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.fill_marks_next(doc, row, col, back)).await
+}
+
+#[tauri::command]
+async fn fill_marks_clear(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.fill_marks_clear(doc)).await
+}
+
+#[tauri::command]
 async fn total_row(
     docs: DocsState<'_>,
     doc: u32,
@@ -4877,6 +4922,11 @@ pub fn run() {
             set_aside,
             report_notes,
             total_row,
+            fill_blanks_count,
+            fill_blanks_count_stop,
+            fill_marks,
+            fill_marks_next,
+            fill_marks_clear,
             put_back_notes,
             keep_notes,
             row_text,

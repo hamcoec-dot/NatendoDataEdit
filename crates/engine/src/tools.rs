@@ -84,6 +84,69 @@ pub struct FillBlanks {
     /// Cells holding only spaces count as empty.
     pub spaces: bool,
     pub keep_first: bool,
+    /// Stop the fill at rows where this column is blank: such a row is not
+    /// filled and the carried value is cut (it cannot be a filled column).
+    pub guard: Option<u32>,
+    /// Stop at rows where every cell (hidden columns included) is blank.
+    pub stop_blank_rows: bool,
+    /// Stop at total rows (first filled cell Total, Subtotal, Grand total or
+    /// Sum, and a number cell): not filled, and their text is not carried.
+    pub stop_total_rows: bool,
+    /// The guard column's title when the step was recorded: a recipe finds
+    /// the guard by it (columns in another order still work).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guard_title: Option<String>,
+}
+
+impl FillBlanks {
+    /// A stop rule is on (they only apply when copying from above or below).
+    pub fn has_stops(&self) -> bool {
+        !matches!(self.from, FillFrom::Value { .. })
+            && (self.guard.is_some() || self.stop_blank_rows || self.stop_total_rows)
+    }
+}
+
+/// What the dialog's count line says before Apply.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct FillCount {
+    /// Blank cells that would be filled.
+    pub fill: u64,
+    /// Blank cells the stops leave blank.
+    pub skipped: u64,
+    /// Shown rows counted (all of them unless capped).
+    pub counted: u64,
+    /// Shown rows in all.
+    pub rows: u64,
+}
+
+/// Shown rows the count line looks at, at most.
+pub const FILL_COUNT_ROWS: u64 = 200_000;
+
+/// One blank cell for a fill with stops.
+struct StopBlank {
+    id: u32,
+    /// The value found for it inside its chunk.
+    found: Option<String>,
+    /// It may take the value carried in from the next chunk over (nothing
+    /// found and no stop between it and that chunk's edge).
+    open: bool,
+    /// In a stop row: never filled.
+    never: bool,
+    /// Filled cells of the column earlier in the chunk (in file order).
+    before: u64,
+}
+
+/// One chunk's view of one column for a fill with stops.
+#[derive(Default)]
+struct StopChunk {
+    blanks: Vec<StopBlank>,
+    /// Above: the last value after the chunk's last stop row; Below: the
+    /// first value before its first stop row.
+    edge: Option<String>,
+    /// A stop row is in the chunk.
+    cut: bool,
+    /// Filled cells of the column in the chunk (stop rows too).
+    values: u64,
 }
 
 /// One chunk's view of one column for fill blanks.
@@ -494,8 +557,19 @@ impl Document {
                 return Err(bad("type the text to put in empty cells"));
             }
         }
-        let reader = Cols::new(self, &spec.cols);
+        if let Some(g) = spec.guard {
+            check_cols(self, &[g])?;
+            if spec.cols.contains(&g) {
+                return Err(bad(
+                    "the column that stops the fill cannot also be filled (every blank in it would stop the fill)",
+                ));
+            }
+        }
         let rows = self.data_rows(spec.keep_first);
+        if spec.has_stops() {
+            return self.plan_fill_stops(spec, rows, CHUNK, progress);
+        }
+        let reader = Cols::new(self, &spec.cols);
         let n = rows.end - rows.start;
         let below = spec.from == FillFrom::Below;
         let value = match &spec.from {
@@ -583,6 +657,340 @@ impl Document {
             }
         }
         let mut plan = RowPlan::new(self);
+        plan.rows = by_row.len() as u64;
+        plan.groups = cells;
+        plan.changes = by_row.into_iter().collect();
+        Ok(plan)
+    }
+
+    /// The count line of Fill blank cells: how many blanks would be filled and
+    /// how many the stops leave blank, in the first [`FILL_COUNT_ROWS`] shown
+    /// rows (a capped count says so with `counted < rows`).
+    pub fn count_fill_blanks(&self, spec: &FillBlanks, progress: &Progress) -> Result<FillCount, Error> {
+        let all = self.data_rows(spec.keep_first);
+        let rows = all.start..all.end.min(all.start + FILL_COUNT_ROWS);
+        if !spec.has_stops() {
+            return Err(bad("the count is for a fill with stops"));
+        }
+        check_tool_cols(self, &spec.cols)?;
+        if let Some(g) = spec.guard {
+            check_cols(self, &[g])?;
+            if spec.cols.contains(&g) {
+                return Err(bad("the column that stops the fill cannot also be filled"));
+            }
+        }
+        self.ready_for_bulk()?;
+        let plan = self.plan_fill_stops(spec, rows.clone(), CHUNK, progress)?;
+        Ok(FillCount {
+            fill: plan.groups,
+            skipped: plan.skipped,
+            counted: rows.end - rows.start,
+            rows: all.end - all.start,
+        })
+    }
+
+    /// Cells of shown rows `row..row + rows` that are in `marks` (row id ->
+    /// logical columns) and still blank: (shown row, column).
+    pub fn marked_cells(
+        &self,
+        marks: &HashMap<u32, Vec<u32>>,
+        row: u64,
+        rows: u64,
+    ) -> Vec<(u64, u32)> {
+        let end = row.saturating_add(rows).min(self.row_count());
+        let mut out = Vec::new();
+        for r in row..end {
+            let Some(id) = self.id_at(r) else { break };
+            if let Some(cols) = marks.get(&id) {
+                for &c in cols {
+                    if self.cell(r, c).is_none_or(|v| v.trim().is_empty()) {
+                        out.push((r, c));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The next marked cell (still blank) after shown row `row`, column `col`
+    /// (before it with `back`), going round the end; `None` when none is left.
+    pub fn next_marked(
+        &self,
+        marks: &HashMap<u32, Vec<u32>>,
+        row: u64,
+        col: u32,
+        back: bool,
+    ) -> Option<(u64, u32)> {
+        let n = self.row_count();
+        if n == 0 || marks.is_empty() {
+            return None;
+        }
+        let row = row.min(n - 1);
+        let hits = |r: u64| -> Vec<u32> {
+            let Some(id) = self.id_at(r) else { return Vec::new() };
+            let mut cols: Vec<u32> = marks
+                .get(&id)
+                .map(|cs| {
+                    cs.iter()
+                        .copied()
+                        .filter(|&c| self.cell(r, c).is_none_or(|v| v.trim().is_empty()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            cols.sort_unstable();
+            cols
+        };
+        // The same row first (the cells past `col`), then the other rows, then
+        // this row's cells before `col`.
+        let here = hits(row);
+        let same = if back {
+            here.iter().rev().find(|&&c| c < col).copied()
+        } else {
+            here.iter().find(|&&c| c > col).copied()
+        };
+        if let Some(c) = same {
+            return Some((row, c));
+        }
+        for k in 1..n {
+            let r = if back { (row + n - k) % n } else { (row + k) % n };
+            let cs = hits(r);
+            let c = if back { cs.last() } else { cs.first() };
+            if let Some(&c) = c {
+                return Some((r, c));
+            }
+        }
+        let c = if back { here.last() } else { here.first() };
+        c.map(|&c| (row, c))
+    }
+
+    /// Is the row (id) a stop row of `spec`? `buf` holds its fill columns and
+    /// the guard (last) read by `reader`.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_stop_row<'a>(
+        &'a self,
+        spec: &FillBlanks,
+        id: u32,
+        reader: &Cols,
+        buf: &[std::borrow::Cow<'a, str>],
+        lead: &Option<Cols>,
+        all: &Option<Cols>,
+        scratch: &mut Vec<std::borrow::Cow<'a, str>>,
+        ctx: &crate::coltype::ReadCtx<'_>,
+    ) -> bool {
+        if spec.guard.is_some() && blank(reader.get(buf, spec.cols.len()), spec.spaces) {
+            return true;
+        }
+        if spec.stop_blank_rows && self.fill_blank_row(id, spec.spaces, all, scratch) {
+            return true;
+        }
+        if spec.stop_total_rows {
+            if let (Some(lead), Some(all)) = (lead, all) {
+                lead.read(self, id, scratch);
+                let first = (0..lead.slots().len())
+                    .map(|i| lead.get(scratch, i))
+                    .find(|v| !v.trim().is_empty());
+                if first.is_some_and(crate::document::report::total_word) {
+                    all.read(self, id, scratch);
+                    let values: Vec<&str> = (0..all.slots().len()).map(|i| all.get(scratch, i)).collect();
+                    if crate::document::report::total_label(&values, self.col_count(), ctx).is_some() {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Every cell of the row (hidden columns included) is blank. Original rows
+    /// of a file read as UTF-8 with no column map are first looked at as bytes
+    /// (any text byte: not blank); every other row, and every "maybe", is read
+    /// from its values (edits, inserted, deleted or moved columns).
+    fn fill_blank_row<'a>(
+        &'a self,
+        id: u32,
+        spaces: bool,
+        all: &Option<Cols>,
+        scratch: &mut Vec<std::borrow::Cow<'a, str>>,
+    ) -> bool {
+        if self.col_map().is_none() && self.working_encoding() == crate::encoding::Encoding::Utf8 {
+            if let crate::document::RowSource::Raw { bytes, .. } = self.row_source(id) {
+                let d = self.format().dialect;
+                let delim = d.delimiter();
+                let text = bytes.iter().any(|&b| {
+                    b.is_ascii()
+                        && !delim.contains(&b)
+                        && Some(b) != d.quote()
+                        && Some(b) != d.escape()
+                        && b != b'\r'
+                        && b != b'\n'
+                        && !(spaces && b.is_ascii_whitespace())
+                        && !(spaces && b == 0x0B)
+                });
+                if text {
+                    return false;
+                }
+            }
+        }
+        let Some(all) = all else { return false };
+        all.read(self, id, scratch);
+        (0..all.slots().len()).all(|i| blank(all.get(scratch, i), spaces))
+    }
+
+    /// Fill blank cells with stop rows: at a stop row nothing is filled, the
+    /// carried value is cut, and the row's own text is not carried on. Shown
+    /// rows `rows` in chunks of `chunk` rows (the result does not depend on it).
+    pub(crate) fn plan_fill_stops(
+        &self,
+        spec: &FillBlanks,
+        rows: std::ops::Range<u64>,
+        chunk: usize,
+        progress: &Progress,
+    ) -> Result<RowPlan, Error> {
+        let mut want = spec.cols.clone();
+        if let Some(g) = spec.guard {
+            want.push(g);
+        }
+        let reader = Cols::new(self, &want);
+        let all_cols: Vec<u32> = (0..self.col_count()).collect();
+        let all = (spec.stop_blank_rows || spec.stop_total_rows).then(|| Cols::new(self, &all_cols));
+        let lead = spec
+            .stop_total_rows
+            .then(|| Cols::new(self, &all_cols[..all_cols.len().min(16)]));
+        let ctx = self.read_ctx(ReadOptions::default());
+        let stops_apply = spec.has_stops();
+        let below = spec.from == FillFrom::Below;
+        let n = rows.end - rows.start;
+        let chunk = chunk.max(1);
+        let spent = AtomicUsize::new(0);
+        let budget = crate::find::split_budget(self);
+        let charge = |len: usize| -> Result<(), Error> {
+            if crate::find::charge_within(&spent, len, budget) {
+                Ok(())
+            } else {
+                Err(Error::OutOfMemory(
+                    "this would fill too many cells at once; fill fewer rows",
+                ))
+            }
+        };
+        progress.start(n);
+        let chunks: Vec<Vec<StopChunk>> = (0..(n as usize).div_ceil(chunk))
+            .into_par_iter()
+            .map(|c| -> Result<Vec<StopChunk>, Error> {
+                let s = rows.start + (c * chunk) as u64;
+                let e = (s + chunk as u64).min(rows.end);
+                let mut out: Vec<StopChunk> = spec.cols.iter().map(|_| StopChunk::default()).collect();
+                let mut last: Vec<Option<String>> = vec![None; spec.cols.len()];
+                let mut waiting: Vec<Vec<usize>> = vec![Vec::new(); spec.cols.len()];
+                let mut buf = Vec::new();
+                let mut scratch = Vec::new();
+                for r in s..e {
+                    let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                    reader.read(self, id, &mut buf);
+                    let stop = stops_apply
+                        && self.fill_stop_row(spec, id, &reader, &buf, &lead, &all, &mut scratch, &ctx);
+                    for (k, ch) in out.iter_mut().enumerate() {
+                        let v = reader.get(&buf, k);
+                        if blank(v, spec.spaces) {
+                            let found = if stop || below { None } else { last[k].clone() };
+                            if let Some(f) = &found {
+                                charge(f.len())?;
+                            }
+                            if below && !stop {
+                                waiting[k].push(ch.blanks.len());
+                            }
+                            ch.blanks.push(StopBlank {
+                                id,
+                                open: !stop && !below && !ch.cut && found.is_none(),
+                                found,
+                                never: stop,
+                                before: ch.values,
+                            });
+                        } else {
+                            ch.values += 1;
+                            if stop {
+                                continue;
+                            }
+                            if below {
+                                for i in waiting[k].drain(..) {
+                                    charge(v.len())?;
+                                    ch.blanks[i].found = Some(v.to_string());
+                                }
+                                if !ch.cut && ch.edge.is_none() {
+                                    ch.edge = Some(v.to_string());
+                                }
+                            } else {
+                                last[k] = Some(v.to_string());
+                            }
+                        }
+                    }
+                    if stop {
+                        for (k, ch) in out.iter_mut().enumerate() {
+                            ch.cut = true;
+                            last[k] = None;
+                            // Blanks waiting for a value below are cut off from it.
+                            waiting[k].clear();
+                        }
+                    }
+                }
+                for (k, ch) in out.iter_mut().enumerate() {
+                    if below {
+                        for i in waiting[k].drain(..) {
+                            ch.blanks[i].open = true;
+                        }
+                    } else {
+                        ch.edge = last[k].take();
+                    }
+                }
+                progress.step(e - s)?;
+                Ok(out)
+            })
+            .collect::<Result<_, _>>()?;
+        // Carry across chunks (forward for above, backward for below), cut at stops.
+        let mut by_row: HashMap<u32, Vec<(u32, String)>> = HashMap::new();
+        let mut cells = 0u64;
+        let mut plan = RowPlan::new(self);
+        for (k, &col) in spec.cols.iter().enumerate() {
+            let mut carry: Option<String> = None;
+            // A filled cell of the column lies on the carrying side (without
+            // stops the blank would have been filled).
+            let mut seen = false;
+            let order: Box<dyn Iterator<Item = &Vec<StopChunk>>> = if below {
+                Box::new(chunks.iter().rev())
+            } else {
+                Box::new(chunks.iter())
+            };
+            for ch in order {
+                let ch = &ch[k];
+                for b in &ch.blanks {
+                    let fill = if b.never {
+                        None
+                    } else {
+                        b.found.as_ref().or(if b.open { carry.as_ref() } else { None })
+                    };
+                    match fill {
+                        Some(t) => {
+                            by_row.entry(b.id).or_default().push((col, t.clone()));
+                            cells += 1;
+                        }
+                        None => {
+                            let side = if below { b.before < ch.values } else { b.before > 0 };
+                            if seen || side {
+                                plan.skipped += 1;
+                                if plan.marks.len() < crate::reshape::MAX_FILL_MARKS {
+                                    plan.marks.push((b.id, col));
+                                }
+                            }
+                        }
+                    }
+                }
+                if ch.edge.is_some() {
+                    carry = ch.edge.clone();
+                } else if ch.cut {
+                    carry = None;
+                }
+                seen |= ch.values > 0;
+            }
+        }
         plan.rows = by_row.len() as u64;
         plan.groups = cells;
         plan.changes = by_row.into_iter().collect();
@@ -2004,6 +2412,7 @@ mod tests {
             from: FillFrom::Above,
             spaces: true,
             keep_first: true,
+            ..Default::default()
         };
         let plan = d.plan_fill_blanks(&spec, &p).unwrap();
         assert_eq!(plan.groups, 6);
@@ -2046,6 +2455,7 @@ mod tests {
             from: FillFrom::Above,
             spaces: false,
             keep_first: true,
+            ..Default::default()
         };
         let plan = d.plan_fill_blanks(&spec, &Progress::new()).unwrap();
         d.apply_rows(plan).unwrap();
@@ -2059,6 +2469,351 @@ mod tests {
         d.apply_rows(plan).unwrap();
         assert_eq!(d.cell(2, 0).unwrap(), "last");
         assert_eq!(d.cell(1, 0).unwrap(), "first");
+    }
+
+    /// The values of every row after `spec` is applied (then undone).
+    fn filled(d: &mut Document, spec: &FillBlanks) -> (Vec<Vec<String>>, u64) {
+        let plan = d.plan_fill_blanks(spec, &Progress::new()).unwrap();
+        let skipped = plan.skipped;
+        d.apply_rows(plan).unwrap();
+        let out = (0..d.row_count()).map(|r| d.row_values(r).unwrap()).collect();
+        d.undo();
+        (out, skipped)
+    }
+
+    /// A plain one-row-at-a-time fill with stops, the reference for the chunks.
+    fn reference(rows: &[Vec<String>], spec: &FillBlanks) -> (Vec<Vec<String>>, u64) {
+        let mut out = rows.to_vec();
+        let below = spec.from == FillFrom::Below;
+        let first = usize::from(spec.keep_first && !rows.is_empty());
+        let mut order: Vec<usize> = (first..rows.len()).collect();
+        if below {
+            order.reverse();
+        }
+        let is_blank = |v: &str| blank(v, spec.spaces);
+        let stop = |row: &[String]| -> bool {
+            if let Some(g) = spec.guard {
+                if is_blank(row.get(g as usize).map_or("", String::as_str)) {
+                    return true;
+                }
+            }
+            if spec.stop_blank_rows && row.iter().all(|v| is_blank(v)) {
+                return true;
+            }
+            if spec.stop_total_rows {
+                if let Some(l) = row.iter().position(|v| !v.trim().is_empty()) {
+                    if crate::document::report::total_word(&row[l])
+                        && row
+                            .iter()
+                            .enumerate()
+                            .any(|(c, v)| c != l && v.trim().parse::<f64>().is_ok())
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        };
+        let mut skipped = 0;
+        for &col in &spec.cols {
+            let c = col as usize;
+            let mut carry: Option<String> = None;
+            let mut seen = false;
+            for &r in &order {
+                let v = rows[r][c].clone();
+                let st = stop(&rows[r]);
+                if is_blank(&v) {
+                    match (&carry, st) {
+                        (Some(t), false) => out[r][c] = t.clone(),
+                        _ if seen => skipped += 1,
+                        _ => {}
+                    }
+                } else {
+                    seen = true;
+                    if !st {
+                        carry = Some(v);
+                    }
+                }
+                if st {
+                    carry = None;
+                }
+            }
+        }
+        (out, skipped)
+    }
+
+    fn rows_of(d: &Document) -> Vec<Vec<String>> {
+        (0..d.row_count()).map(|r| d.row_values(r).unwrap()).collect()
+    }
+
+    const GROUPED: &str = "region,id,amount\r\nNorth,101,5\r\n,102,7\r\nSubtotal,,12\r\n,,\r\n,103,2\r\nSouth,104,9\r\n,105,1\r\n,,10\r\n";
+
+    /// C5: the example of the plan, Above, each rule alone and all three.
+    #[test]
+    fn fill_stops_at_group_edges() {
+        let mut d = doc(GROUPED);
+        let base = FillBlanks {
+            cols: vec![0],
+            from: FillFrom::Above,
+            spaces: true,
+            keep_first: true,
+            ..Default::default()
+        };
+        let region = |rows: &[Vec<String>]| rows.iter().map(|r| r[0].clone()).collect::<Vec<_>>();
+        // Today (no stops): the label bleeds.
+        let (r, s) = filled(&mut d, &base);
+        assert_eq!(
+            region(&r),
+            ["region", "North", "North", "Subtotal", "Subtotal", "Subtotal", "South", "South", "South"]
+        );
+        assert_eq!(s, 0);
+        // Guard on id: rows with no id are not filled and cut the carry.
+        let spec = FillBlanks { guard: Some(1), ..base.clone() };
+        let (r, s) = filled(&mut d, &spec);
+        assert_eq!(region(&r), ["region", "North", "North", "Subtotal", "", "", "South", "South", ""]);
+        assert_eq!(s, 3);
+        // Total rows only: the Subtotal row cuts and is not carried.
+        let spec = FillBlanks { stop_total_rows: true, ..base.clone() };
+        let (r, s) = filled(&mut d, &spec);
+        assert_eq!(region(&r), ["region", "North", "North", "Subtotal", "", "", "South", "South", "South"]);
+        assert_eq!(s, 2);
+        // Blank rows only.
+        let spec = FillBlanks { stop_blank_rows: true, ..base.clone() };
+        let (r, _) = filled(&mut d, &spec);
+        assert_eq!(region(&r), ["region", "North", "North", "Subtotal", "", "", "South", "South", "South"]);
+        // All three.
+        let spec = FillBlanks {
+            guard: Some(1),
+            stop_blank_rows: true,
+            stop_total_rows: true,
+            ..base.clone()
+        };
+        let plan = d.plan_fill_blanks(&spec, &Progress::new()).unwrap();
+        assert_eq!((plan.groups, plan.skipped), (2, 3));
+        let marks: Vec<u32> = plan.marks.iter().map(|m| m.0).collect();
+        assert_eq!(marks.len(), 3);
+        d.apply_rows(plan).unwrap();
+        assert_eq!(region(&rows_of(&d)), ["region", "North", "North", "Subtotal", "", "", "South", "South", ""]);
+        d.undo();
+        let rows = rows_of(&d);
+        assert_eq!(filled(&mut d, &spec), reference(&rows, &spec));
+        // Below, mirrored: the label below does not climb over a stop.
+        let spec = FillBlanks { from: FillFrom::Below, ..spec };
+        let (r, s) = filled(&mut d, &spec);
+        let rows = rows_of(&d);
+        assert_eq!((r.clone(), s), reference(&rows, &spec));
+        assert_eq!(region(&r), ["region", "North", "", "Subtotal", "", "South", "South", "", ""]);
+    }
+
+    /// C5 review 1: the guard column cannot be filled too.
+    #[test]
+    fn fill_guard_is_not_a_filled_column() {
+        let d = doc(GROUPED);
+        let spec = FillBlanks {
+            cols: vec![0, 1],
+            guard: Some(1),
+            keep_first: true,
+            ..Default::default()
+        };
+        let e = d.plan_fill_blanks(&spec, &Progress::new()).err().unwrap().to_string();
+        assert!(e.contains("cannot also be filled"), "{e}");
+        let spec = FillBlanks { guard: Some(9), cols: vec![0], ..spec };
+        assert!(d.plan_fill_blanks(&spec, &Progress::new()).is_err());
+    }
+
+    /// C5 review 2: one meaning of a total row: a voter named Total or Sum,
+    /// with no number cell, does not cut the fill.
+    #[test]
+    fn fill_stop_needs_a_real_total_row() {
+        let mut d = doc("first,last,precinct\r\nAnn,Lee,North\r\nTotal,Smith,\r\nSum,Ray,\r\nBo,Wu,\r\nTotal,,3\r\nCy,Oz,\r\n");
+        let spec = FillBlanks {
+            cols: vec![2],
+            stop_total_rows: true,
+            spaces: true,
+            keep_first: true,
+            ..Default::default()
+        };
+        let (r, s) = filled(&mut d, &spec);
+        let p: Vec<&str> = r.iter().map(|r| r[2].as_str()).collect();
+        assert_eq!(p, ["precinct", "North", "North", "North", "North", "3", ""]);
+        assert_eq!(s, 1);
+    }
+
+    /// C5 review (Q2): a row of spaces is blank only when spaces count as empty,
+    /// for the blank-row rule and the guard alike.
+    #[test]
+    fn fill_spaces_switch_follows_the_stops() {
+        let mut d = doc("k,id\r\na,1\r\n,2\r\n  ,  \r\n,3\r\n");
+        let mut spec = FillBlanks {
+            cols: vec![0],
+            stop_blank_rows: true,
+            spaces: true,
+            keep_first: true,
+            ..Default::default()
+        };
+        let (r, _) = filled(&mut d, &spec);
+        assert_eq!(r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(), ["k", "a", "a", "  ", ""]);
+        spec.spaces = false;
+        let (r, _) = filled(&mut d, &spec);
+        assert_eq!(r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(), ["k", "a", "a", "  ", "  "]);
+        // Guard on id with spaces as blank: the "  " id stops.
+        let spec = FillBlanks { stop_blank_rows: false, guard: Some(1), spaces: true, ..spec };
+        let (r, _) = filled(&mut d, &spec);
+        assert_eq!(r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(), ["k", "a", "a", "  ", ""]);
+        let spec = FillBlanks { spaces: false, ..spec };
+        let (r, _) = filled(&mut d, &spec);
+        assert_eq!(r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(), ["k", "a", "a", "  ", "  "]);
+    }
+
+    /// C5 review 3: edited rows and a column map are read from their values.
+    #[test]
+    fn fill_stops_read_edits_and_moved_columns() {
+        let base = FillBlanks {
+            cols: vec![0],
+            stop_blank_rows: true,
+            spaces: true,
+            keep_first: true,
+            ..Default::default()
+        };
+        let region = |rows: &[Vec<String>]| rows.iter().map(|r| r[0].clone()).collect::<Vec<_>>();
+        // An edited row that is now blank stops the fill; an edited one that is not, does not.
+        let mut d = doc("k,v\r\na,1\r\n,x\r\n,\r\n,y\r\n");
+        d.set_cell(2, 1, String::new()).unwrap();
+        d.set_cell(3, 1, "z".into()).unwrap();
+        let (r, _) = filled(&mut d, &base);
+        assert_eq!(region(&r), ["k", "a", "", "", ""]);
+        // A deleted column: the bytes of the row still hold its text, the row is blank.
+        let mut d = doc("k,gone,v\r\na,1,1\r\n,9,\r\n,,2\r\n");
+        d.delete_cols(1, 1).unwrap();
+        let (r, _) = filled(&mut d, &base);
+        assert_eq!(region(&r), ["k", "a", "", ""]);
+        // An inserted column, then moved first: the guard and the fill follow the titles' places.
+        let mut d = doc("k,id\r\na,1\r\n,2\r\n,\r\n,3\r\n");
+        d.insert_cols(0, 1).unwrap();
+        d.move_cols(2, 1, 0).unwrap();
+        // Now: id, (new), k
+        assert_eq!(d.row_values(0).unwrap(), ["id", "", "k"]);
+        let spec = FillBlanks { cols: vec![2], guard: Some(0), stop_blank_rows: false, ..base.clone() };
+        let (r, s) = filled(&mut d, &spec);
+        assert_eq!(r.iter().map(|r| r[2].as_str()).collect::<Vec<_>>(), ["k", "a", "a", "", ""]);
+        assert_eq!(s, 2);
+        let spec = FillBlanks { cols: vec![2], ..base };
+        let rows = rows_of(&d);
+        assert_eq!(filled(&mut d, &spec), reference(&rows, &spec));
+    }
+
+    /// C5 review 5: the title row is never a stop or a carry source.
+    #[test]
+    fn fill_title_row_is_left_out() {
+        let mut d = doc("Total,7\r\n,1\r\nx,2\r\n,3\r\n");
+        for from in [FillFrom::Above, FillFrom::Below] {
+            let spec = FillBlanks {
+                cols: vec![0],
+                from: from.clone(),
+                stop_total_rows: true,
+                stop_blank_rows: true,
+                guard: Some(1),
+                spaces: true,
+                keep_first: true,
+                guard_title: None,
+            };
+            let (r, _) = filled(&mut d, &spec);
+            let col0: Vec<&str> = r.iter().map(|r| r[0].as_str()).collect();
+            if from == FillFrom::Above {
+                assert_eq!(col0, ["Total", "", "x", "x"]);
+            } else {
+                assert_eq!(col0, ["Total", "x", "x", ""]);
+            }
+        }
+    }
+
+    /// C5: hidden rows neither carry nor cut, and are not filled.
+    #[test]
+    fn fill_stops_skip_hidden_rows() {
+        let mut d = doc("k,id\r\na,1\r\n,\r\nb,2\r\n,3\r\n");
+        d.hide_rows(2, 2).unwrap(); // the blank-id row and the "b" row
+        let spec = FillBlanks {
+            cols: vec![0],
+            guard: Some(1),
+            spaces: true,
+            keep_first: true,
+            ..Default::default()
+        };
+        let plan = d.plan_fill_blanks(&spec, &Progress::new()).unwrap();
+        d.apply_rows(plan).unwrap();
+        d.show_rows(crate::rows::ShowRows::All).unwrap();
+        let col0: Vec<String> = (0..d.row_count()).map(|r| d.cell(r, 0).unwrap()).collect();
+        assert_eq!(col0, ["k", "a", "", "b", "a"]);
+    }
+
+    /// C5: the dialog's count line.
+    #[test]
+    fn fill_count_line() {
+        let d = doc(GROUPED);
+        let spec = FillBlanks {
+            cols: vec![0],
+            guard: Some(1),
+            spaces: true,
+            keep_first: true,
+            ..Default::default()
+        };
+        let c = d.count_fill_blanks(&spec, &Progress::new()).unwrap();
+        assert_eq!(c, FillCount { fill: 2, skipped: 3, counted: 8, rows: 8 });
+        let none = FillBlanks { guard: None, ..spec };
+        assert!(d.count_fill_blanks(&none, &Progress::new()).is_err());
+    }
+
+    /// C5: an old saved spec (no stop fields) reads with every stop off.
+    #[test]
+    fn fill_old_spec_has_no_stops() {
+        let s: FillBlanks = serde_json::from_str(r#"{"cols":[0],"from":{"kind":"above"},"spaces":true,"keep_first":true}"#).unwrap();
+        assert_eq!((s.guard, s.stop_blank_rows, s.stop_total_rows), (None, false, false));
+        assert!(!s.has_stops());
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(200))]
+        /// C5: any chunk size gives the plain serial result, Above and Below,
+        /// every mix of stops; and with no stops the old fill's result.
+        #[test]
+        fn fill_stops_any_chunk_matches_reference(
+            cells in proptest::collection::vec(proptest::collection::vec(0u8..6, 3), 1..40),
+            guard in proptest::option::of(2u32..3),
+            blank_rows in proptest::bool::ANY,
+            totals in proptest::bool::ANY,
+            below in proptest::bool::ANY,
+            chunk in 1usize..7,
+        ) {
+            let word = |x: u8| match x { 0 | 1 => "", 2 => "a", 3 => "Total", 4 => "5", _ => " " };
+            let mut text = String::from("x,y,z\r\n");
+            for r in &cells {
+                text.push_str(&r.iter().map(|&x| word(x)).collect::<Vec<_>>().join(","));
+                text.push_str("\r\n");
+            }
+            let mut d = doc(&text);
+            let spec = FillBlanks {
+                cols: vec![0, 1],
+                from: if below { FillFrom::Below } else { FillFrom::Above },
+                spaces: true,
+                keep_first: true,
+                guard,
+                stop_blank_rows: blank_rows,
+                stop_total_rows: totals,
+                guard_title: None,
+            };
+            let rows = rows_of(&d);
+            let (want, skipped) = reference(&rows, &spec);
+            let range = d.data_rows(true);
+            let plan = d.plan_fill_stops(&spec, range, chunk, &Progress::new()).unwrap();
+            proptest::prop_assert_eq!(plan.skipped, skipped);
+            d.apply_rows(plan).unwrap();
+            proptest::prop_assert_eq!(rows_of(&d), want.clone());
+            d.undo();
+            if !spec.has_stops() {
+                let (old, _) = filled(&mut d, &spec);
+                proptest::prop_assert_eq!(old, want);
+            }
+        }
     }
 
     #[test]

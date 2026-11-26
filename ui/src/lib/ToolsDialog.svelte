@@ -7,11 +7,11 @@
   import HiddenNote from "./HiddenNote.svelte";
   import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
-  import type { Combine, DataOp, DiffSpec, SplitParts, TableOp } from "./backend";
+  import { backend, type Combine, type DataOp, type DiffSpec, type FillCount, type SplitParts, type TableOp } from "./backend";
   import FormShell from "./FormShell.svelte";
   import { GUARD_LABEL } from "./csvguard";
   import { prefs } from "./prefs.svelte";
-  import { toolsRequest, type ToolKind } from "./m10";
+  import { fillStops, toolsRequest, type ToolKind } from "./m10";
 
   export interface ToolsRun {
     data?: DataOp;
@@ -35,8 +35,10 @@
     onClose: () => void;
     /** Open another file (a file picker) so it need not be open already: it opens as a tab and is returned. */
     onPickFile?: () => Promise<{ id: number; name: string } | null>;
+    /** The tab, for the fill's count line. */
+    doc?: number;
   }
-  let { kind, titles, cols, col, header, others, onRun, onClose, onPickFile }: Props = $props();
+  let { kind, titles, cols, col, header, others, onRun, onClose, onPickFile, doc }: Props = $props();
   /** Files picked here (opened as tabs) for the compare. */
   let extra = $state<{ id: number; name: string }[]>([]);
   const choices = $derived([...others, ...extra.filter((e) => !others.some((o) => o.id === e.id))]);
@@ -89,6 +91,64 @@
   let byTitle = $state(true);
   let source = $state(true);
   let problem = $state("");
+  // Fill blank cells: where the fill stops.
+  let fillGuard = $state(-1);
+  let stopBlankRows = $state(false);
+  let stopTotalRows = $state(false);
+  const stopsOn = $derived(from !== "value" && (fillGuard >= 0 || stopBlankRows || stopTotalRows));
+  /** The count line (null while counting or with no stops), or why there is none. */
+  let count = $state<FillCount | null>(null);
+  let countNote = $state("");
+  $effect(() => {
+    if (kind !== "fill_blanks" || doc === undefined || !stopsOn) {
+      count = null;
+      countNote = "";
+      return;
+    }
+    const spec = {
+      cols: [...picked],
+      from: from === "below" ? { kind: "below" as const } : { kind: "above" as const },
+      spaces,
+      keep_first: myHeader,
+      ...fillStops({ from, fillGuard, stopBlankRows, stopTotalRows }),
+    };
+    count = null;
+    if (!spec.cols.length) {
+      countNote = "Tick the columns to fill to see the count.";
+      return;
+    }
+    if (spec.guard !== undefined && spec.cols.includes(spec.guard)) {
+      countNote = "";
+      return;
+    }
+    countNote = "Counting…";
+    const id = doc;
+    let live = true;
+    const timer = setTimeout(() => {
+      backend()
+        .fillBlanksCount(id, spec)
+        .then((c) => {
+          if (!live) return;
+          count = c;
+          countNote = "";
+        })
+        .catch((e: unknown) => {
+          if (live) countNote = (e as { code?: string })?.code === "cancelled" ? "" : "The count is not available right now.";
+        });
+    }, 200);
+    // A newer choice, or the dialog closing, drops this count (the engine stops it).
+    return () => {
+      live = false;
+      clearTimeout(timer);
+      void backend().fillBlanksCountStop(id).catch(() => {});
+    };
+  });
+  const countText = $derived(
+    count
+      ? `Will fill ${count.fill.toLocaleString()} blank ${count.fill === 1 ? "cell" : "cells"}; ${count.skipped.toLocaleString()} left blank by the stops.` +
+          (count.counted < count.rows ? ` (Counted in the first ${count.counted.toLocaleString()} of ${count.rows.toLocaleString()} shown rows.)` : "")
+      : countNote,
+  );
 
   function toggle(c: number): void {
     picked = picked.includes(c) ? picked.filter((x) => x !== c) : [...picked, c].sort((a, b) => a - b);
@@ -135,6 +195,9 @@
       showSame,
       byTitle,
       source,
+      fillGuard,
+      stopBlankRows,
+      stopTotalRows,
     });
     if (typeof r === "string") {
       problem = r;
@@ -190,6 +253,21 @@
       <label><input type="radio" value="value" bind:group={from} /> With this text: <input type="text" bind:value={text} disabled={from !== "value"} /></label>
     </div>
     <label class="row"><input type="checkbox" bind:checked={spaces} /> Cells holding only spaces count as blank</label>
+    <fieldset data-testid="fill-stops" disabled={from === "value"} title={from === "value" ? "Stops apply when copying from above or below" : ""}>
+      <legend>Stop the fill at</legend>
+      <label class="row">Rows where this column is blank:
+        <select bind:value={fillGuard} aria-label="Stop at rows where this column is blank">
+          <option value={-1}>(none)</option>
+          {#each titles as t, c (c)}<option value={c} disabled={picked.includes(c)} title={picked.includes(c) ? "Ticked for filling: a column cannot both stop the fill and be filled" : ""}>{t}</option>{/each}
+        </select>
+      </label>
+      <p class="note">For example an ID column: a row with no ID is not filled and starts a new group.</p>
+      <label class="row"><input type="checkbox" bind:checked={stopBlankRows} /> Blank rows (every cell empty, hidden columns included)</label>
+      <label class="row"><input type="checkbox" bind:checked={stopTotalRows} /> Total rows (first filled cell says Total, Subtotal, Grand total or Sum, and a number)</label>
+      {#if from === "value"}<p class="note">Stops apply when copying from above or below.</p>{/if}
+      {#if fillGuard >= 0 && picked.includes(fillGuard)}<p class="problem" role="alert">The column that stops the fill cannot also be filled: untick it, or choose another column to stop at.</p>{/if}
+    </fieldset>
+    {#if stopsOn && countText}<p class="note" data-testid="fill-count" aria-live="polite">{countText}</p>{/if}
   {/if}
   {#if kind === "count_repeats" || kind === "blank_repeats" || (kind === "compare" && !wholeRow)}
     <label class="row"><input type="checkbox" bind:checked={matchCase} /> Match capitals (Rome and rome differ)</label>

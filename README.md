@@ -1313,6 +1313,16 @@ preview:
   between groups, a line at each change.
 - Fill blank cells (from above, below, or a text), count repeats, blank out
   repeats.
+- **Fill down by group**: Fill blank cells can stop at group edges, at rows
+  where a chosen column (an ID, say) is blank and at blank rows (every cell
+  empty, hidden columns included), so a label never bleeds into spacer rows
+  or the next group. Before Run the dialog counts how many cells it will fill
+  and how many the stops leave blank; afterwards those are marked amber (F7
+  visits them, Esc or Ctrl+Z takes the marks away). A recipe finds the
+  stopping column by its title.
+- **Stop fill at subtotal**: the fill can also stop at total rows (first
+  filled cell Total, Subtotal, Grand total or Sum, with a number in the row;
+  a person called Total is not one), whose own text is never carried on.
 
 ### Pivot tables
 

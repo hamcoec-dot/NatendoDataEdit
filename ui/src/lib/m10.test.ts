@@ -32,6 +32,14 @@ describe("tools requests", () => {
     expect(toolsRequest("fill_blanks", base)).toEqual({ data: { op: "fill_blanks", spec: { cols: [1], from: { kind: "above" }, spaces: true, keep_first: true } } });
     expect(toolsRequest("fill_blanks", { ...base, from: "value", text: "" })).toBe("Type the text to put in blank cells.");
     expect(toolsRequest("fill_blanks", { ...base, from: "value", text: "n/a" })).toMatchObject({ data: { spec: { from: { kind: "value", text: "n/a" } } } });
+    // C5: the stops, only when copying; the guard cannot be a filled column.
+    expect(toolsRequest("fill_blanks", { ...base, fillGuard: 2, stopBlankRows: true, stopTotalRows: true })).toEqual({
+      data: { op: "fill_blanks", spec: { cols: [1], from: { kind: "above" }, spaces: true, keep_first: true, guard: 2, stop_blank_rows: true, stop_total_rows: true } },
+    });
+    expect(toolsRequest("fill_blanks", { ...base, from: "value", text: "x", fillGuard: 2, stopTotalRows: true })).toEqual({
+      data: { op: "fill_blanks", spec: { cols: [1], from: { kind: "value", text: "x" }, spaces: true, keep_first: true } },
+    });
+    expect(toolsRequest("fill_blanks", { ...base, fillGuard: 1 })).toMatch(/cannot also be filled/);
     expect(toolsRequest("count_repeats", { ...base, cols: [] })).toBe("Tick at least one column.");
     expect(toolsRequest("breaks", { ...base, byCol: false, every: 0 })).toBe("Choose how many rows go between breaks.");
     expect(toolsRequest("breaks", base)).toMatchObject({ data: { op: "breaks", spec: { col: 0, every: 0, rows: 1 } } });

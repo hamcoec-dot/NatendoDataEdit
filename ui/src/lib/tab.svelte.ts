@@ -343,6 +343,12 @@ export class Tab {
   dateCheck = $state<{ col: number; cols: number; scan: import("./backend").DateScan } | null>(null);
   dateMarks = new Set<number>();
   dateVersion = $state(0);
+  /** Fill blank cells with stops: how many cells it left blank on purpose (marked amber until undo or Esc),
+   *  0 for none; whether the list was capped; the marked cells on screen ("row:col"). */
+  fillMarked = $state(0);
+  fillCapped = $state(false);
+  fillMarks = new Set<string>();
+  fillVersion = $state(0);
   diffOn = $state(false);
   /** The comparison by key this tab belongs to, to save it as a patch. */
   patchFrom = $state<{ a: number; b: number; keys: number[]; match_case: boolean; trim: boolean } | null>(null);

@@ -4868,9 +4868,20 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const rep = await runOp(op, "Working");
     if (!rep) return;
     switch (op.op) {
-      case "fill_blanks":
-        say(rep.groups ? `Filled ${plural(rep.groups, "blank cell")} in ${plural(rep.rows, "row")}. Undo with Ctrl+Z.` : "No blank cells to fill (or nothing above or below them).");
+      case "fill_blanks": {
+        const t2 = tab;
+        const marked = rep.marked ?? 0;
+        if (t2) {
+          t2.fillMarked = marked;
+          t2.fillCapped = rep.skipped > marked;
+          t2.fillVersion++;
+        }
+        const left = rep.skipped
+          ? ` ${plural(rep.skipped, "blank cell")} left blank on purpose by the stops${marked ? ` (marked amber${t2?.fillCapped ? `: the first ${marked.toLocaleString()}` : ""}; F7 goes to the next one, Esc takes the marks away)` : ""}.`
+          : "";
+        say(rep.groups ? `Filled ${plural(rep.groups, "blank cell")} in ${plural(rep.rows, "row")}.${left} Undo with Ctrl+Z.` : `No blank cells to fill (or nothing above or below them).${left}`);
         break;
+      }
       case "count_repeats":
         say(`Added a Count column after the chosen ${op.spec.cols.length === 1 ? "column" : "columns"}.`);
         break;
@@ -5911,6 +5922,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (!t) return;
     // One at a time per tab: a held Ctrl+Z repeats faster than a big undo.
     if (undoBusy.has(t)) return;
+    // Undo or redo takes the fill's left-blank marks away.
+    clearFillMarks(t);
     // A change to the look (widths, hiding, formats, highlights...) made at
     // this undo position is undone before the engine step that reached it,
     // and redone before the next one.
@@ -6978,6 +6991,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.nextDate", label: "Next ambiguous date", run: () => void nextDate(true), enabled: () => !!tab?.dateCheck, why: () => (tab?.dateCheck ? "" : "use Check dates in this column first") },
     { id: "data.prevDate", label: "Previous ambiguous date", run: () => void nextDate(false), enabled: () => !!tab?.dateCheck, why: () => (tab?.dateCheck ? "" : "use Check dates in this column first") },
     { id: "data.dateMarksOff", label: "Remove the ambiguous date marks", run: endDateCheck, enabled: () => !!tab?.dateCheck },
+    { id: "data.nextLeftBlank", label: "Next cell the fill left blank", run: () => void nextLeftBlank(false), enabled: () => !!tab?.fillMarked, why: () => (tab?.fillMarked ? "" : "use Fill blank cells with a stop first; the cells it leaves blank are marked") },
+    { id: "data.prevLeftBlank", label: "Previous cell the fill left blank", run: () => void nextLeftBlank(true), enabled: () => !!tab?.fillMarked, why: () => (tab?.fillMarked ? "" : "use Fill blank cells with a stop first; the cells it leaves blank are marked") },
+    { id: "data.fillMarksOff", label: "Remove the left-blank marks", run: () => tab && clearFillMarks(tab), enabled: () => !!tab?.fillMarked, why: () => (tab?.fillMarked ? "" : "no cells are marked as left blank by a fill") },
     { id: "data.repairRow", label: "Repair this row…", run: () => { if (tab) repairFrom = { doc: tab.id, row: tab.cell.row }; }, enabled: () => ready() && repairWhyNow() === "", why: repairWhyNow },
     { id: "data.ragged", label: "Show only rows with the wrong number of fields", run: () => void showRagged("all"), enabled: raggedReady, why: raggedWhy },
     { id: "data.raggedShort", label: "Show only rows with too few fields", run: () => void showRagged("short"), enabled: raggedReady, why: raggedWhy },
@@ -7283,7 +7299,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   const contextItems: Record<string, string[]> = {
     totals: [...TOTAL_CHOICES.map(([c]) => `view.total.${c}`), "view.total.auto", "-", "view.copyTotal", "view.copyTotals", "-", "view.totalsRow"],
     tab: ["file.save", "file.saveAs", "-", "data.compareLists", "data.patchSave", "data.patchApply", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "data.headersStartHere", "data.setAsideFoot", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
@@ -7567,6 +7583,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           t.extra = [];
           return;
         }
+        // The fill's left-blank marks go first, when there is nothing else to cancel.
+        if (t.fillMarked && !t.cut && !t.copied && !extendMode) {
+          clearFillMarks(t);
+          say("The left-blank marks are gone.");
+          return;
+        }
         // Esc drops a cut or the copy outline and leaves extend mode; the
         // selection stays (as in Excel and Google Sheets).
         // With nothing of that to cancel, it closes the title-row question.
@@ -7740,6 +7762,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   async function jumpProblem(backward: boolean): Promise<void> {
     const t = tab;
     if (!t) return;
+    // While the last fill's left-blank cells are marked, F7 visits them.
+    if (t.fillMarked) {
+      await nextLeftBlank(backward);
+      return;
+    }
     if (!t.checks.length) {
       say("There are no rules yet. Add some in Data checks.");
       checksOpen = true;
@@ -8028,6 +8055,34 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       say(errorText(e));
     }
     void tick().then(() => grid?.focus());
+  }
+
+  /** The next (or previous) cell the last fill left blank on purpose. */
+  async function nextLeftBlank(backward: boolean): Promise<void> {
+    const t = tab;
+    if (!t?.fillMarked) return;
+    try {
+      const hit = await backend().fillMarksNext(t.id, t.cell.row, t.cell.col, backward);
+      if (!hit) {
+        say("No marked cell is left blank any more.");
+        clearFillMarks(t);
+      } else {
+        grid?.select({ row: hit[0], col: hit[1] }, { row: hit[0], col: hit[1] });
+        say(`A cell the fill left blank on purpose${t.fillCapped ? ` (the first ${t.fillMarked.toLocaleString()} are marked)` : ""}. F7 next, Shift+F7 previous, Esc takes the marks away.`);
+      }
+    } catch (e) {
+      say(errorText(e));
+    }
+    void tick().then(() => grid?.focus());
+  }
+
+  /** Take the left-blank marks away (Esc, undo, redo). */
+  function clearFillMarks(t: Tab): void {
+    if (!t.fillMarked) return;
+    t.fillMarked = 0;
+    t.fillCapped = false;
+    t.fillVersion++;
+    void backend().fillMarksClear(t.id).catch(() => {});
   }
 
   function endDateCheck(): void {
@@ -9810,6 +9865,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       const o = await openOther();
       return o ? { id: o.id, name: o.name } : null;
     }}
+    doc={t.id}
   />
 {/if}
 

@@ -702,9 +702,32 @@ pub const TOTAL_ROWS_LOOKED_AT: u64 = 5;
 
 /// The words that start a total line (whole cell, any case, a colon after
 /// allowed).
-fn total_word(cell: &str) -> bool {
+pub(crate) fn total_word(cell: &str) -> bool {
     let c = cell.trim().trim_end_matches(':').trim().to_lowercase();
     matches!(c.as_str(), "total" | "grand total" | "subtotal" | "sum")
+}
+
+/// The one meaning of a total row in the app: its first filled cell is a
+/// total word AND another cell (a real column) holds a number. A voter whose
+/// first name is "Total" has no number cell, so is not one. Returns the
+/// label's column.
+pub(crate) fn total_label<S: AsRef<str>>(
+    values: &[S],
+    cols: u32,
+    ctx: &crate::coltype::ReadCtx<'_>,
+) -> Option<usize> {
+    let label = values.iter().position(|v| !v.as_ref().trim().is_empty())?;
+    if !total_word(values[label].as_ref()) {
+        return None;
+    }
+    values
+        .iter()
+        .enumerate()
+        .any(|(c, v)| {
+            let v = v.as_ref().trim();
+            c != label && (c as u32) < cols && !v.is_empty() && ctx.reader(c as u32).number(v).is_some()
+        })
+        .then_some(label)
 }
 
 impl Document {
@@ -732,12 +755,9 @@ impl Document {
         let from = n.saturating_sub(TOTAL_ROWS_LOOKED_AT).max(first + 1);
         for pos in (from..n).rev() {
             let values = self.row_values(pos)?;
-            let Some(label_col) = values.iter().position(|v| !v.trim().is_empty()) else {
+            let Some(label_col) = total_label(&values, self.col_count(), &ctx) else {
                 continue;
             };
-            if !total_word(&values[label_col]) {
-                continue;
-            }
             let cols: Vec<u32> = values
                 .iter()
                 .enumerate()

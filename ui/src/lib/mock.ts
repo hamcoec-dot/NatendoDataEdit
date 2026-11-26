@@ -32,6 +32,8 @@ import type {
   NotePlace,
   ReportNotes,
   TotalRow,
+  FillBlanks,
+  FillCount,
   ExportOptions,
   ExportReport,
   FilterSpec,
@@ -767,6 +769,79 @@ export class MockBackend implements Backend {
   /** Test hook: which rows of a document count as short and long. */
   fakeRagged = new Map<number, { short: number[]; long: number[] }>();
   /** Tests: the total line the stand-in reports (finding one is the engine's job). */
+  /** Fill blank cells (with stops): the cells to fill, and those the stops leave blank (shown rows). */
+  private fillPlan(d: MockDoc, s: FillBlanks, lim: number): { changes: [number, number, string][]; left: [number, number][] } {
+    const changes: [number, number, string][] = [];
+    const left: [number, number][] = [];
+    const copy = s.from.kind !== "value";
+    const blankV = (v: string) => (s.spaces ? !v.trim() : !v);
+    const width = this.colCount(d);
+    const stop = (r: number): boolean => {
+      if (!copy) return false;
+      if (s.guard != null && blankV(this.value(d, r, s.guard))) return true;
+      const vals = Array.from({ length: width }, (_, c) => this.value(d, r, c));
+      if (s.stop_blank_rows && vals.every(blankV)) return true;
+      if (s.stop_total_rows) {
+        const l = vals.findIndex((v) => v.trim() !== "");
+        if (l >= 0 && /^(total|grand total|subtotal|sum)$/i.test(vals[l]!.trim().replace(/:$/, "").trim()) && vals.some((v, c) => c !== l && v.trim() !== "" && Number.isFinite(Number(v.trim().replace(/,/g, ""))))) return true;
+      }
+      return false;
+    };
+    const first = s.keep_first ? 1 : 0;
+    const order = Array.from({ length: Math.max(0, lim - first) }, (_, i) => i + first);
+    if (s.from.kind === "below") order.reverse();
+    const stops = order.map(stop);
+    for (const c of s.cols) {
+      let last: string | null = s.from.kind === "value" ? s.from.text : null;
+      let seen = false;
+      order.forEach((r, i) => {
+        const v = this.value(d, r, c);
+        if (blankV(v)) {
+          if (last !== null && !stops[i]) changes.push([r, c, last]);
+          else if (seen) left.push([r, c]);
+        } else if (copy) {
+          seen = true;
+          if (!stops[i]) last = v;
+        }
+        if (stops[i]) last = null;
+      });
+    }
+    return { changes, left };
+  }
+  private fillMarkSets = new Map<number, Map<number, Set<number>>>();
+  async fillBlanksCount(doc: number, spec: FillBlanks): Promise<FillCount> {
+    const d = this.get(doc);
+    this.calls.push(`fillBlanksCount:${JSON.stringify(spec)}`);
+    const all = Math.max(0, this.rowCount(d) - (spec.keep_first ? 1 : 0));
+    const counted = Math.min(all, 200_000);
+    const { changes, left } = this.fillPlan(d, spec, counted + (spec.keep_first ? 1 : 0));
+    return { fill: changes.length, skipped: left.length, counted, rows: all };
+  }
+  async fillBlanksCountStop(doc: number): Promise<void> {
+    this.calls.push(`fillBlanksCountStop:${doc}`);
+  }
+  async fillMarks(doc: number, row: number, rows: number): Promise<[number, number][]> {
+    const d = this.get(doc);
+    const m = this.fillMarkSets.get(doc);
+    const out: [number, number][] = [];
+    if (!m?.size) return out;
+    const end = Math.min(this.rowCount(d), row + rows);
+    for (let r = row; r < end; r++) for (const c of m.get(this.rowId(d, r)) ?? []) if (!this.value(d, r, c).trim()) out.push([r, c]);
+    return out;
+  }
+  async fillMarksNext(doc: number, row: number, col: number, back: boolean): Promise<[number, number] | null> {
+    const d = this.get(doc);
+    const n = this.rowCount(d);
+    const hits: [number, number][] = await this.fillMarks(doc, 0, n);
+    if (!hits.length) return null;
+    const key = (h: [number, number]) => h[0] * 1_000_000 + h[1];
+    const at = row * 1_000_000 + col;
+    if (back) return [...hits].reverse().find((h) => key(h) < at) ?? hits[hits.length - 1]!;
+    return hits.find((h) => key(h) > at) ?? hits[0]!;
+  }
+  async fillMarksClear(doc: number): Promise<void> {
+    this.fillMarkSets.delete(doc);
+  }
   fakeTotals = new Map<number, TotalRow>();
   markTotal(doc: number, t: TotalRow): void {
     this.fakeTotals.set(doc, t);
@@ -3263,22 +3338,16 @@ export class MockBackend implements Backend {
       }
       case "fill_blanks": {
         const s = op.spec;
-        const changes: [number, number, string][] = [];
-        const lim = Math.min(rows, 100_000);
-        for (const c of s.cols) {
-          let last: string | null = s.from.kind === "value" ? s.from.text : null;
-          const order = Array.from({ length: lim - (s.keep_first ? 1 : 0) }, (_, i) => i + (s.keep_first ? 1 : 0));
-          if (s.from.kind === "below") order.reverse();
-          for (const r of order) {
-            const v = this.value(d, r, c);
-            const empty = s.spaces ? !v.trim() : !v;
-            if (empty) {
-              if (last !== null) changes.push([r, c, last]);
-            } else if (s.from.kind !== "value") last = v;
-          }
+        if (s.guard != null && s.cols.includes(s.guard)) throw err("invalid", "the column that stops the fill cannot also be filled");
+        const { changes, left } = this.fillPlan(d, s, Math.min(rows, 100_000));
+        const marks = new Map<number, Set<number>>();
+        for (const [r, c] of left.slice(0, 100_000)) {
+          const id = this.rowId(d, r);
+          (marks.get(id) ?? marks.set(id, new Set()).get(id)!).add(c);
         }
+        this.fillMarkSets.set(doc, marks);
         const info = changes.length ? await this.setCells(doc, changes) : this.refresh(d);
-        return this.report(info, { rows: new Set(changes.map((x) => x[0])).size, groups: changes.length });
+        return this.report(info, { rows: new Set(changes.map((x) => x[0])).size, groups: changes.length, skipped: left.length, marked: Math.min(left.length, 100_000) });
       }
       case "join": {
         const mine = this.table(d);

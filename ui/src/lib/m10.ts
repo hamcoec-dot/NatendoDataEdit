@@ -50,6 +50,22 @@ export interface ToolChoices {
   showSame: boolean;
   byTitle: boolean;
   source: boolean;
+  /** Fill blank cells: stop at rows where this column is blank (-1: no). */
+  fillGuard?: number;
+  /** Fill blank cells: stop at rows with every cell blank. */
+  stopBlankRows?: boolean;
+  /** Fill blank cells: stop at total rows. */
+  stopTotalRows?: boolean;
+}
+
+/** The fill's stop fields, only when one is on and the fill copies (old specs stay as they were). */
+export function fillStops(c: Pick<ToolChoices, "from" | "fillGuard" | "stopBlankRows" | "stopTotalRows">): { guard?: number; stop_blank_rows?: boolean; stop_total_rows?: boolean } {
+  if (c.from === "value") return {};
+  const out: { guard?: number; stop_blank_rows?: boolean; stop_total_rows?: boolean } = {};
+  if ((c.fillGuard ?? -1) >= 0) out.guard = c.fillGuard;
+  if (c.stopBlankRows) out.stop_blank_rows = true;
+  if (c.stopTotalRows) out.stop_total_rows = true;
+  return out;
 }
 
 export interface ToolsRequest {
@@ -69,7 +85,10 @@ export function toolsRequest(kind: ToolKind, c: ToolChoices): ToolsRequest | str
       if (needCols()) return needCols();
       if (c.from === "value" && !c.text) return "Type the text to put in blank cells.";
       const from = c.from === "value" ? { kind: "value" as const, text: c.text } : { kind: c.from };
-      return { data: { op: "fill_blanks", spec: { cols: c.cols, from, spaces: c.spaces, keep_first: c.header } } };
+      const stops = fillStops(c);
+      if (stops.guard !== undefined && c.cols.includes(stops.guard))
+        return "The column that stops the fill cannot also be filled: untick it, or choose another column to stop at.";
+      return { data: { op: "fill_blanks", spec: { cols: c.cols, from, spaces: c.spaces, keep_first: c.header, ...stops } } };
     }
     case "count_repeats":
       if (needCols()) return needCols();

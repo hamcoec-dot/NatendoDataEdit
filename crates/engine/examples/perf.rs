@@ -1974,6 +1974,7 @@ fn main() {
                 from: FillFrom::Above,
                 spaces: true,
                 keep_first: true,
+                ..Default::default()
             },
             &p,
         )
