@@ -145,7 +145,14 @@ fn a_huge_range_is_one_line_and_too_big_numbers_are_other_shape() {
     let r = run(&["1", "10000000000"]);
     assert_eq!(lines(&r), ["2 to 9999999999 (9999999998 missing)"]);
     assert_eq!(r.copy_text().lines().count(), 1);
-    assert!(r.table(&[]).unwrap().rows < 20);
+    let t = r.table(&[]).unwrap();
+    assert_eq!(t.cols, 3);
+    let rows = t.rows;
+    let d = t.into_document().unwrap();
+    assert_eq!(d.row_count(), rows);
+    let last = d.row_values(rows - 1).unwrap();
+    assert_eq!(last, ["2", "9999999999", "9999999998"]);
+    assert_eq!(d.row_values(rows - 2).unwrap(), ["From", "To", "Missing"]);
     let r = run(&["1", "2", "99999999999999999999", "9223372036854775808"]);
     assert_eq!((r.rows, r.other_shape), (2, 2));
 }

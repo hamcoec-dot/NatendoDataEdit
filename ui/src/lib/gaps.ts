@@ -75,3 +75,13 @@ export function copyText(r: GapReport): string {
 export function rowsText(rows: FileRow[]): string {
   return rows.map((r) => (r === null ? "added by hand" : r.toLocaleString())).join(", ");
 }
+
+/** `1 row`, `2 rows`. */
+export function counted(n: number, one: string, many = `${one}s`): string {
+  return `${n.toLocaleString()} ${n === 1 ? one : many}`;
+}
+
+/** ` (file row 7)`, ` (file rows 7, 9)`, or nothing. */
+export function fileRows(rows: FileRow[], more = false): string {
+  return rows.length ? ` (file ${rows.length === 1 && !more ? "row" : "rows"} ${rowsText(rows)}${more ? ", …" : ""})` : "";
+}
