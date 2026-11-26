@@ -23,6 +23,7 @@ use crate::source::Source;
 use crate::Error;
 
 pub mod ragged;
+pub mod rebase;
 pub mod repair;
 pub mod since;
 
