@@ -90,22 +90,27 @@ const url = process.argv[3] || "http://localhost:5301";
   ok(/Nothing in this column tells the order/.test((await dialog.textContent()) || ""), "it says the column gives no clue");
   const apply = dialog.getByRole("button", { name: "Apply" });
   ok((await dialog.locator("input[type=radio]:checked").count()) === 0 && (await apply.isDisabled()), "nothing is pre-selected and Apply is greyed");
+  // The stand-in counts a million rows: wait for the counts, not a fixed time.
+  const counted = () => p.waitForFunction(() => /become/.test(document.querySelector("[data-testid=date-review-preview]")?.textContent || ""), null, { timeout: 60000 });
   await dialog.getByRole("radio", { name: /Leave them as typed/ }).check();
-  await p.waitForTimeout(500);
+  await p.waitForTimeout(300);
+  await counted();
   const preview = async () => ((await p.getByTestId("date-review-preview").textContent()) || "").replace(/\s+/g, " ");
   const leave = await preview();
   ok(/stay as typed/.test(leave) && !/2026-04-07/.test(leave), `leaving them: the preview converts only the clear dates (${leave.slice(0, 80)})`);
   await dialog.getByRole("radio", { name: /Day first/ }).check();
-  await p.waitForTimeout(500);
+  await p.waitForTimeout(300);
+  await counted();
   ok(/2026-04-03/.test(await preview()), "day first reads 03/04/2026 as 3 April");
   if (out) await p.screenshot({ path: path.join(out, "date-review.png") });
   await dialog.getByRole("radio", { name: /Type each one/ }).check();
-  await p.waitForTimeout(500);
+  await p.getByTestId("date-each").locator("tbody tr").first().waitFor({ timeout: 60000 });
   ok((await p.getByTestId("date-each").locator("tbody tr").count()) === 2, "type each lists the two ambiguous cells");
   await dialog.getByRole("button", { name: "2026-07-04" }).click();
   await p.waitForTimeout(500);
+  await counted();
   await apply.click();
-  await p.waitForTimeout(1200);
+  await p.waitForFunction(() => /converted/.test(document.querySelector("footer.status")?.textContent || ""), null, { timeout: 60000 });
   const col5 = (row) =>
     p.evaluate((row) => {
       const m = window.__nde.backend;
