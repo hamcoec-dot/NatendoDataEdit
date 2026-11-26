@@ -19,7 +19,8 @@
     onPreview: (spec: CleanMatrix) => Promise<MatrixPreview | null>;
     onCancelRun: () => void;
     onOpenCleaner: () => Promise<NamedCleaner | null>;
-    onApply: (spec: CleanMatrix) => void;
+    /** `counted`: the revision the preview shown was counted at. */
+    onApply: (spec: CleanMatrix, counted: number) => void;
     onClose: () => void;
   }
   let { titles, picked, hidden, protectedCols, header, revision, readOnly, onPreview, onCancelRun, onOpenCleaner, onApply, onClose }: Props = $props();
@@ -214,7 +215,7 @@
   {#snippet buttons()}
     <button type="button" onclick={close}>Cancel</button>
     <button type="button" onclick={() => void look()} disabled={busy || !spec.entries.length}>Preview</button>
-    <button type="button" class="primary" disabled={busy || stale || readOnly || !preview?.columns.some((c) => c.changed)} onclick={() => onApply($state.snapshot(spec) as CleanMatrix)}>Apply</button>
+    <button type="button" class="primary" disabled={busy || stale || readOnly || !preview?.columns.some((c) => c.changed)} onclick={() => preview && onApply($state.snapshot(spec) as CleanMatrix, preview.revision)}>Apply</button>
   {/snippet}
 </FormShell>
 

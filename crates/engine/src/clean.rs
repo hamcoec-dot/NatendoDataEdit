@@ -2969,6 +2969,8 @@ pub struct MatrixColumn {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct MatrixPreview {
+    /// The document revision counted: Apply is refused at any other.
+    pub revision: u64,
     pub columns: Vec<MatrixColumn>,
     /// The first changes of each column.
     pub examples: Vec<Change>,
@@ -2993,6 +2995,8 @@ struct Cells<'a> {
     per_column: bool,
     /// Columns whose changed cells are checked for look-alike letters.
     homoglyphs: &'a [bool],
+    /// Columns that give no examples (per column only).
+    no_examples: &'a [bool],
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -3074,6 +3078,7 @@ impl Document {
                 examples: preview,
                 per_column: false,
                 homoglyphs: &[],
+                no_examples: &[],
             },
             progress,
         )?;
@@ -3143,6 +3148,7 @@ impl Document {
                                 }
                                 let room = if how.per_column {
                                     tally.changed <= how.examples as u64
+                                        && how.no_examples.get(k) != Some(&true)
                                 } else {
                                     part.examples.len() < how.examples
                                 };
@@ -3248,6 +3254,7 @@ impl Document {
     ) -> Result<MatrixPreview, Error> {
         let (run, columns) = self.run_matrix(matrix, now, seed, false, progress)?;
         Ok(MatrixPreview {
+            revision: self.revision(),
             columns,
             examples: run.examples,
         })
@@ -3273,6 +3280,8 @@ impl Document {
             .map(|e| Compiled::new(&e.cleaner(), matrix.read, now))
             .collect::<Result<Vec<_>, _>>()?;
         let homoglyphs: Vec<bool> = entries.iter().map(|e| fixes_homoglyphs(&e.steps)).collect();
+        // A protected column will not change: it shows no example of one.
+        let protected: Vec<bool> = entries.iter().map(|e| self.is_protected(e.col)).collect();
         let area = self.area(&FindSpec {
             pattern: Pattern::default(),
             scope: Scope::Columns {
@@ -3292,6 +3301,7 @@ impl Document {
                 examples: if keep { 0 } else { MATRIX_EXAMPLES },
                 per_column: true,
                 homoglyphs: &homoglyphs,
+                no_examples: &protected,
             },
             progress,
         )?;

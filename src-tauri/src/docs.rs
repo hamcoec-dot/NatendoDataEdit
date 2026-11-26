@@ -757,6 +757,10 @@ pub enum DataOp {
         spec: CleanMatrix,
         /// The moment of the run (days since 1970-01-01, local).
         now: f64,
+        /// The preview's document revision: refused when the table changed
+        /// since. `None` for a recipe, which has no preview.
+        #[serde(default)]
+        revision: Option<u64>,
     },
     SplitName {
         spec: SplitName,
@@ -871,6 +875,10 @@ pub enum DataOp {
 /// Check a cleaner run from the webview: the moment (years 1900 to 9999,
 /// as days since 1970) and the column list (the cleaner itself is checked
 /// by the engine).
+fn matrix_stale() -> Error {
+    Error::Invalid("the table changed: preview again".into())
+}
+
 /// The moment a cleaning run says it is.
 fn check_now(now: f64) -> CmdResult<()> {
     if !now.is_finite() || !(-25_567.0..=2_932_896.0).contains(&now) {
@@ -1417,7 +1425,11 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
             descending,
         },
         RecipeOp::Clean { spec } => DataOp::Clean { spec, now },
-        RecipeOp::CleanMatrix { spec } => DataOp::CleanMatrix { spec, now },
+        RecipeOp::CleanMatrix { spec } => DataOp::CleanMatrix {
+            spec,
+            now,
+            revision: None,
+        },
         RecipeOp::SplitName { spec } => DataOp::SplitName { spec },
         RecipeOp::FillExample { spec } => DataOp::FillExample { spec },
         RecipeOp::Compute { spec } => DataOp::Compute { spec },
@@ -5937,8 +5949,12 @@ impl Docs {
             RecipeOp::CleanMatrix { spec } => {
                 // Columns are found by title in the file the recipe runs on.
                 let spec = self.get(id)?.read().matrix_by_title(&spec)?;
-                self.data_op(id, DataOp::CleanMatrix { spec, now })
-                    .map(|_| ())
+                let op = DataOp::CleanMatrix {
+                    spec,
+                    now,
+                    revision: None,
+                };
+                self.data_op(id, op).map(|_| ())
             }
             other => self.data_op(id, recipe_data_op(other, now)).map(|_| ()),
         };
@@ -6012,9 +6028,18 @@ impl Docs {
         if let DataOp::Clean { spec, now } = &op {
             check_clean(spec, *now)?;
         }
-        if let DataOp::CleanMatrix { spec, now } = &op {
+        if let DataOp::CleanMatrix {
+            spec,
+            now,
+            revision,
+        } = &op
+        {
             check_now(*now)?;
             spec.check()?;
+            // Before anything else, so a refusal leaves no checkpoint.
+            if revision.is_some_and(|r| self.get(id).is_ok_and(|e| e.read().revision() != r)) {
+                return Err(matrix_stale().into());
+            }
         }
         let seed = run_seed();
         // The other table is copied out under its own lock first, so two
@@ -6136,7 +6161,15 @@ impl Docs {
                     other_order.set(plan.other_order);
                     Planned::Clean(plan)
                 }
-                DataOp::CleanMatrix { spec, now } => {
+                DataOp::CleanMatrix {
+                    spec,
+                    now,
+                    revision,
+                } => {
+                    // Again under the lock the plan is made with.
+                    if revision.is_some_and(|r| d.revision() != r) {
+                        return Err(matrix_stale());
+                    }
                     let plan = d.plan_clean_matrix(spec, *now, seed, p)?.plan;
                     *extra.borrow_mut() = (plan.left, None, 0);
                     other_order.set(plan.other_order);
@@ -12057,13 +12090,21 @@ B,y
         let preview = docs.clean_matrix_preview(id, &spec, 20_000.0).unwrap();
         assert_eq!(preview.columns[1].changed, 1);
         assert!(docs.clean_matrix_preview(id, &spec, f64::NAN).is_err());
-        let op = DataOp::CleanMatrix {
+        let op = |revision| DataOp::CleanMatrix {
             spec: spec.clone(),
             now: 20_000.0,
+            revision,
         };
-        assert_eq!(docs.data_op(id, op).unwrap().cells, 2);
+        // A change after the preview (another window, the agent): refused,
+        // nothing applied or recorded.
+        docs.set_cells(id, vec![(1, 1, "leeds".into())]).unwrap();
+        let why = docs.data_op(id, op(Some(preview.revision))).unwrap_err();
+        assert!(why.message.contains("preview again"), "{}", why.message);
+        assert!(docs.recipe_of(id, true, "r").unwrap().steps.len() <= 1);
+        let again = docs.clean_matrix_preview(id, &spec, 20_000.0).unwrap();
+        assert_eq!(docs.data_op(id, op(Some(again.revision))).unwrap().cells, 1);
         let logged = docs.recipe_of(id, true, "r").unwrap().steps;
-        assert_eq!(logged, vec![RecipeOp::CleanMatrix { spec }]);
+        assert_eq!(logged.last(), Some(&RecipeOp::CleanMatrix { spec }));
     }
 
     #[test]

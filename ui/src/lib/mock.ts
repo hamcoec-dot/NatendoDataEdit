@@ -2569,7 +2569,7 @@ export class MockBackend implements Backend {
     const rows = this.rowCount(d);
     if (rows > 100_000) throw err("too_large", "the browser preview cleans at most 100,000 rows");
     const protectedCols = d.info.protected ?? [];
-    const preview: MatrixPreview = { columns: [], examples: [] };
+    const preview: MatrixPreview = { revision: d.info.data_revision ?? 0, columns: [], examples: [] };
     const cells: [number, number, string][] = [];
     for (const e of [...spec.entries].sort((a, b) => a.col - b.col)) {
       const column = { col: e.col, changed: 0, protected: 0, left: 0, other_order: 0, homoglyph_cells: 0 };
@@ -2583,7 +2583,7 @@ export class MockBackend implements Backend {
           column.changed++;
           cells.push([r, e.col, after]);
         }
-        if (shown++ < 3) preview.examples.push({ row: r, number: r, col: e.col, before, after });
+        if (!protectedCols.includes(e.col) && shown++ < 3) preview.examples.push({ row: r, number: r, col: e.col, before, after });
       }
       preview.columns.push(column);
     }
@@ -2648,6 +2648,7 @@ export class MockBackend implements Backend {
         return this.report(this.setView(d, keep, { columns: [], keep_first: s.keep_first }), { rows: shown });
       }
       case "clean_matrix": {
+        if (op.revision !== undefined && op.revision !== (d.info.data_revision ?? 0)) throw err("invalid", "the table changed: preview again");
         const found = this.matrixRun(d, op.spec);
         const info = found.cells.length ? await this.setCells(doc, found.cells) : this.refresh(d);
         return this.report(info, { cells: found.cells.length, left: 0 });

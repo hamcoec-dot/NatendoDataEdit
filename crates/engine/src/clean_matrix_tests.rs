@@ -226,6 +226,9 @@ fn protected_columns_are_counted_apart_and_left_alone() {
         (preview.columns[1].changed, preview.columns[1].protected),
         (0, 1)
     );
+    assert!(preview.examples.iter().all(|x| x.col == 0));
+    assert_eq!(preview.examples.len(), 2);
+    assert_eq!(preview.revision, d.revision());
     let p = d.plan_clean_matrix(&m, NOW, 7, &Progress::new()).unwrap();
     assert_eq!(p.plan.changed, 2);
     d.apply_clean(p.plan).unwrap();

@@ -27,6 +27,8 @@ export interface MatrixColumn {
   homoglyph_cells: number;
 }
 export interface MatrixPreview {
+  /** The document revision counted: Apply is refused at any other. */
+  revision: number;
   columns: MatrixColumn[];
   examples: CleanChange[];
 }

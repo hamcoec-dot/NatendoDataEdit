@@ -947,7 +947,7 @@ export type DataOp =
   | { op: "show_problems"; spec: CheckSpec; passing?: boolean }
   | { op: "show_ragged"; pick?: "all" | "short" | "long"; keep_first: boolean }
   | { op: "show_gap_rows"; spec: GapsSpec }
-  | { op: "clean_matrix"; spec: CleanMatrix; now: number }
+  | { op: "clean_matrix"; spec: CleanMatrix; now: number; revision?: number }
   | { op: "show_shape"; spec: ShapeFilter }
   | { op: "sort_problems"; spec: CheckSpec }
   | { op: "check_column"; spec: CheckSpec; title?: string }

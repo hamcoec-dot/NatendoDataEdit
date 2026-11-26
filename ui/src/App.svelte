@@ -3420,9 +3420,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
 
-  async function applyMatrix(spec: CleanMatrix): Promise<void> {
+  async function applyMatrix(spec: CleanMatrix, revision: number): Promise<void> {
     matrixAsk = null;
-    const rep = await runOp({ op: "clean_matrix", spec, now: localNow() }, "Cleaning");
+    const rep = await runOp({ op: "clean_matrix", spec, now: localNow(), revision }, "Cleaning");
     if (!rep) return;
     const left = rep.left ? ` ${plural(rep.left, "cell")} could not be read and ${rep.left === 1 ? "was" : "were"} left alone.` : "";
     say(rep.cells ? `Cleaned ${plural(rep.cells, "cell")} in ${plural(spec.entries.length, "column")}. Ctrl+Z undoes it.${left}` : `Nothing needed cleaning.${left}`);
@@ -9002,7 +9002,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     onPreview={previewMatrix}
     onCancelRun={() => { if (tab) void backend().cancelJob(tab.id); }}
     onOpenCleaner={() => backend().cleanerOpenNamed()}
-    onApply={(s) => void applyMatrix(s).then(() => grid?.focus())}
+    onApply={(s, rev) => void applyMatrix(s, rev).then(() => grid?.focus())}
     onClose={() => { matrixAsk = null; grid?.focus(); }}
   />
 {/if}
