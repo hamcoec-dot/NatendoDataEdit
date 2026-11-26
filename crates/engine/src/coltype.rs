@@ -554,7 +554,8 @@ mod tests {
         // (file, function, number of uses, reason)
         let allowed: &[(&str, &str, usize, &str)] = &[
             ("clean.rs", "step", 2, "Clean steps (reformat dates, date bands) are rewrites the person chose for the cells they selected"),
-            ("clean.rs", "number_value", 1, "Clean steps (round, calculate, in words) are rewrites the person chose for the cells they selected"),
+            ("clean.rs", "reviewed_date", 1, "the date review rewrites cells in the order the person chose on its screen, which a column set to Text or Id cannot open"),
+            ("clean.rs", "number_value", 1,"Clean steps (round, calculate, in words) are rewrites the person chose for the cells they selected"),
             ("editing.rs", "plan_group_calc", 1, "a group calculation that has no value column (count, running) reads nothing"),
             ("expr.rs", "numeric", 2, "converts a value an expression already holds; column cells are typed when loaded (Node::Col)"),
             ("expr.rs", "date", 1, "converts a value an expression already holds"),
