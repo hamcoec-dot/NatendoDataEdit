@@ -74,11 +74,14 @@ impl Shape {
         self.longest = self.longest.max(o.longest);
     }
 
-    /// Whole numbers all of one length of 5 or more, or with leading zeros.
-    fn is_identifier(&self) -> bool {
+    /// Whole numbers with leading zeros, or all of one length of 5 or more.
+    /// Under a title that names a `quantity` only the zeros count: five-digit
+    /// vote counts are still added.
+    fn is_identifier(&self, quantity: bool) -> bool {
         self.digits
             && self.longest > 0
-            && (self.leading_zero || (self.shortest == self.longest && self.shortest >= 5))
+            && (self.leading_zero
+                || (!quantity && self.shortest == self.longest && self.shortest >= 5))
     }
 }
 
@@ -171,8 +174,10 @@ impl Document {
                 let typed = matches!(ctx.type_of(col), ColumnType::Text | ColumnType::Id);
                 // At least 95 filled cells in 100 are numbers.
                 let numeric = a.filled > 0 && a.numbers.saturating_mul(20) >= a.filled * 19;
-                let sum =
-                    numeric && !typed && !shape.is_identifier() && !(header && id_like(&title));
+                let sum = numeric
+                    && !typed
+                    && !shape.is_identifier(header && crate::xlsxbook::names_quantity(&title))
+                    && !(header && id_like(&title));
                 ColumnTotal {
                     col,
                     totals: totals_of(a, a.cells),
@@ -223,6 +228,23 @@ mod tests {
         assert_eq!((t[1].totals.filled, t[1].blank), (2, 1));
         assert_eq!((t[8].totals.sum, t[8].blank), (Some(12.5), 1));
         assert_eq!(t[5].totals.sum, None);
+    }
+
+    #[test]
+    fn a_quantity_title_beats_the_shape_but_not_leading_zeros() {
+        let d = doc("Votes,Total,Precinct total,Batch,Ballot count\r\n\
+                     10000,52000,00101,10000,01000\r\n\
+                     25000,61000,00102,25000,02000\r\n");
+        let t = totals(&d, &[0, 1, 2, 3, 4]);
+        use Suggested::{Count, Sum};
+        let s: Vec<Suggested> = t.iter().map(|c| c.suggested).collect();
+        assert_eq!(s, [Sum, Sum, Count, Count, Count]);
+        assert_eq!(t[0].totals.sum, Some(35000.0));
+        // A type the person set still wins.
+        let mut typed = doc("Votes\r\n10000\r\n");
+        let types = typed.type_overlay().with(0, ColumnType::Id);
+        typed.set_column_types(types);
+        assert_eq!(totals(&typed, &[0])[0].suggested, Count);
     }
 
     #[test]
