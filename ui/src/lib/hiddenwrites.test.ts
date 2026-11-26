@@ -35,6 +35,7 @@ const INCLUDES_HIDDEN: Record<string, string> = {
   removeEmptyExtraColumns: "a column operation",
   encodingApply: "reads the whole file again in another encoding",
   updatesAccept: "compares and changes every row; hidden ones are marked, a hidden delete needs its own tick",
+  patchApply: "applies to every row, hidden ones too, and the screen says so (patch.rs, its own tests)",
   recipeRun: "each step as when done by hand",
   stepsGoto: "puts the table back as it was at a step",
   stepsChange: "runs the steps again",
