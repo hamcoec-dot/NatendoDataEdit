@@ -778,6 +778,22 @@ fn write_by_name(
 /// title row once). With `--by-name` columns are lined up by title and every
 /// file's columns are kept.
 pub fn cat(args: &[&str]) -> Result<(), String> {
+    cat_holding(args, MAX_CAT_HELD, &|| {})
+}
+
+/// A file's title row, one cell for every column it has.
+fn title_row(d: &Document) -> Result<Vec<String>, String> {
+    if d.row_count() == 0 {
+        return Ok(Vec::new());
+    }
+    let mut t = d.row_values(0).map_err(|e| e.to_string())?;
+    t.resize(d.col_count() as usize, String::new());
+    Ok(t)
+}
+
+/// [`cat`], keeping at most `most_held` input bytes open between the two
+/// passes of `--by-name`; `between` runs between them (tests).
+fn cat_holding(args: &[&str], most_held: u64, between: &dyn Fn()) -> Result<(), String> {
     let o = opts(args, &[], &["--by-name"])?;
     if o.plain.len() < 2 {
         return Err("give two or more files to stack".into());
@@ -798,26 +814,25 @@ pub fn cat(args: &[&str]) -> Result<(), String> {
     let mut union = TitleUnion::default();
     let mut maps: Vec<Vec<usize>> = Vec::new();
     let mut kept: Vec<Option<Document>> = Vec::new();
+    // Each file's titles as the column maps were made from them.
+    let mut seen: Vec<Vec<String>> = Vec::new();
     if by_name {
         let mut held = 0u64;
         for input in &o.plain {
             let d = load(input, sheet)?;
-            if d.row_count() > 0 {
-                let mut t = d.row_values(0).map_err(|e| e.to_string())?;
-                t.resize(d.col_count() as usize, String::new());
-                maps.push(union.add(&t));
-                if union.len() > MAX_CAT_COLS {
-                    return Err(format!(
-                        "{input}: more than {MAX_CAT_COLS} different columns"
-                    ));
-                }
-            } else {
-                maps.push(Vec::new());
+            let t = title_row(&d)?;
+            maps.push(union.add(&t));
+            if union.len() > MAX_CAT_COLS {
+                return Err(format!(
+                    "{input}: more than {MAX_CAT_COLS} different columns"
+                ));
             }
+            seen.push(t);
             held = held.saturating_add(std::fs::metadata(input).map_or(u64::MAX, |m| m.len()));
-            kept.push((held <= MAX_CAT_HELD).then_some(d));
+            kept.push((held <= most_held).then_some(d));
         }
     }
+    between();
     let titles = union.into_titles();
     let mut w = Rows::create(path, sep, out.overwrite)?;
     if by_name && !titles.is_empty() {
@@ -827,7 +842,16 @@ pub fn cat(args: &[&str]) -> Result<(), String> {
     for (at, input) in o.plain.iter().enumerate() {
         let d = match kept.get_mut(at).and_then(Option::take) {
             Some(d) => d,
-            None => load(input, sheet)?,
+            None => {
+                let d = load(input, sheet)?;
+                // Saved in between, its values could land under wrong titles.
+                if by_name && title_row(&d)? != seen[at] {
+                    return Err(format!(
+                        "{input} changed while it was being combined: run again"
+                    ));
+                }
+                d
+            }
         };
         let head = u64::from(o.header() && d.row_count() > 0);
         if head == 1 && !by_name {
@@ -922,6 +946,34 @@ end,7
         assert_eq!(rows, 7, "every row is in a file");
         let first = std::fs::read_to_string(out.join("p a_b.csv")).unwrap();
         assert!(first.contains("a/b,1") && first.contains("a/b,3"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn cat_by_name_notices_a_file_changed_between_passes() {
+        let d = dir("cat-changed");
+        let (a, b, o) = (d.join("a.csv"), d.join("b.csv"), d.join("o.csv"));
+        let write = || {
+            std::fs::write(&a, "id,name\r\n1,Ann\r\n").unwrap();
+            std::fs::write(&b, "name,id\r\nBo,2\r\n").unwrap();
+        };
+        let (a2, b2, o2) = (s(&a), s(&b), s(&o));
+        let args = [&a2[..], &b2, "-o", &o2, "--by-name", "--overwrite"];
+        // Nothing held: both files are read again, unchanged.
+        write();
+        cat_holding(&args, 0, &|| {}).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&o).unwrap(),
+            "id,name\r\n1,Ann\r\n2,Bo\r\n"
+        );
+        for changed in ["id,name\r\n2,Bo\r\n", "name,id,more\r\nBo,2,x\r\n", ""] {
+            write();
+            let e = cat_holding(&args, 0, &|| std::fs::write(&b, changed).unwrap()).unwrap_err();
+            assert!(e.contains("changed while it was being combined"), "{e}");
+        }
+        // A file held open is the one the map was made from.
+        write();
+        cat_holding(&args, MAX_CAT_HELD, &|| {}).unwrap();
         let _ = std::fs::remove_dir_all(&d);
     }
 
