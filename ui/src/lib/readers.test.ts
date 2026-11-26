@@ -67,6 +67,8 @@ describe("no number is read from a cell outside the helper", () => {
 
 /** file -> reads, and why each is not a cell read. */
 const ALLOWED: Record<string, number> = {
+  // Which list is picked in a drop-down (the value is a list number).
+  "./SetsDialog.svelte": 2,
   // What the person typed in a dialog field, or an id, a row or column number, an offset or a size.
   "../App.svelte": 14,
   "./ChecksDialog.svelte": 2,

@@ -197,6 +197,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "compare two open files": ["tools.compare"],
   "find gaps in a sequence": ["data.gaps"],
   "compare two columns": ["data.compareCols"],
+  "compare lists": ["data.compareLists"],
   "random and audit samples": ["tools.sample"],
   "value editor": ["data.values"],
   "group look alikes by sound or spelling": ["data.valuesLookalikes", "data.values"],

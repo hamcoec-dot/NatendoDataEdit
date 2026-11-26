@@ -800,6 +800,16 @@ everything is also in command search.
   "added by hand"). With more than 10,000 different shapes the rest count as a
   different shape, and the report says to pick the digit run.
   ![Gap audit: missing invoice numbers listed as ranges](docs/screenshots/gaps.png)
+- **Compare lists** (Data > Compare lists, or right-click a tab or column
+  heading): pick 2 to 5 open tabs and the key column or columns of each. Every
+  combination is counted exactly (in A only, in A and B but not C, and so on)
+  with its distinct keys and its rows in each list; blank keys are counted
+  apart. One set of rules for all lists: ignore capitals, trim spaces, and the
+  loose keys of Join. Open any slice as a tab (all columns of the list you
+  choose, or just the keys), copy the counts, or save them as CSV. A change to
+  any list, even a sort or a filter, asks you to compare again. A slice of a
+  private tab is private.
+  ![Compare lists: three lists of made-up voters, counted slice by slice](docs/screenshots/compare-lists.png)
 - **Compare two columns** (Data > Compare two columns, or right-click a
   heading): for each row, are the two cells the same, different, or filled in
   only one? Light up the rows that differ, show only them, or add a column
@@ -1398,6 +1408,8 @@ natendo-cli sort data.csv -o out.csv --by "last name,amount:desc"
 natendo-cli dedupe data.csv -o out.csv --columns email     # the first copy stays
 natendo-cli stats data.csv --columns zip                   # each column's profile
 natendo-cli count data.csv --columns party,precinct        # the counts, most common first
+natendo-cli sets voters.csv:ID mailed.csv:ID returned.csv:ID    # keys by slice
+natendo-cli sets voters.csv:ID returned.csv:ID --slice a,!b -o not-returned.csv
 natendo-cli gaps data.csv --column Invoice --fail-on-gap     # missing numbers; exit 1 when there are any
 natendo-cli sample data.csv -o out.csv --rows 500 --seed 7 # or --percent 5, --every 10
 natendo-cli slice data.csv -o out.csv --rows 1001-2000     # with the title row

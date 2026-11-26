@@ -8,3 +8,4 @@
 - **Find gaps in a sequence:** Data > Find gaps in a sequence lists the numbers or IDs missing from a column as ranges, with repeats and out-of-order rows, and can show the rows next to each gap. Also `natendo-cli gaps`.
 - **Ambiguous dates:** Check dates in this column lights the dates that could be read two ways and says what the column tells about their order.
 - **Clean matrix:** Clean > Clean matrix cleans many columns at once, each with its own ticked steps, with exact preview counts, in one pass, one undo step and one recipe step.
+- **Compare lists:** Data > Compare lists counts the keys shared by 2 to 5 open tabs, slice by slice, and opens any slice as a tab. Also `natendo-cli sets`.

@@ -3,6 +3,7 @@
 // without the desktop shell.
 import { InfoGuard } from "./infoguard";
 import type { GapReport, GapsSpec } from "./gaps";
+import type { SetsRun, SetsSpec } from "./sets";
 import type { CleanMatrix, MatrixPreview, NamedCleaner } from "./matrix";
 import type { ColumnType, ColumnTypes } from "./readers";
 import type { Cleaner, CleanPreview, CleanSpec, ExampleSpec, SplitName } from "./clean";
@@ -1596,6 +1597,10 @@ export interface Backend {
   /** Compare two columns: counts and the rows that differ. */
   compareCols(doc: number, spec: CompareCols): Promise<CompareColsReport>;
   gapAudit(doc: number, spec: GapsSpec): Promise<GapReport>;
+  setsRun(owner: number, tabs: number[], spec: SetsSpec): Promise<SetsRun>;
+  setsOpen(id: number, mask: number, list: number, keys: boolean): Promise<DocInfo>;
+  setsTable(id: number): Promise<DocInfo>;
+  setsClose(id: number): Promise<void>;
   cleanMatrixPreview(doc: number, spec: CleanMatrix, now: number): Promise<MatrixPreview>;
   cleanerOpenNamed(): Promise<NamedCleaner | null>;
   /** Smallest and largest number of a column ("busy" while changing). */
@@ -2178,6 +2183,18 @@ class TauriBackend implements Backend {
   }
   specialCells(doc: number, spec: SpecialSpec) {
     return call<SpecialCells>("special_cells", { doc, spec });
+  }
+  setsRun(owner: number, tabs: number[], spec: SetsSpec) {
+    return call<SetsRun>("sets_run", { owner, tabs, spec });
+  }
+  setsOpen(id: number, mask: number, list: number, keys: boolean) {
+    return call<DocInfo>("sets_open", { id, mask, list, keys });
+  }
+  setsTable(id: number) {
+    return call<DocInfo>("sets_table", { id });
+  }
+  setsClose(id: number) {
+    return call<void>("sets_close", { id });
   }
   gapAudit(doc: number, spec: GapsSpec) {
     return call<GapReport>("gap_audit", { doc, spec });

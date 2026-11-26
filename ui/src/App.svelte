@@ -62,6 +62,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import TidyTitlesDialog from "./lib/TidyTitlesDialog.svelte";
   import CompareColsDialog, { type CompareAction } from "./lib/CompareColsDialog.svelte";
   import GapsDialog from "./lib/GapsDialog.svelte";
+  import SetsDialog, { type SetsTab } from "./lib/SetsDialog.svelte";
+  import type { SetsRun, SetsSpec } from "./lib/sets";
   import CleanMatrixDialog from "./lib/CleanMatrixDialog.svelte";
   import type { CleanMatrix, MatrixPreview } from "./lib/matrix";
   import type { GapReport, GapsSpec } from "./lib/gaps";
@@ -3387,6 +3389,68 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
 
+  // ---- compare lists ----
+  let setsAsk = $state<{ tabs: SetsTab[]; current: number } | null>(null);
+
+  function openSets(): void {
+    const t = tab;
+    if (!t) return;
+    const list = tabs.map((x) => ({
+      id: x.id,
+      name: x.info.name,
+      titles: Array.from({ length: Math.min(x.info.cols, 5_000) }, (_, c) => columnTitle(x, c)),
+      hidden: hiddenColsOf(x),
+      header: x.header && x.info.rows > 0,
+    }));
+    setsAsk = { tabs: list, current: t.id };
+  }
+
+  async function runSets(ids: number[], spec: SetsSpec): Promise<SetsRun | null> {
+    const t = tab;
+    if (!t) return null;
+    try {
+      return await runJob("Comparing lists", () => backend().setsRun(t.id, ids, spec));
+    } catch (e) {
+      say(errorText(e));
+      return null;
+    }
+  }
+
+  /** A slice or the counts in a new tab; false when it was refused. */
+  async function openSetsTab(make: () => Promise<DocInfo>, header: boolean, id: number | null, saveIt = false): Promise<boolean> {
+    try {
+      const d = await runJob("Opening", make);
+      if (!d) return true;
+      setsAsk = null;
+      if (id !== null) void backend().setsClose(id).catch(() => {});
+      addTab(d, false);
+      const nt = tabs[tabs.length - 1];
+      if (nt) {
+        nt.header = header;
+        nt.headerTouched = true;
+        nt.bump();
+      }
+      if (saveIt) {
+        await tick();
+        await save(true);
+      } else say(`Opened ${plural(Math.max(0, d.rows - (header ? 1 : 0)), "row")} in a new tab.`);
+      void tick().then(() => grid?.focus());
+      return true;
+    } catch (e) {
+      say(errorText(e));
+      return false;
+    }
+  }
+
+  async function copySets(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      say("Copied the counts.");
+    } catch {
+      say("Could not reach the clipboard.");
+    }
+  }
+
   // ---- clean matrix ----
   let matrixAsk = $state<{ titles: string[]; picked: number[] } | null>(null);
 
@@ -6234,6 +6298,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "format.tidyTitles", label: "&Tidy column titles…", run: openTidyTitles, enabled: ready },
     { id: "data.compareCols", label: "Compare t&wo columns…", run: openCompareCols, enabled: ready },
     { id: "data.gaps", label: "Find gaps in a sequence…", run: openGaps, enabled: ready },
+    { id: "data.compareLists", label: "Compare lists…", run: openSets, enabled: ready },
     {
       id: "format.protectCols",
       label: "&Protect column (no changes)",
@@ -6518,7 +6583,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
         "data.counts", "data.profile", "data.checkDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
-        "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.gaps", "-",
+        "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.compareLists", "data.gaps", "-",
         "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",
         "find.find", "find.replace", "find.batch", "find.next", "find.prev", "find.ghosts",
       ],
@@ -6551,11 +6616,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
-    tab: ["file.save", "file.saveAs", "-", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
+    tab: ["file.save", "file.saveAs", "-", "data.compareLists", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -8987,6 +9052,19 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     readOnly={!!tab.info.read_only}
     onRun={(spec, action) => void runCompareCols(spec, action).then(() => grid?.focus())}
     onClose={() => { compareAsk = null; grid?.focus(); }}
+  />
+{/if}
+{#if setsAsk && tab}
+  {@const s = setsAsk}
+  <SetsDialog
+    tabs={s.tabs}
+    current={s.current}
+    onRun={runSets}
+    onCancelRun={() => { if (tab) void backend().cancelJob(tab.id); }}
+    onOpen={(id, mask, list, keys, header) => openSetsTab(() => backend().setsOpen(id, mask, list, keys), keys || header, id)}
+    onTable={(id, saveIt) => openSetsTab(() => backend().setsTable(id), true, id, saveIt)}
+    onCopy={(t) => void copySets(t)}
+    onClose={(id) => { setsAsk = null; if (id !== null) void backend().setsClose(id).catch(() => {}); grid?.focus(); }}
   />
 {/if}
 {#if matrixAsk && tab}

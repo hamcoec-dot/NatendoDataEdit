@@ -4,6 +4,7 @@
 // behave the same at the command level.
 
 import type { GapReport, GapsSpec } from "./gaps";
+import { countsText, sliceName, type SetsRun, type SetsSpec } from "./sets";
 import type { CleanMatrix, MatrixPreview, NamedCleaner } from "./matrix";
 import { COLUMNS_CHANGED } from "./ragged";
 import { joinPreview } from "./repair";
@@ -2554,6 +2555,76 @@ export class MockBackend implements Backend {
       }
     }
     return out;
+  }
+
+  /** Comparisons of lists: the stand-in compares trimmed, small-letter
+   *  texts (no loose keys). */
+  private compared = new Map<number, { tabs: number[]; at: string; spec: SetsSpec; run: SetsRun; masks: number[][] }>();
+  private comparisons = 0;
+
+  /** What a table holds now, to tell whether it changed. */
+  private stateOf(tabs: number[]): string {
+    return tabs.map((id) => JSON.stringify([this.get(id).info.data_revision ?? 0, this.rowCount(this.get(id))])).join();
+  }
+
+  async setsRun(_owner: number, tabs: number[], spec: SetsSpec): Promise<SetsRun> {
+    const keys = tabs.map((id, i) => {
+      const d = this.get(id);
+      const l = spec.lists[i]!;
+      if (this.rowCount(d) > 200_000) throw err("too_large", "the browser preview compares at most 200,000 rows");
+      const out: (string | null)[] = [];
+      for (let r = l.header ? 1 : 0; r < this.rowCount(d); r++) {
+        const parts = l.cols.map((c) => this.value(d, r, c));
+        if (parts.every((p) => !p.trim())) out.push(null);
+        else out.push(JSON.stringify(parts.map((p) => (spec.trim ? p.trim() : p)).map((p) => (spec.match_case ? p : p.toLowerCase()))));
+      }
+      return out;
+    });
+    const mask = new Map<string, number>();
+    keys.forEach((list, i) => list.forEach((k) => k !== null && mask.set(k, (mask.get(k) ?? 0) | (1 << i))));
+    const masks = keys.map((list) => list.map((k) => (k === null ? 0 : mask.get(k)!)));
+    const slices = Array.from({ length: (1 << tabs.length) - 1 }, (_, j) => ({ mask: j + 1, keys: [...mask.values()].filter((m) => m === j + 1).length, rows: masks.map((l) => l.filter((m) => m === j + 1).length) }));
+    const id = ++this.comparisons;
+    const names = tabs.map((t) => this.get(t).info.name.replace(/\.[A-Za-z0-9]{1,5}$/, ""));
+    const run: SetsRun = { id, names, report: { slices, lists: masks.map((l, i) => ({ rows: l.length, keys: new Set(keys[i]!.filter((k) => k !== null)).size, blank: l.filter((m) => !m).length })) } };
+    this.compared.set(id, { tabs, at: this.stateOf(tabs), spec, run, masks });
+    return JSON.parse(JSON.stringify(run)) as SetsRun;
+  }
+
+  private kept(id: number) {
+    const c = this.compared.get(id);
+    if (!c || c.tabs.some((t) => !this.docs.has(t)) || c.at !== this.stateOf(c.tabs)) throw err("changed", "a list changed since it was compared: run the comparison again");
+    return c;
+  }
+
+  private setsDoc(title: string, out: string[][]): DocInfo {
+    const info = this.make("Untitled", out.length, out[0]!.length);
+    const nd = this.get(info.id);
+    out.forEach((line, r) => line.forEach((v, c) => nd.edits.set(`${r}:${c}`, v)));
+    nd.clean = -1;
+    nd.info.name = title;
+    return this.refresh(nd);
+  }
+
+  async setsOpen(id: number, mask: number, list: number, keys: boolean): Promise<DocInfo> {
+    const c = this.kept(id);
+    const d = this.get(c.tabs[list]!);
+    const l = c.spec.lists[list]!;
+    const cols = keys ? l.cols : Array.from({ length: this.colCount(d) }, (_, i) => i);
+    const first = l.header ? 1 : 0;
+    const rows = [...(first ? [0] : []), ...c.masks[list]!.flatMap((m, i) => (m === mask ? [i + first] : []))];
+    let out = rows.map((r) => cols.map((col) => this.value(d, r, col)));
+    if (keys) out = out.filter((line, i) => out.findIndex((x) => JSON.stringify(x).toLowerCase() === JSON.stringify(line).toLowerCase()) === i);
+    return this.setsDoc(`${sliceName(mask, c.run.names)} (compared)`, out);
+  }
+
+  async setsTable(id: number): Promise<DocInfo> {
+    const c = this.kept(id);
+    return this.setsDoc("Compared lists", countsText(c.run, false).trimEnd().split("\n").slice(0, 1 + c.run.report.slices.filter((s) => s.keys).length).map((x) => x.split("\t")));
+  }
+
+  async setsClose(id: number): Promise<void> {
+    this.compared.delete(id);
   }
 
   async cleanerOpenNamed(): Promise<NamedCleaner | null> {
