@@ -300,7 +300,7 @@ fn loose_part(p: &str, match_case: bool, out: &mut String) {
 
 /// The key of `parts` in `out`; `false` when it is blank (blank keys match
 /// nothing). A loose key that keeps no letters or digits is blank too.
-fn norm_key(parts: &[&str], spec: &JoinSpec, exact: &[bool], out: &mut String) -> bool {
+pub(crate) fn norm_key(parts: &[&str], spec: &JoinSpec, exact: &[bool], out: &mut String) -> bool {
     out.clear();
     let mut part = String::new();
     let mut any = false;

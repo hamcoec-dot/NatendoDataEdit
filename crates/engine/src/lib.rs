@@ -62,6 +62,7 @@ pub mod reshape;
 pub mod rows;
 pub mod save;
 pub mod scan;
+pub mod sets;
 pub mod sheet;
 pub mod shift;
 pub mod sort;
