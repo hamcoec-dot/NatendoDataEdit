@@ -12357,18 +12357,18 @@ B,y
             header: true,
         };
         let named = docs
-            .sets_run(a, &[a, again, a], &SetsSpec {
-                lists: vec![list.clone(), list.clone(), other],
-                ..Default::default()
-            })
+            .sets_run(
+                a,
+                &[a, again, a],
+                &SetsSpec {
+                    lists: vec![list.clone(), list.clone(), other],
+                    ..Default::default()
+                },
+            )
             .unwrap();
         assert_eq!(
             named.names,
-            [
-                "sets-a (id) [list A]",
-                "sets-a (id) [list B]",
-                "sets-a (n)"
-            ]
+            ["sets-a (id) [list A]", "sets-a (id) [list B]", "sets-a (n)"]
         );
         docs.close(again);
         let run = docs.sets_run(a, &[a, b], &spec).unwrap();

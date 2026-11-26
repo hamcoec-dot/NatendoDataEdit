@@ -801,7 +801,8 @@ everything is also in command search.
   different shape, and the report says to pick the digit run.
   ![Gap audit: missing invoice numbers listed as ranges](docs/screenshots/gaps.png)
 - **Compare lists** (Data > Compare lists, or right-click a tab or column
-  heading): pick 2 to 5 open tabs and the key column or columns of each. Every
+  heading): pick 2 to 5 open tabs, say whether each has a title row, and pick
+  the key column or columns of each. Every
   combination is counted exactly (in A only, in A and B but not C, and so on)
   with its distinct keys and its rows in each list; blank keys are counted
   apart. One set of rules for all lists: ignore capitals, trim spaces, and the

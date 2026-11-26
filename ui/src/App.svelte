@@ -9059,6 +9059,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   <SetsDialog
     tabs={s.tabs}
     current={s.current}
+    {titlesOf}
     onRun={runSets}
     onCancelRun={() => { if (tab) void backend().cancelJob(tab.id); }}
     onOpen={(id, mask, list, keys, header) => openSetsTab(() => backend().setsOpen(id, mask, list, keys), keys || header, id)}

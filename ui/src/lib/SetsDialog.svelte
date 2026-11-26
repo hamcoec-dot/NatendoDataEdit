@@ -18,6 +18,8 @@
     tabs: SetsTab[];
     /** The tab the screen was opened on. */
     current: number;
+    /** Column titles of a tab, with or without a title row. */
+    titlesOf: (tab: number, header: boolean) => Promise<string[]>;
     onRun: (tabs: number[], spec: SetsSpec) => Promise<SetsRun | null>;
     onCancelRun: () => void;
     /** List `list`'s rows, or the keys as it spells them. `header`: that
@@ -28,16 +30,11 @@
     /** `id` of the comparison to forget, if one was made. */
     onClose: (id: number | null) => void;
   }
-  let { tabs, current, onRun, onCancelRun, onOpen, onTable, onCopy, onClose }: Props = $props();
+  let { tabs, current, titlesOf, onRun, onCancelRun, onOpen, onTable, onCopy, onClose }: Props = $props();
 
-  type Pick = { tab: number; cols: number[] };
-  const init = untrack(() => {
-    const other = tabs.find((t) => t.id !== current)?.id ?? current;
-    return [
-      { tab: current, cols: [] as number[] },
-      { tab: other, cols: [] as number[] },
-    ];
-  });
+  type Pick = { tab: number; cols: number[]; header: boolean };
+  const start = (id: number): Pick => ({ tab: id, cols: [], header: tabs.find((t) => t.id === id)!.header });
+  const init = untrack(() => [start(current), start(tabs.find((t) => t.id !== current)?.id ?? current)]);
   let lists = $state<Pick[]>(init);
   let matchCase = $state(false);
   let trim = $state(true);
@@ -59,9 +56,23 @@
   }
 
   const tabOf = (id: number) => tabs.find((t) => t.id === id)!;
+  /** Titles read since the screen opened, by tab and title row. */
+  let read = $state<Record<string, string[]>>({});
+  const titles = (l: Pick): string[] => read[`${l.tab}:${l.header}`] ?? tabOf(l.tab).titles;
+  // The tab's own list of titles holds numbers only until that tab has been
+  // looked at: read them for every list.
+  const asked = new Set<string>();
+  $effect(() => {
+    for (const { tab, header } of lists) {
+      const key = `${tab}:${header}`;
+      if (asked.has(key)) continue;
+      asked.add(key);
+      void titlesOf(tab, header).then((t) => (read[key] = t));
+    }
+  });
   const letter = (i: number) => String.fromCharCode(65 + i);
   const spec = $derived<SetsSpec>({
-    lists: lists.map((l) => ({ cols: [...l.cols].sort((a, b) => a - b), header: tabOf(l.tab).header })),
+    lists: lists.map((l) => ({ cols: [...l.cols].sort((a, b) => a - b), header: l.header })),
     match_case: matchCase,
     trim,
     loose,
@@ -71,13 +82,13 @@
     const n = lists[0]!.cols.length;
     if (!n || lists.some((l) => !l.cols.length)) return "Tick the key column (or columns) of every list.";
     if (lists.some((l) => l.cols.length !== n)) return "Tick the same number of key columns in every list.";
-    if (lists.some((l, i) => lists.slice(0, i).some((m) => m.tab === l.tab && JSON.stringify(spec.lists[i]) === JSON.stringify(spec.lists[lists.indexOf(m)])))) return "A tab that is in twice needs different key columns.";
+    if (lists.some((l, i) => lists.slice(0, i).some((m, j) => m.tab === l.tab && JSON.stringify(spec.lists[i]) === JSON.stringify(spec.lists[j])))) return "A tab that is in twice needs different key columns.";
     return "";
   });
   const stale = $derived(!result || ran !== key);
 
   function setTab(i: number, id: number): void {
-    lists[i] = { tab: id, cols: [] };
+    lists[i] = start(id);
   }
   function tick(i: number, c: number, on: boolean): void {
     const cols = lists[i]!.cols;
@@ -128,10 +139,11 @@
         <select aria-label={`Tab of list ${letter(i)}`} value={l.tab} disabled={busy} onchange={(e) => setTab(i, Number((e.currentTarget as HTMLSelectElement).value))}>
           {#each tabs as o (o.id)}<option value={o.id}>{o.name}</option>{/each}
         </select>
+        <label class="titles"><input type="checkbox" checked={l.header} disabled={busy} onchange={(e) => (lists[i]!.header = (e.currentTarget as HTMLInputElement).checked)} /> First row is titles</label>
         <p class="muted">Key columns</p>
         <AllNone count={t.titles.length} picked={l.cols} max={MAX_SET_KEYS} skip={(c) => t.hidden.includes(c)} onChange={(v) => (lists[i]!.cols = v)} />
         <div class="cols">
-          {#each t.titles as title, c (c)}
+          {#each titles(l) as title, c (c)}
             {#if !t.hidden.includes(c)}
               <label><input type="checkbox" checked={l.cols.includes(c)} disabled={busy} onchange={(e) => tick(i, c, (e.currentTarget as HTMLInputElement).checked)} /> {title}</label>
             {/if}
@@ -140,7 +152,7 @@
         {#if lists.length > 2}<button type="button" disabled={busy} onclick={() => (lists = lists.filter((_, j) => j !== i))}>Remove list {letter(i)}</button>{/if}
       </fieldset>
     {/each}
-    {#if lists.length < MAX_LISTS}<button type="button" class="add" disabled={busy} onclick={() => lists.push({ tab: current, cols: [] })}>Add a list</button>{/if}
+    {#if lists.length < MAX_LISTS}<button type="button" class="add" disabled={busy} onclick={() => lists.push(start(current))}>Add a list</button>{/if}
   </div>
   <div class="options">
     <label><input type="checkbox" checked={!matchCase} disabled={busy} onchange={(e) => (matchCase = !(e.currentTarget as HTMLInputElement).checked)} /> Ignore capitals</label>
@@ -255,6 +267,11 @@
   }
   .open select {
     max-width: 170px;
+  }
+  .titles {
+    display: block;
+    font-size: 12px;
+    margin-top: 4px;
   }
   .muted {
     color: var(--muted);

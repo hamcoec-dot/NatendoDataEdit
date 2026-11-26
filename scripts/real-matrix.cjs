@@ -33,7 +33,15 @@ const hash = (p) => (fs.existsSync(p) ? crypto.createHash("sha256").update(fs.re
 const BACKUP = path.join(WORK, "backup");
 const backup = () => {
   fs.mkdirSync(BACKUP, { recursive: true });
-  for (const f of ["session.json", "recent.json"]) if (fs.existsSync(path.join(DATA, f))) fs.copyFileSync(path.join(DATA, f), path.join(BACKUP, f));
+  // Copied, then moved aside for the run: a screenshot must never show the
+  // person's own recent files or tabs.
+  for (const f of ["session.json", "recent.json"]) {
+    fs.rmSync(path.join(BACKUP, f), { force: true });
+    if (fs.existsSync(path.join(DATA, f))) {
+      fs.copyFileSync(path.join(DATA, f), path.join(BACKUP, f));
+      fs.rmSync(path.join(DATA, f));
+    }
+  }
   fs.rmSync(path.join(BACKUP, "no-private-json"), { force: true });
   if (!fs.existsSync(path.join(DATA, "private.json"))) fs.writeFileSync(path.join(BACKUP, "no-private-json"), "");
   else fs.copyFileSync(path.join(DATA, "private.json"), path.join(BACKUP, "private.json"));
@@ -57,6 +65,7 @@ const restore = () => {
   for (const f of ["session.json", "recent.json"]) {
     const b = path.join(BACKUP, f);
     if (fs.existsSync(b)) fs.copyFileSync(b, path.join(DATA, f));
+    else fs.rmSync(path.join(DATA, f), { force: true });
   }
   const same = ["session.json", "recent.json"].every((f) => hash(path.join(BACKUP, f)) === hash(path.join(DATA, f)));
   say(`the app's session.json and recent.json restored byte for byte: ${same}`);
