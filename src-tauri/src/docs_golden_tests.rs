@@ -22,6 +22,49 @@ fn column(docs: &Docs, id: u32, col: u32) -> Vec<String> {
         .collect()
 }
 
+/// Match people pairs each later row with one earlier row, so three of one
+/// person are joined through one row: marked, and left for review when every
+/// pair must be accepted.
+#[test]
+fn three_of_a_kind_are_joined_through_one_row() {
+    let dir = std::env::temp_dir().join(format!("nde-sh-golden3-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let docs = Docs::default();
+    let text = "name\r\nZebedee Quillfeather\r\nZebedee Quillfeather\r\nZebedee Quillfeather\r\n";
+    let id = tab(&docs, &dir, "three.csv", text);
+    let spec = MatchSpec {
+        fields: vec![MatchField {
+            col: 0,
+            other_col: 0,
+            kind: FieldKind::Name,
+            weight: 1.0,
+        }],
+        keep_first: true,
+        other_header: true,
+        min_score: 90.0,
+        ..Default::default()
+    };
+    let rep = docs.match_find(id, None, &spec, &[]).unwrap();
+    let accepted: Vec<(u32, u64, f32)> = rep
+        .listed
+        .iter()
+        .map(|c| (c.id, c.other_row, c.score))
+        .collect();
+    assert_eq!(accepted.len(), 2);
+    let s = docs
+        .golden_plan(id, &accepted, GoldenSpec::default())
+        .unwrap();
+    assert_eq!((s.counts.clusters, s.counts.hub_only), (1, 1));
+    assert!(docs.golden_page(id, 0).unwrap()[0].hub_only);
+    let strict = GoldenSpec {
+        require_all: true,
+        ..Default::default()
+    };
+    let s = docs.golden_plan(id, &accepted, strict).unwrap();
+    assert_eq!((s.counts.clusters, s.counts.review), (0, 3));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn plan_preview_create_stale_and_privacy() {
     let dir = std::env::temp_dir().join(format!("nde-sh-golden-{}", std::process::id()));
@@ -91,8 +134,13 @@ fn plan_preview_create_stale_and_privacy() {
         "{}",
         e.message
     );
-    // A filter changes which rows were shown: also a change.
+    // Undone, it is still not the table that was matched.
     docs.undo(id).unwrap();
+    let e = docs.golden_plan(id, &accepted, golden.clone()).unwrap_err();
+    assert_eq!(e.kind, "changed");
+    // Hiding rows moves which rows are shown: the match is refused too.
+    docs.match_find(id, None, &spec, &[]).unwrap();
+    docs.hide_rows(id, 3, 1).unwrap();
     let e = docs.golden_plan(id, &accepted, golden.clone()).unwrap_err();
     assert_eq!(e.kind, "changed");
     docs.golden_close(id);
