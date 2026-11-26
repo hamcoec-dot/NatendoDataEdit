@@ -6,6 +6,7 @@
   import { untrack } from "svelte";
   import { backend, errorText, type Check, type CheckKind, type CheckReport, type CheckSpec, type RuleSuggestion } from "./backend";
   import FormShell from "./FormShell.svelte";
+  import AllNone from "./AllNone.svelte";
   import { CHECK_KINDS, CHECK_PATTERNS, describeCheck, localDays, newCheck } from "./m8";
 
   interface Props {
@@ -91,6 +92,8 @@
   }
 
   const MAX = 200;
+  /** Most columns in one unique rule's key (the engine's MAX_KEY_COLS). */
+  const MAX_KEY = 8;
   function add(): void {
     if (list.length < MAX) list = [...list, newCheck("required", col)];
   }
@@ -107,7 +110,13 @@
   const strOrNull = (s: string): string | null => (s.trim() === "" ? null : s.trim());
 
   function spec(): CheckSpec {
-    return { checks: $state.snapshot(list) as Check[], keep_first: header, read: { decimal_comma: false, date_order: "mdy" }, now: localDays() };
+    // A unique rule never lists its own column among the others (it may have been picked as the rule's column since).
+    const checks = ($state.snapshot(list) as Check[]).map((c) => {
+      if (c.kind.type !== "unique" || !c.kind.also?.length) return c;
+      const also = c.kind.also.filter((a) => a !== c.col);
+      return { ...c, kind: also.length ? { ...c.kind, also } : { type: "unique" as const, match_case: c.kind.match_case } };
+    });
+    return { checks, keep_first: header, read: { decimal_comma: false, date_order: "mdy" }, now: localDays() };
   }
 
   async function run(): Promise<void> {
@@ -188,6 +197,21 @@
         {:else if c.kind.type === "unique"}
           {@const k = c.kind}
           <label class="row"><input type="checkbox" bind:checked={k.match_case} /> case matters</label>
+          <details class="also" open={(k.also?.length ?? 0) > 0}>
+            <summary>Also unique together with{k.also?.length ? `: ${k.also.map((a) => title(a)).join(", ")}` : "…"}</summary>
+            <p class="sub">Two rows are repeats only when every ticked column matches too (at most {MAX_KEY - 1} more). A row blank in all of them passes.</p>
+            <AllNone count={titles.length} picked={k.also ?? []} max={MAX_KEY - 1} skip={(x) => x === c.col}
+              onChange={(p) => { k.also = p.length ? p : undefined; report = null; }} />
+            <div class="also-list">
+              {#each titles as t, x (x)}
+                {#if x !== c.col}
+                  <label class="row"><input type="checkbox" aria-label={`Also unique together with ${t || `Column ${x + 1}`}`} checked={k.also?.includes(x) ?? false}
+                    disabled={!(k.also?.includes(x) ?? false) && (k.also?.length ?? 0) >= MAX_KEY - 1}
+                    onchange={(e) => { const on = e.currentTarget.checked; const cur = (k.also ?? []).filter((a) => a !== x); const next = on ? [...cur, x].sort((a, b) => a - b) : cur; k.also = next.length ? next : undefined; report = null; }} /> {t || `Column ${x + 1}`}</label>
+                {/if}
+              {/each}
+            </div>
+          </details>
         {:else if c.kind.type === "expression"}
           {@const k = c.kind}
           <input class="grow mono" type="text" aria-label="Rule" placeholder="true when the row is right, like [Start] <= [End]" bind:value={k.expr} spellcheck="false" />
@@ -298,6 +322,16 @@
   }
   .x {
     width: 2em;
+  }
+  .also {
+    flex-basis: 100%;
+  }
+  .also-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+    max-height: 9em;
+    overflow: auto;
   }
   tr.hit {
     cursor: pointer;

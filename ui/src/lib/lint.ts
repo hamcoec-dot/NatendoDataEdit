@@ -37,6 +37,7 @@ export function describeCheck(c: Check): string {
     case "pattern":
       return `Matches ${k.pattern.text}`;
     case "unique":
+      if (k.also?.length) return `Unique together with ${k.also.length} other column${k.also.length === 1 ? "" : "s"} (no repeats)`;
       return "Unique (no repeats)";
     case "expression":
       return `Row rule: ${k.expr}`;

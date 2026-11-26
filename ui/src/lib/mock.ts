@@ -4835,6 +4835,10 @@ export class MockBackend implements Backend {
         throw err("invalid", e instanceof Error ? e.message : String(e));
       }
     }
+    if (k.type === "unique") {
+      const key = this.uniqueKey(d, r, c);
+      return key !== null && (seen.get(key) ?? 0) > 1;
+    }
     const v = this.value(d, r, c.col ?? 0).trim();
     if (!v) return k.type === "required";
     switch (k.type) {
@@ -4858,13 +4862,17 @@ export class MockBackend implements Backend {
         } catch {
           throw err("bad_pattern", "the pattern is not valid");
         }
-      case "unique": {
-        const key = k.match_case ? v : v.toLowerCase();
-        return (seen.get(key) ?? 0) > 1;
-      }
       default:
         return false;
     }
+  }
+  /** A unique rule's key for row `r` (its column and `also` columns together), or null when every part is blank. */
+  private uniqueKey(d: MockDoc, r: number, c: Check): string | null {
+    if (c.kind.type !== "unique") return null;
+    const parts = [c.col ?? 0, ...(c.kind.also ?? [])].map((k) => this.value(d, r, k).trim());
+    if (parts.every((v) => !v)) return null;
+    const key = parts.join("\u0001");
+    return c.kind.match_case ? key : key.toLowerCase();
   }
   private names(d: MockDoc, header: boolean): string[] {
     return Array.from({ length: this.colCount(d) }, (_, c) => (header ? this.value(d, 0, c) : "") || `Column ${c + 1}`);
@@ -4874,10 +4882,8 @@ export class MockBackend implements Backend {
       const m = new Map<string, number>();
       if (c.kind.type !== "unique") return m;
       for (let r = spec.keep_first ? 1 : 0; r < this.rowCount(d); r++) {
-        const v = this.value(d, r, c.col ?? 0).trim();
-        if (!v) continue;
-        const key = c.kind.match_case ? v : v.toLowerCase();
-        m.set(key, (m.get(key) ?? 0) + 1);
+        const key = this.uniqueKey(d, r, c);
+        if (key !== null) m.set(key, (m.get(key) ?? 0) + 1);
       }
       return m;
     });
@@ -4897,7 +4903,9 @@ export class MockBackend implements Backend {
         bad = true;
         rep.problems++;
         rep.per_check[i]!++;
-        if (rep.listed.length < 1000) rep.listed.push({ row: r, col: c.kind.type === "expression" ? null : c.col, check: i, value: c.kind.type === "expression" ? "" : this.value(d, r, c.col ?? 0) });
+        const also = c.kind.type === "unique" ? (c.kind.also ?? []) : [];
+        const value = c.kind.type === "expression" ? "" : [c.col ?? 0, ...also].map((k) => this.value(d, r, k)).join(" | ");
+        if (rep.listed.length < 1000) rep.listed.push({ row: r, col: c.kind.type === "expression" ? null : c.col, check: i, value });
       });
       if (bad) rep.rows++;
     }
@@ -4911,6 +4919,12 @@ export class MockBackend implements Backend {
     for (let r = Math.max(row, spec.keep_first ? 1 : 0); r < Math.min(this.rowCount(d), row + rows); r++) {
       spec.checks.forEach((c, i) => {
         const at = c.kind.type === "expression" ? null : c.col;
+        if (c.kind.type === "unique" && c.kind.also?.length) {
+          // A repeated key marks every key cell in the area.
+          const keys = [c.col ?? 0, ...c.kind.also].filter((k) => k >= col && k < col + cols);
+          if (keys.length && this.checkFails(d, c, r, names, counts[i]!)) for (const k of keys) out.push({ row: r, col: k, check: i });
+          return;
+        }
         if (at !== null && (at < col || at >= col + cols)) return;
         if (this.checkFails(d, c, r, names, counts[i]!)) out.push({ row: r, col: at, check: i });
       });

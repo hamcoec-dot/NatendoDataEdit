@@ -1,6 +1,7 @@
 // One open document as the UI sees it: engine info, selection, view
 // settings (header row, frozen panes, column widths) and its cell cache.
 
+import { placeCheck } from "./m8";
 import type { DiskNote } from "./disk";
 import type { Check, FindSpec } from "./backend";
 import type { Highlight } from "./views";
@@ -463,7 +464,7 @@ export class Tab {
       this.ranges.clear();
     }
     if (this.checks.length) {
-      this.checks = this.checks.map((k) => (k.col === null ? k : { ...k, col: place(k.col) }));
+      this.checks = this.checks.map((k) => placeCheck(k, place) ?? k);
       this.checkVersion++;
     }
     if (this.filter) this.filter = { ...this.filter, columns: this.filter.columns.map((f) => ({ ...f, col: place(f.col) })) };

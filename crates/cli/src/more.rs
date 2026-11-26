@@ -573,7 +573,8 @@ pub fn compute(args: &[&str], json_out: bool) -> Result<(), String> {
 
 /// Read a checks file: `{"checks": [...]}` or a bare list. A check may name
 /// its column with `"column": "Title"` (or a number from 1) instead of
-/// `"col"` (from 0).
+/// `"col"` (from 0), and a unique check the other columns of its key with
+/// `"also_columns": ["Title", ...]` instead of `"also"` (from 0) in its kind.
 fn read_checks(path: &str, d: &Document, header: bool) -> Result<CheckSpec, String> {
     let size = std::fs::metadata(path)
         .map_err(|e| format!("{path}: {e}"))?
@@ -599,8 +600,8 @@ fn read_checks(path: &str, d: &Document, header: bool) -> Result<CheckSpec, Stri
         let Value::Object(o) = c else {
             return Err(format!("{path}: each check is an object"));
         };
-        if let Some(col) = o.remove("column") {
-            let n = match &col {
+        let find = |col: &Value| -> Result<u64, String> {
+            match col {
                 Value::Number(n) => n.as_u64().and_then(|n| n.checked_sub(1)),
                 Value::String(s) => names
                     .iter()
@@ -609,8 +610,34 @@ fn read_checks(path: &str, d: &Document, header: bool) -> Result<CheckSpec, Stri
                     .map(|i| i as u64),
                 _ => None,
             }
-            .ok_or_else(|| format!("{path}: no column {col}"))?;
+            .ok_or_else(|| format!("{path}: no column {col}"))
+        };
+        if let Some(col) = o.remove("column") {
+            let n = find(&col)?;
             o.insert("col".into(), json!(n));
+        }
+        // A unique rule over several columns: the others by title (or number from 1).
+        if let Some(also) = o.remove("also_columns") {
+            let Value::Array(list) = &also else {
+                return Err(format!("{path}: \"also_columns\" is a list of columns"));
+            };
+            if list.len() >= natendo_engine::validate::MAX_KEY_COLS {
+                return Err(format!(
+                    "{path}: a unique rule can use at most {} columns together",
+                    natendo_engine::validate::MAX_KEY_COLS
+                ));
+            }
+            let cols = list.iter().map(&find).collect::<Result<Vec<_>, _>>()?;
+            match o.get_mut("kind") {
+                Some(Value::Object(k)) if k.get("type") == Some(&json!("unique")) => {
+                    k.insert("also".into(), json!(cols));
+                }
+                _ => {
+                    return Err(format!(
+                        "{path}: \"also_columns\" goes with a unique check only"
+                    ))
+                }
+            }
         }
     }
     let checks = serde_json::from_value(Value::Array(std::mem::take(list)))

@@ -1049,7 +1049,7 @@ export type CheckKind =
   | { type: "length"; min: number | null; max: number | null }
   | { type: "list"; values: string[]; match_case: boolean }
   | { type: "pattern"; pattern: Pattern }
-  | { type: "unique"; match_case: boolean }
+  | { type: "unique"; match_case: boolean; also?: number[] }
   | { type: "expression"; expr: string };
 /** A pivot layout column found by place, not title. */
 export interface PlaceSwap {

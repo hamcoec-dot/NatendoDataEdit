@@ -109,6 +109,22 @@ export function newCheck(type: CheckKind["type"], col: number): Check {
   return { col: type === "expression" ? null : col, kind };
 }
 
+/** A check moved to other columns: its column and, for a unique rule, every `also` column
+ *  (`place` gives null for a column that is gone, and then the rule is dropped: null). */
+export function placeCheck(c: Check, place: (k: number) => number | null | undefined): Check | null {
+  if (c.col === null) return c;
+  const col = place(c.col);
+  if (col === null || col === undefined || col < 0) return null;
+  if (c.kind.type !== "unique" || !c.kind.also?.length) return { ...c, col };
+  const also: number[] = [];
+  for (const a of c.kind.also) {
+    const k = place(a);
+    if (k === null || k === undefined || k < 0) return null;
+    also.push(k);
+  }
+  return { ...c, col, kind: { ...c.kind, also } };
+}
+
 const num = (n: number | null): string => (n === null ? "" : n.toLocaleString());
 
 /** A check in words, for lists and the problem panel. */
@@ -133,6 +149,7 @@ export function describeCheck(c: Check, titles: string[]): string {
     case "pattern":
       return `${col}matches ${k.pattern.text}`;
     case "unique":
+      if (k.also?.length) return `${col}no repeated values together with ${k.also.map((a) => titles[a] ?? `Column ${a + 1}`).join(", ")}`;
       return `${col}no repeated values`;
     case "expression":
       return `row rule: ${k.expr}`;
