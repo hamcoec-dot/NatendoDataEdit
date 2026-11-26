@@ -3805,6 +3805,17 @@ async fn clean_matrix_preview(
     blocking(move || docs.clean_matrix_preview(doc, &spec, now)).await
 }
 
+/// Look for relationships among columns.
+#[tauri::command]
+async fn find_relations(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::relations::RelationsSpec,
+) -> CmdResult<natendo_engine::relations::RelationsReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.find_relations(doc, &spec)).await
+}
+
 /// Find the numbers missing from a column of numbers or IDs.
 #[tauri::command]
 async fn gap_audit(
@@ -4633,6 +4644,7 @@ pub fn run() {
             save_mail,
             run_checks,
             gap_audit,
+            find_relations,
             sets_run,
             sets_open,
             sets_table,

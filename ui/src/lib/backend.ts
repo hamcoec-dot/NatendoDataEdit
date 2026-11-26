@@ -3,6 +3,7 @@
 // without the desktop shell.
 import { InfoGuard } from "./infoguard";
 import type { GapReport, GapsSpec } from "./gaps";
+import type { RelationKind, RelationsReport, RelationsSpec } from "./relations";
 import type { SetsRun, SetsSpec } from "./sets";
 import type { CleanMatrix, MatrixPreview, NamedCleaner } from "./matrix";
 import type { ColumnType, ColumnTypes } from "./readers";
@@ -948,6 +949,7 @@ export type DataOp =
   | { op: "show_problems"; spec: CheckSpec; passing?: boolean }
   | { op: "show_ragged"; pick?: "all" | "short" | "long"; keep_first: boolean }
   | { op: "show_gap_rows"; spec: GapsSpec }
+  | { op: "show_relation_exceptions"; kind: RelationKind; a: number; b: number }
   | { op: "clean_matrix"; spec: CleanMatrix; now: number; revision?: number }
   | { op: "show_shape"; spec: ShapeFilter }
   | { op: "sort_problems"; spec: CheckSpec }
@@ -1613,6 +1615,7 @@ export interface Backend {
   /** Compare two columns: counts and the rows that differ. */
   compareCols(doc: number, spec: CompareCols): Promise<CompareColsReport>;
   gapAudit(doc: number, spec: GapsSpec): Promise<GapReport>;
+  findRelations(doc: number, spec: RelationsSpec): Promise<RelationsReport>;
   setsRun(owner: number, tabs: number[], spec: SetsSpec): Promise<SetsRun>;
   setsOpen(id: number, mask: number, list: number, keys: boolean): Promise<DocInfo>;
   setsTable(id: number): Promise<DocInfo>;
@@ -2214,6 +2217,9 @@ class TauriBackend implements Backend {
   }
   setsClose(id: number) {
     return call<void>("sets_close", { id });
+  }
+  findRelations(doc: number, spec: RelationsSpec) {
+    return call<RelationsReport>("find_relations", { doc, spec });
   }
   gapAudit(doc: number, spec: GapsSpec) {
     return call<GapReport>("gap_audit", { doc, spec });
