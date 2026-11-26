@@ -373,6 +373,92 @@ impl Document {
         Ok(leader)
     }
 
+    /// [`Document::group_rows`] over some shown rows only (`at`, in order): for each, the
+    /// index in `at` of the first row with the same key.
+    pub(crate) fn group_rows_at(
+        &self,
+        at: &[u64],
+        cols: &[u32],
+        match_case: bool,
+        trim: bool,
+        progress: &Progress,
+    ) -> Result<Vec<u32>, Error> {
+        if at.len() > u32::MAX as usize {
+            return Err(Error::TooManyRows);
+        }
+        let reader = Cols::new(self, cols);
+        let rs = RandomState::new();
+        progress.start(at.len() as u64);
+        let mut hashed: Vec<(u64, u32)> = at
+            .par_chunks(1 << 15)
+            .enumerate()
+            .map(|(c, part)| -> Result<Vec<(u64, u32)>, Error> {
+                let mut buf = Vec::new();
+                let mut out = Vec::with_capacity(part.len());
+                for (k, &r) in part.iter().enumerate() {
+                    let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                    reader.read(self, id, &mut buf);
+                    let mut h = rs.build_hasher();
+                    for j in 0..cols.len() {
+                        hash_norm(&mut h, reader.get(&buf, j), match_case, trim);
+                    }
+                    out.push((h.finish(), (c * (1 << 15) + k) as u32));
+                }
+                progress.step(part.len() as u64)?;
+                Ok(out)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        hashed.par_sort_unstable();
+        let key = |i: u32| -> Vec<String> {
+            let id = self.id_at(at[i as usize]).expect("in range");
+            let mut buf = Vec::new();
+            reader.read(self, id, &mut buf);
+            (0..cols.len())
+                .map(|k| norm(reader.get(&buf, k), match_case, trim).into_owned())
+                .collect()
+        };
+        // Runs of equal hashes, compared in parallel (as in `group_rows`).
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut i = 0usize;
+        while i < hashed.len() {
+            let mut j = i + 1;
+            while j < hashed.len() && hashed[j].0 == hashed[i].0 {
+                j += 1;
+            }
+            if j - i > 1 {
+                runs.push((i, j));
+            }
+            i = j;
+        }
+        let found: Vec<Vec<(u32, u32)>> = runs
+            .par_iter()
+            .map(|&(i, j)| {
+                // Same hash: compare the real keys, in row order (a run is sorted by index).
+                let mut out = Vec::new();
+                let mut firsts: Vec<(u32, Vec<String>)> = Vec::new();
+                for batch in hashed[i..j].chunks(1 << 16) {
+                    let keys: Vec<Vec<String>> =
+                        batch.par_iter().map(|&(_, row)| key(row)).collect();
+                    for (&(_, row), k) in batch.iter().zip(keys) {
+                        match firsts.iter().find(|f| f.1 == k) {
+                            Some(f) => out.push((row, f.0)),
+                            None => firsts.push((row, k)),
+                        }
+                    }
+                }
+                out
+            })
+            .collect();
+        let mut leader: Vec<u32> = (0..at.len() as u32).collect();
+        for (row, first) in found.into_iter().flatten() {
+            leader[row as usize] = first;
+        }
+        Ok(leader)
+    }
+
     fn dup_cols(&self, spec: &Duplicates) -> Result<Vec<u32>, Error> {
         check_keys(self, &spec.cols)?;
         Ok(if spec.cols.is_empty() {

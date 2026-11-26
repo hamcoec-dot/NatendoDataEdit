@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { columnRef, defaultPage, describeCheck, expandTabs, guessStarts, newCheck, placeCheck, printHtml, splitFixed, toggleStart, toJsPattern, LOG_PRESETS } from "./m8";
+import { columnRef, defaultPage, describeCheck, expandTabs, guessStarts, newCheck, placeCheck, printHtml, shiftChecks, splitFixed, toggleStart, toJsPattern, LOG_PRESETS } from "./m8";
 import { mockEval } from "./mockexpr";
 
 describe("fixed width", () => {
@@ -83,5 +83,25 @@ describe("unique rules over several columns", () => {
     expect(placeCheck(rule, (k) => (k === 3 ? null : k))).toBeNull();
     expect(placeCheck({ col: null, kind: { type: "expression", expr: "[a]" } }, () => null)).toEqual({ col: null, kind: { type: "expression", expr: "[a]" } });
     expect(placeCheck(newCheck("required", 1), (k) => k + 1)).toEqual({ col: 2, kind: { type: "required" } });
+  });
+});
+describe("rules follow inserted and deleted columns", () => {
+  const key = { col: 2, kind: { type: "unique" as const, match_case: false, also: [4] } };
+  const req = newCheck("required", 0);
+  const row = { col: null, kind: { type: "expression" as const, expr: "[a] > 1" } };
+  it("moves rules right of columns put in", () => {
+    const r = shiftChecks([key, req, row], 1, 2);
+    expect(r.dropped).toBe(0);
+    expect(r.checks).toEqual([{ col: 4, kind: { type: "unique", match_case: false, also: [6] } }, req, row]);
+  });
+  it("moves rules left of columns taken out, and drops a rule that used one", () => {
+    const left = shiftChecks([key, req, row], 0, -1);
+    expect(left.dropped).toBe(1);
+    expect(left.checks).toEqual([{ col: 1, kind: { type: "unique", match_case: false, also: [3] } }, row]);
+    const keyCol = shiftChecks([key, req], 3, -2);
+    expect(keyCol.dropped).toBe(1);
+    expect(keyCol.checks).toEqual([req]);
+    const after = shiftChecks([key], 5, -1);
+    expect(after).toEqual({ checks: [key], dropped: 0 });
   });
 });

@@ -125,6 +125,24 @@ export function placeCheck(c: Check, place: (k: number) => number | null | undef
   return { ...c, col, kind: { ...c.kind, also } };
 }
 
+/** Rules after `count` columns were put in at `at` (or, with a negative count, taken out from `at`):
+ *  columns to the right move along, and a rule that used a deleted column (its own or one of
+ *  its key) is dropped and counted. */
+export function shiftChecks(checks: Check[], at: number, count: number): { checks: Check[]; dropped: number } {
+  const place = (c: number): number | null => {
+    if (c < at) return c;
+    if (count >= 0) return c + count;
+    return c < at - count ? null : c + count;
+  };
+  let dropped = 0;
+  const out = checks.flatMap((c) => {
+    const k = placeCheck(c, place);
+    if (k === null) dropped++;
+    return k === null ? [] : [k];
+  });
+  return { checks: out, dropped };
+}
+
 const num = (n: number | null): string => (n === null ? "" : n.toLocaleString());
 
 /** A check in words, for lists and the problem panel. */

@@ -78,7 +78,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import type { TitleSpec } from "./lib/backend";
   import type { ZipList } from "./lib/backend";
   import type { SpecialKind, SpecialSpec } from "./lib/backend";
-  import { columnRef, localDays, placeCheck } from "./lib/m8";
+  import { columnRef, localDays, placeCheck, shiftChecks } from "./lib/m8";
   import { remapChecks, renameInChecks } from "./lib/rename";
   import { TOOLS, localNow, type Cleaner, type CleanSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
@@ -3398,6 +3398,16 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (await change({ op: "delete_rows", at: r.row, count })) grid?.select({ row: r.row, col: r.col });
   }
 
+  /** Data check rules follow columns put in (`count` > 0) or taken out (`count` < 0) at `at`; how many rules
+   *  used a deleted column and were dropped. */
+  function followCols(t: Tab, at: number, count: number): number {
+    if (!t.checks.length) return 0;
+    const r = shiftChecks(t.checks, at, count);
+    t.checks = r.checks;
+    t.checkVersion++;
+    return r.dropped;
+  }
+
   async function insertCols(right: boolean, howMany?: number): Promise<void> {
     const t = tab;
     if (!t) return;
@@ -3407,6 +3417,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const count = howMany ?? r.cols;
     if (await change({ op: "insert_cols", at, count })) {
       t.columns.shift(at, count);
+      followCols(t, at, count);
       grid?.select({ row: r.row, col: at }, { row: r.row + r.rows - 1, col: at + count - 1 });
     }
   }
@@ -3438,6 +3449,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
     if (await change({ op: "delete_cols", at: r.col, count: r.cols })) {
       t.columns.shift(r.col, -r.cols);
+      const dropped = followCols(t, r.col, -r.cols);
+      if (dropped) say(`${dropped === 1 ? "1 data check rule" : `${dropped} data check rules`} used a deleted column and ${dropped === 1 ? "was" : "were"} removed.`);
       grid?.select({ row: r.row, col: Math.min(r.col, t.info.cols - 1) });
       if (t.info.filter_on_deleted) {
         say("The deleted column had a filter, so some rows stay hidden. Undo brings the column back, or click Filtered ✕ to show every row.");
