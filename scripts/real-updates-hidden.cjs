@@ -201,6 +201,8 @@ const proof = async () => {
   ok(/1 changed cell, 1 new row \(in the newer file only\), 1 missing row/.test(await text()), `counts: ${(await text()).slice(0, 160)}`);
   ok(/In rows hidden here: 1 changed cell and 1 missing row\. ?Hidden rows are not ticked for deletion/.test(await text()), "the hidden ones are counted");
   ok(/Row 3 \(hidden\)/.test(await text()), "the changed cell is marked hidden");
+  const widths = await dialog.locator("label.line span").evaluateAll((spans) => spans.map((e) => Math.round(e.getBoundingClientRect().width)));
+  ok(widths.length === 4 && widths.every((w) => w > 20), `the row, column, old and new value are all visible (${widths.join(", ")})`);
   await m.screenshot({ path: path.join(evidence, "updates-hidden.png") });
   await dialog.getByRole("tab", { name: /Missing rows/ }).click();
   await sleep(300);
