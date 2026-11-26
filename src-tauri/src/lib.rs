@@ -2714,6 +2714,53 @@ async fn row_width(docs: DocsState<'_>, doc: u32, row: u64) -> CmdResult<(u64, u
 }
 
 #[tauri::command]
+async fn same_shape(
+    docs: DocsState<'_>,
+    doc: u32,
+    keep_first: bool,
+    fields: u32,
+    groups: Vec<u32>,
+) -> CmdResult<natendo_engine::document::repair::SameShape> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.same_shape(doc, keep_first, fields, &groups)).await
+}
+
+#[tauri::command]
+async fn fix_all(
+    docs: DocsState<'_>,
+    doc: u32,
+    keep_first: bool,
+    revision: u64,
+    fields: u32,
+    groups: Vec<u32>,
+    skip: Vec<u32>,
+) -> CmdResult<(u64, DocInfo)> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.fix_all(doc, keep_first, revision, fields, groups, &skip)).await
+}
+
+#[tauri::command]
+async fn empty_extra_columns(
+    docs: DocsState<'_>,
+    doc: u32,
+    keep_first: bool,
+) -> CmdResult<(u32, u64)> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.empty_extra_columns(doc, keep_first)).await
+}
+
+#[tauri::command]
+async fn remove_empty_extra_columns(
+    docs: DocsState<'_>,
+    doc: u32,
+    keep_first: bool,
+    revision: u64,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.remove_empty_extra_columns(doc, keep_first, revision)).await
+}
+
+#[tauri::command]
 async fn repair_row(
     docs: DocsState<'_>,
     doc: u32,
@@ -4174,6 +4221,10 @@ pub fn run() {
             ragged_list,
             row_text,
             repair_row,
+            same_shape,
+            fix_all,
+            empty_extra_columns,
+            remove_empty_extra_columns,
             row_width,
             set_cells,
             set_column_type,

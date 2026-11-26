@@ -631,6 +631,33 @@ impl Document {
         Ok(n)
     }
 
+    /// A recorded "Fix all like this" on this file: refused when its usual
+    /// number of fields is another one (or columns have changed); the rows
+    /// changed.
+    pub fn replay_join_fields(
+        &mut self,
+        usual: u32,
+        fields: u32,
+        groups: &[u32],
+        header: bool,
+        progress: &Progress,
+    ) -> Result<u64, Error> {
+        self.repairable()?;
+        let here = self.index.stats().usual_fields();
+        if here != usual {
+            return Err(Error::Invalid(format!(
+                "this recipe was made for files with {usual} fields; this file has {here}"
+            )));
+        }
+        let revision = self.revision();
+        self.fix_all(header, revision, fields, groups, &[], progress)
+    }
+
+    /// The usual number of fields in the file's rows.
+    pub fn usual_fields(&self) -> u32 {
+        self.index.stats().usual_fields()
+    }
+
     /// The columns past the usual number can be removed: none has a title or
     /// a value in any row, hidden ones too. Gives how many columns and the
     /// rows that hold such cells; refused with the reason otherwise.
@@ -1081,5 +1108,31 @@ mod tests {
             "a,b,c\n1,\"Smith, John\",3\n4,5,6\n7,8,9\n"
         );
         assert_eq!(d.col_count(), 3);
+    }
+
+    #[test]
+    fn a_recorded_fix_replays_only_where_the_usual_width_matches() {
+        use crate::recipe::RecipeOp;
+        let step = RecipeOp::JoinFields {
+            usual: 3,
+            fields: 4,
+            groups: vec![1, 2],
+            header: true,
+        };
+        let json = serde_json::to_string(&step).unwrap();
+        assert!(!json.contains("Smith") && !step.holds_values(), "{json}");
+        let back: RecipeOp = serde_json::from_str(&json).unwrap();
+        let (mut d, _) = open("a,b,c\n1,Roe, Bo,x\n2,y,z\n3,y,z\n");
+        d.run_recipe_step(&back, 0.0, 1, &Progress::new()).unwrap();
+        assert_eq!(all(&d)[1], ["1", "Roe, Bo", "x"]);
+        let (mut other, _) = open("a,b\n1,2\n3,4\n");
+        let e = other
+            .run_recipe_step(&back, 0.0, 1, &Progress::new())
+            .unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("made for files with 3 fields; this file has 2"),
+            "{e}"
+        );
     }
 }

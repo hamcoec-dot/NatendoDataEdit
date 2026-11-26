@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuar
 use crate::recovery::Autosaved;
 use natendo_engine::cellformula::CellFormula;
 use natendo_engine::clean::{CleanPreview, CleanSpec, SplitName};
-use natendo_engine::document::repair::{Repair, RowText};
+use natendo_engine::document::repair::{Repair, RowText, SameShape};
 use natendo_engine::editing::{
     Arrange, Extract, GroupCalc, MapValues, TallySpec, ValueTally, MAX_PAIRS,
 };
@@ -1123,6 +1123,7 @@ fn auto_label_op(op: &RecipeOp) -> Option<&'static str> {
         RecipeOp::MergeRows { .. } => Some("Merge rows"),
         RecipeOp::Clean { .. } => Some("Clean-up"),
         RecipeOp::DeleteHidden => Some("Delete hidden rows"),
+        RecipeOp::JoinFields { .. } => Some("Fix all like this"),
         RecipeOp::MapValues { .. } => Some("Change values from a list"),
         // Cheap to undo, or they change only the view: no checkpoint (and no crowding of the 20).
         RecipeOp::Sort { .. }
@@ -1419,6 +1420,7 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
         | RecipeOp::BatchReplace { .. }
         | RecipeOp::RenameColumn { .. }
         | RecipeOp::TidyTitles { .. }
+        | RecipeOp::JoinFields { .. }
         | RecipeOp::ColumnTypes { .. } => unreachable!("handled by its own command"),
     }
 }
@@ -2742,6 +2744,110 @@ impl Docs {
         self.recorded(id, Logged::LeftOut("repairing one row".into()), || {
             self.edit(id, |d| d.repair_row(row_id, revision, repair))
         })
+    }
+
+    /// What "Fix all like this" would change.
+    pub fn same_shape(
+        &self,
+        id: u32,
+        keep_first: bool,
+        fields: u32,
+        groups: &[u32],
+    ) -> CmdResult<SameShape> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for rows of the same shape")?;
+        let d = entry.read();
+        Ok(d.same_shape(keep_first, fields, groups, &job.progress)?)
+    }
+
+    /// "Fix all like this": one undo step, after the automatic checkpoint,
+    /// recorded as a recipe step that holds counts only. The rows changed.
+    pub fn fix_all(
+        &self,
+        id: u32,
+        keep_first: bool,
+        revision: u64,
+        fields: u32,
+        groups: Vec<u32>,
+        skip: &[u32],
+    ) -> CmdResult<(u64, DocInfo)> {
+        let usual = self.get(id)?.read().usual_fields();
+        let step = RecipeOp::JoinFields {
+            usual,
+            fields,
+            groups: groups.clone(),
+            header: keep_first,
+        };
+        let mut rows = 0;
+        let info = self.recorded(id, Logged::Step(step), || {
+            let entry = self.get(id)?;
+            let job = entry.start("Fixing rows")?;
+            self.edit(id, |d| {
+                rows = d.fix_all(keep_first, revision, fields, &groups, skip, &job.progress)?;
+                Ok(())
+            })
+        })?;
+        Ok((rows, info))
+    }
+
+    /// A recorded "Fix all like this", run again.
+    fn replay_join_fields(
+        &self,
+        id: u32,
+        usual: u32,
+        fields: u32,
+        groups: Vec<u32>,
+        header: bool,
+    ) -> CmdResult<DocInfo> {
+        let step = RecipeOp::JoinFields {
+            usual,
+            fields,
+            groups: groups.clone(),
+            header,
+        };
+        self.recorded(id, Logged::Step(step), || {
+            let entry = self.get(id)?;
+            let job = entry.start("Fixing rows")?;
+            self.edit(id, |d| {
+                d.replay_join_fields(usual, fields, &groups, header, &job.progress)
+                    .map(|_| ())
+            })
+        })
+    }
+
+    /// How many empty, untitled columns past the usual number could be
+    /// removed, and the revision they were looked at.
+    pub fn empty_extra_columns(&self, id: u32, keep_first: bool) -> CmdResult<(u32, u64)> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking at the extra column")?;
+        let d = entry.read();
+        Ok((
+            d.empty_extra_columns(keep_first, &job.progress),
+            d.revision(),
+        ))
+    }
+
+    /// Cut the empty cells past the usual number, after the automatic
+    /// checkpoint. Left out of recipes.
+    pub fn remove_empty_extra_columns(
+        &self,
+        id: u32,
+        keep_first: bool,
+        revision: u64,
+    ) -> CmdResult<DocInfo> {
+        self.recorded_auto(
+            id,
+            Logged::LeftOut("removing the empty column".into()),
+            Some("removing the empty column".into()),
+            || {
+                let entry = self.get(id)?;
+                let job = entry.start("Removing the empty column")?;
+                self.edit(id, |d| {
+                    d.remove_empty_extra_columns(keep_first, revision, &job.progress)
+                        .map(|_| ())
+                })
+            },
+        )
     }
 
     /// Paste as column names: set cells of the table's first row (column,
@@ -5711,6 +5817,14 @@ impl Docs {
                 self.set_first_row_cell(id, col, name).map(|_| ())
             }
             RecipeOp::TidyTitles { spec } => self.tidy_titles(id, spec).map(|_| ()),
+            RecipeOp::JoinFields {
+                usual,
+                fields,
+                groups,
+                header,
+            } => self
+                .replay_join_fields(id, usual, fields, groups, header)
+                .map(|_| ()),
             RecipeOp::ColumnTypes { types } => {
                 let set = {
                     let entry = self.get(id)?;
@@ -10985,6 +11099,62 @@ ca,California
         let t = docs.row_text(id, None, Some(3), true).unwrap();
         assert!(t.note_keys.is_empty() && t.previous.as_ref().unwrap().noted);
         assert_eq!(t.previous.unwrap().note_keys, [0]);
+    }
+
+    /// C1b b2: "Fix all like this" and removing the empty column through the shell: automatic checkpoints, a recipe
+    /// step with counts only, replay on a second file and its refusal.
+    #[test]
+    fn fix_all_checkpoints_and_records_counts_only() {
+        let docs = Docs::default();
+        let body: &[u8] = b"a,b,c\n1,Smith, John,x\n2,Doe, Jane,y\n3,u,v\n4,u,v\n5,u,v\n";
+        let p = tmp("fixall.csv", body);
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let same = docs.same_shape(id, true, 4, &[1, 2]).unwrap();
+        assert_eq!(same.total, 2);
+        let (n, _) = docs
+            .fix_all(id, true, same.revision, 4, vec![1, 2], &[])
+            .unwrap();
+        assert_eq!(n, 2);
+        let names: Vec<String> = docs
+            .checkpoint_list(id)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, ["Before Fix all like this"]);
+        let book = docs.recipe_of(id, true, "r").unwrap();
+        let json = serde_json::to_string(&book).unwrap();
+        assert!(
+            json.contains("join_fields") && !json.contains("Smith"),
+            "{json}"
+        );
+        let (cols, revision) = docs.empty_extra_columns(id, true).unwrap();
+        assert_eq!(cols, 1);
+        let info = docs.remove_empty_extra_columns(id, true, revision).unwrap();
+        assert_eq!(info.cols, 3);
+        assert!(docs
+            .checkpoint_list(id)
+            .unwrap()
+            .iter()
+            .any(|c| c.name == "Before removing the empty column"));
+        // The step on a second file, and on one of another width.
+        let q = tmp("fixall2.csv", b"a,b,c\n9,Roe, Bo,z\n8,u,v\n7,u,v\n");
+        let two = docs.open_path(&q, false).unwrap().id;
+        wait(&docs, two);
+        docs.run_recipe_op(two, book.steps[0].clone(), 0.0).unwrap();
+        assert_eq!(docs.ragged_list(two, true).unwrap().total, 0);
+        let r = tmp("fixall3.csv", b"a,b\n1,2\n3,4\n");
+        let three = docs.open_path(&r, false).unwrap().id;
+        wait(&docs, three);
+        let e = docs
+            .run_recipe_op(three, book.steps[0].clone(), 0.0)
+            .unwrap_err();
+        assert!(
+            e.message.contains("made for files with 3 fields"),
+            "{}",
+            e.message
+        );
     }
 
     /// B4: risky bulk changes name a moment first; cheap ones do not; the automatic ones are capped at 20 and

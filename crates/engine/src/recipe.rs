@@ -229,6 +229,17 @@ pub enum RecipeOp {
     ColumnTypes {
         types: Vec<ColumnTypeAt>,
     },
+    /// "Fix all like this": join the fields `groups` in every row of exactly
+    /// `fields` fields, in a file whose usual number is `usual`. Counts and
+    /// places only, never a cell's text.
+    JoinFields {
+        usual: u32,
+        fields: u32,
+        groups: Vec<u32>,
+        /// The first row holds titles and is never changed.
+        #[serde(default)]
+        header: bool,
+    },
 }
 
 /// One typed column of a [`RecipeOp::ColumnTypes`] step: its title (and where it was, used only when the
@@ -287,6 +298,9 @@ impl RecipeOp {
             RecipeOp::BlankRepeats { .. } => "Blank out repeats".into(),
             RecipeOp::Breaks { .. } => "Add breaks between groups".into(),
             RecipeOp::DeleteHidden => "Delete hidden rows".into(),
+            RecipeOp::JoinFields { fields, .. } => {
+                format!("Join fields in every row of {fields} fields")
+            }
             RecipeOp::RenameColumn { col, name } => {
                 format!("Rename column {} to \"{}\"", col + 1, name)
             }
@@ -728,6 +742,14 @@ impl Document {
                 let p = self.plan_delete_hidden()?;
                 self.apply_rows(p)
             }
+            RecipeOp::JoinFields {
+                usual,
+                fields,
+                groups,
+                header,
+            } => self
+                .replay_join_fields(*usual, *fields, groups, *header, progress)
+                .map(|_| ()),
             RecipeOp::RenameColumn { col, name } => self.set_first_row_cell(*col, name.clone()),
             RecipeOp::TidyTitles { spec } => self.tidy_titles(spec).map(|_| ()),
             RecipeOp::CompareColumn { spec } => {
