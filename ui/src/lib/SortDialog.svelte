@@ -1,6 +1,7 @@
 <script lang="ts">
   // Custom sort: one or more columns, each with its order and how values
   // compare. The first row stays in place when it holds the titles.
+  import { hiddenRows, sortWords } from "./shown.svelte";
   import { untrack } from "svelte";
   import type { SortKey, SortKind, SortSpec } from "./backend";
   import { prefs } from "./prefs.svelte";
@@ -20,6 +21,8 @@
   // Starting values; the dialog edits its own copies.
   let keys = $state<SortKey[]>(untrack(() => start.map((k) => ({ ...k }))));
   let hasHeader = $state(untrack(() => header));
+  /** Sort hidden rows too (offered only while some are hidden). */
+  let sortAll = $state(false);
   let box: HTMLDivElement;
 
   const KINDS: [SortKind, string][] = [
@@ -92,7 +95,8 @@
       }
       return { ...k, kind: { list: at.get(i)! } };
     });
-    onSort({ keys: ks, keep_first: hasHeader, ...(used.length ? { lists: used } : {}) }, hasHeader);
+    const scope = hiddenRows.hidden && !sortAll ? "shown" : "all";
+    onSort({ keys: ks, keep_first: hasHeader, scope, ...(used.length ? { lists: used } : {}) }, hasHeader);
   }
 
   function onKey(e: KeyboardEvent): void {
@@ -115,6 +119,10 @@
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="sort-title" tabindex="-1" bind:this={box} onkeydown={onKey}>
     <h2 id="sort-title">Sort</h2>
     <label class="hdr"><input type="checkbox" bind:checked={hasHeader} /> First row is header (keep it at the top)</label>
+    {#if hiddenRows.hidden}
+      <p class="hidden-note" class:all={sortAll} data-testid="hidden-note">{sortAll ? "Including hidden rows: every row is put in order." : sortWords(hiddenRows.hidden, hiddenRows.total)}</p>
+      <label class="hdr"><input type="checkbox" bind:checked={sortAll} /> Sort all rows, including hidden ones</label>
+    {/if}
     <div class="levels">
       {#each keys as k, i (i)}
         <div class="level">
@@ -162,6 +170,15 @@
 </div>
 
 <style>
+  .hidden-note {
+    margin: 0.2rem 0;
+    padding: 0.2rem 0.5rem;
+    border-left: 3px solid var(--border, #8886);
+  }
+  .all {
+    border-left-color: #d98e04;
+    background: rgb(217 142 4 / 0.16);
+  }
   .backdrop {
     position: fixed;
     inset: 0;
