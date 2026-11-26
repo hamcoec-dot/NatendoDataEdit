@@ -705,7 +705,8 @@ impl Document {
 
         // 1. Write and flush the temp file next to the target.
         let (temp, file) = create_temp(&target)?;
-        let written = (|| -> Result<Counts, Error> {
+        let this: &Document = self;
+        let write = || -> Result<Counts, Error> {
             let mut bw = BufWriter::with_capacity(1 << 20, &file);
             let c = if gzip {
                 let mut gz = ParGz::new(&mut bw);
@@ -713,7 +714,7 @@ impl Document {
                     inner: &mut gz,
                     n: 0,
                 };
-                let mut c = self.write_rows(
+                let mut c = this.write_rows(
                     &mut cw,
                     format,
                     opts.convert_line_breaks,
@@ -729,7 +730,7 @@ impl Document {
                     inner: &mut bw,
                     n: 0,
                 };
-                let mut c = self.write_rows(
+                let mut c = this.write_rows(
                     &mut cw,
                     format,
                     opts.convert_line_breaks,
@@ -743,7 +744,14 @@ impl Document {
             bw.flush()?;
             file.sync_all()?;
             Ok(c)
-        })();
+        };
+        // The undo history is moved onto the rows being written beside the write (it only reads; it is kept only if
+        // the save then succeeds). With no history there is nothing to do.
+        let (written, rebase) = if !this.has_history() {
+            (write(), Err(Default::default()))
+        } else {
+            rayon::join(write, || this.prepare_rebase())
+        };
         drop(file);
         let counts = match written {
             Ok(c) => c,
@@ -762,9 +770,6 @@ impl Document {
             }
         };
         let (check_src, check_start, check_index) = check.into_parts();
-        // SPIKE: the history moved onto the saved rows, made while the old file is still readable; applied only
-        // after the replace succeeds.
-        let rebase = self.prepare_rebase();
         let temp_hash = check_src.file_hash();
         // A mapped temp file is locked; release it so it can be moved.
         let mut kept = (!check_src.is_mapped()).then_some(check_src);
@@ -835,10 +840,7 @@ impl Document {
                 Err(e) => return Err(self.reload_failed(&target, e.to_string())),
             },
         };
-        self.reset_to(source, check_start, format, check_index);
-        if let Some(r) = rebase {
-            self.apply_rebase(r);
-        }
+        self.reset_keeping(source, check_start, format, check_index, rebase);
         Ok(SaveReport {
             path: target,
             skipped: false,

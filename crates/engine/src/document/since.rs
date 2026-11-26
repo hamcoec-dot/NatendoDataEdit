@@ -263,7 +263,7 @@ impl Document {
         }
     }
 
-    fn since_read(&self, mark: u64, watermark: u32) -> Result<Read<'_>, Error> {
+    fn since_read(&self, mark: u64) -> Result<Read<'_>, Error> {
         let steps = self.since_steps(mark)?;
         let ops = &self.undo[self.undo.len() - steps..];
         let mut r = Read {
@@ -351,7 +351,6 @@ impl Document {
             r.totals.reordered = a != b;
             r.both = Some(both);
         }
-        let _ = watermark;
         // Columns: the map at the mark is the map now with the stored inverse steps applied, newest first.
         r.cols.now_map = self.logical_to_physical();
         r.cols.then_map = r.cols.now_map.clone();
@@ -475,12 +474,11 @@ impl Document {
     pub fn since_plan(
         &self,
         mark: u64,
-        watermark: u32,
         header: bool,
         progress: &Progress,
     ) -> Result<SincePlan, Error> {
         self.ready_for_bulk()?;
-        let r = self.since_read(mark, watermark)?;
+        let r = self.since_read(mark)?;
         let mut ids: Vec<u32> = r.compared_ids();
         ids.sort_unstable();
         progress.start(ids.len() as u64);
@@ -543,18 +541,17 @@ impl Document {
         })
     }
 
-    /// A page of the list, from a plan made for the same `mark` and `watermark` against the document as it is now:
+    /// A page of the list, from a plan made for the same `mark` against the document as it is now:
     /// the changed cells in row id order, then the rows taken out, the rows made since, and the cells of the columns
     /// taken out (column by column).
     pub fn since_page(
         &self,
         plan: &SincePlan,
         mark: u64,
-        watermark: u32,
         offset: u64,
         want: usize,
     ) -> Result<Vec<SinceCell>, Error> {
-        let r = self.since_read(mark, watermark)?;
+        let r = self.since_read(mark)?;
         let mut found: Vec<SinceCell> = Vec::new();
         // Changed cells: start in the batch the page starts in.
         if offset < plan.totals.cells_changed {
@@ -896,7 +893,7 @@ mod tests {
             let mut d = doc(300);
             let pre = rnd(8);
             random_steps(&mut d, &mut rnd, pre, with_cols, 1000 + round);
-            let (mark, wm) = (d.step_mark(), d.next_row_id());
+            let mark = d.step_mark();
             let then = snap(&d);
             let header = round % 2 == 0;
             let then_first = d.id_at(0).unwrap();
@@ -905,7 +902,7 @@ mod tests {
             random_steps(&mut d, &mut rnd, steps, with_cols, round);
             let now = snap(&d);
             let (want, want_cells) = brute(&then, &now);
-            let plan = d.since_plan(mark, wm, header, &Progress::new()).unwrap();
+            let plan = d.since_plan(mark, header, &Progress::new()).unwrap();
             let t = &plan.totals;
             assert_eq!(
                 (
@@ -932,7 +929,7 @@ mod tests {
             let mut got = Vec::new();
             let mut offset = 0;
             loop {
-                let page = d.since_page(&plan, mark, wm, offset, 7).unwrap();
+                let page = d.since_page(&plan, mark, offset, 7).unwrap();
                 if page.is_empty() {
                     break;
                 }
@@ -1024,25 +1021,25 @@ mod tests {
         let one = d.step_mark();
         d.set_cell(2, 0, "y".into()).unwrap();
         // Behind the table: fine.
-        assert!(d.since_plan(start, 0, false, &Progress::new()).is_ok());
+        assert!(d.since_plan(start, false, &Progress::new()).is_ok());
         // Ahead of the table (undone): refused, saying why.
         assert!(d.undo());
         assert!(d.undo());
         let e = d
-            .since_plan(one, 0, false, &Progress::new())
+            .since_plan(one, false, &Progress::new())
             .unwrap_err()
             .to_string();
         assert!(e.contains("ahead of the table"), "{e}");
         // Replaced by a newer change: gone.
         d.set_cell(3, 0, "z".into()).unwrap();
         let e = d
-            .since_plan(one, 0, false, &Progress::new())
+            .since_plan(one, false, &Progress::new())
             .unwrap_err()
             .to_string();
         assert!(e.contains("no longer be reached"), "{e}");
     }
 
-    /// B4 part 2, the case the review asked for: Split into rows makes rows; with the mark and the watermark taken
+    /// B4 part 2, the case the review asked for: Split into rows makes rows; with the mark taken
     /// inside the change they are added once, and the row they came from is a changed row (its cell now holds one
     /// part), matched by id.
     #[test]
@@ -1066,20 +1063,20 @@ mod tests {
         crate::document::capture_mark_start(d.uid());
         let plan = d.plan_split_rows(&spec, &Progress::new()).unwrap();
         d.apply_rows(plan).unwrap();
-        let (mark, wm) = crate::document::capture_mark_take().expect("the split made a step");
+        let mark = crate::document::capture_mark_take().expect("the split made a step");
         let then_rows = 4;
         assert_eq!(
             d.row_count(),
             then_rows + 3,
             "a|b|c and p|q make three more rows"
         );
-        let plan = d.since_plan(mark, wm, true, &Progress::new()).unwrap();
+        let plan = d.since_plan(mark, true, &Progress::new()).unwrap();
         let t = &plan.totals;
         assert_eq!(t.rows_added, 3, "added once, not twice");
         assert_eq!((t.rows_removed, t.cols_added, t.cols_removed), (0, 0, 0));
         // The two source rows now hold their first part: two changed cells.
         assert_eq!((t.rows_changed, t.cells_changed), (2, 2));
-        let cells = d.since_page(&plan, mark, wm, 0, 10).unwrap();
+        let cells = d.since_page(&plan, mark, 0, 10).unwrap();
         assert_eq!(
             cells.len(),
             5,
@@ -1100,7 +1097,7 @@ mod tests {
         );
     }
 
-    /// The watermark is taken with the mark, inside the change: a row a bulk change adds is added, once.
+    /// The mark is taken inside the change: a row a bulk change adds is added, once.
     #[test]
     fn rows_a_change_adds_count_once() {
         let mut d = doc(20);
@@ -1110,8 +1107,8 @@ mod tests {
             vec![vec!["n".into(), "n".into(), "n".into(), "n".into()]],
         )
         .unwrap();
-        let (mark, wm) = crate::document::capture_mark_take().expect("a change was made");
-        let plan = d.since_plan(mark, wm, true, &Progress::new()).unwrap();
+        let mark = crate::document::capture_mark_take().expect("a change was made");
+        let plan = d.since_plan(mark, true, &Progress::new()).unwrap();
         assert_eq!(
             (
                 plan.totals.rows_added,

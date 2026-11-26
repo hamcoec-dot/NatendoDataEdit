@@ -15,6 +15,7 @@ enum Act {
     Sort(u32, bool),
     Hide(u64, u8),
     Upper(u32),
+    DelCol(u32),
     Undo,
     Redo,
 }
@@ -28,6 +29,7 @@ fn act() -> impl Strategy<Value = Act> {
         1 => (0..3u32, any::<bool>()).prop_map(|(c, d)| Act::Sort(c, d)),
         1 => (0..40u64, 1..4u8).prop_map(|(a, n)| Act::Hide(a, n)),
         1 => (0..3u32).prop_map(Act::Upper),
+        1 => (0..3u32).prop_map(Act::DelCol),
         2 => Just(Act::Undo),
         1 => Just(Act::Redo),
     ]
@@ -88,6 +90,12 @@ fn apply(d: &mut Document, a: &Act) {
                 Err(e) => Err(e),
             }
         }
+        // Counted on the title row without empty cells at its end, which a saved file and its twin agree on.
+        Act::DelCol(c) if shown(d)[0].len() > 1 => {
+            let w = shown(d)[0].len() as u32;
+            d.plan_delete_cols(&[c % w])
+                .and_then(|p| d.apply_cols(p).map(|_| ()))
+        }
         Act::Undo => {
             d.undo();
             Ok(())
@@ -100,18 +108,26 @@ fn apply(d: &mut Document, a: &Act) {
     };
 }
 
+/// The rows as shown, without empty cells at their ends: after a column step a saved file and its unsaved twin can
+/// differ in how far a row is padded (the saved one has no column map), never in a value.
 fn shown(d: &Document) -> Vec<Vec<String>> {
     (0..d.row_count())
-        .map(|r| d.row_values(r).unwrap())
+        .map(|r| {
+            let mut v = d.row_values(r).unwrap();
+            while v.last().is_some_and(String::is_empty) {
+                v.pop();
+            }
+            v
+        })
         .collect()
 }
 
 type SinceCells = Vec<(SinceKind, Option<u64>, Option<u32>, String, String)>;
 
 fn since(d: &Document, mark: u64) -> Option<(SinceTotals, SinceCells)> {
-    let plan = d.since_plan(mark, 0, true, &Progress::new()).ok()?;
+    let plan = d.since_plan(mark, true, &Progress::new()).ok()?;
     let mut cells: SinceCells = d
-        .since_page(&plan, mark, 0, 0, 500)
+        .since_page(&plan, mark, 0, 500)
         .ok()?
         .into_iter()
         .map(|c| (c.kind, c.row, c.col, c.old, c.new))
@@ -140,6 +156,29 @@ fn table(rows: usize) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// Lets the twin's history go where the save let the saved document's go (a column step, or the budget).
+fn cut_like(y: &mut Document, k: HistoryKept) {
+    if k.cleared {
+        y.undo.clear();
+        y.redo.clear();
+        y.undo_ids.clear();
+        y.redo_ids.clear();
+        y.base_mark = next_step_id();
+    } else {
+        let u = k.undo_cut();
+        if u > 0 {
+            y.base_mark = y.undo_ids[u - 1];
+        }
+        y.undo.drain(..u);
+        y.undo_ids.drain(..u);
+        y.clean_depth = y.clean_depth.and_then(|d| d.checked_sub(u));
+        y.redo.drain(..k.redo_cut());
+        y.redo_ids.drain(..k.redo_cut());
+    }
+    y.undo_bytes = y.undo.iter().map(Op::cost).sum();
+    y.redo_bytes = y.redo.iter().map(Op::cost).sum();
+}
+
 /// One run: the same steps with and without a save in the middle.
 fn check(acts: &[Act], save_at: usize, mark_at: usize) -> Result<(), TestCaseError> {
     let d0 = dir("p");
@@ -158,17 +197,29 @@ fn check(acts: &[Act], save_at: usize, mark_at: usize) -> Result<(), TestCaseErr
             let before = since(&x, marks.0);
             x.save(SaveOptions::default()).unwrap();
             prop_assert!(!x.is_modified());
-            prop_assert_eq!(
-                &before,
-                &since(&x, marks.0),
-                "since, before and after the save"
-            );
+            if let Some(k) = x.last_history() {
+                cut_like(&mut y, k);
+            }
+            // A mark older than a cut is gone (on the twin too); every other one sees the same changes.
+            prop_assert_eq!(x.step_reach(marks.0).is_some(), y.step_reach(marks.1).is_some());
+            if x.step_reach(marks.0).is_some() {
+                prop_assert_eq!(
+                    &before,
+                    &since(&x, marks.0),
+                    "since, before and after the save"
+                );
+            }
         }
         apply(&mut x, a);
         apply(&mut y, a);
         prop_assert_eq!(shown(&x), shown(&y), "after step {} {:?}", i, a);
     }
-    prop_assert_eq!(since(&x, marks.0), since(&y, marks.1), "since at the end");
+    let col_step = acts.iter().any(|a| matches!(a, Act::DelCol(_)));
+    if !col_step {
+        // (After a column step the saved file has no column map and its twin does, so a cell typed past the last
+        // column is "a cell changed" in one and "a column added" in the other: same values, other wording.)
+        prop_assert_eq!(since(&x, marks.0), since(&y, marks.1), "since at the end");
+    }
     // Back to the mark across the save, and forward again.
     prop_assert_eq!(x.go_to_mark(marks.0), y.go_to_mark(marks.1));
     prop_assert_eq!(shown(&x), shown(&y), "at the mark");
@@ -190,14 +241,19 @@ fn check(acts: &[Act], save_at: usize, mark_at: usize) -> Result<(), TestCaseErr
         })
         .unwrap();
     }
-    prop_assert_eq!(std::fs::read(&gx).unwrap(), std::fs::read(&gy).unwrap());
+    if col_step {
+        // (Padding aside, see `shown`.)
+        prop_assert_eq!(shown(&x), shown(&y));
+    } else {
+        prop_assert_eq!(std::fs::read(&gx).unwrap(), std::fs::read(&gy).unwrap());
+    }
     drop((x, y));
     let _ = std::fs::remove_dir_all(d0);
     Ok(())
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 400, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: 1000, ..ProptestConfig::default() })]
     #[test]
     fn a_save_in_the_middle_changes_nothing_undo_redo_or_checkpoints_see(
         acts in prop::collection::vec(act(), 1..30),
@@ -252,7 +308,7 @@ fn rebase_timing() {
         .unwrap_or(100_000);
     let d0 = dir("time");
     let src = table(rows);
-    let run = |on: bool| -> (u128, Option<RebaseReport>) {
+    let run = |on: bool| -> (u128, Option<HistoryKept>) {
         let f = d0.join(format!("t{on}.csv"));
         std::fs::write(&f, &src).unwrap();
         let mut d = Document::open_indexed(&f, OpenOptions::default(), None).unwrap();
@@ -284,7 +340,7 @@ fn rebase_timing() {
                 t.elapsed().as_millis()
             );
         }
-        (ms, if on { last_rebase() } else { None })
+        (ms, if on { d.last_history() } else { None })
     };
     let (mut off, mut on, mut rep) = (Vec::new(), Vec::new(), None);
     for _ in 0..5 {
@@ -302,5 +358,181 @@ fn rebase_timing() {
         on[2] as f64 / off[2] as f64,
         rep
     );
+    let _ = std::fs::remove_dir_all(d0);
+}
+
+fn open_bytes(tag: &str, bytes: &[u8]) -> (std::path::PathBuf, Document) {
+    let d0 = dir(tag);
+    let f = d0.join("t.csv");
+    std::fs::write(&f, bytes).unwrap();
+    let d = Document::open_indexed(&f, OpenOptions::default(), None).unwrap();
+    (d0, d)
+}
+
+fn upper(d: &mut Document, c: u32) {
+    apply(d, &Act::Upper(c));
+}
+
+/// U2/B1: what the history really holds after the save is never above what was worked out before it, on a file of
+/// many 1-3 character cells and on one of long cells.
+#[test]
+fn the_estimate_is_not_below_what_is_held() {
+    let short = {
+        let mut s = (0..20).map(|c| format!("c{c}")).collect::<Vec<_>>().join(",") + "\r\n";
+        for i in 0..400 {
+            s += &((0..20).map(|c| format!("{}", (i + c) % 7)).collect::<Vec<_>>().join(",") + "\r\n");
+        }
+        s
+    };
+    let long = {
+        let mut s = String::from("a,b,c\r\n");
+        for i in 0..400 {
+            s += &format!("{},{},{}\r\n", "x".repeat(40 + i % 60), "é".repeat(30), i);
+        }
+        s
+    };
+    for (tag, bytes) in [("short", short), ("long", long)] {
+        let (d0, mut d) = open_bytes(tag, bytes.as_bytes());
+        // Cell edits, a bulk clean (Patch states), row deletes (None states), a sort, hidden rows, an insert.
+        for r in 1..60u64 {
+            d.set_cell(r * 5, 1, "z".into()).unwrap();
+        }
+        upper(&mut d, 0);
+        d.delete_rows(3, 40).unwrap();
+        apply(&mut d, &Act::Sort(2, true));
+        d.hide_rows(10, 5).unwrap();
+        apply(&mut d, &Act::Insert(4, 3));
+        assert!(d.undo() && d.undo(), "some steps on the redo side too");
+        let est = d.prepare_rebase().ok().expect("kept").estimate;
+        d.save(SaveOptions::default()).unwrap();
+        let real = d.undo_bytes + d.redo_bytes;
+        let k = d.last_history().unwrap();
+        assert!(!k.cleared && k.undo_cut() == 0 && k.redo == 2, "{tag}: {k:?}");
+        assert!(real <= est, "{tag}: real {real} > estimate {est}");
+        eprintln!("{tag}: real {real}, estimate {est} ({:.2}x)", est as f64 / real as f64);
+        drop(d);
+        let _ = std::fs::remove_dir_all(d0);
+    }
+}
+
+/// U2: with a small budget the newest steps that fit are kept, the older ones let go, and it says how many.
+#[test]
+fn a_save_keeps_the_newest_steps_that_fit() {
+    let (d0, mut x) = open_bytes("fit", &table(40));
+    let (d1, mut y) = open_bytes("fit2", &table(40));
+    for i in 0..30u64 {
+        for d in [&mut x, &mut y] {
+            d.set_cell(1 + i, 1, format!("edit{i}")).unwrap();
+        }
+    }
+    let one = x.rebased_cost(x.undo.last().unwrap(), 3, 1);
+    x.undo_budget = one * 10 + one / 2;
+    x.save(SaveOptions::default()).unwrap();
+    let k = x.last_history().unwrap();
+    assert_eq!((k.undo, k.undo_cut_memory, k.cleared), (10, 20, false), "{k:?}");
+    assert!(x.undo_bytes <= x.undo_budget);
+    for _ in 0..10 {
+        assert!(x.undo() && y.undo());
+        assert_eq!(shown(&x), shown(&y));
+    }
+    assert!(!x.undo(), "the older steps were let go");
+    drop((x, y));
+    let _ = std::fs::remove_dir_all(d0);
+    let _ = std::fs::remove_dir_all(d1);
+}
+
+#[test]
+fn nothing_fits_clears_the_history_as_before() {
+    let (d0, mut d) = open_bytes("none", &table(10));
+    d.set_cell(1, 1, "x".into()).unwrap();
+    d.undo_budget = 10;
+    d.save(SaveOptions::default()).unwrap();
+    let k = d.last_history().unwrap();
+    assert!(k.cleared && k.undo == 0, "{k:?}");
+    assert!(!d.undo() && !d.is_modified());
+    drop(d);
+    let _ = std::fs::remove_dir_all(d0);
+}
+
+/// B2: three whole-column cleans of a big file with a budget for about one and a half: the newest is kept, the two
+/// older ones are let go and counted.
+#[test]
+fn three_whole_column_cleans_keep_the_newest_that_fits() {
+    let mut s = String::from("a,b,c\r\n");
+    for i in 0..20_000 {
+        s += &format!("name{i},street {i},town{}\r\n", i % 40);
+    }
+    let (d0, mut d) = open_bytes("cleans", s.as_bytes());
+    for c in 0..3 {
+        upper(&mut d, c);
+    }
+    let all = d.prepare_rebase().ok().unwrap().estimate;
+    d.undo_budget = all / 2;
+    d.save(SaveOptions::default()).unwrap();
+    let k = d.last_history().unwrap();
+    assert_eq!((k.undo, k.undo_cut_memory), (1, 2), "{k:?}");
+    assert_eq!(d.cell(2, 2).unwrap(), "TOWN1");
+    assert!(d.undo());
+    assert_eq!(d.cell(2, 2).unwrap(), "town1", "the newest clean undoes");
+    assert_eq!(d.cell(2, 1).unwrap(), "STREET 1", "the older cleans stay");
+    assert!(!d.undo());
+    drop(d);
+    let _ = std::fs::remove_dir_all(d0);
+}
+
+/// B3: a column step waiting on the redo side is cut there too, at the step nearest the present.
+#[test]
+fn the_redo_side_is_cut_at_a_column_step() {
+    let (d0, mut d) = open_bytes("redo", &table(5));
+    let plan = d.plan_delete_cols(&[2]).unwrap();
+    d.apply_cols(plan).unwrap();
+    assert!(d.undo());
+    d.save(SaveOptions {
+        rewrite: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let k = d.last_history().unwrap();
+    assert_eq!((k.redo, k.redo_cut_columns), (0, 1), "{k:?}");
+    assert!(!d.redo(), "the column delete cannot be redone after the save");
+    assert_eq!(d.col_count(), 3);
+    // An edit, then a column delete, then both undone: redo holds [column delete, edit], the edit nearest the
+    // present. The save keeps the edit's redo and lets the column delete go.
+    d.set_cell(1, 0, "e".into()).unwrap();
+    let plan = d.plan_delete_cols(&[2]).unwrap();
+    d.apply_cols(plan).unwrap();
+    assert!(d.undo() && d.undo());
+    d.save(SaveOptions {
+        rewrite: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let k = d.last_history().unwrap();
+    assert_eq!((k.redo, k.redo_cut_columns), (1, 1), "{k:?}");
+    assert!(d.redo());
+    assert_eq!(d.cell(1, 0).unwrap(), "e");
+    assert!(!d.redo());
+    assert_eq!(d.col_count(), 3);
+    let _ = std::fs::remove_dir_all(d0);
+}
+
+/// U3: a kept "take changes from a newer file" plan is refused after a save (it names the rows of the old file).
+#[test]
+fn a_kept_updates_plan_is_refused_after_a_save() {
+    use crate::updates::{compare_newer, UpdateChoice, UpdateSpec};
+    let (d0, mut d) = open_bytes("upd", b"id,name\r\n1,Ann\r\n2,Bo\r\n");
+    let newer = Document::from_bytes(b"id,name\r\n1,Anne\r\n2,Bo\r\n".to_vec(), OpenOptions::default(), Some("csv")).unwrap();
+    d.set_cell(2, 1, "Bob".into()).unwrap();
+    let spec = UpdateSpec {
+        keys: vec![0],
+        keep_first: true,
+        ..Default::default()
+    };
+    let (ups, _) = compare_newer(&d, &newer, &spec, &Progress::new()).unwrap();
+    assert!(d.plan_updates(&ups, &UpdateChoice::default()).is_ok());
+    d.save(SaveOptions::default()).unwrap();
+    assert!(d.has_history(), "the edit is still undoable");
+    assert!(matches!(d.plan_updates(&ups, &UpdateChoice::default()), Err(Error::Changed)));
+    drop(d);
     let _ = std::fs::remove_dir_all(d0);
 }
