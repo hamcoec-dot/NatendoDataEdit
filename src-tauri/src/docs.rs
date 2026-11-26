@@ -3567,6 +3567,13 @@ impl Docs {
         self.edit(id, |d| d.hide_rows(at, count).map(drop))
     }
 
+    /// Rows hidden by hand in the gap just above shown row `row`.
+    pub fn gap_hidden(&self, id: u32, row: u64) -> CmdResult<u64> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.hidden_by_hand_before(row))
+    }
+
     /// Show hidden rows again (one undo step).
     pub fn show_rows(&self, id: u32, which: ShowRows) -> CmdResult<DocInfo> {
         self.edit(id, |d| d.show_rows(which).map(drop))
