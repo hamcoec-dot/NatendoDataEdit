@@ -1,3 +1,21 @@
+import type { ImportFormat } from "./backend";
+
+/** A dBase table's titles are always its field names: the import screen offers no choice about it. */
+export function headerChoice(format: ImportFormat | null): boolean {
+  return format !== "dbf";
+}
+
+/** Whether the imported table's first row holds titles. */
+export function importHeader(format: ImportFormat | null, ticked: boolean): boolean {
+  return headerChoice(format) ? ticked : true;
+}
+
+/** The line under the preview. `rows` counts the preview's rows; a dBase table says its records instead. */
+export function previewLine(format: ImportFormat | null, rows: number, records: string | undefined): string {
+  if (format === "dbf") return records ? `${records}.` : "Counting the records\u2026";
+  return rows >= 100 ? "Showing the first 100 rows." : `${rows.toLocaleString()} rows.`;
+}
+
 // The encodings offered for a dBase (.dbf) table: [label sent to the engine, name shown].
 export const DBF_ENCODINGS: [string, string][] = [
   ["", "Automatic"],

@@ -53,8 +53,7 @@ impl Session {
 /// why, the coordinate system and the warnings (field names and counts only).
 fn dbf_summary(info: &DbfInfo, warnings: &[String]) -> String {
     let mut s = format!(
-        "{}, {}. Text is read as {} ({}).",
-        count_of(info.records, "record", "records"),
+        "{}. Text is read as {} ({}).",
         count_of(u64::from(info.fields), "field", "fields"),
         info.encoding,
         info.rule
@@ -71,6 +70,24 @@ fn dbf_summary(info: &DbfInfo, warnings: &[String]) -> String {
             s.push_str(c.as_str());
             s.push('.');
         }
+    }
+    s
+}
+
+/// "2 records (1 marked as deleted, left out)": the records the table will hold.
+fn dbf_records(info: &DbfInfo, show_deleted: bool) -> String {
+    let shown = if show_deleted {
+        info.records
+    } else {
+        info.records - info.deleted
+    };
+    let mut s = count_of(shown, "record", "records");
+    if info.deleted > 0 {
+        s.push_str(&format!(
+            " ({} marked as deleted, {})",
+            info.deleted,
+            if show_deleted { "shown" } else { "left out" }
+        ));
     }
     s
 }
@@ -111,6 +128,9 @@ pub struct ImportNotes {
     pub remember_path: Option<String>,
     /// One sentence for the status line and the import screen (empty when no guard did anything).
     pub summary: String,
+    /// dBase: how many records there are, said under the preview (a record count is what a GIS
+    /// program shows, so the title row is never in it).
+    pub records: String,
 }
 
 /// "A", "B", ... "AA" for a column number counted from 0.
@@ -166,6 +186,7 @@ pub fn notes_of(st: &SheetStats, names: &[String], scanned: u64, all: bool) -> I
         all_scanned: all,
         remember_path: None,
         summary: String::new(),
+        records: String::new(),
     };
     let mut parts: Vec<String> = Vec::new();
     if st.kept_big > 0 {
@@ -360,6 +381,7 @@ impl Imports {
             )?;
             return Ok(ImportNotes {
                 summary: dbf_summary(&info, &st.warnings),
+                records: dbf_records(&info, opts.dbf.show_deleted),
                 scanned_rows: info.records.min(NOTES_ROWS),
                 all_scanned: info.records < NOTES_ROWS,
                 ..Default::default()
@@ -482,6 +504,26 @@ mod tests {
 
     /// A1a: the summary holds counts and column names only (never a cell value), and says plainly what
     /// could not be kept.
+    #[test]
+    fn dbf_record_counts_leave_out_the_title_row() {
+        let mut info = DbfInfo {
+            records: 3,
+            deleted: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            dbf_records(&info, false),
+            "2 records (1 marked as deleted, left out)"
+        );
+        assert_eq!(
+            dbf_records(&info, true),
+            "3 records (1 marked as deleted, shown)"
+        );
+        info.deleted = 0;
+        info.records = 1;
+        assert_eq!(dbf_records(&info, false), "1 record");
+    }
+
     #[test]
     fn notes_hold_counts_and_names_only() {
         let st = SheetStats {

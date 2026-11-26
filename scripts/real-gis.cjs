@@ -319,6 +319,8 @@ const shot = (m, n) => m.screenshot({ path: path.join(evidence, n) });
     ok(why.includes("sample roads.dbf") && why.includes("shapes are not shown"), `why it opened: ${why}`);
     let notes = await text(m, "[data-testid=import-notes]");
     ok(notes.includes("windows-1252") && notes.includes("the code page stored in the table") && notes.includes("Made up datum"), `notes: ${notes}`);
+    ok(await waitFor(async () => (await text(m, "body")).includes("2 records (1 marked as deleted, left out)."), 8000), "records are counted under the preview");
+    ok((await m.getByRole("checkbox", { name: "First row is header" }).count()) === 0, "no title-row tick for a dBase table");
     await shot(m, "import-dbf.png");
     const preview = () => text(m, ".table-preview");
     ok((await preview()).includes("Caf\u00e9 Example Road"), "accented text in the preview");
