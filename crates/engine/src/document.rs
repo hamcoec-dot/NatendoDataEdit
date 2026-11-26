@@ -1161,6 +1161,15 @@ impl Document {
 
     /// Whether another program changed the file (size or time) since it
     /// was opened or last saved.
+    pub(crate) fn source_mut(&mut self) -> &mut Source {
+        &mut self.source
+    }
+
+    /// The bytes and file identity behind the table.
+    pub(crate) fn source_ref(&self) -> &Source {
+        &self.source
+    }
+
     pub fn changed_on_disk(&self) -> bool {
         self.source.changed_on_disk().unwrap_or(true)
     }

@@ -8,6 +8,7 @@ mod agent;
 mod applog;
 mod assoc;
 mod batch;
+mod diskwatch;
 mod docs;
 mod extras;
 mod imports;
@@ -1709,6 +1710,29 @@ async fn open_folder_hit(
         open_any(&docs, &imports, &recent, &path)
     })
     .await
+}
+
+static DISK_WATCH: std::sync::LazyLock<diskwatch::DiskWatch> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Look whether another program changed an open file. Waits at most two
+/// seconds, off the window's thread.
+#[tauri::command]
+async fn disk_check(docs: DocsState<'_>) -> CmdResult<Vec<diskwatch::DiskEvent>> {
+    let docs = docs.inner().clone();
+    blocking(move || Ok(DISK_WATCH.round(docs.disk_marks(), |id| docs.disk_mark(id)))).await
+}
+
+/// Compare a tab's file as it was last read or saved with the file on disk
+/// now: opens the disk's version and the differences as new tabs.
+#[tauri::command]
+async fn disk_compare(
+    docs: DocsState<'_>,
+    doc: u32,
+    header: bool,
+) -> CmdResult<(DocInfo, DocInfo)> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.disk_compare(doc, header)).await
 }
 
 /// What changed since the file was opened or last saved.
@@ -4590,6 +4614,8 @@ pub fn run() {
             find_private,
             save_safe_copy,
             label_sheets,
+            disk_check,
+            disk_compare,
             change_list,
             pick_search_folder,
             search_folder,

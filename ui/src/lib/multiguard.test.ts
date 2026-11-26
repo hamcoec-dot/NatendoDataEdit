@@ -168,6 +168,8 @@ const NOT_WRITES = [
   "findPrivate",
   "saveSafeCopy",
   "changeList",
+  "diskCheck",
+  "diskCompare",
   "pickSearchFolder",
   "searchFolder",
   "folderSearchProgress",

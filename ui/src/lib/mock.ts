@@ -4072,6 +4072,16 @@ export class MockBackend implements Backend {
     }
     return out;
   }
+  /** A test or the browser stand-in says what the next look finds. */
+  diskEvents: import("./backend").DiskEvent[] = [];
+  async diskCheck(): Promise<import("./backend").DiskEvent[]> {
+    return this.diskEvents.splice(0);
+  }
+  async diskCompare(doc: number): Promise<[DocInfo, DocInfo]> {
+    const info = await this.docInfo(doc);
+    return [this.make(`${info.name} (on disk)`, 10, 3), this.make(`Changes in ${info.name}`, 2, 3)];
+  }
+
   async changeList(doc: number): Promise<import("./backend").ChangeList> {
     const d = this.get(doc);
     const cells = this.changedCells(d);

@@ -97,7 +97,7 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
-fn hash_file(path: &Path) -> io::Result<u64> {
+pub(crate) fn hash_file(path: &Path) -> io::Result<u64> {
     let mut f = File::open(path)?;
     let mut h = std::hash::DefaultHasher::new();
     let mut buf = vec![0u8; HASH_CHUNK];
@@ -211,6 +211,13 @@ impl Source {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// No file stands behind these bytes any more (a mapped file stays
+    /// locked until the table closes).
+    pub(crate) fn forget_path(&mut self) {
+        self.path = None;
+        self.stamp = None;
     }
 
     /// The file was renamed or moved (same bytes, new name).
