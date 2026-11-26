@@ -2163,7 +2163,7 @@ mod tests {
                 let cols = d.col_count().max(1);
                 let rows = d.row_count();
                 let _ = match kind {
-                    0 => d.sort(&SortSpec {
+                    0 => d.sort(&SortSpec { scope: Default::default(),
                         keys: vec![SortKey {
                             col: a % cols,
                             descending: b % 2 == 1,
