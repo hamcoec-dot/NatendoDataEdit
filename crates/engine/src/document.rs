@@ -930,6 +930,12 @@ impl Document {
         self.view.as_ref().is_none_or(|v| v.shows(id))
     }
 
+    /// The document positions of the shown rows, when some are hidden (by a
+    /// filter or by hand); `None` when every row shows.
+    pub(crate) fn shown_places(&self) -> Option<&[u32]> {
+        self.view.as_ref().map(|v| self.visible(v))
+    }
+
     /// Positions of the rows a filter shows.
     pub(crate) fn visible<'a>(&'a self, v: &'a View) -> &'a [u32] {
         v.visible.get_or_init(|| {
