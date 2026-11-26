@@ -228,11 +228,11 @@ const proof = async () => {
   ok(sum.counts.clusters === 2 && state.file === true, `private source, private result (${JSON.stringify(state)})`);
   await invoke(m, "sort_rows", { doc: 1, spec: { keys: [{ col: 1, descending: true, kind: "auto", match_case: false }], keep_first: true, read: { decimal_comma: false, date_order: "mdy" }, lists: [] } });
   let said = "";
-  await invoke(m, "golden_plan", { doc: 1, accepted, spec: golden }).catch((e) => (said = String(e)));
-  ok(/run Match people again/.test(said), "after a sort the match is refused");
-  said = "";
   await invoke(m, "golden_create", { doc: 1, away: false }).catch((e) => (said = String(e)));
-  ok(/run Match people again/.test(said), "and so is the planned result");
+  ok(/run Match people again/.test(said), `after a sort the planned result is refused (${said.slice(0, 100)})`);
+  said = "";
+  await invoke(m, "golden_plan", { doc: 1, accepted, spec: golden }).catch((e) => (said = String(e)));
+  ok(/run Match people again/.test(said), "and so is the match");
   await invoke(m, "change", { doc: 1, change: { op: "undo" } });
   await sleep(800);
   const added = fs.existsSync(LOG) ? fs.readFileSync(LOG).subarray(logStart).toString("utf8") : "";
