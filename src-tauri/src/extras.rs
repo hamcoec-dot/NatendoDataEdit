@@ -509,6 +509,22 @@ pub struct ViewColumn {
     /// What the column holds (Text, Number, Date, Id); a view without it leaves the type alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub col_type: Option<natendo_engine::coltype::ColumnType>,
+    /// What the totals row shows under the column, when the person chose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<TotalChoice>,
+}
+
+/// One choice for a column's cell in the totals row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TotalChoice {
+    Sum,
+    Average,
+    Count,
+    Blank,
+    Min,
+    Max,
+    None,
 }
 
 /// A column's alignment in a view.
@@ -595,6 +611,9 @@ pub struct View {
     /// Titles of the fields pinned to the top of the Record panel (matched by title like the columns).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub record_pins: Vec<String>,
+    /// The totals row under the table is on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub totals_row: bool,
 }
 
 /// One filter-panel card of a view.
@@ -789,6 +808,23 @@ pub fn write_atomic_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_totals_row_and_its_choices_round_trip_in_a_view() {
+        let v = View::from_json(
+            br#"{"name":"T","totals_row":true,"columns":[{"title":"Votes","total":"max"},{"title":"b"}]}"#,
+        )
+        .unwrap();
+        assert!(v.totals_row);
+        assert_eq!(v.columns[0].total, Some(TotalChoice::Max));
+        assert_eq!(v.columns[1].total, None);
+        let old = View::from_json(br#"{"name":"T","columns":[{"title":"b"}]}"#).unwrap();
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("total"), "{text}");
+        assert!(
+            View::from_json(br#"{"name":"T","columns":[{"title":"b","total":"median"}]}"#).is_err()
+        );
+    }
 
     #[test]
     fn record_pins_and_filter_cards_round_trip_in_a_view() {

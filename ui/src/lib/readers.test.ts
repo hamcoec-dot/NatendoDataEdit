@@ -95,6 +95,7 @@ const ALLOWED: Record<string, number> = {
   "./cellformula.ts": 1, // a row number in an A1 reference
   "./lint.ts": 3, // the parts of a date written in a rule
   "./views.ts": 1, // formats a number for a label
+  "./totalsRow.ts": 1, // rounds an engine total for copying
   // The one reader of cell text as numbers and dates (the parsers, and the typed wrappers around them).
   "./m9.ts": 12,
   "./readers.ts": 3,

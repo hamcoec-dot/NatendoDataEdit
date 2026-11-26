@@ -284,6 +284,8 @@ export class Tab {
   checkVersion = 0;
   /** Alternating row colours (kept with views). */
   banded = $state(false);
+  /** The totals row under the table (view only). */
+  totalsOn = $state(false);
   /** Numbers, dates and text in different colours (View › Show value types). */
   valueTypes = $state(false);
   /** A line under each group: where this column's value changes. */

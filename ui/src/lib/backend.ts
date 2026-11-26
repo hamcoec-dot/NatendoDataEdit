@@ -205,6 +205,28 @@ export type Change =
   | { op: "redo" };
 
 /** Quick totals of a selection (status bar). */
+/** One column's totals over the shown rows, for the totals row. */
+export interface ColumnTotal {
+  col: number;
+  cells: number;
+  filled: number;
+  numbers: number;
+  blank: number;
+  sum: number | null;
+  average: number | null;
+  min: number | null;
+  max: number | null;
+  too_large: boolean;
+  /** What to show until the person chooses: never "sum" for an identifier. */
+  suggested: "sum" | "count";
+}
+export interface ColumnTotals {
+  revision: number;
+  /** Data rows shown (and so totalled). */
+  rows: number;
+  filtered: boolean;
+  columns: ColumnTotal[];
+}
 export interface Totals {
   cells: number;
   filled: number;
@@ -1714,6 +1736,8 @@ export interface Backend {
   selectionTotals(doc: number, row: number, rows: number, col: number, cols: number, read: ReadOptions, distinct?: boolean): Promise<Totals>;
   /** Totals of several blocks (Ctrl+click), each cell once, no distinct count. */
   selectionTotalsAreas(doc: number, areas: import("./selection").Rect[], read: ReadOptions): Promise<Totals>;
+  /** The totals row (at most 256 columns at once). */
+  columnTotals(doc: number, cols: number[], header: boolean, read: ReadOptions): Promise<ColumnTotals>;
   chartData(doc: number, spec: ChartSpec): Promise<ChartData>;
   highlights(doc: number, row: number, rows: number, col: number, cols: number, rules: Highlight[], skipFirst: boolean, read: ReadOptions): Promise<Mark[]>;
   /** Where Ctrl+arrow lands from a cell. */
@@ -2382,6 +2406,9 @@ class TauriBackend implements Backend {
   }
   selectionTotals(doc: number, row: number, rows: number, col: number, cols: number, read: ReadOptions, distinct = false) {
     return call<Totals>("selection_totals", { doc, row, rows, col, cols, read, distinct });
+  }
+  columnTotals(doc: number, cols: number[], header: boolean, read: ReadOptions) {
+    return call<ColumnTotals>("column_totals", { doc, cols, header, read });
   }
   selectionTotalsAreas(doc: number, areas: import("./selection").Rect[], read: ReadOptions) {
     return call<Totals>("selection_totals_areas", { doc, areas, read });

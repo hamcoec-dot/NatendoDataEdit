@@ -225,28 +225,8 @@ const CURRENCY: &[char] = &['$', '€', '£', '¥', '₹', '₩', '₽', '¢'];
 /// spaces, punctuation and capitals ("VoterID", "voter_id", "VoterId"), so
 /// "Valid" or "Amount paid" are not IDs; a title that also names a quantity
 /// ("Postal votes", "Cell count", "Account total") is a number.
-fn id_title(title: &str) -> bool {
-    let mut words: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut prev: Option<char> = None;
-    for c in title.chars() {
-        if !c.is_alphanumeric() {
-            if !cur.is_empty() {
-                words.push(std::mem::take(&mut cur));
-            }
-            prev = None;
-            continue;
-        }
-        // A capital after a small letter starts a word: Voter|ID, Voter|Id.
-        if c.is_uppercase() && prev.is_some_and(|p| p.is_lowercase()) && !cur.is_empty() {
-            words.push(std::mem::take(&mut cur));
-        }
-        cur.extend(c.to_lowercase());
-        prev = Some(c);
-    }
-    if !cur.is_empty() {
-        words.push(cur);
-    }
+pub(crate) fn id_title(title: &str) -> bool {
+    let words = title_words(title);
     const WORDS: &[&str] = &[
         "id",
         "ids",
@@ -271,18 +251,49 @@ fn id_title(title: &str) -> bool {
         "npi",
         "num",
     ];
+    !names_quantity(title)
+        && words
+            .iter()
+            .any(|w| WORDS.contains(&w.as_str()) || (w.len() > 3 && w.starts_with("zip")))
+}
+
+/// A title's words in lower case, split at spaces, punctuation and capitals.
+pub(crate) fn title_words(title: &str) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut prev: Option<char> = None;
+    for c in title.chars() {
+        if !c.is_alphanumeric() {
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+            prev = None;
+            continue;
+        }
+        // A capital after a small letter starts a word: Voter|ID, Voter|Id.
+        if c.is_uppercase() && prev.is_some_and(|p| p.is_lowercase()) && !cur.is_empty() {
+            words.push(std::mem::take(&mut cur));
+        }
+        cur.extend(c.to_lowercase());
+        prev = Some(c);
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words
+}
+
+/// The title names an amount or a count.
+pub(crate) fn names_quantity(title: &str) -> bool {
+    let words = title_words(title);
     const QUANTITY: &[&str] = &[
         "count", "counts", "votes", "ballots", "total", "totals", "amount", "amounts", "balance",
         "sum", "qty", "quantity", "paid",
     ];
-    let quantity = words.iter().enumerate().any(|(i, w)| {
+    words.iter().enumerate().any(|(i, w)| {
         QUANTITY.contains(&w.as_str())
             || (w == "number" && words.get(i + 1).is_some_and(|n| n == "of"))
-    });
-    !quantity
-        && words
-            .iter()
-            .any(|w| WORDS.contains(&w.as_str()) || (w.len() > 3 && w.starts_with("zip")))
+    })
 }
 
 /// The Excel number format of a kind: a built-in id, or a format string.

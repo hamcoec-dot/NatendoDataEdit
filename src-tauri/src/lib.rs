@@ -770,6 +770,19 @@ async fn selection_totals(
     blocking(move || docs.selection_totals(doc, row, rows, col, cols, read, distinct)).await
 }
 
+/// The totals row: each of these columns over the shown rows.
+#[tauri::command]
+async fn column_totals(
+    docs: DocsState<'_>,
+    doc: u32,
+    cols: Vec<u32>,
+    header: bool,
+    read: natendo_engine::value::ReadOptions,
+) -> CmdResult<docs::ColumnTotalsOut> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.column_totals(doc, cols, header, read)).await
+}
+
 /// Totals of several selected blocks (Ctrl+click), each cell once.
 #[tauri::command]
 async fn selection_totals_areas(
@@ -4536,6 +4549,7 @@ pub fn run() {
             column_summary,
             selection_totals,
             selection_totals_areas,
+            column_totals,
             fill_areas,
             open_link,
             clean_suggestions,

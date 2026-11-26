@@ -16,3 +16,4 @@
 - **GeoPackage:** open a `.gpkg` and pick a layer or attribute table. Shapes are left out; nothing is written beside the file. `.gpkg`, `.sqlite` and `.sqlite3` files now open from Open, drag and drop and double-click.
 - A SQLite database in write-ahead mode with unsaved changes in its `-wal` file (or an unfinished `-journal`) is no longer opened, because reading it could create or change files beside it. Close it in the program using it first.
 - **Recipes with a dates step:** a step recorded from now on says what it does with ambiguous dates (left as typed, month first or day first). Older recipes keep their behaviour.
+- **Totals row:** View > Totals row pins one total per column under the table, over the rows shown. Columns of IDs and codes are counted, not added.
