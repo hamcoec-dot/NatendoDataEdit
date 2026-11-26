@@ -86,11 +86,11 @@ fn main() -> ExitCode {
                 _ => Err(USAGE.to_string()),
             }
         }
-        ["clean", rest @ ..] => clean(rest),
-        ["convert", rest @ ..] => more::convert(rest),
-        ["compute", rest @ ..] => more::compute(rest),
-        ["run", rest @ ..] => more::run(rest),
-        ["pivot", rest @ ..] => more::pivot(rest),
+        ["clean", rest @ ..] => clean(rest, json),
+        ["convert", rest @ ..] => more::convert(rest, json),
+        ["compute", rest @ ..] => more::compute(rest, json),
+        ["run", rest @ ..] => more::run(rest, json),
+        ["pivot", rest @ ..] => more::pivot(rest, json),
         ["join", rest @ ..] => join::join(rest, json),
         ["validate", rest @ ..] => match more::validate(rest, json) {
             Ok(true) => Ok(()),
@@ -98,17 +98,17 @@ fn main() -> ExitCode {
             Err(e) => Err(e),
         },
         ["app", rest @ ..] => app::run(rest),
-        ["headers", rest @ ..] => tools::headers(rest),
-        ["select", rest @ ..] => tools::select(rest),
-        ["filter", rest @ ..] => tools::filter(rest),
-        ["sort", rest @ ..] => tools::sort(rest),
-        ["dedupe", rest @ ..] => tools::dedupe(rest),
-        ["stats", rest @ ..] => tools::stats(rest),
-        ["count", rest @ ..] => tools::count(rest),
-        ["sample", rest @ ..] => tools::sample(rest),
-        ["slice", rest @ ..] => tools::slice(rest),
-        ["split", rest @ ..] => tools::split(rest),
-        ["cat", rest @ ..] => tools::cat(rest),
+        ["headers", rest @ ..] => tools::headers(&with_json(rest, json)),
+        ["select", rest @ ..] => tools::select(&with_json(rest, json)),
+        ["filter", rest @ ..] => tools::filter(&with_json(rest, json)),
+        ["sort", rest @ ..] => tools::sort(&with_json(rest, json)),
+        ["dedupe", rest @ ..] => tools::dedupe(&with_json(rest, json)),
+        ["stats", rest @ ..] => tools::stats(&with_json(rest, json)),
+        ["count", rest @ ..] => tools::count(&with_json(rest, json)),
+        ["sample", rest @ ..] => tools::sample(&with_json(rest, json)),
+        ["slice", rest @ ..] => tools::slice(&with_json(rest, json)),
+        ["split", rest @ ..] => tools::split(&with_json(rest, json)),
+        ["cat", rest @ ..] => tools::cat(&with_json(rest, json)),
         _ => Err(USAGE.to_string()),
     };
     match result {
@@ -122,6 +122,15 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// The toolkit commands read `--json` themselves: give it back to them.
+fn with_json<'a>(rest: &[&'a str], json: bool) -> Vec<&'a str> {
+    let mut v = rest.to_vec();
+    if json {
+        v.push("--json");
+    }
+    v
 }
 
 fn open(path: &str) -> Result<Document, String> {
@@ -234,7 +243,7 @@ fn view(d: &Document, first: u64, count: u64) -> Result<(), String> {
 }
 
 /// Run a saved cleaner on a file and save the result with the same layout.
-fn clean(args: &[&str]) -> Result<(), String> {
+fn clean(args: &[&str], json: bool) -> Result<(), String> {
     use natendo_engine::clean::{CleanSpec, Cleaner, MAX_CLEANER_BYTES};
     use natendo_engine::find::Scope;
     use natendo_engine::{Progress, SaveOptions};
@@ -321,7 +330,7 @@ fn clean(args: &[&str]) -> Result<(), String> {
             ..Default::default()
         })
         .map_err(|e| format!("{output}: {e}"))?;
-    println!(
+    let msg = format!(
         "{changed} cells cleaned{}; saved {} rows to {}",
         if left > 0 {
             format!(", {left} left as they were")
@@ -331,5 +340,16 @@ fn clean(args: &[&str]) -> Result<(), String> {
         report.rows,
         report.path.display()
     );
+    if json {
+        more::print_json(&serde_json::json!({
+            "message": msg,
+            "changed": changed,
+            "left": left,
+            "rows": report.rows,
+            "file": report.path.display().to_string(),
+        }));
+    } else {
+        println!("{msg}");
+    }
     Ok(())
 }

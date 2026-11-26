@@ -7,8 +7,8 @@
 //! filtered-out rows never change), and "first row is header" keeps the
 //! title row out. Each change is one undo step.
 
-use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
+use std::collections::{hash_map::RandomState, HashSet};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1777,6 +1777,126 @@ pub struct Combine {
 /// Most tables combined at once.
 pub const MAX_COMBINE: usize = 500;
 
+/// The output columns when files are stacked by title (the app's Combine and
+/// `cat --by-name`). Titles match ignoring case and spaces at the ends. A
+/// title repeated within one file pairs in order: the second `Note` is
+/// `Note (2)`, so no column of a file ever lands on another of the same file.
+/// Blank titles match by position.
+#[derive(Debug, Default)]
+pub struct TitleUnion {
+    titles: Vec<String>,
+    seen: HashMap<String, usize>,
+}
+
+impl TitleUnion {
+    /// Add one file's title row; returns the output column of each of its
+    /// columns (never the same one twice).
+    pub fn add(&mut self, file: &[String]) -> Vec<usize> {
+        let mut used: HashSet<String> = HashSet::with_capacity(file.len());
+        // Where to go on counting for each repeated title, so many repeats
+        // stay quick.
+        let mut next: HashMap<String, u32> = HashMap::new();
+        let mut map = Vec::with_capacity(file.len());
+        for (c, t) in file.iter().enumerate() {
+            let name = t.trim();
+            let mut key = name.to_lowercase();
+            let mut number = None;
+            if key.is_empty() {
+                key = format!("\u{0}{c}");
+            } else if used.contains(&key) {
+                let base = key.clone();
+                let n = next.entry(base.clone()).or_insert(2);
+                loop {
+                    key = format!("{base} ({n})");
+                    number = Some(*n);
+                    *n += 1;
+                    if !used.contains(&key) {
+                        break;
+                    }
+                }
+            }
+            used.insert(key.clone());
+            let titles = &mut self.titles;
+            let at = *self.seen.entry(key).or_insert_with(|| {
+                titles.push(match number {
+                    _ if name.is_empty() => format!("Column {}", c + 1),
+                    Some(n) => format!("{name} ({n})"),
+                    None => t.clone(),
+                });
+                titles.len() - 1
+            });
+            map.push(at);
+        }
+        map
+    }
+
+    /// How many output columns there are so far.
+    pub fn len(&self) -> usize {
+        self.titles.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.titles.is_empty()
+    }
+
+    pub fn into_titles(self) -> Vec<String> {
+        self.titles
+    }
+}
+
+/// The output columns' titles, and for each table where its columns go.
+/// Kept apart from the row loop in [`combine`], which stays fast that way.
+#[inline(never)]
+#[allow(clippy::type_complexity)]
+fn plan_columns(
+    tables: &[(String, &Document)],
+    header: bool,
+    by_title: bool,
+) -> Result<(Vec<String>, Vec<Vec<usize>>), Error> {
+    let mut union = TitleUnion::default();
+    let mut titles: Vec<String> = Vec::new();
+    let mut maps: Vec<Vec<usize>> = Vec::with_capacity(tables.len());
+    for (_, d) in tables {
+        d.ready_for_bulk()?;
+        let w = d.col_count() as usize;
+        let mut row0 = if header && d.row_count() > 0 {
+            d.row_values(0)?
+        } else {
+            Vec::new()
+        };
+        row0.resize(w, String::new());
+        if by_title {
+            maps.push(union.add(&row0));
+        } else {
+            for (c, t) in row0.iter().enumerate().skip(titles.len()) {
+                titles.push(if t.is_empty() {
+                    format!("Column {}", c + 1)
+                } else {
+                    t.clone()
+                });
+            }
+            maps.push((0..w).collect());
+        }
+    }
+    if by_title {
+        titles = union.into_titles();
+    }
+    Ok((titles, maps))
+}
+
+/// `Source file`, numbered when a column already has that title.
+#[inline(never)]
+fn source_title(titles: &[String]) -> String {
+    let taken: HashSet<String> = titles.iter().map(|t| t.trim().to_lowercase()).collect();
+    let mut name = "Source file".to_string();
+    let mut n = 2u32;
+    while taken.contains(&name.to_lowercase()) {
+        name = format!("Source file ({n})");
+        n += 1;
+    }
+    name
+}
+
 /// Stack the shown rows of `tables` (name, table) into a new table.
 pub fn combine(
     tables: &[(String, &Document)],
@@ -1787,50 +1907,7 @@ pub fn combine(
         return Err(bad(format!("combine 1 to {MAX_COMBINE} files")));
     }
     let by_title = spec.by_title && spec.header;
-    // Output columns, and where each table's columns go.
-    let mut titles: Vec<String> = Vec::new();
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    let mut maps: Vec<Vec<usize>> = Vec::with_capacity(tables.len());
-    for (_, d) in tables {
-        d.ready_for_bulk()?;
-        let w = d.col_count() as usize;
-        let row0 = if spec.header && d.row_count() > 0 {
-            d.row_values(0)?
-        } else {
-            Vec::new()
-        };
-        let mut map = Vec::with_capacity(w);
-        for c in 0..w {
-            let t = row0.get(c).cloned().unwrap_or_default();
-            if by_title {
-                let key = t.trim().to_lowercase();
-                let key = if key.is_empty() {
-                    format!("\u{0}{c}")
-                } else {
-                    key
-                };
-                let at = *seen.entry(key).or_insert_with(|| {
-                    titles.push(if t.trim().is_empty() {
-                        format!("Column {}", c + 1)
-                    } else {
-                        t.clone()
-                    });
-                    titles.len() - 1
-                });
-                map.push(at);
-            } else {
-                if c >= titles.len() {
-                    titles.push(if t.is_empty() {
-                        format!("Column {}", c + 1)
-                    } else {
-                        t.clone()
-                    });
-                }
-                map.push(c);
-            }
-        }
-        maps.push(map);
-    }
+    let (titles, maps) = plan_columns(tables, spec.header, by_title)?;
     if titles.len() > crate::reshape::MAX_PIVOT_COLS {
         return Err(too_big());
     }
@@ -1845,7 +1922,7 @@ pub fn combine(
     let mut rows = 0u64;
     if spec.header {
         if spec.source {
-            line.push("Source file".into());
+            line.push(source_title(&titles));
         }
         line.extend(titles.iter().cloned());
         push_line(&mut out, &line);
@@ -2420,6 +2497,119 @@ mod tests {
         assert_eq!(rows.len(), 5);
         assert_eq!(rows[2], ["name ", "id", "extra"]);
         assert!(combine(&[], &spec, &p).is_err());
+    }
+
+    fn combined(files: &[&str], source: bool) -> Vec<Vec<String>> {
+        let docs: Vec<Document> = files.iter().map(|f| doc(f)).collect();
+        let tables: Vec<(String, &Document)> = docs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (format!("{i}.csv"), d))
+            .collect();
+        let spec = Combine {
+            header: true,
+            by_title: true,
+            source,
+        };
+        table(combine(&tables, &spec, &Progress::new()).unwrap())
+    }
+
+    #[test]
+    fn combine_keeps_repeated_titles() {
+        assert_eq!(
+            combined(&["Note,Note\r\na,b\r\n", "note \r\nc\r\n"], false),
+            [vec!["Note", "Note (2)"], vec!["a", "b"], vec!["c", ""],]
+        );
+        // An earlier result (`Note (2)` written out) lines up with raw repeats.
+        assert_eq!(
+            combined(
+                &["Note,Note (2)\r\na,b\r\n", "NOTE, note\r\nc,d\r\n"],
+                false
+            ),
+            [vec!["Note", "Note (2)"], vec!["a", "b"], vec!["c", "d"],]
+        );
+        // A literal `Note (2)` after two `Note`s gets its own column.
+        assert_eq!(
+            combined(&["Note,Note,Note (2),Note\r\na,b,c,d\r\n"], false),
+            [
+                vec!["Note", "Note (2)", "Note (2) (2)", "Note (3)"],
+                vec!["a", "b", "c", "d"],
+            ]
+        );
+        // Blank titles still match by position.
+        assert_eq!(
+            combined(&["x,,\r\n1,2,3\r\n", "x,,\r\n4,5,6\r\n"], false),
+            [
+                vec!["x", "Column 2", "Column 3"],
+                vec!["1", "2", "3"],
+                vec!["4", "5", "6"],
+            ]
+        );
+    }
+
+    #[test]
+    fn combine_source_title_does_not_clash() {
+        assert_eq!(
+            combined(&["Source file,source file (2)\r\na,b\r\n"], true),
+            [
+                vec!["Source file (3)", "Source file", "source file (2)"],
+                vec!["0.csv", "a", "b"],
+            ]
+        );
+    }
+
+    proptest::proptest! {
+        /// No file's columns share an output column, and every filled cell
+        /// comes out exactly once.
+        #[test]
+        fn combine_by_title_loses_nothing(
+            files in proptest::collection::vec(
+                proptest::collection::vec(
+                    proptest::sample::select(vec![
+                        "", " ", "a", "A", " a ", "a (2)", "A (3)", "a (2) (2)", "b", "Source file",
+                    ]),
+                    1..7,
+                ),
+                1..5,
+            ),
+        ) {
+            let mut union = TitleUnion::default();
+            for f in &files {
+                let titles: Vec<String> = f.iter().map(|t| t.to_string()).collect();
+                let map = union.add(&titles);
+                proptest::prop_assert_eq!(map.len(), f.len());
+                let distinct: std::collections::HashSet<_> = map.iter().collect();
+                proptest::prop_assert_eq!(distinct.len(), map.len());
+                proptest::prop_assert!(map.iter().all(|&j| j < union.len()));
+            }
+            // Cell values are unique, so each must be found once.
+            let mut want = Vec::new();
+            let texts: Vec<String> = files
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    let cells: Vec<String> = (0..f.len()).map(|c| format!("v{i}_{c}")).collect();
+                    want.extend(cells.iter().cloned());
+                    let titles: Vec<String> = f.iter().map(|t| format!("\"{t}\"")).collect();
+                    format!("{}\r\n{}\r\n", titles.join(","), cells.join(","))
+                })
+                .collect();
+            let docs: Vec<Document> = texts.iter().map(|t| doc(t)).collect();
+            let tables: Vec<(String, &Document)> =
+                docs.iter().map(|d| ("f".to_string(), d)).collect();
+            let spec = Combine { header: true, by_title: true, source: true };
+            let rows = table(combine(&tables, &spec, &Progress::new()).unwrap());
+            let mut got: Vec<String> = rows
+                .iter()
+                .skip(1)
+                .flat_map(|r| r.iter().skip(1))
+                .filter(|v| !v.is_empty())
+                .cloned()
+                .collect();
+            got.sort();
+            want.sort();
+            proptest::prop_assert_eq!(got, want);
+        }
     }
 
     #[test]

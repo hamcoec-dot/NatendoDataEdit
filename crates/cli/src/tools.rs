@@ -12,7 +12,7 @@ use natendo_engine::profile::ProfileSpec;
 use natendo_engine::recipe::RecipeOp;
 use natendo_engine::reshape::Duplicates;
 use natendo_engine::sort::{SortKey, SortSpec};
-use natendo_engine::tools::{Sample, SampleSize};
+use natendo_engine::tools::{Sample, SampleSize, TitleUnion};
 use natendo_engine::{Document, Progress};
 use serde_json::{json, Value};
 
@@ -21,6 +21,10 @@ use crate::USAGE;
 
 /// Files `cat` stacks at most.
 const MAX_CAT_FILES: usize = 1_000;
+/// Columns `cat --by-name` writes at most.
+const MAX_CAT_COLS: usize = 16_384;
+/// Input bytes `cat --by-name` keeps open between its two passes.
+const MAX_CAT_HELD: u64 = 1 << 30;
 /// Parts `split` writes at most.
 const MAX_PARTS: u64 = 10_000;
 /// Lines `count` prints at most (the counts file has them all).
@@ -735,8 +739,44 @@ pub fn split(args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// The data rows of one file of `cat --by-name`, each value moved to its
+/// output column (`map`) among `width`.
+#[inline(never)]
+fn write_by_name(
+    w: &mut Rows,
+    d: &Document,
+    head: u64,
+    map: &[usize],
+    width: usize,
+    input: &str,
+) -> Result<(), String> {
+    // A file whose columns already are the output's needs no moving.
+    let as_is = map.len() == width && map.iter().enumerate().all(|(i, &j)| i == j);
+    for r in head..d.row_count() {
+        let row = d.row_values(r).map_err(|e| e.to_string())?;
+        if as_is && row.len() == width {
+            w.row(&row)?;
+            continue;
+        }
+        let mut cells = vec![String::new(); width];
+        for (i, v) in row.into_iter().enumerate() {
+            if let Some(&j) = map.get(i) {
+                cells[j] = v;
+            } else if !v.is_empty() {
+                return Err(format!(
+                    "{input}: row {} has a value beyond its last column",
+                    r + 1
+                ));
+            }
+        }
+        w.row(&cells)?;
+    }
+    Ok(())
+}
+
 /// `cat <in> <in> … -o <out>`: stack files with the same columns (the
-/// title row once).
+/// title row once). With `--by-name` columns are lined up by title and every
+/// file's columns are kept.
 pub fn cat(args: &[&str]) -> Result<(), String> {
     let o = opts(args, &[], &["--by-name"])?;
     if o.plain.len() < 2 {
@@ -750,27 +790,52 @@ pub fn cat(args: &[&str]) -> Result<(), String> {
     if o.plain.iter().any(|i| same_file(i, path)) {
         return Err("write to a different file than the inputs".into());
     }
-    let mut w = Rows::create(path, sep_of(&o, out.path)?, out.overwrite)?;
+    let sep = sep_of(&o, out.path)?;
+    let by_name = o.has("--by-name") && o.header();
+    let sheet = sheet(&o)?;
+    // By name, the output has every file's columns, so all title rows are
+    // read first. Files are kept open up to a size; larger sets are read again.
+    let mut union = TitleUnion::default();
+    let mut maps: Vec<Vec<usize>> = Vec::new();
+    let mut kept: Vec<Option<Document>> = Vec::new();
+    if by_name {
+        let mut held = 0u64;
+        for input in &o.plain {
+            let d = load(input, sheet)?;
+            if d.row_count() > 0 {
+                let mut t = d.row_values(0).map_err(|e| e.to_string())?;
+                t.resize(d.col_count() as usize, String::new());
+                maps.push(union.add(&t));
+                if union.len() > MAX_CAT_COLS {
+                    return Err(format!(
+                        "{input}: more than {MAX_CAT_COLS} different columns"
+                    ));
+                }
+            } else {
+                maps.push(Vec::new());
+            }
+            held = held.saturating_add(std::fs::metadata(input).map_or(u64::MAX, |m| m.len()));
+            kept.push((held <= MAX_CAT_HELD).then_some(d));
+        }
+    }
+    let titles = union.into_titles();
+    let mut w = Rows::create(path, sep, out.overwrite)?;
+    if by_name && !titles.is_empty() {
+        w.row(&titles)?;
+    }
     let mut first_titles: Option<Vec<String>> = None;
-    for input in &o.plain {
-        let d = load(input, sheet(&o)?)?;
+    for (at, input) in o.plain.iter().enumerate() {
+        let d = match kept.get_mut(at).and_then(Option::take) {
+            Some(d) => d,
+            None => load(input, sheet)?,
+        };
         let head = u64::from(o.header() && d.row_count() > 0);
-        // Where each of this file's columns goes.
-        let mut map: Option<Vec<Option<usize>>> = None;
-        if head == 1 {
+        if head == 1 && !by_name {
             let t = d.row_values(0).map_err(|e| e.to_string())?;
             match &first_titles {
                 None => {
                     w.row(&t)?;
                     first_titles = Some(t);
-                }
-                Some(f) if o.has("--by-name") => {
-                    let norm = |s: &str| s.trim().to_lowercase();
-                    map = Some(
-                        t.iter()
-                            .map(|x| f.iter().position(|y| norm(y) == norm(x)))
-                            .collect(),
-                    );
                 }
                 Some(f) => {
                     let norm = |s: &str| s.trim().to_lowercase();
@@ -782,20 +847,11 @@ pub fn cat(args: &[&str]) -> Result<(), String> {
                 }
             }
         }
-        let width = first_titles.as_ref().map_or(0, Vec::len);
-        for r in head..d.row_count() {
-            let row = d.row_values(r).map_err(|e| e.to_string())?;
-            match &map {
-                Some(m) => {
-                    let mut cells = vec![String::new(); width];
-                    for (i, v) in row.into_iter().enumerate() {
-                        if let Some(Some(j)) = m.get(i) {
-                            cells[*j] = v;
-                        }
-                    }
-                    w.row(&cells)?;
-                }
-                None => w.row(&row)?,
+        if by_name {
+            write_by_name(&mut w, &d, head, &maps[at], titles.len(), input)?;
+        } else {
+            for r in head..d.row_count() {
+                w.row(&d.row_values(r).map_err(|e| e.to_string())?)?;
             }
         }
     }

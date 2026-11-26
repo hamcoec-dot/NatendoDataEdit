@@ -262,7 +262,7 @@ fn parse<'a>(args: &[&'a str], allowed: &[&str]) -> Result<Args<'a>, String> {
 /// Run a recipe saved in the app on a file: the steps are listed first,
 /// the file's columns are checked against the recipe's (`--force` runs it
 /// anyway), and the result is written to `-o` (`--dry-run` only lists).
-pub fn run(args: &[&str]) -> Result<(), String> {
+pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
     // `--set name=value`: answers to the recipe's questions.
     let mut answers: Vec<(String, String)> = Vec::new();
     let mut rest: Vec<&str> = Vec::new();
@@ -307,28 +307,49 @@ pub fn run(args: &[&str]) -> Result<(), String> {
     let recipe = recipe
         .answered(&answers)
         .map_err(|e| format!("{recipe_path}: {e}"))?;
-    for q in &recipe.questions {
-        let ask = if q.prompt.is_empty() {
-            &q.name
-        } else {
-            &q.prompt
-        };
-        println!("{ask}: {}", q.default);
-    }
-    println!(
-        "Recipe{}: {} step(s)",
-        if recipe.name.is_empty() {
-            String::new()
-        } else {
-            format!(" \"{}\"", recipe.name)
-        },
-        recipe.steps.len()
-    );
-    for (i, s) in recipe.steps.iter().enumerate() {
-        println!("  {}. {}", i + 1, s.describe());
-    }
-    for l in &recipe.left_out {
-        println!("  (not in the recipe: {l})");
+    let questions: Vec<(&str, &str)> = recipe
+        .questions
+        .iter()
+        .map(|q| {
+            let ask = if q.prompt.is_empty() {
+                &q.name
+            } else {
+                &q.prompt
+            };
+            (ask.as_str(), q.default.as_str())
+        })
+        .collect();
+    let steps: Vec<String> = recipe.steps.iter().map(|s| s.describe()).collect();
+    // With --json the listing is part of the one result printed at the end.
+    let mut report = json!({
+        "recipe": recipe.name,
+        "questions": questions
+            .iter()
+            .map(|(q, a)| json!({"question": q, "answer": a}))
+            .collect::<Vec<_>>(),
+        "steps": steps,
+        "left_out": recipe.left_out,
+        "dry_run": a.dry_run,
+    });
+    if !json_out {
+        for (ask, answer) in &questions {
+            println!("{ask}: {answer}");
+        }
+        println!(
+            "Recipe{}: {} step(s)",
+            if recipe.name.is_empty() {
+                String::new()
+            } else {
+                format!(" \"{}\"", recipe.name)
+            },
+            recipe.steps.len()
+        );
+        for (i, s) in steps.iter().enumerate() {
+            println!("  {}. {s}", i + 1);
+        }
+        for l in &recipe.left_out {
+            println!("  (not in the recipe: {l})");
+        }
     }
     let mut d = load(input, a.sheet)?;
     let problems = recipe.column_problems(&d);
@@ -339,10 +360,20 @@ pub fn run(args: &[&str]) -> Result<(), String> {
                 "the file's columns differ from the recipe's: {text}. Use --force to run it anyway."
             ));
         }
-        println!("Columns differ ({text}); running anyway (--force).");
+        if json_out {
+            report["columns_differ"] = json!(problems);
+        } else {
+            println!("Columns differ ({text}); running anyway (--force).");
+        }
     }
     if a.dry_run {
-        println!("Dry run: nothing was changed or written.");
+        let msg = "Dry run: nothing was changed or written.";
+        if json_out {
+            report["message"] = json!(msg);
+            print_json(&report);
+        } else {
+            println!("{msg}");
+        }
         return Ok(());
     }
     let Some(out) = a.out else {
@@ -369,14 +400,21 @@ pub fn run(args: &[&str]) -> Result<(), String> {
             overwrite: a.overwrite,
         },
     )?;
-    println!("{msg}");
+    if json_out {
+        report["message"] = json!(msg);
+        report["rows"] = json!(d.row_count());
+        report["file"] = json!(out);
+        print_json(&report);
+    } else {
+        println!("{msg}");
+    }
     Ok(())
 }
 
 /// Make a pivot table from a layout saved in the app (`.ndpivot`) and
 /// write it to `-o`. Columns are found by their titles, so the layout fits
 /// next month's file even if its columns moved.
-pub fn pivot(args: &[&str]) -> Result<(), String> {
+pub fn pivot(args: &[&str], json_out: bool) -> Result<(), String> {
     use natendo_engine::pivot::{SavedPivot, MAX_SAVED_PIVOT_BYTES};
     let a = parse(args, &["-o", "--out", "--to", "--no-header", "--overwrite"])?;
     let ([layout, input], Some(out)) = (a.plain.as_slice(), a.out) else {
@@ -424,11 +462,24 @@ pub fn pivot(args: &[&str]) -> Result<(), String> {
             overwrite: a.overwrite,
         },
     )?;
-    println!("{msg}");
+    report_written(json_out, msg, t.row_count(), out, json!({}));
     Ok(())
 }
 
-pub fn convert(args: &[&str]) -> Result<(), String> {
+/// The result of a command that wrote a file: a line, or with `--json` an
+/// object. `rows` counts every row of the table written, titles too.
+fn report_written(json_out: bool, msg: String, rows: u64, file: &str, mut extra: Value) {
+    if json_out {
+        extra["message"] = json!(msg);
+        extra["rows"] = json!(rows);
+        extra["file"] = json!(file);
+        print_json(&extra);
+    } else {
+        println!("{msg}");
+    }
+}
+
+pub fn convert(args: &[&str], json_out: bool) -> Result<(), String> {
     let a = parse(
         args,
         &[
@@ -456,11 +507,11 @@ pub fn convert(args: &[&str]) -> Result<(), String> {
             overwrite: a.overwrite,
         },
     )?;
-    println!("{msg}");
+    report_written(json_out, msg, d.row_count(), out, json!({}));
     Ok(())
 }
 
-pub fn compute(args: &[&str]) -> Result<(), String> {
+pub fn compute(args: &[&str], json_out: bool) -> Result<(), String> {
     let a = parse(
         args,
         &[
@@ -500,10 +551,16 @@ pub fn compute(args: &[&str]) -> Result<(), String> {
             overwrite: a.overwrite,
         },
     )?;
-    if rep.errors > 0 {
+    if rep.errors > 0 && !json_out {
         println!("{} cells came out as errors (like #VALUE!)", rep.errors);
     }
-    println!("{msg}");
+    report_written(
+        json_out,
+        msg,
+        d.row_count(),
+        out,
+        json!({"errors": rep.errors}),
+    );
     Ok(())
 }
 

@@ -29,6 +29,11 @@ while ((Get-Date) -lt $deadline) {
       $save = $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.AndCondition(
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)),
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '1')))))
+      if ($edit -and -not $save) {
+        # The Open dialog's button (id 1) is a split button: any control type, a direct child of the dialog.
+        $save = $w.FindFirst([System.Windows.Automation.TreeScope]::Children, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '1')))
+      }
+      if (-not $edit -or -not $save) { $script:seen = "dialog found; name box $([bool]$edit), button $([bool]$save)" }
       if ($edit -and $save) {
         $vp = $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
         $vp.SetValue($Target)
@@ -61,5 +66,5 @@ foreach ($p in $pids) {
   $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $p)
   foreach ($w in $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) { $names += ('"' + $w.Current.Name + '" (' + $w.Current.ControlType.ProgrammaticName + ')') }
 }
-'no dialog; windows of the app: ' + ($names -join ', ')
+'no dialog; windows of the app: ' + ($names -join ', ') + '; ' + $script:seen
 exit 1

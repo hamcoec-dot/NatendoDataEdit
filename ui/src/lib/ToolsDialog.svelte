@@ -160,6 +160,7 @@
     <p class="note">Choose the files in the next window (hold Ctrl to pick several). They are stacked into a new tab; the files themselves do not change.</p>
     <label class="row"><input type="checkbox" bind:checked={myHeader} /> Each file starts with a row of titles</label>
     {#if myHeader}<label class="row"><input type="checkbox" bind:checked={byTitle} /> Match columns by their titles (otherwise by position)</label>{/if}
+    {#if myHeader && byTitle}<p class="note">A title repeated within one file pairs in order: Note, Note (2).</p>{/if}
     <label class="row"><input type="checkbox" bind:checked={source} /> Add a column with each row's file name</label>
   {/if}
   {#if many}

@@ -987,7 +987,9 @@ everything is also in command search.
 ![Exporting to Excel: made for Excel users, in four parts as separate files](docs/screenshots/excel-export.png)
 *A table cut into parts of 10 rows, each part a file of its own with the title row.*
 - **Split one file into many** (by a column's value or a row count) and
-  **combine many files into one**.
+  **combine many files into one**, matching columns by title or by position.
+  By title, no column is lost when a file repeats a title: the repeats pair in
+  order as `Note`, `Note (2)`.
 - **Append** the rows of another file.
 - **CSV export safety** (File > Options, or command search): a spreadsheet
   can run a CSV cell that starts with `=`, `+`, `-` or `@` as a formula. With
@@ -1331,8 +1333,10 @@ The installer lands in `target/release/bundle/nsis/`.
 
 ## Command line (`natendo-cli`)
 
-Installed next to the app, for scripts and scheduled jobs. Add `--json` to get
-JSON output. `validate` exits with 1 when it finds problems and 2 on failure.
+Installed next to the app, for scripts and scheduled jobs. Add `--json` to any
+command to get one JSON value on standard output; a failure is then
+`{"error": "..."}`. `validate` exits with 1 when it finds problems; every
+command exits with 2 on failure.
 
 ```
 natendo-cli info data.csv --json
@@ -1365,6 +1369,10 @@ natendo-cli slice data.csv -o out.csv --rows 1001-2000     # with the title row
 natendo-cli split data.csv -o parts --by county            # or --rows 50000
 natendo-cli cat jan.csv feb.csv mar.csv -o q1.csv --by-name
 ```
+
+`cat --by-name` keeps every column of every file, as the app's Combine does:
+titles match ignoring case and spaces at the ends, a title repeated within one
+file pairs in order (`Note`, `Note (2)`), and blank titles match by position.
 
 A checks file is what Data > Data checks > Save writes, for example
 `{"checks": [{"column": "Email", "kind": {"type": "pattern", "pattern": {"text": "[^@]+@[^@]+", "kind": "regex"}}}]}`.
