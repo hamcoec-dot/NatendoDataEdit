@@ -7,7 +7,7 @@
   import { backend, errorText, type DocInfo } from "./backend";
   import FormShell from "./FormShell.svelte";
   import type { OtherTable } from "./transfer";
-  import { choiceOf, columnNotes, type UpdateList } from "./updates";
+  import { choiceOf, columnNotes, ticked, tickedCount, type Ticks, type UpdateList } from "./updates";
 
   interface Props {
     doc: number;
@@ -31,13 +31,12 @@
   let running = $state(false);
   let problem = $state("");
   // Ticks: true = take it. Changed cells and new rows start ticked,
-  // missing rows not (taking them deletes rows).
-  let cellsAll = $state(true);
-  let addedAll = $state(true);
-  let removedAll = $state(false);
-  let cellsFlip = $state(new Set<number>());
-  let addedFlip = $state(new Set<number>());
-  let removedFlip = $state(new Set<number>());
+  // missing rows not (taking them deletes rows). A hidden row is never
+  // deleted without its own tick or the button that names the hidden ones.
+  const fresh = (all: boolean, skipHidden = false): Ticks => ({ all, skipHidden, flips: new Set() });
+  let cells = $state<Ticks>(fresh(true));
+  let added = $state<Ticks>(fresh(true));
+  let removed = $state<Ticks>(fresh(false, true));
   let tab = $state<"cells" | "added" | "removed">("cells");
   let page = $state(0);
   const PAGE = 200;
@@ -55,9 +54,9 @@
     problem = "";
     try {
       found = await backend().updatesFind(doc, other, { keys: $state.snapshot(keys) as number[], keep_first: keepFirst, match_case: matchCase, trim });
-      cellsFlip = new Set();
-      addedFlip = new Set();
-      removedFlip = new Set();
+      cells = fresh(true);
+      added = fresh(true);
+      removed = fresh(false, true);
       page = 0;
       tab = found.cells_total ? "cells" : found.added_total ? "added" : "removed";
     } catch (e) {
@@ -66,25 +65,34 @@
       running = false;
     }
   }
-  const flip = (s: Set<number>, i: number): Set<number> => {
-    const n = new Set(s);
-    if (n.has(i)) n.delete(i);
-    else n.add(i);
-    return n;
+  const flip = (t: Ticks, i: number): Ticks => {
+    const flips = new Set(t.flips);
+    if (flips.has(i)) flips.delete(i);
+    else flips.add(i);
+    return { ...t, flips };
   };
-  const taken = (all: boolean, flips: Set<number>, total: number) => (all ? total - flips.size : flips.size);
-  const nCells = $derived(found ? taken(cellsAll, cellsFlip, found.cells_total) : 0);
-  const nAdded = $derived(found ? taken(addedAll, addedFlip, found.added_total) : 0);
-  const nRemoved = $derived(found ? taken(removedAll, removedFlip, found.removed_total) : 0);
+  const cellHidden = (i: number) => !!found?.cells[i]?.hidden;
+  const rowHidden = (i: number) => !!found?.removed_hidden?.[i];
+  const hiddenCells = $derived(found?.cells_hidden_total ?? 0);
+  const hiddenRemoved = $derived(found?.removed_hidden_total ?? 0);
+  const nCells = $derived(found ? tickedCount(cells, found.cells_total, hiddenCells, cellHidden) : 0);
+  const nAdded = $derived(found ? tickedCount(added, found.added_total, 0, () => false) : 0);
+  const nRemoved = $derived(found ? tickedCount(removed, found.removed_total, hiddenRemoved, rowHidden) : 0);
+  /** Leave every change to a hidden row out, ticks of single hidden cells too. */
+  function untickHidden(): void {
+    cells = { ...cells, skipHidden: true, flips: new Set([...cells.flips].filter((i) => !cellHidden(i))) };
+  }
   async function apply(): Promise<void> {
     if (!found || running) return;
     running = true;
     problem = "";
     try {
       const info = await backend().updatesAccept(doc, {
-        cells: choiceOf(cellsAll, cellsFlip),
-        added: choiceOf(addedAll, addedFlip),
-        removed: choiceOf(removedAll, removedFlip),
+        cells: choiceOf(cells.all, cells.flips),
+        added: choiceOf(added.all, added.flips),
+        removed: choiceOf(removed.all, removed.flips),
+        cells_skip_hidden: cells.skipHidden,
+        removed_skip_hidden: removed.skipHidden,
       });
       onDone(info, `Took ${plural(nCells, "changed cell")}, ${plural(nAdded, "new row")} and ${plural(nRemoved, "row removal")} from the newer file.`);
     } catch (e) {
@@ -117,22 +125,30 @@
     <label class="row"><input type="checkbox" bind:checked={keepFirst} /> Both files start with a title row (columns are then matched by title, wherever they are)</label>
     <label class="row"><input type="checkbox" bind:checked={trim} /> Ignore spaces around the key values</label>
     <label class="row"><input type="checkbox" bind:checked={matchCase} /> Key values must match in case</label>
+    <p class="note">Every row of both tables is compared: filters and hidden rows, here and in the newer file, are ignored.</p>
   {:else}
     <p>{plural(found.cells_total, "changed cell")}, {plural(found.added_total, "new row")} (in the newer file only), {plural(found.removed_total, "missing row")} (here only).
       {#if found.repeated_keys}<span class="warn">{plural(found.repeated_keys, "key")} appear more than once; those rows were paired in order.</span>{/if}
       {#each columnNotes(found, keepFirst) as note (note)}<span class="warn">{note}</span>{/each}
     </p>
+    {#if hiddenCells || hiddenRemoved}
+      <p class="hidden-note" data-testid="updates-hidden">
+        In rows hidden here: {plural(hiddenCells, "changed cell")} and {plural(hiddenRemoved, "missing row")}.
+        {#if hiddenRemoved && removed.skipHidden}Hidden rows are not ticked for deletion.{/if}
+        {#if hiddenCells}<button type="button" onclick={untickHidden} disabled={cells.skipHidden && ![...cells.flips].some(cellHidden)}>Untick changes to hidden rows</button>{/if}
+      </p>
+    {/if}
     <div class="tabs" role="tablist">
       <button type="button" role="tab" aria-selected={tab === "cells"} onclick={() => { tab = "cells"; page = 0; }}>Changed cells ({nCells.toLocaleString()} of {found.cells_total.toLocaleString()} taken)</button>
       <button type="button" role="tab" aria-selected={tab === "added"} onclick={() => { tab = "added"; page = 0; }}>New rows ({nAdded.toLocaleString()} of {found.added_total.toLocaleString()})</button>
       <button type="button" role="tab" aria-selected={tab === "removed"} onclick={() => { tab = "removed"; page = 0; }}>Missing rows ({nRemoved.toLocaleString()} of {found.removed_total.toLocaleString()})</button>
     </div>
     {#if tab === "cells"}
-      <div class="tools"><button type="button" onclick={() => { cellsAll = true; cellsFlip = new Set(); }}>Take all</button><button type="button" onclick={() => { cellsAll = false; cellsFlip = new Set(); }}>Take none</button></div>
+      <div class="tools"><button type="button" onclick={() => (cells = fresh(true))}>Take all</button><button type="button" onclick={() => (cells = fresh(false))}>Take none</button></div>
       <div class="list">
         {#each found.cells.slice(page * PAGE, page * PAGE + PAGE) as c, k (page * PAGE + k)}
           {@const i = page * PAGE + k}
-          <label class="line"><input type="checkbox" checked={cellsAll !== cellsFlip.has(i)} onchange={() => (cellsFlip = flip(cellsFlip, i))} /><span>Row {(c.row + 1).toLocaleString()}</span><span>{title(c.col)}</span><span class="old">{short(c.old)}</span><span>→ {short(c.new)}</span></label>
+          <label class="line"><input type="checkbox" checked={ticked(cells, i, !!c.hidden)} onchange={() => (cells = flip(cells, i))} /><span>Row {(c.row + 1).toLocaleString()}{c.hidden ? " (hidden)" : ""}</span><span>{title(c.col)}</span><span class="old">{short(c.old)}</span><span>→ {short(c.new)}</span></label>
         {/each}
       </div>
       {#if found.cells_total > found.cells.length}<p class="note">The first {found.cells.length.toLocaleString()} are listed; "Take all" and "Take none" cover the rest too.</p>{/if}
@@ -140,19 +156,23 @@
         <div class="tools"><button type="button" disabled={page === 0} onclick={() => page--}>Previous</button><button type="button" disabled={(page + 1) * PAGE >= found.cells.length} onclick={() => page++}>Next</button></div>
       {/if}
     {:else if tab === "added"}
-      <div class="tools"><button type="button" onclick={() => { addedAll = true; addedFlip = new Set(); }}>Take all</button><button type="button" onclick={() => { addedAll = false; addedFlip = new Set(); }}>Take none</button></div>
+      <div class="tools"><button type="button" onclick={() => (added = fresh(true))}>Take all</button><button type="button" onclick={() => (added = fresh(false))}>Take none</button></div>
       <div class="list">
         {#each found.added as r, i (i)}
-          <label class="line"><input type="checkbox" checked={addedAll !== addedFlip.has(i)} onchange={() => (addedFlip = flip(addedFlip, i))} /><span class="wide">{r.slice(0, 8).map(short).join(" · ")}</span></label>
+          <label class="line"><input type="checkbox" checked={ticked(added, i, false)} onchange={() => (added = flip(added, i))} /><span class="wide">{r.slice(0, 8).map(short).join(" · ")}</span></label>
         {/each}
       </div>
       <p class="note">New rows go at the end of the table.{found.added_total > found.added.length ? ` The first ${found.added.length.toLocaleString()} are listed.` : ""}</p>
     {:else}
-      <div class="tools"><button type="button" onclick={() => { removedAll = true; removedFlip = new Set(); }}>Take all (delete them)</button><button type="button" onclick={() => { removedAll = false; removedFlip = new Set(); }}>Keep all</button></div>
+      <div class="tools">
+        <button type="button" onclick={() => (removed = fresh(true, true))}>{hiddenRemoved ? "Take all shown (delete them)" : "Take all (delete them)"}</button>
+        {#if hiddenRemoved}<button type="button" onclick={() => (removed = fresh(true, false))}>Delete them all, with the {plural(hiddenRemoved, "hidden row")}</button>{/if}
+        <button type="button" onclick={() => (removed = fresh(false, true))}>Keep all</button>
+      </div>
       <div class="list">
         {#each found.removed.slice(page * PAGE, page * PAGE + PAGE) as r, k (page * PAGE + k)}
           {@const i = page * PAGE + k}
-          <label class="line"><input type="checkbox" checked={removedAll !== removedFlip.has(i)} onchange={() => (removedFlip = flip(removedFlip, i))} /><span>Row {(r + 1).toLocaleString()} is not in the newer file; tick to delete it</span></label>
+          <label class="line"><input type="checkbox" checked={ticked(removed, i, rowHidden(i))} onchange={() => (removed = flip(removed, i))} /><span class="wide">Row {(r + 1).toLocaleString()}{rowHidden(i) ? " (hidden)" : ""} is not in the newer file; tick to delete it</span></label>
         {/each}
       </div>
     {/if}
@@ -209,6 +229,11 @@
   .old {
     opacity: 0.7;
     text-decoration: line-through;
+  }
+  .hidden-note {
+    padding: 0.2rem 0.5rem;
+    border-left: 3px solid #d98e04;
+    background: rgb(217 142 4 / 0.16);
   }
   .warn {
     color: var(--warn, #b45309);

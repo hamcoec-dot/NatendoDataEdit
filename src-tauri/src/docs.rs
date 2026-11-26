@@ -9908,6 +9908,8 @@ Ann Lee,00123
             picked: vec![],
         };
         let choice = UpdateChoice {
+            cells_skip_hidden: false,
+            removed_skip_hidden: false,
             cells: all.clone(),
             added: all.clone(),
             removed: all,

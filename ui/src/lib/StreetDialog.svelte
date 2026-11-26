@@ -2,6 +2,7 @@
   // Street range lookup (Milestone 15): the precinct, district or other
   // value for each address, from a street index (street, from and to house
   // numbers, odd/even side) open in another tab.
+  import OtherHidden from "./OtherHidden.svelte";
   import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import FormShell from "./FormShell.svelte";
@@ -92,6 +93,7 @@
       <label class="row"><input type="checkbox" bind:checked={spec.note} /> Add a "Lookup note" column saying why a row found nothing</label>
     </fieldset>
   {/if}
+  <OtherHidden table={list.find((o) => o.id === other)} />
   {#snippet buttons()}
     <button type="button" class="primary" data-enter disabled={!ready || (split && spec.number === null) || (cols.area !== null && spec.area === null)} onclick={() => onRun(other, $state.snapshot(cols) as IndexCols, $state.snapshot(spec) as StreetSpec)}>Look up</button>
     <button type="button" onclick={onClose}>Close</button>

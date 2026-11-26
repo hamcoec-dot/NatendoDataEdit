@@ -42,11 +42,13 @@ pub struct UpdateSpec {
 /// One changed cell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CellUpdate {
-    /// Its shown row here.
+    /// Its row here, counted over every row (hidden ones too).
     pub row: u64,
     pub col: u32,
     pub old: String,
     pub new: String,
+    /// A filter or the person hid the row.
+    pub hidden: bool,
 }
 
 /// What a newer file changes, for the review screen.
@@ -59,9 +61,15 @@ pub struct UpdateList {
     /// this table's columns).
     pub added: Vec<Vec<String>>,
     pub added_total: u64,
-    /// Rows here not in the newer file: their shown rows (first 100,000).
+    /// Rows here not in the newer file: their rows counted over every row
+    /// (first 100,000).
     pub removed: Vec<u64>,
     pub removed_total: u64,
+    /// Which of the listed rows in `removed` are hidden here.
+    pub removed_hidden: Vec<bool>,
+    /// All changed cells, and all missing rows, that are in hidden rows.
+    pub cells_hidden_total: u64,
+    pub removed_hidden_total: u64,
     /// Keys found more than once (paired in order).
     pub repeated_keys: u64,
     /// Columns here the newer file does not have (never compared or
@@ -95,6 +103,16 @@ pub struct UpdateChoice {
     pub cells: Choice,
     pub added: Choice,
     pub removed: Choice,
+    /// A changed cell, or a missing row, in a hidden row is taken only when
+    /// its number is in `picked`, whatever `all` says.
+    pub cells_skip_hidden: bool,
+    pub removed_skip_hidden: bool,
+}
+
+/// Document positions of every data row, shown or not.
+fn every_row(d: &Document, keep_first: bool) -> std::ops::Range<u64> {
+    let n = d.total_rows();
+    u64::from(keep_first && n > 0).min(n)..n
 }
 
 /// Normalized title for pairing columns.
@@ -214,7 +232,9 @@ impl NewerIndex {
         // Compared columns, in this table's order.
         let compared: Vec<u32> = map.iter().flatten().copied().collect();
         let reader = Cols::new(newer, &all);
-        let rows = newer.data_rows(spec.keep_first);
+        // Every row of the newer file: its filter and hidden rows say what
+        // the person is looking at, not what the file holds.
+        let rows = every_row(newer, spec.keep_first);
         progress.start(rows.end - rows.start);
         let parts: Vec<Vec<(u128, u64, u32)>> = (0..(rows.end - rows.start).div_ceil(CHUNK))
             .into_par_iter()
@@ -224,7 +244,7 @@ impl NewerIndex {
                 let mut out = Vec::with_capacity((e - s) as usize);
                 let mut buf = Vec::new();
                 for r in s..e {
-                    let id = newer.id_at(r).ok_or(Error::OutOfRange)?;
+                    let id = newer.doc_id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(newer, id, &mut buf);
                     let parts: Vec<&str> = keys_there
                         .iter()
@@ -408,7 +428,8 @@ impl Document {
         sorted.par_sort_unstable();
         let all: Vec<u32> = (0..cols).collect();
         let reader = Cols::new(self, &all);
-        let rows = self.data_rows(spec.keep_first);
+        // Every row here too: a hidden row is still in the table.
+        let rows = every_row(self, spec.keep_first);
         progress.start(rows.end - rows.start);
         let empty_key = key_hash(&vec![""; spec.keys.len()], spec.match_case, spec.trim);
         let mut empty_here = 0u64;
@@ -438,7 +459,7 @@ impl Document {
                     let mut out = Vec::with_capacity((e - s) as usize);
                     let mut buf = Vec::new();
                     for r in s..e {
-                        let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                        let id = self.doc_id_at(r).ok_or(Error::OutOfRange)?;
                         reader.read(self, id, &mut buf);
                         let parts: Vec<&str> = spec
                             .keys
@@ -561,8 +582,11 @@ impl Document {
         };
         let mut cells = Vec::new();
         for (id, r, c, vr, old) in found.into_iter().flatten() {
+            let hidden = !self.is_shown(id);
+            list.cells_hidden_total += u64::from(hidden);
             if list.cells.len() < MAX_LISTED {
                 list.cells.push(CellUpdate {
+                    hidden,
                     row: r,
                     col: c,
                     old,
@@ -588,6 +612,17 @@ impl Document {
             .map(|x| x.1)
             .collect();
         list.removed_total = pairing.removed.len() as u64;
+        list.removed_hidden = pairing
+            .removed
+            .iter()
+            .take(MAX_LISTED)
+            .map(|x| !self.is_shown(x.0))
+            .collect();
+        list.removed_hidden_total = pairing
+            .removed
+            .iter()
+            .filter(|x| !self.is_shown(x.0))
+            .count() as u64;
         Ok((
             Updates {
                 revision: self.revision(),
@@ -618,7 +653,13 @@ impl Document {
         let width = self.col_count();
         let mut by_row: Vec<(u32, Vec<(u32, String)>)> = Vec::new();
         for (i, &(id, c, vr)) in ups.cells.iter().enumerate() {
-            if !choice.cells.takes(i as u64, &pc) || c >= width {
+            let held = choice.cells_skip_hidden && !self.is_shown(id);
+            let take = if held {
+                pc.contains(&(i as u64))
+            } else {
+                choice.cells.takes(i as u64, &pc)
+            };
+            if !take || c >= width {
                 continue;
             }
             let text = ups.values.cell(vr as usize, c as usize).to_string();
@@ -635,7 +676,13 @@ impl Document {
             }
         }
         for (i, &id) in ups.removed.iter().enumerate() {
-            if choice.removed.takes(i as u64, &pr) {
+            let held = choice.removed_skip_hidden && !self.is_shown(id);
+            let take = if held {
+                pr.contains(&(i as u64))
+            } else {
+                choice.removed.takes(i as u64, &pr)
+            };
+            if take {
                 plan.remove.push(id);
             }
         }
@@ -720,6 +767,7 @@ mod tests {
                 all: false,
                 picked: vec![],
             },
+            ..Default::default()
         };
         let plan = old.plan_updates(&ups, &choice).unwrap();
         old.apply_rows(plan).unwrap();
@@ -737,6 +785,128 @@ mod tests {
         // A changed table is refused.
         old.set_cell(1, 1, "x".into()).unwrap();
         assert!(old.plan_updates(&ups, &choice).is_err());
+    }
+
+    const THREE: &str = "id,name\n1,Ann\n2,Bo\n3,Cy\n";
+
+    fn take_all() -> UpdateChoice {
+        let all = Choice {
+            all: true,
+            picked: vec![],
+        };
+        UpdateChoice {
+            cells: all.clone(),
+            added: all.clone(),
+            removed: all,
+            cells_skip_hidden: false,
+            removed_skip_hidden: true,
+        }
+    }
+
+    /// A row hidden here is not offered as new again, and a row hidden in the
+    /// newer table is not offered for deletion.
+    #[test]
+    fn hidden_rows_of_both_tables_are_compared() {
+        let p = Progress::new();
+        let mut old = doc(THREE);
+        old.hide_rows(2, 1).unwrap();
+        let (_, list) = compare_newer(&old, &doc(THREE), &spec(), &p).unwrap();
+        assert_eq!((list.added_total, list.removed_total), (0, 0));
+        let mut newer = doc(THREE);
+        newer.hide_rows(2, 1).unwrap();
+        let (_, list) = compare_newer(&doc(THREE), &newer, &spec(), &p).unwrap();
+        assert_eq!((list.added_total, list.removed_total), (0, 0));
+    }
+
+    #[test]
+    fn a_change_to_a_hidden_row_is_marked_and_can_be_left_out() {
+        let p = Progress::new();
+        let newer = doc("id,name\n1,Ann\n2,Bob\n3,Cyd\n");
+        for (skip, want) in [(false, ["Ann", "Bob", "Cyd"]), (true, ["Ann", "Bo", "Cyd"])] {
+            let mut old = doc(THREE);
+            old.hide_rows(2, 1).unwrap();
+            let (ups, list) = compare_newer(&old, &newer, &spec(), &p).unwrap();
+            assert_eq!(list.cells_hidden_total, 1);
+            assert_eq!(
+                list.cells
+                    .iter()
+                    .map(|c| (c.row, c.hidden))
+                    .collect::<Vec<_>>(),
+                [(2, true), (3, false)]
+            );
+            let choice = UpdateChoice {
+                cells_skip_hidden: skip,
+                ..take_all()
+            };
+            let plan = old.plan_updates(&ups, &choice).unwrap();
+            old.apply_rows(plan).unwrap();
+            old.show_rows(crate::rows::ShowRows::All).unwrap();
+            let got: Vec<String> = (1..4).map(|r| old.cell(r, 1).unwrap()).collect();
+            assert_eq!(got, want);
+        }
+    }
+
+    #[test]
+    fn deleting_a_hidden_row_takes_an_explicit_tick() {
+        let p = Progress::new();
+        let newer = doc("id,name\n1,Ann\n");
+        for (picked, left) in [(vec![], vec!["Ann", "Bo"]), (vec![0], vec!["Ann"])] {
+            let mut old = doc(THREE);
+            old.hide_rows(2, 1).unwrap(); // Bo: the first missing row
+            let (ups, list) = compare_newer(&old, &newer, &spec(), &p).unwrap();
+            assert_eq!(list.removed_hidden, [true, false]);
+            assert_eq!(list.removed_hidden_total, 1);
+            let mut choice = take_all();
+            choice.removed.picked = picked;
+            // "Take all" with the hidden ones held back: a number in `picked`
+            // takes the hidden row and nothing else changes.
+            let plan = old.plan_updates(&ups, &choice).unwrap();
+            old.apply_rows(plan).unwrap();
+            old.show_rows(crate::rows::ShowRows::All).unwrap();
+            let got: Vec<String> = (1..old.row_count())
+                .map(|r| old.cell(r, 1).unwrap())
+                .collect();
+            assert_eq!(got, left);
+        }
+    }
+
+    proptest::proptest! {
+        /// Hiding rows in either table changes nothing about the result.
+        #[test]
+        fn filters_do_not_change_the_result(
+            old in proptest::collection::vec((0u8..6, "[ab]{0,2}", proptest::bool::ANY), 0..12),
+            new in proptest::collection::vec((0u8..6, "[ab]{0,2}", proptest::bool::ANY), 0..12),
+        ) {
+            let make = |rows: &[(u8, String, bool)], hide: bool| {
+                let mut text = String::from("id,name\n");
+                for r in rows {
+                    text.push_str(&format!("{},{}\n", r.0, r.1));
+                }
+                let mut d = doc(&text);
+                if hide {
+                    for (i, r) in rows.iter().enumerate().rev() {
+                        if r.2 {
+                            d.hide_rows(i as u64 + 1, 1).unwrap();
+                        }
+                    }
+                }
+                d
+            };
+            let run = |hide: bool| {
+                let mut here = make(&old, hide);
+                let p = Progress::new();
+                let (ups, _) = compare_newer(&here, &make(&new, hide), &spec(), &p).unwrap();
+                let mut choice = take_all();
+                choice.removed_skip_hidden = false;
+                let plan = here.plan_updates(&ups, &choice).unwrap();
+                here.apply_rows(plan).unwrap();
+                let _ = here.show_rows(crate::rows::ShowRows::All);
+                (0..here.total_rows())
+                    .map(|r| here.row_values(r).unwrap())
+                    .collect::<Vec<_>>()
+            };
+            proptest::prop_assert_eq!(run(true), run(false));
+        }
     }
 
     #[test]
@@ -767,6 +937,7 @@ mod tests {
                     cells: all.clone(),
                     added: all.clone(),
                     removed: all,
+                    ..Default::default()
                 },
             )
             .unwrap();

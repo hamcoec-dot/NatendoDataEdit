@@ -925,6 +925,11 @@ impl Document {
         }
     }
 
+    /// Whether the row with this id is shown (not filtered out or hidden).
+    pub(crate) fn is_shown(&self, id: u32) -> bool {
+        self.view.as_ref().is_none_or(|v| v.shows(id))
+    }
+
     /// Positions of the rows a filter shows.
     pub(crate) fn visible<'a>(&'a self, v: &'a View) -> &'a [u32] {
         v.visible.get_or_init(|| {
