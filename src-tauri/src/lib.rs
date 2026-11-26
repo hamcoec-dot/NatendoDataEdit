@@ -4252,9 +4252,87 @@ async fn dictionary_list(app: tauri::AppHandle) -> CmdResult<(String, Vec<Dictio
     .await
 }
 
+/// Dictionary files the person picked in a file window this session (only
+/// those, and files in the Dictionaries folder, are read or written).
+static DICT_PICKED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// A path the dictionary commands may use: in the Dictionaries folder, or
+/// picked by the person.
+fn dictionary_path_ok(app: &tauri::AppHandle, path: &std::path::Path) -> CmdResult<()> {
+    let dir = dictionary_folder(app)?;
+    let picked = DICT_PICKED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .any(|p| p == path);
+    let inside = path.parent().is_some_and(|p| p == dir);
+    if picked || inside {
+        Ok(())
+    } else {
+        Err(docs::CmdError::new("bad_request", "choose the dictionary file in the file window"))
+    }
+}
+
+/// Pick a dictionary file to load.
 #[tauri::command]
-async fn dictionary_read(path: String) -> CmdResult<natendo_engine::dictionary::ReadDictionary> {
+async fn dictionary_pick(app: tauri::AppHandle, window: WebviewWindow) -> CmdResult<Option<String>> {
     blocking(move || {
+        let mut d = rfd::FileDialog::new()
+            .set_title("Load a dictionary")
+            .add_filter("Natendo dictionary", &["ndmap"])
+            .set_parent(&window);
+        if let Ok(dir) = dictionary_folder(&app) {
+            d = d.set_directory(dir);
+        }
+        let Some(path) = d.pick_file() else {
+            return Ok(None);
+        };
+        DICT_PICKED.lock().unwrap_or_else(|p| p.into_inner()).push(path.clone());
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+}
+
+/// Pick where to save a dictionary (the Dictionaries folder to begin with).
+#[tauri::command]
+async fn dictionary_pick_save(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    name: String,
+) -> CmdResult<Option<String>> {
+    blocking(move || {
+        let stem = if name.trim().is_empty() {
+            "dictionary".to_string()
+        } else {
+            safe_file_name(&name)
+        };
+        let mut d = rfd::FileDialog::new()
+            .set_title("Save as dictionary")
+            .set_file_name(format!("{stem}.ndmap"))
+            .add_filter("Natendo dictionary", &["ndmap"])
+            .set_parent(&window);
+        if let Ok(dir) = dictionary_folder(&app) {
+            d = d.set_directory(dir);
+        }
+        let Some(mut path) = d.save_file() else {
+            return Ok(None);
+        };
+        if path.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("ndmap") {
+            path.set_extension("ndmap");
+        }
+        DICT_PICKED.lock().unwrap_or_else(|p| p.into_inner()).push(path.clone());
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn dictionary_read(
+    app: tauri::AppHandle,
+    path: String,
+) -> CmdResult<natendo_engine::dictionary::ReadDictionary> {
+    blocking(move || {
+        dictionary_path_ok(&app, std::path::Path::new(&path))?;
         let bytes = extras::read_capped(
             std::path::Path::new(&path),
             natendo_engine::dictionary::MAX_DICTIONARY_BYTES as u64,
@@ -4269,6 +4347,7 @@ async fn dictionary_read(path: String) -> CmdResult<natendo_engine::dictionary::
 /// are only written once the person said so (`confirmed`); never automatic.
 #[tauri::command]
 async fn dictionary_write(
+    app: tauri::AppHandle,
     docs: DocsState<'_>,
     doc: u32,
     path: String,
@@ -4283,13 +4362,14 @@ async fn dictionary_write(
                 "This dictionary holds values from a private file",
             ));
         }
-        let mut p = PathBuf::from(&path);
-        if !p.is_absolute() {
+        let p = PathBuf::from(&path);
+        if !p.is_absolute()
+            || p.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("ndmap")
+        {
             return Err(docs::CmdError::new("bad_request", "choose where to save the dictionary"));
         }
-        if p.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("ndmap") {
-            p.set_extension("ndmap");
-        }
+        dictionary_path_ok(&app, &p)?;
+        docs.check_writable(&p)?;
         let text = dict.to_json()?;
         extras::write_atomic(&p, text.as_bytes())?;
         Ok(p.to_string_lossy().into_owned())
@@ -5046,6 +5126,8 @@ pub fn run() {
             report_notes,
             total_row,
             dictionary_list,
+            dictionary_pick,
+            dictionary_pick_save,
             dictionary_read,
             dictionary_write,
             dictionary_unmatched,

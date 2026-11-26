@@ -991,11 +991,44 @@ export interface ValueTally {
   look_alikes: { members: number[] }[];
 }
 /** How to decide that two values look alike. */
-export type LookAlikeMethod = "sounds" | "spelling" | "both";
+export type LookAlikeMethod = "sounds" | "spelling" | "both" | "abbreviations";
 export interface LookAlikeSpec {
   col: number;
   keep_first: boolean;
   method: LookAlikeMethod;
+  /** Abbreviations: dictionary pairs (variant, canonical) that also group. */
+  extra?: [string, string][];
+}
+/** A value dictionary (C6): a saved list of merges, variant -> canonical. */
+export interface Dictionary {
+  name: string;
+  match_case: boolean;
+  trim: boolean;
+  pairs: [string, string][];
+}
+export interface ReadDictionary {
+  dict: Dictionary;
+  /** Pairs from a value to itself, left out. */
+  self_pairs: number;
+  /** The same pair twice, kept once. */
+  repeats: number;
+}
+export interface DictionaryItem {
+  /** The name inside the file. */
+  name: string;
+  /** The file's own name (shown when two share a name). */
+  file: string;
+  path: string;
+  pairs: number;
+  /** Why the file cannot be used, if it cannot. */
+  problem: string | null;
+}
+/** The column's values a dictionary does not know ("new since last time"). */
+export interface UnmatchedOut {
+  values: { value: string; count: number }[];
+  count: number;
+  rows: number;
+  complete: boolean;
 }
 export interface LookAlikes {
   /** Each group's values with counts; the suggested spelling first. */
@@ -1008,6 +1041,9 @@ export interface LookAlikes {
   too_long: number;
   /** Deleted forms skipped for being shared by too many values. */
   crowded: number;
+  /** Abbreviations: each group's "maybe" mark (state or country codes in a column that is mostly not
+   *  states or countries): listed apart and never put in the list all at once. */
+  maybe?: boolean[];
 }
 export interface MapValues {
   cols: number[];
@@ -1998,6 +2034,17 @@ export interface Backend {
   /** Group a column's values that sound or are spelled alike (a job:
    *  jobProgress and cancelJob apply). */
   lookalikeGroups(doc: number, spec: LookAlikeSpec): Promise<LookAlikes>;
+  /** The Dictionaries folder and the dictionaries in it. */
+  dictionaryList(): Promise<[string, DictionaryItem[]]>;
+  /** Pick a dictionary file to load (null: cancelled). */
+  dictionaryPick(): Promise<string | null>;
+  /** Pick where to save a dictionary (null: cancelled). */
+  dictionaryPickSave(name: string): Promise<string | null>;
+  dictionaryRead(path: string): Promise<ReadDictionary>;
+  /** Save a dictionary made from tab `doc`; refused with kind "private" for a private or encrypted tab
+   *  until `confirmed`. Returns the path written. */
+  dictionaryWrite(doc: number, path: string, dict: Dictionary, confirmed: boolean): Promise<string>;
+  dictionaryUnmatched(doc: number, col: number, keepFirst: boolean, dict: Dictionary): Promise<UnmatchedOut>;
   /** The first rows after a join, with counts for the whole table (a job). */
   joinPreview(doc: number, other: number | null, list: string | null, spec: JoinSpec, listId?: number | null): Promise<JoinPreview>;
   /** Keep a pasted list of keys for the Join screen; its number. */
@@ -2785,6 +2832,24 @@ class TauriBackend implements Backend {
   }
   computePreview(doc: number, spec: ComputeSpec) {
     return call<ComputePreview>("compute_preview", { doc, spec });
+  }
+  dictionaryList() {
+    return call<[string, DictionaryItem[]]>("dictionary_list");
+  }
+  dictionaryPick() {
+    return call<string | null>("dictionary_pick");
+  }
+  dictionaryPickSave(name: string) {
+    return call<string | null>("dictionary_pick_save", { name });
+  }
+  dictionaryRead(path: string) {
+    return call<ReadDictionary>("dictionary_read", { path });
+  }
+  dictionaryWrite(doc: number, path: string, dict: Dictionary, confirmed: boolean) {
+    return call<string>("dictionary_write", { doc, path, dict, confirmed });
+  }
+  dictionaryUnmatched(doc: number, col: number, keepFirst: boolean, dict: Dictionary) {
+    return call<UnmatchedOut>("dictionary_unmatched", { doc, col, keepFirst, dict });
   }
   lookalikeGroups(doc: number, spec: LookAlikeSpec) {
     return call<LookAlikes>("lookalike_groups", { doc, spec });

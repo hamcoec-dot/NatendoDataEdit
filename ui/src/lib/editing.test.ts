@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { editPairs, parsePairs, parsePositions, quote, rulesExpr, templateExpr } from "./editing";
+import { dictFromEdits, editPairs, editsFromDict, finalOf, mergeInto, parsePairs, parsePositions, quote, rulesExpr, templateExpr } from "./editing";
 import { MockBackend } from "./mock";
 
 const fin = { format: null, part: 0, raw_dates: false, record: "" };
@@ -49,5 +49,44 @@ describe("editing tools", () => {
     await b.dataOp(a.id, { op: "extract", spec: { col: 2, what: "last_word", title: "Last", remove: true, keep_first: true } });
     expect((await b.cellText(a.id, 1, 2)).text).toBe("Ann");
     expect((await b.cellText(a.id, 1, 3)).text).toBe("Lee");
+  });
+});
+
+describe("merging values (C6)", () => {
+  const m = (o: Record<string, string>) => new Map(Object.entries(o));
+  it("merges into a target's own final value, so chains never form", () => {
+    let e = mergeInto(new Map(), ["NY", "N.Y."], "New York");
+    expect(Object.fromEntries(e)).toEqual({ NY: "New York", "N.Y.": "New York" });
+    // New York merged on: the others follow it (no chain New York -> NYC left behind them).
+    e = mergeInto(e, ["New York"], "NYC");
+    expect(Object.fromEntries(e)).toEqual({ NY: "NYC", "N.Y.": "NYC", "New York": "NYC" });
+    // Dropping on a value that is itself merged goes to its final value.
+    e = mergeInto(e, ["ny"], "N.Y.");
+    expect(e.get("ny")).toBe("NYC");
+    expect(finalOf(e, "N.Y.")).toBe("NYC");
+  });
+  it("a value dropped on itself (or on what it already becomes) does nothing", () => {
+    const e = m({ A: "B" });
+    expect(mergeInto(e, ["A"], "A")).toEqual(m({ A: "B" }));
+    // A already becomes B: B dropped on A is B on itself.
+    expect(mergeInto(e, ["B"], "A")).toEqual(m({ A: "B" }));
+  });
+  it("keeps the old map for undo", () => {
+    const e = m({ A: "B" });
+    const n = mergeInto(e, ["C"], "B");
+    expect(e).toEqual(m({ A: "B" }));
+    expect(n.get("C")).toBe("B");
+  });
+  it("puts a dictionary in, listing (not overriding) the person's own different merges", () => {
+    const mine = m({ "Ham Co": "Hamilton" });
+    const r = editsFromDict(mine, [["ham co", "Hamilton County"], ["Knox Co", "Knox"], ["Ham", "Hamilton County"]], (s) => s.trim().toLowerCase());
+    expect(r.conflicts).toEqual([{ value: "Ham Co", mine: "Hamilton", theirs: "Hamilton County" }]);
+    expect(r.added).toBe(2);
+    expect(Object.fromEntries(r.edits)).toEqual({ "Ham Co": "Hamilton", "Knox Co": "Knox", Ham: "Hamilton County" });
+    // The same merge as the dictionary is no conflict.
+    expect(editsFromDict(m({ X: "Y" }), [["x", "y"]], (s) => s.toLowerCase()).conflicts).toEqual([]);
+  });
+  it("turns pending merges into dictionary pairs", () => {
+    expect(dictFromEdits(m({ A: "B", C: "C", D: "B" }))).toEqual([["A", "B"], ["D", "B"]]);
   });
 });

@@ -206,6 +206,8 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "find relationships": ["data.relations"],
   "random and audit samples": ["tools.sample"],
   "value editor": ["data.values"],
+  "merge values by dragging": ["data.values", "data.valuesLookalikes"],
+  "value dictionaries": ["data.loadDictionary", "data.saveDictionary", "data.values"],
   "group look alikes by sound or spelling": ["data.valuesLookalikes", "data.values"],
   // Checking data
   "data checks": ["data.checks", "data.unmarkChecks", "data.clearChecks"],

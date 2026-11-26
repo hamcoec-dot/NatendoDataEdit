@@ -144,6 +144,77 @@ export function editPairs(edits: Map<string, string>): [string, string][] {
   return [...edits].filter(([a, b]) => a !== b);
 }
 
+/** Where `v` ends up after the edits (following them to the end; a loop stops where it began). */
+export function finalOf(edits: Map<string, string>, v: string): string {
+  let t = v;
+  const seen = new Set<string>([t]);
+  while (edits.has(t)) {
+    const n = edits.get(t)!;
+    if (seen.has(n)) break;
+    seen.add(n);
+    t = n;
+  }
+  return t;
+}
+
+/**
+ * Merge `values` into `target` (C6, drag or Merge into…): each becomes the
+ * target's own final value, so chains never form; values that pointed at a
+ * merged value follow it; a value dropped on itself does nothing. Returns a
+ * new map (the old one stays for undo).
+ */
+export function mergeInto(edits: Map<string, string>, values: string[], target: string): Map<string, string> {
+  const to = finalOf(edits, target);
+  const moving = new Set(values.filter((v) => v !== to));
+  const next = new Map(edits);
+  if (moving.size === 0) return next;
+  for (const v of moving) next.set(v, to);
+  // The target is canonical: it changes to nothing.
+  next.delete(to);
+  for (const [a, b] of next) if (moving.has(b) && a !== b) next.set(a, to);
+  return next;
+}
+
+/** A dictionary's pairs put into the pending edits: each through mergeInto; a value the person already
+ *  merged elsewhere keeps their merge and is listed as a conflict (never overridden silently). `norm` is how
+ *  the dictionary compares values (its own match case and trim settings). */
+export function editsFromDict(
+  edits: Map<string, string>,
+  pairs: [string, string][],
+  norm: (s: string) => string = (s) => s,
+): { edits: Map<string, string>; conflicts: { value: string; mine: string; theirs: string }[]; added: number } {
+  const next = new Map(edits);
+  const mineByNorm = new Map<string, string>();
+  for (const k of edits.keys()) mineByNorm.set(norm(k), k);
+  const conflicts: { value: string; mine: string; theirs: string }[] = [];
+  const fresh: [string, string][] = [];
+  for (const [from, to] of pairs) {
+    const mineKey = mineByNorm.get(norm(from));
+    if (mineKey !== undefined) {
+      const mine = finalOf(next, mineKey);
+      if (norm(mine) !== norm(to)) conflicts.push({ value: mineKey, mine, theirs: to });
+      continue;
+    }
+    fresh.push([from, to]);
+  }
+  // A checked dictionary has no chains, so its pairs go in at once (one copy of the map, not one per pair).
+  for (const [from, to] of fresh) {
+    const t = finalOf(next, to);
+    if (from !== t) next.set(from, t);
+  }
+  if (fresh.length) {
+    const moved = new Set(fresh.map(([f]) => f));
+    for (const [a, b] of next) if (moved.has(b) && a !== b) next.set(a, finalOf(next, b));
+    for (const [, to] of fresh) if (next.get(to) === to) next.delete(to);
+  }
+  return { edits: next, conflicts, added: fresh.length };
+}
+
+/** The pending merges as dictionary pairs (variant, canonical), each to its final value. */
+export function dictFromEdits(edits: Map<string, string>): [string, string][] {
+  return [...edits].map(([a]) => [a, finalOf(edits, a)] as [string, string]).filter(([a, b]) => a !== b);
+}
+
 export const GROUP_FUNCS: [string, string][] = [
   ["count", "Rows in the group (for example household size)"],
   ["running", "Running number within the group (1, 2, 3 …)"],

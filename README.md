@@ -898,7 +898,29 @@ everything is also in command search.
 *Two rows from each precinct with seed 2024: the record beside the sample.*
 - **Value editor:** every value in a column with its count; rename or merge
   values, group look-alikes ("Main St" / "Main Street"), or apply a
-  translation list.
+  translation list. The Look-alikes choice **Abbreviations and full names**
+  groups St / Street (the last word of a value only, so "St Louis" stays),
+  NY / New York and the other states and territories, and USA / U.S.A. /
+  United States (a whole cell only), each group led by its full form. Where
+  most of the column is not states, groups made only by a state code (OK,
+  OR, IN) or a country code are listed apart as "Maybe states or countries"
+  and are never put in the list all at once.
+- **Merge values by dragging:** in the value editor, drag a value (by its
+  grip) onto another and it becomes that value; tick several (Shift+click
+  for a run) to drag them together. The chip shows how many values and
+  cells; Esc cancels a drag. Without a mouse: tick values, then Merge into…
+  (Ctrl+M) and pick or type the value they become. Undo merge (Ctrl+Z in the
+  list) steps back one merge at a time; nothing changes in the file until
+  Change, which is one undo step.
+- **Value dictionaries:** Save as dictionary keeps the merges as a small
+  file (.ndmap) in the app's Dictionaries folder, or anywhere you choose;
+  Load puts a dictionary's merges in the list (where you had merged a value
+  differently, yours is kept and listed), and Show only values not in the
+  dictionary lists what is new since last time, to drag into place. A
+  dictionary from a private or encrypted file asks before it is saved, and is
+  never saved by itself. Files with a value merged two ways, a chain (A to B
+  and B to C) or a circle are refused with what to fix. A recipe keeps its
+  pairs in itself, so it never needs the dictionary file.
 - **Group look-alikes by sound or spelling:** Data > Group look-alike values
   by sound or spelling (also in the column heading's right-click menu, or
   the Look-alikes choice in the value editor) finds names that sound alike

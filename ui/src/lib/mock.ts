@@ -32,6 +32,10 @@ import type {
   NotePlace,
   ReportNotes,
   TotalRow,
+  Dictionary,
+  DictionaryItem,
+  ReadDictionary,
+  UnmatchedOut,
   FillBlanks,
   FillCount,
   ExportOptions,
@@ -4300,11 +4304,91 @@ export class MockBackend implements Backend {
 
   /** A stand-in for the engine's grouping: a rough sound key, and spelling
    *  within one slip for values of 4 or more letters. */
+  // ---- dictionaries (C6): kept in memory by path ----
+  dictFiles = new Map<string, Dictionary>();
+  /** Tests: the path the next "Load a dictionary" window returns (null: cancelled). */
+  nextDictPick: string | null = null;
+  async dictionaryList(): Promise<[string, DictionaryItem[]]> {
+    const dir = "C:\\Users\\you\\AppData\\Roaming\\Natendo Data Edit\\Dictionaries";
+    const items = [...this.dictFiles].map(([path, d]) => ({ name: d.name || path.split(/[\\/]/).pop()!.replace(/\.ndmap$/, ""), file: path.split(/[\\/]/).pop()!, path, pairs: d.pairs.length, problem: null }));
+    items.sort((a, b) => a.name.localeCompare(b.name) || a.file.localeCompare(b.file));
+    return [dir, items];
+  }
+  async dictionaryPick(): Promise<string | null> {
+    return this.nextDictPick;
+  }
+  async dictionaryPickSave(name: string): Promise<string | null> {
+    this.calls.push(`dictionaryPickSave:${name}`);
+    return `C:\\Users\\you\\AppData\\Roaming\\Natendo Data Edit\\Dictionaries\\${name.replace(/[\\/:*?"<>|]/g, "_") || "dictionary"}.ndmap`;
+  }
+  async dictionaryRead(path: string): Promise<ReadDictionary> {
+    const d = this.dictFiles.get(path);
+    if (!d) throw err("io", "could not open the file");
+    return { dict: structuredClone(d), self_pairs: 0, repeats: 0 };
+  }
+  async dictionaryWrite(doc: number, path: string, dict: Dictionary, confirmed: boolean): Promise<string> {
+    const p = await this.privateState(doc);
+    if (!confirmed && (p.file || p.folder)) throw err("private", "This dictionary holds values from a private file");
+    this.calls.push(`dictionaryWrite:${path}:${dict.pairs.length}`);
+    this.dictFiles.set(path, structuredClone(dict));
+    return path;
+  }
+  async dictionaryUnmatched(doc: number, col: number, keepFirst: boolean, dict: Dictionary): Promise<UnmatchedOut> {
+    const t = await this.valueTallyNow(doc, { col, keep_first: keepFirst });
+    const norm = (v: string) => {
+      const x = dict.trim ? v.trim() : v;
+      return dict.match_case ? x : x.toLowerCase();
+    };
+    const known = new Set(dict.pairs.flat().map(norm));
+    const values = t.values.filter((v) => v.value !== "" && !known.has(norm(v.value)));
+    return { values: values.slice(0, 5000), count: values.length, rows: values.reduce((n, v) => n + v.count, 0), complete: t.complete };
+  }
+  /** The stand-in's abbreviation groups: a few table entries (enough for the tests), whole cell, or a street word last. */
+  private abbrevGroups(vals: { value: string; count: number }[], extra: [string, string][]): LookAlikes {
+    const fold = (v: string) => v.toLowerCase().normalize("NFD").replace(/[^\p{L}\p{N}]/gu, "");
+    const whole = new Map<string, [string, "code" | "name" | "dict"]>([
+      ["ny", ["New York", "code"]], ["newyork", ["New York", "name"]],
+      ["ok", ["Oklahoma", "code"]], ["oklahoma", ["Oklahoma", "name"]],
+      ["tn", ["Tennessee", "code"]], ["tennessee", ["Tennessee", "name"]],
+      ["usa", ["United States", "code"]], ["us", ["United States", "code"]], ["unitedstates", ["United States", "name"]], ["unitedstatesofamerica", ["United States", "code"]],
+    ]);
+    for (const [a, b] of extra) {
+      whole.set(fold(a), [b, "dict"]);
+      if (!whole.has(fold(b))) whole.set(fold(b), [b, "dict"]);
+    }
+    const street: Record<string, string> = { st: "Street", ave: "Avenue", rd: "Road", dr: "Drive", ct: "Court" };
+    const full = vals.map((v) => {
+      const w = whole.get(fold(v.value));
+      if (w) return w;
+      const words = v.value.trim().split(/\s+/);
+      const last = fold(words[words.length - 1] ?? "");
+      if (words.length >= 2 && street[last]) return [`${words.slice(0, -1).join(" ")} ${street[last]}`, "street"] as [string, string];
+      return [v.value.trim(), "plain"] as [string, string];
+    });
+    const total = Math.max(1, vals.reduce((n, v) => n + v.count, 0));
+    const stateRows = vals.reduce((n, v, i) => n + (full[i]![1] === "code" || full[i]![1] === "name" ? v.count : 0), 0);
+    const mostly = stateRows * 2 >= total;
+    const byKey = new Map<string, number[]>();
+    full.forEach(([f], i) => {
+      const k = fold(f);
+      if (k) byKey.set(k, [...(byKey.get(k) ?? []), i]);
+    });
+    const groups: { value: string; count: number }[][] = [];
+    const maybe: boolean[] = [];
+    for (const m of byKey.values()) {
+      if (m.length < 2) continue;
+      m.sort((a, b) => Number(vals[b]!.value.trim() === full[b]![0]) - Number(vals[a]!.value.trim() === full[a]![0]) || vals[b]!.count - vals[a]!.count);
+      groups.push(m.map((i) => vals[i]!));
+      maybe.push(!mostly && m.some((i) => full[i]![1] === "code"));
+    }
+    return { groups, values: vals.length, complete: true, too_long: 0, crowded: 0, maybe };
+  }
   async lookalikeGroups(doc: number, spec: LookAlikeSpec): Promise<LookAlikes> {
     return this.oneJob(doc, "Looking for look-alikes", `group:${spec.col}`, () => this.lookalikeGroupsNow(doc, spec));
   }
   private async lookalikeGroupsNow(doc: number, spec: LookAlikeSpec): Promise<LookAlikes> {
     const t = await this.valueTallyNow(doc, { col: spec.col, keep_first: spec.keep_first });
+    if (spec.method === "abbreviations") return { ...this.abbrevGroups(t.values, spec.extra ?? []), complete: t.complete };
     const fold = (v: string) => v.toLowerCase().normalize("NFD").replace(/[^\p{L}\p{N}]/gu, "");
     const sound = (v: string) => {
       const w = fold(v).replace(/\d/g, "");
