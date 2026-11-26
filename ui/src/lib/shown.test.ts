@@ -27,9 +27,10 @@ describe("the pill and the seams", () => {
   });
   it("counts and names a gap", () => {
     expect([gapBetween(-1, 0), gapBetween(0, 1), gapBetween(1, 50), gapBetween(undefined, 5)]).toEqual([0, 0, 48, 0]);
-    expect(seamWords(48, false, true)).toBe("48 rows hidden here. Click to show them.");
-    expect(seamWords(1, true, false)).toBe("1 row filtered out here.");
-    expect(seamWords(2, true, true)).toMatch(/filtered out or hidden by hand/);
+    expect(seamWords(48, 48)).toBe("48 rows hidden here. Click to show them.");
+    // A filtered-out gap never promises rows hidden by hand, whatever is hidden elsewhere.
+    expect(seamWords(1, 0)).toBe("1 row filtered out here. Click for the filter.");
+    expect(seamWords(3, 1)).toBe("3 rows hidden here (1 by hand, the rest filtered out). Click to show the one hidden by hand.");
   });
 });
 

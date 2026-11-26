@@ -381,6 +381,32 @@ impl Document {
         Ok(pos.len() as u64)
     }
 
+    /// How many rows the person hid by hand lie just above shown row `row`
+    /// (`row` = the shown row count: after the last one). The rest of that
+    /// gap is filtered out.
+    pub fn hidden_by_hand_before(&self, row: u64) -> u64 {
+        let Some(bits) = self.hidden_bits() else {
+            return 0;
+        };
+        let from = match row.checked_sub(1) {
+            Some(above) => self.row_number(above).map_or(u64::MAX, |p| p + 1),
+            None => 0,
+        };
+        let to = if row >= self.row_count() {
+            self.total_rows()
+        } else {
+            self.row_number(row).unwrap_or(0)
+        };
+        (from..to)
+            .filter(|&p| {
+                self.doc_id_at(p).is_some_and(|id| {
+                    bits.get((id >> 6) as usize)
+                        .is_some_and(|w| (w >> (id & 63)) & 1 == 1)
+                })
+            })
+            .count() as u64
+    }
+
     /// Show hidden rows again (one undo step). Returns how many came back.
     pub fn show_rows(&mut self, which: ShowRows) -> Result<u64, Error> {
         self.ready_for_bulk()?;
@@ -490,6 +516,36 @@ mod tests {
         (0..d.row_count())
             .map(|r| d.cell(r, c).unwrap_or_default())
             .collect()
+    }
+
+    /// A gap says what it holds itself: rows hidden by hand elsewhere do not
+    /// make a filtered-out gap one of them.
+    #[test]
+    fn each_gap_counts_its_own_rows_hidden_by_hand() {
+        let mut d = Document::from_bytes(
+            b"g\na\nx\nb\nc\nd\ne\n".to_vec(),
+            crate::OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        d.hide_rows(4, 1).unwrap(); // c
+        d.set_filter(&crate::filter::FilterSpec {
+            columns: vec![crate::filter::ColumnFilter {
+                col: 0,
+                rule: crate::filter::Rule::Values {
+                    values: ["a", "b", "c", "d"].map(String::from).to_vec(),
+                    blanks: false,
+                },
+            }],
+            keep_first: true,
+            read: Default::default(),
+        })
+        .unwrap();
+        // Shown: g, a, b, d. Gaps: x (filtered) before b, c (by hand) before
+        // d, e (filtered) after the last.
+        assert_eq!(d.row_count(), 4);
+        let gaps: Vec<u64> = (0..=4).map(|r| d.hidden_by_hand_before(r)).collect();
+        assert_eq!(gaps, [0, 0, 0, 1, 0]);
     }
 
     #[test]

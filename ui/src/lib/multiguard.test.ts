@@ -23,6 +23,7 @@ const NOT_WRITES = [
   "dateMarks",
   "dateFind",
   "dateList",
+  "gapHidden",
   "rowText",
   "rowWidth",
   "sameShape",

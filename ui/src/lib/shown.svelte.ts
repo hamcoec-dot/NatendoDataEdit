@@ -24,12 +24,13 @@ export function actingWords(hidden: number, total: number, including: boolean): 
   return `Acting on ${n(shown)} shown ${rows(shown)} (${n(hidden)} hidden, untouched)`;
 }
 
-/** The rows missing between two shown rows, said when pointing at the dotted line there. */
-export function seamWords(count: number, filter: boolean, byHand: boolean): string {
+/** The rows missing between two shown rows, said when pointing at the dotted line there. `byHand` of them were
+ *  hidden by hand; the rest are filtered out. */
+export function seamWords(count: number, byHand: number): string {
   const some = `${n(count)} ${rows(count)}`;
-  if (filter && byHand) return `${some} hidden here (filtered out or hidden by hand). Click to show those hidden by hand.`;
-  if (filter) return `${some} filtered out here.`;
-  return `${some} hidden here. Click to show ${count === 1 ? "it" : "them"}.`;
+  if (byHand >= count) return `${some} hidden here. Click to show ${count === 1 ? "it" : "them"}.`;
+  if (!byHand) return `${some} filtered out here. Click for the filter.`;
+  return `${some} hidden here (${n(byHand)} by hand, the rest filtered out). Click to show ${byHand === 1 ? "the one" : "those"} hidden by hand.`;
 }
 
 /** How many file rows are missing before the shown row whose place is `place` (`before`: the place of the shown row

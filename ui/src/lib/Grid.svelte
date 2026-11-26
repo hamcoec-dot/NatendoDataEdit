@@ -54,7 +54,7 @@
 
   interface Props {
     /** The dotted line before shown row `row` was clicked (`count` rows are hidden there). */
-    onSeam?: (row: number, count: number) => void;
+    onSeam?: (row: number, x: number, y: number) => void;
     tab: Tab;
     /** Commit an edit of one cell (or, with `fill`, of every selected cell). */
     onCommit: (row: number, col: number, value: string, fill: boolean) => Promise<boolean>;
@@ -1911,7 +1911,9 @@
 
   function seamLine(ctx: CanvasRenderingContext2D, y: number): void {
     ctx.save();
-    ctx.strokeStyle = colors.accent;
+    // The text colour, not the accent: the row numbers beside it are in the accent while rows are hidden, and an
+    // amber accent would look like the date marks.
+    ctx.strokeStyle = colors.text;
     ctx.lineWidth = 2;
     ctx.setLineDash([2, 3]);
     ctx.beginPath();
@@ -1931,6 +1933,25 @@
     if (row < 0) return null;
     const count = gapAbove(row);
     return count ? { row, count } : null;
+  }
+
+  /** The rows hidden by hand in the gap being pointed at, asked once per gap and state of the table. */
+  let gapTip: { key: string; byHand?: number } | null = null;
+  function gapByHand(row: number): number | undefined {
+    if (!tab.info.hidden_rows) return 0;
+    const key = `${tab.id}:${row}:${tab.info.rows}:${tab.info.data_revision}:${tab.version}`;
+    if (gapTip?.key === key) return gapTip.byHand;
+    const asked: { key: string; byHand?: number } = { key };
+    gapTip = asked;
+    void backend()
+      .gapHidden(tab.id, row)
+      .then((byHand) => {
+        asked.byHand = byHand;
+        const count = gapAbove(row);
+        if (gapTip === asked && count) tip = seamWords(count, byHand);
+      })
+      .catch(() => {});
+    return undefined;
   }
 
   /** The number shown for row `r`: its place in the whole file. */
@@ -2375,7 +2396,9 @@
       case "row": {
         const seam = seamAt(y, h.row);
         if (seam) {
-          onSeam?.(seam.row, seam.count);
+          // On release: a menu opened while the button is still down would be closed by the same click.
+          const [px, py] = [e.clientX, e.clientY];
+          window.addEventListener("mouseup", () => setTimeout(() => onSeam?.(seam.row, px, py)), { once: true });
           break;
         }
         if (h.edge !== undefined) {
@@ -2566,10 +2589,12 @@
       tip = link ? `${link}\nCtrl+click to open` : gh ? `Replace all would change this cell:\n${tab.cache.get(cellHit!.row, cellHit!.col) ?? ""}\n\u2192 ${gh.after}${gh.cut ? "\u2026" : ""}` : rule;
       const seam = h.area === "row" ? seamAt(y, h.row) : null;
       if (seam) {
-        tip = seamWords(seam.count, tab.info.has_filter, tab.info.hidden_rows > 0);
-        cursor = tab.info.hidden_rows ? "pointer" : "default";
+        const byHand = gapByHand(seam.row);
+        tip = byHand === undefined ? "" : seamWords(seam.count, byHand);
+        cursor = "pointer";
         return;
       }
+      gapTip = null;
       const pointer = h.area === "cell" && ((e.ctrlKey && !!linkAt(h.row, h.col)) || onTickBox(x, y, h.row, h.col) || onPickButton(x, y, h.row, h.col));
       const r = tab.drawRect;
       const grab =

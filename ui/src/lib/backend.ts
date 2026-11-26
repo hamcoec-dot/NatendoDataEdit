@@ -1544,6 +1544,8 @@ export interface Backend {
   dateFind(doc: number, col: number, keepFirst: boolean, from: number, forward: boolean): Promise<number | null>;
   /** The first 500 rows whose date can be read two ways: shown row, row number, the cell's text. */
   dateList(doc: number, col: number, keepFirst: boolean): Promise<[number, number, string][]>;
+  /** Rows hidden by hand in the gap just above shown row `row` (the row count: after the last). */
+  gapHidden(doc: number, row: number): Promise<number>;
   raggedList(doc: number, keepFirst: boolean): Promise<RaggedList>;
   rowText(doc: number, row: number | null, rowId: number | null, keepFirst: boolean): Promise<RowText>;
   sameShape(doc: number, keepFirst: boolean, fields: number, groups: number[]): Promise<SameShape>;
@@ -2082,6 +2084,9 @@ class TauriBackend implements Backend {
   }
   dateScan(doc: number, col: number, keepFirst: boolean, sample: number | null) {
     return call<DateScan>("date_scan", { doc, col, keepFirst, sample });
+  }
+  gapHidden(doc: number, row: number) {
+    return call<number>("gap_hidden", { doc, row });
   }
   dateList(doc: number, col: number, keepFirst: boolean) {
     return call<[number, number, string][]>("date_list", { doc, col, keepFirst });

@@ -4685,12 +4685,17 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     say(n ? `${plural(n, "hidden row")} shown again.` : "No hidden rows in the selection. Select the rows on both sides of the hidden ones, or use Unhide all rows.");
   }
 
-  /** The dotted line in the row numbers was clicked: show the rows hidden by hand there. */
-  function openSeam(row: number): void {
+  /** The dotted line in the row numbers was clicked: show the rows hidden by hand in that gap; a gap that is only
+   *  filtered out opens the filter menu (which never clears anything by itself). */
+  async function openSeam(row: number, x: number, y: number): Promise<void> {
     const t = tab;
     if (!t) return;
-    if (!t.info.hidden_rows) {
-      say("A filter leaves rows out here. Data > Clear filter shows every row.");
+    const byHand = t.info.hidden_rows ? await backend().gapHidden(t.id, row).catch(() => 0) : 0;
+    if (t !== tab) return;
+    if (!byHand) {
+      const col = t.info.filter_cols[0];
+      if (col !== undefined) filterMenu = { col, x: x + 12, y };
+      say("A filter leaves these rows out. Data > Clear filter shows every row.");
       return;
     }
     const at = Math.max(t.firstRow, row - 1);
@@ -8561,7 +8566,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           <div class="splitview" class:cols={sp.dir === "cols"} bind:this={splitEl} style={sp.dir === "cols" ? `grid-template-columns: minmax(0, ${sp.at}fr) 6px minmax(0, ${1 - sp.at}fr)` : `grid-template-rows: minmax(0, ${sp.at}fr) 6px minmax(0, ${1 - sp.at}fr)`}>
             <div class="pane">
             <Grid
-                  onSeam={(row) => openSeam(row)}
+                  onSeam={(row, x, y) => void openSeam(row, x, y)}
                   bind:this={grid}
                   {tab}
                   bottomInset={headerAskInset}
@@ -8600,7 +8605,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
             <div class="divider" role="separator" aria-orientation={sp.dir === "cols" ? "vertical" : "horizontal"} aria-label="Split: drag to resize, or to the edge to close" title="Drag to resize; drag to the edge to close the split" onpointerdown={splitDrag}></div>
             <div class="pane">
             <Grid
-                  onSeam={(row) => openSeam(row)}
+                  onSeam={(row, x, y) => void openSeam(row, x, y)}
                   pane="split"
                   bottomInset={headerAskInset}
                   {tab}
@@ -8639,7 +8644,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           </div>
         {:else}
         <Grid
-          onSeam={(row) => openSeam(row)}
+          onSeam={(row, x, y) => void openSeam(row, x, y)}
           bind:this={grid}
           {tab}
           bottomInset={headerAskInset}

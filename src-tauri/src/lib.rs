@@ -3010,6 +3010,12 @@ async fn date_list(
 }
 
 #[tauri::command]
+async fn gap_hidden(docs: DocsState<'_>, doc: u32, row: u64) -> CmdResult<u64> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.gap_hidden(doc, row)).await
+}
+
+#[tauri::command]
 async fn date_find(
     docs: DocsState<'_>,
     doc: u32,
@@ -4633,6 +4639,7 @@ pub fn run() {
             date_marks,
             date_find,
             date_list,
+            gap_hidden,
             row_text,
             repair_row,
             same_shape,
