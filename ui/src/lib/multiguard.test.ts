@@ -90,7 +90,7 @@ const NOT_WRITES = [
   "findChange",
   "findExtreme",
   "specialCells",
-  "compareCols", "gapAudit", "patchPickSave", "patchMake", "patchPick", "patchProtected", "patchPreview", "patchReportSave", "patchClose", "findRelations", "setsRun", "setsOpen", "setsTable", "setsClose", "cleanMatrixPreview", "cleanerOpenNamed",
+  "compareCols", "gapAudit", "goldenPlan", "goldenPage", "goldenCreate", "goldenClose", "patchPickSave", "patchMake", "patchPick", "patchProtected", "patchPreview", "patchReportSave", "patchClose", "findRelations", "setsRun", "setsOpen", "setsTable", "setsClose", "cleanMatrixPreview", "cleanerOpenNamed",
   "numberRange",
   "typeahead",
   "renameFile",
