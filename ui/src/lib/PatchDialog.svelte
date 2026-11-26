@@ -131,7 +131,7 @@
         </ul>
       {/if}
       {#if r.missing.length}<p class="warn">Not in this table: {r.missing.join(", ")}. Entries that need these columns are not applied.</p>{/if}
-      {#if r.extra.length}<p class="note">The patch does not look at {r.extra.join(", ")}: they are not compared, and added rows get them blank.</p>{/if}
+      {#if r.extra.length}<p class="note">The patch does not look at these columns: {r.extra.join(", ")}. They are not compared, and added rows leave them blank.</p>{/if}
       {#if preview.private}<p class="note">This patch is protected or private, so applying it turns private file mode on for this tab.</p>{/if}
       {#if r.lines.length}
         <div class="lines">
