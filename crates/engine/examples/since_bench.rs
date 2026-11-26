@@ -78,7 +78,7 @@ fn main() {
     let mut d = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
     println!("{rows} rows; one big change after a checkpoint, then the diff since it.");
     let p = Progress::new();
-    let report = |what: &str, d: &Document, mark: u64, wm: u32| {
+    let report = |what: &str, d: &Document, mark: u64| {
         let mut best = f64::MAX;
         let mut plan = None;
         let mut peak_extra = 0usize;
@@ -86,18 +86,18 @@ fn main() {
             let live0 = LIVE.load(Ordering::Relaxed);
             PEAK.store(live0, Ordering::Relaxed);
             let t = Instant::now();
-            let r = d.since_plan(mark, wm, true, &p).unwrap();
+            let r = d.since_plan(mark, true, &p).unwrap();
             best = best.min(t.elapsed().as_secs_f64() * 1000.0);
             peak_extra = peak_extra.max(PEAK.load(Ordering::Relaxed) - live0);
             plan = Some(r);
         }
         let plan = plan.unwrap();
         let t = Instant::now();
-        let page = d.since_page(&plan, mark, wm, 0, 50).unwrap();
+        let page = d.since_page(&plan, mark, 0, 50).unwrap();
         let first_page = t.elapsed().as_secs_f64() * 1000.0;
         let t = Instant::now();
         let far = d
-            .since_page(&plan, mark, wm, plan.totals.entries.saturating_sub(50), 50)
+            .since_page(&plan, mark, plan.totals.entries.saturating_sub(50), 50)
             .unwrap();
         let last_page = t.elapsed().as_secs_f64() * 1000.0;
         let tt = &plan.totals;
@@ -113,7 +113,7 @@ fn main() {
         );
     };
     // Replace all over every row: every cell with a letter n gets an N... (every row changes).
-    let (mark, wm) = (d.step_mark(), d.next_row_id());
+    let mark = d.step_mark();
     let spec = FindSpec {
         pattern: Pattern {
             text: "name".into(),
@@ -130,11 +130,11 @@ fn main() {
         "(Replace all itself took {:.0} ms)",
         t.elapsed().as_secs_f64() * 1000.0
     );
-    report("Replace all over every row", &d, mark, wm);
+    report("Replace all over every row", &d, mark);
     assert!(d.go_to_mark(mark));
     d.drop_redo();
     // A Clean-up of one column (trim the spaces).
-    let (mark, wm) = (d.step_mark(), d.next_row_id());
+    let mark = d.step_mark();
     let cs = CleanSpec {
         cleaner: Cleaner {
             version: 1,
@@ -152,11 +152,11 @@ fn main() {
         "(Clean-up itself took {:.0} ms)",
         t.elapsed().as_secs_f64() * 1000.0
     );
-    report("Clean-up of one column", &d, mark, wm);
+    report("Clean-up of one column", &d, mark);
     assert!(d.go_to_mark(mark));
     d.drop_redo();
     // Remove duplicates removing about half the rows.
-    let (mark, wm) = (d.step_mark(), d.next_row_id());
+    let mark = d.step_mark();
     let dup = Duplicates {
         cols: vec![0],
         keep_first: true,
@@ -170,5 +170,5 @@ fn main() {
         t.elapsed().as_secs_f64() * 1000.0,
         d.row_count()
     );
-    report("Remove duplicates (about half the rows)", &d, mark, wm);
+    report("Remove duplicates (about half the rows)", &d, mark);
 }
