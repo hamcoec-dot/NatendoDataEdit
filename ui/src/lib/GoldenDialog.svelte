@@ -148,6 +148,7 @@
   <p class="note">The new columns Merged_IDs (the main row first) and Merged_Count say which rows became which. They are as private as the column you name them by.</p>
   <label class="row">Largest cluster to merge <input type="number" min="2" max="100" bind:value={maxCluster} /> rows</label>
   <label class="row"><input type="checkbox" bind:checked={requireAll} /> Only merge clusters where every pair was accepted</label>
+  <p class="note">Match people lists one pair for each later row, so with this ticked only clusters of two rows merge; larger ones are left for review.</p>
   <label class="row"><input type="checkbox" bind:checked={away} /> Also open the folded rows in a second tab ("Merged away")</label>
 
   {#if stale}<p class="warn" role="status">The choices changed: preview again.</p>{/if}
