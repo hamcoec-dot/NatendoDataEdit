@@ -1335,6 +1335,12 @@ impl Document {
         }
     }
 
+    /// Whether the rows are in the order their ids count (never sorted,
+    /// moved, inserted or deleted): a row's place is then its id.
+    pub(crate) fn places_are_ids(&self) -> bool {
+        self.order.is_none()
+    }
+
     /// Every row id in document order, copied in one go.
     pub(crate) fn order_copy(&self) -> Vec<u32> {
         match &self.order {

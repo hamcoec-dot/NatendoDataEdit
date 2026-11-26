@@ -7,7 +7,7 @@
 //! row numbers to keep right.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -195,6 +195,29 @@ pub struct DiffFirst {
     empty_a: u64,
     dup_a: Vec<String>,
     rev: u64,
+}
+
+/// Each row's number in `d` by its id, for the data rows `rows` lists in
+/// document order. `None` when a row's place is its id (number `id + 1`).
+fn places_by_id(
+    d: &Document,
+    rows: &[(u128, u64, u32)],
+    keep_first: bool,
+) -> Option<Vec<AtomicU32>> {
+    if d.places_are_ids() {
+        return None;
+    }
+    let first = 1 + u32::from(keep_first);
+    let places: Vec<AtomicU32> = (0..d.next_row_id())
+        .into_par_iter()
+        .map(|_| AtomicU32::new(0))
+        .collect();
+    rows.par_chunks(CHUNK).enumerate().for_each(|(k, chunk)| {
+        for (number, row) in (first + (k * CHUNK) as u32..).zip(chunk) {
+            places[row.2 as usize].store(number, AtomicOrdering::Relaxed);
+        }
+    });
+    Some(places)
 }
 
 /// What a diff gives back.
@@ -521,25 +544,16 @@ impl Document {
             }
             Ok(())
         };
-        // Each changed or added row's number in the second table (as the
-        // first's: the title row is 1), whatever its filter or order shows.
-        let second: HashMap<u32, u64> = {
-            let wanted: std::collections::HashSet<u32> = listed
-                .changed
-                .iter()
-                .map(|c| c.2)
-                .chain(listed.added.iter().copied())
-                .collect();
-            let first = 1 + u64::from(spec.keep_first);
-            index
-                .rows
-                .iter()
-                .zip(first..)
-                .filter(|(row, _)| wanted.contains(&row.2))
-                .map(|(row, number)| (row.2, number))
-                .collect()
+        // A changed or added row's number in the second table (as the
+        // first's: the title row is 1), whatever its filter shows.
+        let places = places_by_id(other, &index.rows, spec.keep_first);
+        let number_b = |id: u32| {
+            let number = match &places {
+                None => u64::from(id) + 1,
+                Some(p) => u64::from(p[id as usize].load(AtomicOrdering::Relaxed)),
+            };
+            number.to_string()
         };
-        let number_b = |id: u32| second.get(&id).map_or_else(String::new, u64::to_string);
         // Removed rows: in the first table only.
         for ri in 0..removed.len() {
             let ra = removed.row(ri);
@@ -935,6 +949,32 @@ mod tests {
         };
         let l = lines(&a.diff_files(&b, &spec, &Progress::new()).unwrap());
         assert!(l.iter().any(|x| x.starts_with("changed,2,1,2,B")), "{l:?}");
+    }
+
+    #[test]
+    fn a_second_table_sorted_in_the_app_is_numbered_as_it_shows() {
+        let a = doc("id,v\r\n1,a\r\n2,b\r\n3,c\r\n");
+        let mut b = doc("id,v\r\n9,new\r\n3,C\r\n2,b\r\n1,A\r\n");
+        let sort = crate::sort::SortSpec {
+            keys: vec![crate::sort::SortKey {
+                col: 0,
+                descending: false,
+                kind: Default::default(),
+                match_case: false,
+            }],
+            keep_first: true,
+            ..Default::default()
+        };
+        let plan = b.plan_sort(&sort, &Progress::new()).unwrap();
+        b.apply_sort(plan).unwrap();
+        let shown: Vec<String> = (0..b.row_count())
+            .map(|r| b.row_values(r).unwrap()[0].clone())
+            .collect();
+        assert_eq!(shown, ["id", "1", "2", "3", "9"]);
+        let l = lines(&a.diff_files(&b, &spec(&[0]), &Progress::new()).unwrap());
+        for want in ["changed,2,2,1,A,", "changed,4,4,3,C,", "added,,5,9,new,"] {
+            assert!(l.iter().any(|x| x.starts_with(want)), "{want}: {l:?}");
+        }
     }
 
     #[test]
