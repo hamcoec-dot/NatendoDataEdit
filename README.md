@@ -821,7 +821,8 @@ everything is also in command search.
   together. Only rows whose first value appears twice or more count, and each
   line says how many that is; a pair that holds only because a column is mostly
   one value is set aside. Big tables are scanned from a sample and the best 25
-  lines counted again over every row. Show the exceptions filters to the rows
+  lines counted again over every row. The time limit covers
+  the search for pairs, not that final exact count. Show the exceptions filters to the rows
   that break a line. Values are compared exactly, so TN and tn differ: clean
   first if capitals should not count. Turning a line into a data check is not
   available yet.
