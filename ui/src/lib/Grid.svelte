@@ -1415,6 +1415,8 @@
     }
     const ghostsOn = tab.ghosts.size > 0 && prefs.data.showGhosts;
     const diffOn = tab.diffOn && tab.diffMarks.size > 0;
+    // (Read once: reactive state is not read for every cell.)
+    const dateCol = tab.dateMarks.size ? (tab.dateCheck?.col ?? -1) : -1;
     // Long text that spills into the empty cells to its right, drawn after
     // every column (so the next cells' backgrounds don't cover it).
     const spills: { text: string; x: number; y: number; to: number; h: number; colour: string }[] = [];
@@ -1607,7 +1609,7 @@
             if (link) ctx.fillRect(tx, ty + Math.round(fontPx * 0.55), Math.min(w, cw - 2 * pad), 1);
           }
         }
-        if (tab.dateCheck?.col === c && tab.dateMarks.has(r)) {
+        if (dateCol === c && tab.dateMarks.has(r)) {
           // Amber, with a corner triangle so the mark does not rest on colour.
           ctx.fillStyle = DATE_AMBER;
           ctx.globalAlpha = 0.28;
