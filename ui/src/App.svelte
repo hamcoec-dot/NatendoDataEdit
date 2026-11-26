@@ -471,7 +471,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     active = tabs.length - 1;
     void tick().then(() => grid?.focus());
     if (guess) {
-      void guessHeader(t);
+      void guessHeader(t).then(() => checkTotalRow(t));
       void applyRememberedTypes(t, false);
     }
     void loadSidecar(t);
@@ -6125,6 +6125,72 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const names: Record<string, string> = { ",": "commas", "\t": "tabs", ";": "semicolons", "|": "bars", " ": "spaces" };
     return names[sep] ?? `“${sep}”`;
   }
+  /** Files whose total-line bar was answered this session (asked once per file). */
+  const totalAsked = new Set<string>();
+  /** Look for a total line once the file is read (C4 b). Nothing changes without a click. */
+  async function checkTotalRow(t: Tab, asked = false): Promise<void> {
+    const key = t.info.path ?? `tab:${t.id}`;
+    if (totalAsked.has(key) && !asked) return;
+    for (let i = 0; i < 600 && !t.info.indexed; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      if (!tabs.includes(t)) return;
+    }
+    if (!t.info.indexed || t.info.filtered) return;
+    try {
+      t.totalRow = await backend().totalRow(t.id, t.header, READ);
+    } catch {
+      t.totalRow = null;
+    }
+    if (asked && !t.totalRow) say("No total row among the last 5 rows: none starts with Total, Grand total, Subtotal or Sum and has a number.");
+  }
+  /** The total-line bar's words: which row, and whether the numbers add up (which columns do not). */
+  function totalWords(t: Tab): string {
+    const r = t.totalRow!;
+    const where = `Row ${(r.row + 1).toLocaleString()} looks like a total row (“${r.label}”)`;
+    if (r.adds_up) return `${where}, and the rows above add up to it.`;
+    const bad = r.checks.filter((c) => !c.matches);
+    const cols = bad.slice(0, 3).map((c) => `${columnTitle(t, c.col)} (the rows above make ${c.sum ?? "no number"}, it says ${c.total})`);
+    return `${where}, but ${cols.join(", ")}${bad.length > 3 ? ` and ${bad.length - 3} more columns` : ""} ${bad.length === 1 ? "does" : "do"} not add up.`;
+  }
+  /** The bar answered: set the total line aside below the table, delete it, or keep it. */
+  async function answerTotal(how: "aside" | "delete" | "keep"): Promise<void> {
+    const t = tab;
+    const r = t?.totalRow;
+    if (!t || !r) return;
+    totalAsked.add(t.info.path ?? `tab:${t.id}`);
+    t.totalRow = null;
+    if (how === "keep") {
+      say("The total row stays in the table.");
+      return;
+    }
+    if (t.info.filtered) {
+      say("Show all rows first: rows are hidden or filtered out.");
+      return;
+    }
+    // Looked at again: the table may have changed since the bar came up.
+    const now = await backend().totalRow(t.id, t.header, READ).catch(() => null);
+    if (!now || now.row !== r.row || now.count !== r.count || (how === "delete" && !now.adds_up)) {
+      say("The table changed since the bar came up, so nothing was done. Data › Set aside rows as footer notes works on the selected last rows.");
+      return;
+    }
+    if (how === "delete") {
+      if (!r.adds_up) return;
+      t.whatNext = "deleting the total row";
+      if (await change({ op: "delete_rows", at: r.row, count: r.count })) say(`Deleted the total row${r.count > 1 ? ` and the ${plural(r.count - 1, "blank row")} after it` : ""}. Ctrl+Z brings it back.`);
+      return;
+    }
+    const why = await backend().setAsideCheck(t.id, r.row, r.count, "foot").catch((e) => errorText(e));
+    if (why) {
+      say(`The total row cannot be set aside: ${why}.`);
+      return;
+    }
+    t.whatNext = "setting the total row aside";
+    if (!t.rowHeights.empty) t.pendingRows = { kind: "delete", at: r.row, count: r.count };
+    const ok = await apply((x) => backend().setAside(x.id, r.row, r.count, "foot"));
+    t.pendingRows = null;
+    if (ok) say(`Set the total row aside below the table as report notes; saving writes it after the last row, whatever the sort (View › Report notes shows it). Ctrl+Z undoes it.`);
+  }
+
   /** Lines of report notes, in words, for messages. */
   function notesWords(n: NoteCountsLike): string {
     const parts: string[] = [];
@@ -6913,6 +6979,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "format.makeHeader", label: "&Make this row the header", run: makeHeader, enabled: ready },
     { id: "data.headersStartHere", label: "Headers start here (set the rows above aside as report notes)", run: () => void headersStartHere(), enabled: () => ready() && asideWhy("head") === "", why: () => asideWhy("head") },
     { id: "data.setAsideFoot", label: "Set aside rows as footer notes (the last rows: a total line)", run: () => void setAsideFoot(), enabled: () => ready() && asideWhy("foot") === "", why: () => asideWhy("foot") },
+    { id: "data.findTotalRow", label: "Look for a total row at the end", run: () => { if (tab) void checkTotalRow(tab, true); }, enabled: () => ready() && !tab?.info.filtered, why: () => (tab?.info.filtered ? "show all rows first: some rows are hidden or filtered out" : "") },
     { id: "data.putBackNotes", label: "Put the report notes back into the table", run: () => void putBackNotes(), enabled: () => ready() && noteLines(tab) > 0 && !tab?.info.filtered && !tab?.info.read_only, why: () => (noteLines(tab) === 0 ? "this file has no report notes" : tab?.info.filtered ? "show all rows first" : tab?.info.read_only ? "the file is open read-only" : "") },
     { id: "file.keepNotes", label: "Save report notes with the file", run: () => void setKeepNotes(!(tab?.info.notes?.keep ?? true)), enabled: () => ready() && noteLines(tab) > 0, why: () => (noteLines(tab) === 0 ? "this file has no report notes" : ""), checked: () => tab?.info.notes?.keep ?? true },
     { id: "format.renameCol", label: "Re&name column…", run: () => void askRename(menuCol ?? undefined), enabled: () => ready() && !tab?.info.read_only && (tab?.info.cols ?? 0) > 0 },
@@ -7170,7 +7237,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.sortAsc", "data.sortDesc", "data.sort", "data.sortColsAsc", "data.sortColsDesc", "data.shuffle", "-",
         "data.filter", "data.filterMenu", "data.filterBySel", "data.filterFormula", "view.panelFilters", "data.clearFilter", "data.reapply", "-",
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "data.repairRow", "data.ragged", "data.raggedShort", "data.raggedLong", "-",
-        "data.headersStartHere", "data.setAsideFoot", "data.putBackNotes", "file.keepNotes", "view.panelNotes", "-",
+        "data.headersStartHere", "data.setAsideFoot", "data.findTotalRow", "data.putBackNotes", "file.keepNotes", "view.panelNotes", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
         "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
@@ -8492,6 +8559,16 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const out: Notice[] = [];
     if (d.layout_confidence !== null && d.layout_confidence < 0.6 && d.path)
       out.push({ text: "Not sure how this file's columns are separated. Please check the layout.", action: "Choose layout…", run: chooseLayout });
+    // A total line at the end (C4 b): never while rows are hidden; nothing happens without a click.
+    if (t.totalRow && !d.filtered)
+      out.push({
+        text: totalWords(t),
+        actions: [
+          { label: "Set aside", run: () => void answerTotal("aside"), title: "Keep it below the table as a report note (saved after the last row)" },
+          ...(t.totalRow.adds_up ? [{ label: "Delete", run: () => void answerTotal("delete"), title: "Take it out of the file (Ctrl+Z brings it back)" }] : []),
+          { label: "Keep", run: () => void answerTotal("keep"), title: "Leave it as a row of the table" },
+        ],
+      });
     // The lines above the table the file had (put back into the table, they are rows: no note).
     const above = d.notes ? d.notes.above_file : d.preamble_lines;
     if (above > 0)

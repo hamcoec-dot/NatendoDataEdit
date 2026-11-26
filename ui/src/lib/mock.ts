@@ -31,6 +31,7 @@ import type {
   DocInfo,
   NotePlace,
   ReportNotes,
+  TotalRow,
   ExportOptions,
   ExportReport,
   FilterSpec,
@@ -765,6 +766,16 @@ export class MockBackend implements Backend {
   }
   /** Test hook: which rows of a document count as short and long. */
   fakeRagged = new Map<number, { short: number[]; long: number[] }>();
+  /** Tests: the total line the stand-in reports (finding one is the engine's job). */
+  fakeTotals = new Map<number, TotalRow>();
+  markTotal(doc: number, t: TotalRow): void {
+    this.fakeTotals.set(doc, t);
+  }
+  async totalRow(doc: number): Promise<TotalRow | null> {
+    const d = this.get(doc);
+    if (d.shown !== null || d.hidden !== null) return null;
+    return this.fakeTotals.get(doc) ?? null;
+  }
   markRagged(doc: number, short: number[], long: number[], usual: number): DocInfo {
     this.fakeRagged.set(doc, { short, long });
     const d = this.get(doc);

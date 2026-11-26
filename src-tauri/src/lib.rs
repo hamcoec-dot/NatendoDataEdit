@@ -3153,6 +3153,17 @@ async fn set_aside(
 }
 
 #[tauri::command]
+async fn total_row(
+    docs: DocsState<'_>,
+    doc: u32,
+    header: bool,
+    read: natendo_engine::value::ReadOptions,
+) -> CmdResult<Option<natendo_engine::document::report::TotalRow>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.total_row(doc, header, read)).await
+}
+
+#[tauri::command]
 async fn report_notes(
     docs: DocsState<'_>,
     doc: u32,
@@ -4865,6 +4876,7 @@ pub fn run() {
             set_aside_check,
             set_aside,
             report_notes,
+            total_row,
             put_back_notes,
             keep_notes,
             row_text,

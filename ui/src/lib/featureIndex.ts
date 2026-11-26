@@ -126,7 +126,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "sorting with rows hidden": ["data.sort", "data.sortAsc", "data.sortDesc", "data.fieldCheck", "data.compute"],
   "which rows edits act on": ["view.whichRows", "format.showRows"],
   "repair bar": ["data.repairRow"],
-  "report notes": ["data.headersStartHere", "data.setAsideFoot", "data.putBackNotes", "file.keepNotes", "view.panelNotes"],
+  "report notes": ["data.headersStartHere", "data.setAsideFoot", "data.findTotalRow", "data.putBackNotes", "file.keepNotes", "view.panelNotes"],
   "shifted and ragged rows": ["data.repairRow", "data.ragged", "data.raggedShort", "data.raggedLong", "edit.gotoSpecial"],
   "x ray gremlins": ["view.xray", "view.xrayReport", "edit.sanitize", "clean.tool.sanitize"],
   "what a column holds": ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "format.typesAnyway", "data.typeRule"],

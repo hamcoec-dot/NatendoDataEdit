@@ -209,6 +209,8 @@ export class Tab {
   /** Report title lines found above the column titles when the file was opened (0: none): the title-row
    *  bar offers "Headers start at row N+1". */
   titleLines = $state(0);
+  /** A total line found at open (piece b): the bar offers to set it aside or delete it. */
+  totalRow = $state<import("./backend").TotalRow | null>(null);
   /** Data rows (after the header) and columns kept in view while scrolling. */
   frozenRows = $state(0);
   frozenCols = $state(0);
