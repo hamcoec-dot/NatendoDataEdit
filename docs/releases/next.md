@@ -21,3 +21,4 @@
 - **Find relationships:** Data > Find relationships shows which columns settle which, which are one to one or blank together, and the rows that break each.
 - **Totals row:** View > Totals row pins one total per column under the table, over the rows shown. Columns of IDs and codes are counted, not added.
 - **Outside changes:** a banner says when another program changes or deletes an open file, with Reload, Compare with disk and Ignore.
+- **Hidden rows are marked:** a dotted line in the row numbers shows where rows are missing, and the status bar says which rows edits act on.

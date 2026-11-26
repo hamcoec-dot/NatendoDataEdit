@@ -67,6 +67,33 @@ const url = process.argv[3] || "http://localhost:5301";
   if (out) await p.screenshot({ path: path.join(out, "shown-split.png") });
   await close();
 
+  // The status pill and the dotted line where rows are missing.
+  const pill = async () => ((await p.getByTestId("acting-pill").textContent({ timeout: 3000 }).catch(() => "")) || "").trim();
+  ok(/^Acting on [\d,]+ shown rows \(3 hidden, untouched\)$/.test(await pill()), `the pill says which rows edits act on (${await pill()})`);
+  await run("data.sort");
+  await dialog.getByRole("checkbox", { name: /Sort all rows/ }).check();
+  await p.waitForTimeout(300);
+  ok((await pill()) === "Including hidden rows (3 hidden)" && (await p.locator("[data-testid=acting-pill].including").count()) === 1, `amber while a screen includes hidden rows (${await pill()})`);
+  await close();
+  ok(/^Acting on/.test(await pill()), "and back when it closes");
+  await p.evaluate(() => window.__nde.grid.select({ row: 1, col: 1 }, { row: 1, col: 1 }));
+  await p.waitForTimeout(300);
+  const box = await p.locator("canvas").first().boundingBox();
+  let found = null;
+  for (let y = box.y + 20; y < box.y + 110 && !found; y += 3) {
+    await p.mouse.move(box.x + 25, y);
+    await p.waitForTimeout(60);
+    const tip = await p.evaluate(() => [...document.querySelectorAll("[title]")].map((e) => e.getAttribute("title")).find((t) => /hidden here/.test(t || "")) || "");
+    if (tip) found = { y, tip };
+  }
+  ok(!!found && /^3 rows hidden here\. Click to show them\.$/.test(found.tip), `pointing at the dotted line says how many (${found?.tip})`);
+  if (out) await p.screenshot({ path: path.join(out, "shown-seam.png") });
+  if (found) await p.mouse.click(box.x + 25, found.y);
+  await p.waitForTimeout(1200);
+  ok((await p.evaluate(() => window.__nde.tab.info.total_rows - window.__nde.tab.info.rows)) === 0 && (await p.getByTestId("acting-pill").count()) === 0, "clicking it shows the rows again, and the pill goes");
+  // Hide the rows again for the quick sort (the stand-in does not keep hidden rows in place, so it comes last).
+  await p.evaluate(() => window.__nde.grid.select({ row: 2, col: 1 }, { row: 4, col: 1 }));
+  await run("format.hideRows");
   await p.evaluate(() => window.__nde.grid.select({ row: 1, col: 1 }, { row: 1, col: 1 }));
   await run("data.sortAsc");
   await p.waitForTimeout(1500);

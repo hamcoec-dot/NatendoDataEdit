@@ -1,6 +1,7 @@
 <script lang="ts">
   // Find and replace bar. Searches run in the engine (safe regular
   // expressions, whole files of any size); results select cells in the grid.
+  import { includeWhile } from "./shown.svelte";
   import { backend, errorText, type DocInfo, type FindAll, type FindCount, type FindRowsAction, type FindSpec, type ReplaceReport } from "./backend";
   import { onDestroy, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
@@ -942,6 +943,9 @@
     const t = of.header ? (of === tab ? heads[c] || of.cache.get(0, c) : of.cache.get(0, c)) : undefined;
     return t ? `${t} (column ${c + 1})` : `Column ${c + 1}`;
   }
+
+  // The status pill turns amber while this includes hidden rows.
+  $effect(() => includeWhile(options.includeHidden));
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->

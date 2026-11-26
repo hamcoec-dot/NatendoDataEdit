@@ -124,6 +124,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "csv export safety": ["file.csvGuard", "file.options"],
   "ambiguous dates": ["data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff"],
   "sorting with rows hidden": ["data.sort", "data.sortAsc", "data.sortDesc", "data.fieldCheck", "data.compute"],
+  "which rows edits act on": ["view.whichRows", "format.showRows"],
   "repair bar": ["data.repairRow"],
   "shifted and ragged rows": ["data.repairRow", "data.ragged", "data.raggedShort", "data.raggedLong", "edit.gotoSpecial"],
   "x ray gremlins": ["view.xray", "view.xrayReport", "edit.sanitize", "clean.tool.sanitize"],
