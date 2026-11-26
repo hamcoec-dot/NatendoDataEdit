@@ -334,9 +334,27 @@ fn parse_time(t: &str) -> Option<f64> {
     Some(hour as f64 * 3600.0 + m as f64 * 60.0 + secs - offset as f64)
 }
 
-/// The date (and time) a cell holds, as days since 1970-01-01 with the time
-/// as a fraction; a time alone is a fraction of day 0.
-pub fn parse_date(s: &str, opts: ReadOptions) -> Option<f64> {
+/// What a cell's date part is, before any order is chosen.
+enum Form {
+    /// A time alone.
+    TimeOnly,
+    /// A date only one reading fits: year first, or a month written out.
+    Fixed { days: i64, written: bool },
+    /// `a/b/year`: which of `a` and `b` is the day depends on the order.
+    Slash {
+        a: u32,
+        b: u32,
+        year: i64,
+        two_digit: bool,
+    },
+    /// Eight digits that are a calendar date (`20260425`). Not read as a
+    /// date by [`parse_date`].
+    Compact,
+}
+
+/// The one splitter of a date's text: [`parse_date`] and [`classify_date`]
+/// both read cells through it, so they cannot disagree. Allocates nothing.
+fn date_form(s: &str) -> Option<(Form, Option<f64>)> {
     let t = s.trim_matches(is_space);
     if t.is_empty() || t.len() > MAX_VALUE_LEN {
         return None;
@@ -356,65 +374,180 @@ pub fn parse_date(s: &str, opts: ReadOptions) -> Option<f64> {
     };
     let date_part = date_part.trim_end_matches(|c: char| is_space(c) || c == 'T' || c == ',');
     if date_part.is_empty() {
-        return secs.map(|s| s / 86_400.0);
+        return secs.map(|secs| (Form::TimeOnly, Some(secs)));
     }
-    let lower = date_part.to_ascii_lowercase();
-    let mut toks: Vec<&str> = lower
+    // Month and weekday names are matched in lower case (a copy on the stack).
+    let mut buf = [0u8; MAX_VALUE_LEN];
+    let copy = &mut buf[..date_part.len()];
+    copy.copy_from_slice(date_part.as_bytes());
+    copy.make_ascii_lowercase();
+    let lower = std::str::from_utf8(copy).ok()?;
+    let mut parts = [""; 4];
+    let mut n = 0;
+    for x in lower
         .split(|c: char| is_space(c) || matches!(c, '-' | '/' | '.' | ','))
         .filter(|x| !x.is_empty())
-        .collect();
-    if toks.len() > 4 {
-        return None;
+    {
+        *parts.get_mut(n)? = x;
+        n += 1;
     }
+    let mut toks = &parts[..n];
     if toks.first().is_some_and(|w| is_weekday(w)) {
-        toks.remove(0);
+        toks = &toks[1..];
     }
     let numeric = |x: &str| x.bytes().all(|c| c.is_ascii_digit());
-    let days = match toks.as_slice() {
+    let fixed = |days: i64, written: bool| Form::Fixed { days, written };
+    let form = match toks {
         [a, b, c] if numeric(a) && numeric(b) && numeric(c) => {
             if a.len() == 4 {
-                date_days(year_of(a)?, b.parse().ok()?, c.parse().ok()?)?
+                fixed(
+                    date_days(year_of(a)?, b.parse().ok()?, c.parse().ok()?)?,
+                    false,
+                )
             } else {
                 if a.len() > 2 || b.len() > 2 {
                     return None;
                 }
-                let (x, y): (u32, u32) = (a.parse().ok()?, b.parse().ok()?);
-                let year = year_of(c)?;
-                let (m, d) = if x > 12 {
-                    (y, x)
-                } else if y > 12 {
-                    (x, y)
-                } else {
-                    match opts.date_order {
-                        DateOrder::Mdy => (x, y),
-                        DateOrder::Dmy => (y, x),
-                    }
-                };
-                date_days(year, m, d)?
+                Form::Slash {
+                    a: a.parse().ok()?,
+                    b: b.parse().ok()?,
+                    year: year_of(c)?,
+                    two_digit: c.len() == 2,
+                }
             }
         }
         [a, b, c] => {
             if let Some(m) = month_of(a) {
-                date_days(year_of(c)?, m, day_of(b)?)?
+                fixed(date_days(year_of(c)?, m, day_of(b)?)?, true)
             } else {
                 let m = month_of(b)?;
                 if a.len() == 4 && numeric(a) {
-                    date_days(year_of(a)?, m, day_of(c)?)?
+                    fixed(date_days(year_of(a)?, m, day_of(c)?)?, true)
                 } else {
-                    date_days(year_of(c)?, m, day_of(a)?)?
+                    fixed(date_days(year_of(c)?, m, day_of(a)?)?, true)
                 }
             }
         }
         [a, b] => {
             if let (Some(m), true) = (month_of(a), b.len() == 4) {
-                date_days(year_of(b)?, m, 1)?
+                fixed(date_days(year_of(b)?, m, 1)?, true)
             } else {
                 return None;
             }
         }
+        [a] if a.len() == 8 && numeric(a) => {
+            let year = year_of(&a[..4])?;
+            date_days(year, a[4..6].parse().ok()?, a[6..].parse().ok()?)?;
+            Form::Compact
+        }
         _ => return None,
     };
+    Some((form, secs))
+}
+
+/// Month and day of a slash date read in `order`: a part over 12 is the day
+/// whatever the order says.
+fn slash_parts(a: u32, b: u32, order: DateOrder) -> (u32, u32) {
+    if a > 12 {
+        (b, a)
+    } else if b > 12 {
+        (a, b)
+    } else {
+        match order {
+            DateOrder::Mdy => (a, b),
+            DateOrder::Dmy => (b, a),
+        }
+    }
+}
+
+/// The date (and time) a cell holds, as days since 1970-01-01 with the time
+/// as a fraction; a time alone is a fraction of day 0.
+pub fn parse_date(s: &str, opts: ReadOptions) -> Option<f64> {
+    let (form, secs) = date_form(s)?;
+    let days = match form {
+        Form::TimeOnly => return secs.map(|s| s / 86_400.0),
+        Form::Fixed { days, .. } => days,
+        Form::Slash { a, b, year, .. } => {
+            let (m, d) = slash_parts(a, b, opts.date_order);
+            date_days(year, m, d)?
+        }
+        Form::Compact => return None,
+    };
     Some(days as f64 + secs.unwrap_or(0.0) / 86_400.0)
+}
+
+/// How a cell's date can be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DateKind {
+    /// Year first.
+    Iso,
+    /// Eight digits that are a calendar date.
+    Compact,
+    /// The month written as a word.
+    Written,
+    /// `a/b/year` only month-first can read (the second part is over 12).
+    MonthFirstOnly,
+    /// Only day-first can read it (the first part is over 12).
+    DayFirstOnly,
+    /// Both orders read it, as different days.
+    Ambiguous,
+    /// Both orders read it as the same day (`05/05/2026`).
+    SameEither,
+    NotDate,
+}
+
+/// A cell's date by its date part (a time after it changes nothing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DateClass {
+    pub kind: DateKind,
+    /// The year is written with two digits (read as [`TWO_DIGIT_YEARS`]).
+    pub two_digit_year: bool,
+}
+
+/// How a two-digit year is read, in words.
+pub const TWO_DIGIT_YEARS: &str = "00 to 29 are 2000 to 2029, 30 to 99 are 1930 to 1999";
+
+/// Classify a cell without choosing an order. Allocates nothing.
+pub fn classify_date(s: &str) -> DateClass {
+    let class = |kind, two_digit_year| DateClass {
+        kind,
+        two_digit_year,
+    };
+    let Some((form, _)) = date_form(s) else {
+        return class(DateKind::NotDate, false);
+    };
+    match form {
+        Form::TimeOnly => class(DateKind::NotDate, false),
+        Form::Compact => class(DateKind::Compact, false),
+        Form::Fixed { written, .. } => class(
+            if written {
+                DateKind::Written
+            } else {
+                DateKind::Iso
+            },
+            false,
+        ),
+        Form::Slash {
+            a,
+            b,
+            year,
+            two_digit,
+        } => {
+            let reads = |order| {
+                let (m, d) = slash_parts(a, b, order);
+                date_days(year, m, d)
+            };
+            let kind = match (reads(DateOrder::Mdy), reads(DateOrder::Dmy)) {
+                _ if a > 12 && reads(DateOrder::Mdy).is_some() => DateKind::DayFirstOnly,
+                _ if b > 12 && reads(DateOrder::Mdy).is_some() => DateKind::MonthFirstOnly,
+                (Some(x), Some(y)) if x == y => DateKind::SameEither,
+                (Some(_), Some(_)) => DateKind::Ambiguous,
+                _ => DateKind::NotDate,
+            };
+            class(kind, two_digit && kind != DateKind::NotDate)
+        }
+    }
 }
 
 /// Lower-case `c` and remove common accents (Latin-1 and Latin Extended-A).
@@ -651,5 +784,170 @@ mod tests {
             natural_cmp(long_a.as_bytes(), long_b.as_bytes()),
             Ordering::Less
         );
+    }
+}
+
+#[cfg(test)]
+mod date_class_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// `parse_date` as it was before the classifier (0.6.0), to compare with.
+    fn parse_date_before(s: &str, opts: ReadOptions) -> Option<f64> {
+        let t = s.trim_matches(is_space);
+        if t.is_empty() || t.len() > MAX_VALUE_LEN {
+            return None;
+        }
+        // Where a time starts: the digits just before the first ':'.
+        let (date_part, time_part) = match t.find(':') {
+            Some(c) => {
+                // Digits are ASCII, so the digit run's start is a char boundary.
+                let start = c - t[..c].bytes().rev().take_while(u8::is_ascii_digit).count();
+                (&t[..start], Some(&t[start..]))
+            }
+            None => (t, None),
+        };
+        let secs = match time_part {
+            Some(tp) => Some(parse_time(tp)?),
+            None => None,
+        };
+        let date_part = date_part.trim_end_matches(|c: char| is_space(c) || c == 'T' || c == ',');
+        if date_part.is_empty() {
+            return secs.map(|s| s / 86_400.0);
+        }
+        let lower = date_part.to_ascii_lowercase();
+        let mut toks: Vec<&str> = lower
+            .split(|c: char| is_space(c) || matches!(c, '-' | '/' | '.' | ','))
+            .filter(|x| !x.is_empty())
+            .collect();
+        if toks.len() > 4 {
+            return None;
+        }
+        if toks.first().is_some_and(|w| is_weekday(w)) {
+            toks.remove(0);
+        }
+        let numeric = |x: &str| x.bytes().all(|c| c.is_ascii_digit());
+        let days = match toks.as_slice() {
+            [a, b, c] if numeric(a) && numeric(b) && numeric(c) => {
+                if a.len() == 4 {
+                    date_days(year_of(a)?, b.parse().ok()?, c.parse().ok()?)?
+                } else {
+                    if a.len() > 2 || b.len() > 2 {
+                        return None;
+                    }
+                    let (x, y): (u32, u32) = (a.parse().ok()?, b.parse().ok()?);
+                    let year = year_of(c)?;
+                    let (m, d) = if x > 12 {
+                        (y, x)
+                    } else if y > 12 {
+                        (x, y)
+                    } else {
+                        match opts.date_order {
+                            DateOrder::Mdy => (x, y),
+                            DateOrder::Dmy => (y, x),
+                        }
+                    };
+                    date_days(year, m, d)?
+                }
+            }
+            [a, b, c] => {
+                if let Some(m) = month_of(a) {
+                    date_days(year_of(c)?, m, day_of(b)?)?
+                } else {
+                    let m = month_of(b)?;
+                    if a.len() == 4 && numeric(a) {
+                        date_days(year_of(a)?, m, day_of(c)?)?
+                    } else {
+                        date_days(year_of(c)?, m, day_of(a)?)?
+                    }
+                }
+            }
+            [a, b] => {
+                if let (Some(m), true) = (month_of(a), b.len() == 4) {
+                    date_days(year_of(b)?, m, 1)?
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        };
+        Some(days as f64 + secs.unwrap_or(0.0) / 86_400.0)
+    }
+
+    fn same(s: &str) {
+        for date_order in [DateOrder::Mdy, DateOrder::Dmy] {
+            let opts = ReadOptions {
+                date_order,
+                ..Default::default()
+            };
+            assert_eq!(parse_date(s, opts), parse_date_before(s, opts), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn the_table_of_cases() {
+        use DateKind::*;
+        for (text, kind, two) in [
+            ("25/04/2026", DayFirstOnly, false),
+            ("04/25/2026", MonthFirstOnly, false),
+            ("03/04/2026", Ambiguous, false),
+            ("05/05/2026", SameEither, false),
+            ("13/13/2026", NotDate, false),
+            ("02/30/2026", NotDate, false),
+            ("20260425", Compact, false),
+            ("20269999", NotDate, false),
+            ("Jan 5 2024", Written, false),
+            ("5th January 2024", Written, false),
+            ("Mon, 5 Jan 2024", Written, false),
+            ("4/7/26", Ambiguous, true),
+            ("25.04.2026", DayFirstOnly, false),
+            ("2026/04/03", Iso, false),
+            ("2026-04-03", Iso, false),
+            ("2026-04-03T14:00:00Z", Iso, false),
+            ("03/04/2026 14:00", Ambiguous, false),
+            ("  03-04-2026  ", Ambiguous, false),
+            ("14:00", NotDate, false),
+            ("123456789", NotDate, false),
+            ("", NotDate, false),
+            ("hello", NotDate, false),
+        ] {
+            let c = classify_date(text);
+            assert_eq!((c.kind, c.two_digit_year), (kind, two), "{text:?}");
+            same(text);
+        }
+    }
+
+    #[test]
+    fn the_two_digit_year_window_is_as_it_says() {
+        let read = |s| parse_date(s, ReadOptions::default()).unwrap() as i64;
+        assert_eq!(read("1/13/29"), date_days(2029, 1, 13).unwrap());
+        assert_eq!(read("1/13/30"), date_days(1930, 1, 13).unwrap());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(6000))]
+        #[test]
+        fn parse_date_reads_what_it_read_before(s in "\\PC{0,40}") {
+            same(&s);
+        }
+
+        #[test]
+        fn date_like_text_reads_as_before_and_agrees_with_its_class(
+            s in "((mon|Tue|friday),? )?([0-9]{1,4}|jan|March|sept\\.)[-/. ,]{0,2}([0-9]{1,2}(st|th)?|Feb|dec)[-/. ,]{0,2}([0-9]{2,4})?([ T][0-9]{1,2}:[0-9]{2}(:[0-9]{2})?( ?(am|PM|Z|\\+02:00))?)?",
+        ) {
+            same(&s);
+            let read = |date_order| parse_date(&s, ReadOptions { date_order, ..Default::default() });
+            let (m, d) = (read(DateOrder::Mdy), read(DateOrder::Dmy));
+            match classify_date(&s).kind {
+                DateKind::Ambiguous => prop_assert!(m.is_some() && d.is_some() && m != d),
+                DateKind::SameEither
+                | DateKind::MonthFirstOnly
+                | DateKind::DayFirstOnly
+                | DateKind::Iso
+                | DateKind::Written => prop_assert!(m.is_some() && m == d),
+                DateKind::Compact => prop_assert!(m.is_none() && d.is_none()),
+                DateKind::NotDate => {}
+            }
+        }
     }
 }
