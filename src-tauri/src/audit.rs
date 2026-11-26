@@ -290,6 +290,7 @@ fn data_ops() -> Vec<DataOp> {
         read: Default::default(),
         now: 20_000.0,
         tables: Default::default(),
+        hidden: true,
     };
     vec![
         DataOp::Paste {
@@ -468,7 +469,10 @@ fn data_ops() -> Vec<DataOp> {
                 ..Default::default()
             },
         },
-        DataOp::SortProblems { spec: checks() },
+        DataOp::SortProblems {
+            spec: checks(),
+            scope: Default::default(),
+        },
         DataOp::CheckColumn {
             spec: checks(),
             title: "made".into(),
