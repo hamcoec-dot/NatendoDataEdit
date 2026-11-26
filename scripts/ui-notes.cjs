@@ -103,6 +103,7 @@ const url = process.argv[3] || "http://localhost:5321";
   await p.waitForTimeout(400);
   t = await text();
   ok(/Leave out the report notes when saving: the 4 lines you set aside/.test(t), "turning it off asks, with the real counts");
+  ok(/Once you save with it off, they will not be in the saved file, and this tab carries on without them\./.test(t), "and says the tab carries on without them once saved");
   await p.getByRole("button", { name: "Leave them out" }).click();
   await p.waitForTimeout(500);
   i = await info();

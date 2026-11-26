@@ -67,7 +67,7 @@
       Save report notes with the file
     </label>
     {#if !notes.keep}
-      <p class="note warn">Saving leaves them out. They stay here until then: switch it back on and nothing is lost.</p>
+      <p class="note warn">Saving leaves them out. They stay here until then: switch it back on and nothing is lost. Once saved with it off, they are not in the file and this tab carries on without them.</p>
     {/if}
     {#each parts as [title, text, n] (title)}
       <div class="part">

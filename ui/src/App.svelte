@@ -1525,6 +1525,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     let allowLossy = false;
     let options: SaveAsOptions | null = null;
     let receipt: ReceiptAsk | null = null;
+    // Report notes are written as they were: saved with another separator, they keep the old one (said once).
+    const sepBefore = t.info.delimiter;
+    const notesSaved = noteLines(t) > 0 && (t.info.notes?.keep ?? true);
     t.busy = "Saving…";
     try {
       for (;;) {
@@ -1544,7 +1547,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           if (!d.can_undo) t.afterSave();
           void rememberTab(t, true);
           const note = receipt ? await backend().receiptNote(t.id).catch(() => null) : null;
-          say(`Saved ${d.name}.${note ? ` ${note}.` : ""}`);
+          const sepNote = notesSaved && d.delimiter !== sepBefore ? ` The report notes are written as they were, with ${separatorWords(sepBefore)}.` : "";
+          say(`Saved ${d.name}.${note ? ` ${note}.` : ""}${sepNote}`);
           return true;
         } catch (e) {
           if (!isCmdError(e)) throw e;
@@ -6070,7 +6074,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
    *  the selected rows ("foot"). */
   function asideSpan(t: Tab, place: NotePlace): { at: number; count: number } | null {
     if (place === "head") return { at: 0, count: t.cell.row };
-    const r = oneBlock(t);
+    // (Only a look: never `oneBlock`, which says "That works on one block" on the status line.)
+    const r = t.singleRect();
     if (!r) return null;
     return { at: r.row, count: Math.max(0, Math.min(r.rows, t.info.rows - r.row)) };
   }
@@ -6085,7 +6090,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   let asideTimer = 0;
   $effect(() => {
     const t = tab;
-    if (!t || !t.info.indexed || t.info.filtered) return;
+    // Not while several blocks are selected: nothing to ask about then.
+    if (!t || !t.info.indexed || t.info.filtered || t.extra.length > 0) return;
     const key = asideKey(t);
     const h = asideSpan(t, "head");
     const f = asideSpan(t, "foot");
@@ -6106,12 +6112,18 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (!t.info.indexed) return "the file is still being read";
     if (t.info.read_only) return "the file is open read-only";
     if (t.info.filtered) return "show all rows first: some rows are hidden or filtered out, so the first and last rows of the file may not be on screen";
+    if (t.extra.length > 0) return "select one block of rows";
     const s = asideSpan(t, place);
     if (place === "head" && s?.count === 0) return t.header ? "this row already holds the column titles" : "";
     if (!s || s.count === 0) return "select the rows to set aside";
     const c = asideChecked;
     if (c && c.key === asideKey(t)) return (place === "head" ? c.head : c.foot) ?? "";
     return "";
+  }
+  /** A separator in words ("commas", "tabs"). */
+  function separatorWords(sep: string): string {
+    const names: Record<string, string> = { ",": "commas", "\t": "tabs", ";": "semicolons", "|": "bars", " ": "spaces" };
+    return names[sep] ?? `“${sep}”`;
   }
   /** Lines of report notes, in words, for messages. */
   function notesWords(n: NoteCountsLike): string {
@@ -6166,7 +6178,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** The selected last rows of the file go aside below the table. */
   async function setAsideFoot(): Promise<void> {
     const t = tab;
-    if (!t) return;
+    if (!t || !oneBlock(t)) return;
     const s = asideSpan(t, "foot");
     if (!s || s.count === 0) return;
     const why = t.info.filtered ? asideWhy("foot") : await backend().setAsideCheck(t.id, s.at, s.count, "foot").catch((e) => errorText(e));
@@ -6209,7 +6221,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const t = tab;
     if (!t || !t.info.notes || t.info.notes.keep === keep) return;
     if (!keep) {
-      const a = await ask("Leave out the report notes?", `Leave out the report notes when saving: ${notesWords(t.info.notes)}. They stay here (switch it back on and nothing is lost); Ctrl+Z undoes the switch.`, [
+      const a = await ask("Leave out the report notes?", `Leave out the report notes when saving: ${notesWords(t.info.notes)}. Until you save they stay here (switch it back on and nothing is lost; Ctrl+Z undoes the switch). Once you save with it off, they will not be in the saved file, and this tab carries on without them.`, [
         { id: "off", label: "Leave them out" },
         { id: "keep", label: "Keep them", primary: true },
       ], "keep");

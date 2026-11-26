@@ -341,6 +341,7 @@ impl Document {
         let have_lines: usize = side.iter().map(|b| lines_in(self.block_bytes(b))).sum();
         let mut bytes = have;
         let mut lines = have_lines;
+        let mut made = Vec::new();
         for pos in at..end {
             let id = self.doc_id_at(pos).ok_or(Error::OutOfRange)?;
             let n = match self.row_source(id) {
@@ -348,12 +349,18 @@ impl Document {
                     lines += lines_in(bytes).max(1);
                     bytes.len()
                 }
+                // An edited (or added) row counts as it will be written.
                 _ => {
-                    lines += 1;
-                    0
+                    made.clear();
+                    self.row_bytes(id, pos, &mut made)?;
+                    lines += lines_in(&made).max(1);
+                    made.len()
                 }
             };
             bytes += n;
+            if bytes > MAX_NOTE_BYTES || lines > MAX_NOTE_LINES {
+                break;
+            }
         }
         if lines > MAX_NOTE_LINES {
             return Err(too_many(lines));
@@ -1194,6 +1201,57 @@ mod tests {
             .to_string();
         assert!(e.contains("looks like data"), "{e}");
         assert_eq!(wide.total_rows(), 5);
+    }
+
+    /// The 1 MB limit counts an edited row at the length it will be written.
+    #[test]
+    fn edited_rows_count_toward_the_size_limit() {
+        let mut d = doc(b"a\nb\nc\nd\n");
+        let big = "x".repeat(600 * 1024);
+        d.set_cell(2, 0, big.clone()).unwrap();
+        d.set_cell(3, 0, big).unwrap();
+        let e = d
+            .set_aside_check(2, 2, Place::Foot)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("more than 1 MB"), "{e}");
+        assert!(d.set_aside_check(3, 1, Place::Foot).is_ok());
+        // An edited cell with a line break counts its lines.
+        let mut d = doc(b"a\nb\n");
+        d.set_cell(1, 0, "two\nlines".into()).unwrap();
+        d.set_aside_rows(1, 1, Place::Foot).unwrap();
+        assert_eq!(d.note_lines(false), (0, 2));
+    }
+
+    /// Saved with the switch off, the tab carries on without the notes (the
+    /// question says so).
+    #[test]
+    fn saved_with_the_switch_off_the_tab_has_no_notes() {
+        let dir = tmp("off");
+        let path = dir.join("r.csv");
+        std::fs::write(&path, REPORT).unwrap();
+        let mut d = Document::open_indexed(
+            &path,
+            OpenOptions {
+                skip_lines: Some(0),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        d.set_aside_rows(4, 1, Place::Foot).unwrap();
+        d.set_keep_notes(false);
+        save_over(&mut d);
+        assert!(!d.has_report_notes());
+        d.set_keep_notes(true);
+        assert!(!d.is_modified());
+        d.set_cell(1, 1, "5".into()).unwrap();
+        save_over(&mut d);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"name,amount\r\nann,5\r\nbo,2\r\ncy,3\r\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
