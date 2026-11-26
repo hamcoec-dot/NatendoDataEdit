@@ -1175,20 +1175,24 @@ preview:
   the main row's, first or last non-blank, longest, most common, from the
   newest or oldest date, all different values joined (exact text, so `Tag` and
   `tag` are both kept), or an exact sum, smallest or largest. A blank never
-  replaces a value unless you tick that a newer blank does. A date readable two
-  ways or a value that is not an exact number (money signs and exponents
-  included) keeps the first value, **highlighted in the preview**. The main row
-  of a cluster is the one with the most accepted pairs; the others were each
-  accepted with it, so a chain of look-alikes never pulls in a stranger. A row
-  paired into two clusters, or a cluster over the size limit, is **left for you
+  replaces a value unless you tick that a newer blank does. On equal dates the
+  first row in the table wins; if any date in a cluster can be read two ways or
+  not at all, the first value is kept. That, and a value that is not an exact
+  number (money signs and exponents included), is **highlighted in the
+  preview**. The main row of a cluster is the one with the most accepted pairs;
+  the others were each accepted with it, so a chain of look-alikes never pulls
+  in a stranger. A row paired into two clusters, a cluster over the size limit,
+  and every other paired row that ends up merged nowhere are **listed for you
   to review**. Clusters joined through the main row only are marked, and
   **Only merge clusters where every pair was accepted** (off to start) leaves
-  them for review too. Match people lists one pair for each later row,
-  so with that ticked only clusters of two rows merge. `Merged_IDs` (the main row first, then file order) and
-  `Merged_Count` say what became what; the names come from your ID column, else
-  the row number in the file. Hidden rows are not matched and are kept as they
-  are. The folded rows can open in a second tab. Refused if the table changed
-  since the match.
+  them for review too. Match people lists one pair for each later row, so with
+  that ticked only clusters of two rows merge. `Merged_IDs` (the main row
+  first, then in the table's order) and `Merged_Count` say what became what.
+  The names come from your ID column, else `row N`, the line in the file with
+  the title row counted as row 1; `Merged_IDs` is only as sensitive as the ID
+  column you choose, and an ID that itself holds `; ` reads ambiguously there.
+  Hidden rows are not matched and are kept as they are. The folded rows can
+  open in a second tab. Refused if the table changed since the match.
 - **Street range lookup:** find the precinct, district or ward for each
   address from a street index of house number ranges, with odd and even sides
   and ZIP or city to tell same-named streets apart. `North Main Street`,

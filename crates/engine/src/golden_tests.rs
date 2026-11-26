@@ -55,8 +55,55 @@ fn a_chain_never_pulls_a_stranger_in() {
     // A~B~C~D: D is not pulled in through C, which goes to review.
     let p = plan(&d, &[(A, B), (B, C), (C, D)], &Default::default());
     assert_eq!(members(&p), [[B, A]]);
-    assert_eq!(reasons(&p), [(C, Reason::TwoClusters)]);
+    assert_eq!(
+        reasons(&p),
+        [(C, Reason::TwoClusters), (D, Reason::PartnerUnderReview)]
+    );
     assert_eq!(p.counts.unmerged_pairs, 2);
+    assert_eq!(p.counts.review, 2);
+}
+
+/// Every paired row is merged or listed for review (a reviewer's graph that
+/// once left row 1 out without a word).
+#[test]
+fn no_paired_row_is_dropped_silently() {
+    let mut text = String::from("id\r\n");
+    for i in 1..=10 {
+        text.push_str(&format!("{i}\r\n"));
+    }
+    let d = doc(&text);
+    let pairs = [
+        (1, 6),
+        (9, 7),
+        (4, 3),
+        (2, 10),
+        (3, 9),
+        (6, 4),
+        (4, 8),
+        (10, 8),
+        (2, 1),
+        (1, 9),
+        (7, 2),
+    ];
+    for require_all in [false, true] {
+        for max_cluster in [2, 3, 10] {
+            let spec = GoldenSpec {
+                require_all,
+                max_cluster,
+                ..Default::default()
+            };
+            let p = plan(&d, &pairs, &spec);
+            for (a, b) in pairs {
+                for r in [a, b] {
+                    assert!(
+                        p.clusters.iter().any(|c| c.members.contains(&r))
+                            || p.review.iter().any(|x| x.0 == r),
+                        "row {r} (strict {require_all}, at most {max_cluster})"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -168,6 +215,13 @@ fn random_graphs_keep_every_row_and_ignore_the_pair_order() {
         }
         for &(r, _) in &p.review {
             assert!(seen.insert(r), "round {round}: {r} merged and reviewed");
+        }
+        // And no paired row is in neither.
+        for &(a, b) in pairs.iter().filter(|(a, b)| a != b) {
+            assert!(
+                seen.contains(&a) && seen.contains(&b),
+                "round {round}: a row of ({a}, {b}) is not accounted for"
+            );
         }
         let first = (p.counts.clone(), p.clusters.clone(), p.review.clone());
         // The same pairs another way.
