@@ -311,10 +311,12 @@ impl Document {
 
     /// The state that makes row `id` hold `values`: none when that is what
     /// the file holds.
-    fn state_for(&self, id: u32, values: Vec<String>) -> Result<(u32, Option<Edit>), Error> {
+    fn state_for(&self, id: u32, mut values: Vec<String>) -> Result<(u32, Option<Edit>), Error> {
         if self.file_row(id) {
             let (bytes, mode) = self.raw_row(id);
-            if self.original_fields(id, bytes, mode)? == values {
+            let original = self.original_fields(id, bytes, mode)?;
+            cut_back(&mut values, self.home_width(original.len()));
+            if original == values {
                 return Ok((id, None));
             }
         }
@@ -1118,6 +1120,7 @@ mod tests {
             fields: 4,
             groups: vec![1, 2],
             header: true,
+            unticked: 0,
         };
         let json = serde_json::to_string(&step).unwrap();
         assert!(!json.contains("Smith") && !step.holds_values(), "{json}");
@@ -1134,5 +1137,39 @@ mod tests {
                 .contains("made for files with 3 fields; this file has 2"),
             "{e}"
         );
+    }
+
+    #[test]
+    fn a_cut_row_edited_back_is_saved_at_the_usual_width() {
+        for bulk in [false, true] {
+            let (mut d, p) = open("a,b,c\n1,2,3\n4,5,6\n7,8,9,\n");
+            let revision = d.revision();
+            d.remove_empty_extra_columns(true, revision, &Progress::new())
+                .unwrap();
+            let set = |d: &mut Document, col: u32, v: &str| {
+                if bulk {
+                    let id = d.doc_id_at(3).unwrap();
+                    let states = d
+                        .patch_states(vec![(id, vec![(col, v.to_string())])])
+                        .unwrap();
+                    d.push(Op::Restore(states));
+                } else {
+                    d.set_cell(3, col, v.to_string()).unwrap();
+                }
+            };
+            // Changed and changed back; then a value past the width, taken out again.
+            set(&mut d, 0, "x");
+            set(&mut d, 0, "7");
+            set(&mut d, 3, "y");
+            assert_eq!(d.col_count(), 4);
+            set(&mut d, 3, "");
+            assert_eq!(d.col_count(), 3, "bulk {bulk}");
+            assert_eq!(all(&d)[3], ["7", "8", "9"]);
+            assert_eq!(
+                saved(&mut d, &p),
+                "a,b,c\n1,2,3\n4,5,6\n7,8,9\n",
+                "bulk {bulk}"
+            );
+        }
     }
 }

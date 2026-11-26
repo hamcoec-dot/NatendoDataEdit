@@ -120,6 +120,7 @@ const url = process.argv[3] || "http://localhost:5301";
   await p.waitForTimeout(800);
   const fixed = await p.evaluate(() => window.__nde.backend.calls.filter((c) => c.startsWith("fixAll:")).pop() || "");
   ok(/^fixAll:8:\[2,1,1,1,1,1,1\]:skip=\[11\]:true$/.test(fixed), `fix all asks for the shape and the unticked row (${fixed})`);
+  ok(/1 row you unticked is not in the recipe; running it fixes every row of 8 fields/.test((await p.textContent("footer.status")) || ""), "the status line says the unticked row is not in the recipe");
   ok((await p.getByTestId("repair-extra").count()) === 0, "no column offer while a long row is left");
   await p.getByRole("button", { name: "Join fields 1 and 2" }).click();
   await apply.click();

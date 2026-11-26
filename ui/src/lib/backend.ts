@@ -80,6 +80,8 @@ export interface DocInfo {
   repair_count: number;
   unclosed_quotes: boolean;
   /** The usual number of fields, and the file's rows with another number. */
+  /** What the steps of a recipe just run have to say. */
+  run_notes?: string[];
   usual_fields?: number;
   ragged_rows?: number;
   first_row_ragged?: boolean;

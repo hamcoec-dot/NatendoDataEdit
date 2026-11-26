@@ -874,7 +874,9 @@ everything is also in command search.
   all like this** lists them (hidden ones are counted; the first 20 can be
   unticked) and joins the same fields in all, in one undo step, after an
   automatic checkpoint; recipes record only the counts and places, and run only
-  on files with the same usual number of fields. When the extra column is then
+  on files with the same usual number of fields. Which rows you unticked is not
+  recorded (the step says how many): running it fixes every row of that width,
+  and says how many it changed. When the extra column is then
   empty and untitled, **Remove the empty last column** takes it away.
 
   ![The repair bar: a name with an unescaped comma, two fields marked to be joined](docs/screenshots/repair-bar.png)

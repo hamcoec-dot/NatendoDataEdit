@@ -1345,6 +1345,17 @@ impl Document {
         (&self.source.bytes()[a..b], self.index.mode_of(id as u64))
     }
 
+    /// The width a file row of `fields` fields goes back to: its own, or the
+    /// lowered width once the empty columns past it were removed. (Such a row
+    /// then never matches its file text, so it stays as edited and is saved
+    /// at the lowered width.)
+    fn home_width(&self, fields: usize) -> usize {
+        match self.file_width {
+            Some(w) if fields > w as usize => w as usize,
+            _ => fields,
+        }
+    }
+
     /// How many fields original row `id` has in the file.
     fn file_fields(&self, id: u32) -> u64 {
         let (bytes, mode) = self.raw_row(id);
@@ -1778,7 +1789,7 @@ impl Document {
                 values[c] = value;
             }
             if let Some(o) = &original {
-                cut_back(&mut values, o.len());
+                cut_back(&mut values, self.home_width(o.len()));
             }
             // An original row edited back to its file values returns to its
             // raw bytes, so it is saved byte-for-byte again.
@@ -2189,7 +2200,7 @@ impl Document {
                         v[c] = s;
                     }
                     if v.last().is_some_and(String::is_empty) && (id as u64) < self.index.rows() {
-                        let width = self.file_fields(id) as usize;
+                        let width = self.home_width(self.file_fields(id) as usize);
                         cut_back(&mut v, width);
                     }
                     Edit::Full(v)

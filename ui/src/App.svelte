@@ -7236,7 +7236,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     try {
       const info = await runJob("Running the recipe", () => backend().recipeRun(t.id, withPhrase(r.recipe, phrase), localNow(), force, answerPairs(questions, answers)));
       if (info) t.update(info, true);
-      say(`Ran the recipe: ${plural(r.recipe.steps.length, "step")}. Undo each with Ctrl+Z.`);
+      const notes = (info?.run_notes ?? []).map((n) => ` ${n}.`).join("");
+      say(`Ran the recipe: ${plural(r.recipe.steps.length, "step")}.${notes} Undo each with Ctrl+Z.`);
     } catch (e) {
       say(`${errorText(e)} Steps before it stay done; undo them with Ctrl+Z.`);
     }

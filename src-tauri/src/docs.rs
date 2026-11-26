@@ -1648,6 +1648,10 @@ pub struct DocInfo {
     /// The number of fields most rows of the file have (0 until indexed),
     /// the rows of the file with another number, and whether the first row is
     /// one of them. From counts kept while reading the file.
+    /// What the steps of a recipe just run have to say (only in the answer
+    /// to running one).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub run_notes: Vec<String>,
     pub usual_fields: u32,
     pub ragged_rows: u64,
     pub first_row_ragged: bool,
@@ -2777,9 +2781,10 @@ impl Docs {
             fields,
             groups: groups.clone(),
             header: keep_first,
+            unticked: skip.len() as u32,
         };
         let mut rows = 0;
-        let info = self.recorded(id, Logged::Step(step), || {
+        let mut info = self.recorded(id, Logged::Step(step), || {
             let entry = self.get(id)?;
             let job = entry.start("Fixing rows")?;
             self.edit(id, |d| {
@@ -2787,6 +2792,12 @@ impl Docs {
                 Ok(())
             })
         })?;
+        if !skip.is_empty() {
+            info.run_notes = vec![natendo_engine::recipe::unticked_note(
+                skip.len() as u32,
+                fields,
+            )];
+        }
         Ok((rows, info))
     }
 
@@ -2798,21 +2809,24 @@ impl Docs {
         fields: u32,
         groups: Vec<u32>,
         header: bool,
-    ) -> CmdResult<DocInfo> {
+    ) -> CmdResult<u64> {
         let step = RecipeOp::JoinFields {
             usual,
             fields,
             groups: groups.clone(),
             header,
+            unticked: 0,
         };
+        let mut rows = 0;
         self.recorded(id, Logged::Step(step), || {
             let entry = self.get(id)?;
             let job = entry.start("Fixing rows")?;
             self.edit(id, |d| {
-                d.replay_join_fields(usual, fields, &groups, header, &job.progress)
-                    .map(|_| ())
+                rows = d.replay_join_fields(usual, fields, &groups, header, &job.progress)?;
+                Ok(())
             })
-        })
+        })?;
+        Ok(rows)
     }
 
     /// How many empty, untitled columns past the usual number could be
@@ -5787,24 +5801,31 @@ impl Docs {
         // Each step goes through the same command as when done by hand (so
         // it plans under the read lock, keeps the grid live, is noted for
         // the tab's own recipe and is one undo step).
+        let mut notes = Vec::new();
         for (i, s) in recipe.steps.iter().enumerate() {
-            self.run_recipe_op(id, s.clone(), now).map_err(|mut e| {
+            let note = self.run_recipe_op(id, s.clone(), now).map_err(|mut e| {
                 e.message = format!("step {} ({}): {}", i + 1, s.describe(), e.message);
                 e
             })?;
+            if !note.is_empty() {
+                notes.push(note);
+            }
         }
-        self.info(id)
+        let mut info = self.info(id)?;
+        info.run_notes = notes;
+        Ok(info)
     }
 
     /// One recipe step, through the same command as when done by hand.
-    fn run_recipe_op(&self, id: u32, s: RecipeOp, now: f64) -> CmdResult<()> {
+    /// Gives what a step has to say about its run ("" for most).
+    fn run_recipe_op(&self, id: u32, s: RecipeOp, now: f64) -> CmdResult<String> {
         if let RecipeOp::Clean { spec } = &s {
             check_clean(spec, now)?;
         }
         if let RecipeOp::Filter { spec } = &s {
             check_filter(spec)?;
         }
-        match s {
+        let done: CmdResult<()> = match s {
             RecipeOp::Sort { spec } => self.sort(id, spec).map(|_| ()),
             RecipeOp::Filter { spec } => self.filter(id, spec).map(|_| ()),
             RecipeOp::ClearFilter => self.clear_filter(id).map(|_| ()),
@@ -5822,9 +5843,15 @@ impl Docs {
                 fields,
                 groups,
                 header,
-            } => self
-                .replay_join_fields(id, usual, fields, groups, header)
-                .map(|_| ()),
+                ..
+            } => {
+                let rows = self.replay_join_fields(id, usual, fields, groups, header)?;
+                return Ok(format!(
+                    "Join fields in every row of {fields} fields: {} {}",
+                    group(rows),
+                    if rows == 1 { "row" } else { "rows" }
+                ));
+            }
             RecipeOp::ColumnTypes { types } => {
                 let set = {
                     let entry = self.get(id)?;
@@ -5834,7 +5861,8 @@ impl Docs {
                 self.set_column_types(id, set).map(|_| ())
             }
             other => self.data_op(id, recipe_data_op(other, now)).map(|_| ()),
-        }
+        };
+        done.map(|()| String::new())
     }
 
     fn data_op_now(&self, id: u32, op: DataOp) -> CmdResult<OpReport> {
@@ -8301,6 +8329,7 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         mixed_line_breaks: stats.mixed_line_breaks(),
         lossy: d.is_lossy(),
         invalid_bytes: d.has_invalid_bytes(),
+        run_notes: Vec::new(),
         usual_fields: d.ragged_at_open(false).map_or(0, |r| r.0),
         ragged_rows: d.ragged_at_open(false).map_or(0, |r| r.1),
         first_row_ragged: d.first_row_ragged(),
@@ -11154,6 +11183,45 @@ ca,California
             e.message.contains("made for files with 3 fields"),
             "{}",
             e.message
+        );
+    }
+
+    /// C1b b2 review: a recorded fix says that unticked rows are not in the recipe, and running it reports how many
+    /// rows it changed, none included.
+    #[test]
+    fn a_recorded_fix_says_what_it_leaves_out_and_reports_its_count() {
+        let docs = Docs::default();
+        let body: &[u8] = b"a,b,c\n1,Smith, John,x\n2,Doe, Jane,y\n3,u,v\n4,u,v\n5,u,v\n";
+        let p = tmp("unticked.csv", body);
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let same = docs.same_shape(id, true, 4, &[1, 2]).unwrap();
+        let left = same.first[1].id;
+        let (_, done) = docs
+            .fix_all(id, true, same.revision, 4, vec![1, 2], &[left])
+            .unwrap();
+        let note =
+            "1 row you unticked is not in the recipe; running it fixes every row of 4 fields";
+        assert_eq!(done.run_notes, [note]);
+        assert!(docs.steps_view(id).unwrap().steps[0].text.contains(note));
+        let book = docs.recipe_of(id, true, "r").unwrap();
+        assert!(book.steps[0].describe().contains(note));
+        // Run on a fresh copy: both rows, the count said; run again: none.
+        let q = tmp("unticked2.csv", body);
+        let two = docs.open_path(&q, false).unwrap().id;
+        wait(&docs, two);
+        let info = docs.run_recipe(two, &book, &[], 0.0, true).unwrap();
+        assert_eq!(
+            info.run_notes,
+            ["Join fields in every row of 4 fields: 2 rows"]
+        );
+        assert!(!docs.steps_view(two).unwrap().steps[0]
+            .text
+            .contains("unticked"));
+        let info = docs.run_recipe(two, &book, &[], 0.0, true).unwrap();
+        assert_eq!(
+            info.run_notes,
+            ["Join fields in every row of 4 fields: 0 rows"]
         );
     }
 

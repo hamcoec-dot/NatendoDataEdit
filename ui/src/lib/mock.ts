@@ -820,7 +820,8 @@ export class MockBackend implements Backend {
       this.fakeRagged.set(doc, after);
       return () => void this.fakeRagged.set(doc, before);
     });
-    return [fixed.size, info];
+    const left = skip.length ? [`${skip.length} ${skip.length === 1 ? "row you unticked is" : "rows you unticked are"} not in the recipe; running it fixes every row of ${fields} fields`] : [];
+    return [fixed.size, { ...info, run_notes: left }];
   }
   async emptyExtraColumns(doc: number): Promise<[number, number]> {
     const m = this.fakeRagged.get(doc);

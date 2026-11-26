@@ -104,6 +104,20 @@ fn fill_texts(v: &mut serde_json::Value, answers: &[(String, String)]) {
     }
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// What a recorded "Fix all like this" says about the rows left unticked.
+pub fn unticked_note(unticked: u32, fields: u32) -> String {
+    let rows = if unticked == 1 {
+        "1 row you unticked is".to_string()
+    } else {
+        format!("{unticked} rows you unticked are")
+    };
+    format!("{rows} not in the recipe; running it fixes every row of {fields} fields")
+}
+
 /// One step. The names match the app's own operations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -239,6 +253,10 @@ pub enum RecipeOp {
         /// The first row holds titles and is never changed.
         #[serde(default)]
         header: bool,
+        /// Rows left unticked when it was done by hand. Which ones is not
+        /// kept: running the step changes every row of that width.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        unticked: u32,
     },
 }
 
@@ -298,8 +316,14 @@ impl RecipeOp {
             RecipeOp::BlankRepeats { .. } => "Blank out repeats".into(),
             RecipeOp::Breaks { .. } => "Add breaks between groups".into(),
             RecipeOp::DeleteHidden => "Delete hidden rows".into(),
-            RecipeOp::JoinFields { fields, .. } => {
-                format!("Join fields in every row of {fields} fields")
+            RecipeOp::JoinFields {
+                fields, unticked, ..
+            } => {
+                let mut text = format!("Join fields in every row of {fields} fields");
+                if *unticked > 0 {
+                    text.push_str(&format!(" ({})", unticked_note(*unticked, *fields)));
+                }
+                text
             }
             RecipeOp::RenameColumn { col, name } => {
                 format!("Rename column {} to \"{}\"", col + 1, name)
@@ -747,6 +771,7 @@ impl Document {
                 fields,
                 groups,
                 header,
+                ..
             } => self
                 .replay_join_fields(*usual, *fields, groups, *header, progress)
                 .map(|_| ()),

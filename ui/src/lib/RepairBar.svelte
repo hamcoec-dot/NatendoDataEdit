@@ -69,7 +69,8 @@
     try {
       const done = await job("Fixing rows", () => backend().fixAll(tab.id, tab.header, o.same.revision, o.fields, $state.snapshot(o.groups), [...unticked]));
       if (!done) return;
-      onDone(done[1], `Joined the fields in ${done[0].toLocaleString()} ${done[0] === 1 ? "row" : "rows"}.`);
+      const note = (done[1].run_notes ?? []).map((n) => ` ${n}.`).join("");
+      onDone(done[1], `Joined the fields in ${done[0].toLocaleString()} ${done[0] === 1 ? "row" : "rows"}.${note}`);
       await afterRepair(null);
       const found = await list();
       if (found.length) await show({ id: found[0]! });
