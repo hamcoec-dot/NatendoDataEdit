@@ -174,6 +174,38 @@ const proof = async () => {
   await invoke(m, "date_scan", { doc: 1, col: 0, keepFirst: true, sample: null }).catch((e) => (why = String(e)));
   ok(/set to Text/.test(why), `Text column refused: ${why.slice(0, 120)}`);
   ok(fs.readFileSync(FILE, "utf8") === BODY && !(await invoke(m, "doc_info", { doc: 1 })).modified, "the file and the table are unchanged");
+  // The review screen: counts, a choice, eight-digit values only when ticked, one undo step, the recipe.
+  await invoke(m, "set_column_type", { doc: 1, col: 0, kind: "auto" });
+  await sleep(500);
+  const text = async (row, col = 0) => (await invoke(m, "cell_text", { doc: 1, row, col })).text;
+  const column = async () => {
+    const out = [];
+    for (let r = 1; r <= 7; r++) out.push(await text(r));
+    return JSON.stringify(out);
+  };
+  const before = await column();
+  await cmd(m, "Review and convert dates");
+  const dialog = m.getByRole("dialog", { name: /^Review dates/ });
+  ok(await waitFor(async () => (await dialog.count()) === 1), "the review screen opens");
+  ok(/only be read month first/.test((await dialog.textContent()) || "") && (await dialog.getByRole("radio", { name: /Leave them/ }).isChecked()), "a mixed column is warned about and opens on leave");
+  const preview = async () => ((await m.getByTestId("date-review-preview").textContent()) || "").replace(/\s+/g, " ");
+  await waitFor(async () => /become/.test(await preview()));
+  ok(/3 cells become like 2026-04-25\. ?3 stay as typed/.test(await preview()), `leave: ${(await preview()).slice(0, 70)}`);
+  await dialog.getByRole("radio", { name: /Day first/ }).check();
+  await dialog.getByRole("checkbox", { name: /8-digit/ }).check();
+  await sleep(800);
+  ok(/6 cells become like 2026-04-25\. ?0 stay as typed/.test(await preview()), `day first with eight digits: ${(await preview()).slice(0, 70)}`);
+  await m.screenshot({ path: path.join(evidence, "date-review.png") });
+  await dialog.getByRole("button", { name: "Apply" }).click();
+  await sleep(1500);
+  const want = JSON.stringify(["2026-04-25", "2026-04-03", "2026-04-25", "2026-05-05", "1966-03-05", "2026-01-02", "2026-08-07"]);
+  ok((await column()) === want, `converted: ${await column()}`);
+  const recipe = JSON.stringify(await invoke(m, "recipe_get", { doc: 1, header: true }));
+  ok(/"ambiguous":"dmy"/.test(recipe) && /read day first/.test(recipe), "the recipe records and says the choice");
+  ok((await text(1, 1)) === "19750612", "the registration numbers are untouched");
+  await invoke(m, "change", { doc: 1, change: { op: "undo" } });
+  ok((await column()) === before, "one undo restores the column");
+  ok(fs.readFileSync(FILE, "utf8") === BODY, "the file is not written without Save");
 };
 
 (async () => {
