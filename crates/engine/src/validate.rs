@@ -668,9 +668,21 @@ impl Document {
             }
             out
         };
-        let first = flags(&self.group_rows(rows.clone(), &key[..1], match_case, true, progress)?);
         if key.len() == 1 {
-            return Ok(first);
+            return Ok(flags(
+                &self.group_rows(rows, key, match_case, true, progress)?,
+            ));
+        }
+        // Rows whose first value may be shared (by hash: a few extra rows at most, never one
+        // fewer); only they are grouped on the whole key.
+        let first = self.hash_shared(rows.clone(), key[0], match_case, true, progress)?;
+        // When most rows share their first value, the whole key over every row is the
+        // quicker pass (it reads in order); the result is the same either way.
+        let shared = first.iter().filter(|&&g| g).count();
+        if shared > first.len() / 4 {
+            return Ok(flags(
+                &self.group_rows(rows, key, match_case, true, progress)?,
+            ));
         }
         let at: Vec<u64> = first
             .iter()
@@ -1906,7 +1918,18 @@ mod repeat_props {
                     full[k] = true;
                 }
             }
-            prop_assert_eq!(fast, full);
+            prop_assert_eq!(fast, full.clone());
+            // The pass over some rows only (used when few rows share their first value) agrees too.
+            let at: Vec<u64> = d.data_rows(true).collect();
+            let sub = d.group_rows_at(&at, &key, match_case, true, &p).unwrap();
+            let mut part = vec![false; sub.len()];
+            for (k, &l) in sub.iter().enumerate() {
+                if l as usize != k {
+                    part[l as usize] = true;
+                    part[k] = true;
+                }
+            }
+            prop_assert_eq!(part, full);
         }
     }
 }

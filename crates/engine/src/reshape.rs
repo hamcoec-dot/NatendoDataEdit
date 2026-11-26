@@ -373,6 +373,44 @@ impl Document {
         Ok(leader)
     }
 
+    /// For each shown row in `rows` (by offset), whether another row's `col` value hashes
+    /// alike (compared as `group_rows` compares): every row that shares its value is marked,
+    /// and now and then one more (a hash that matches by chance), never one fewer. Hashes
+    /// only, so it costs one read of the column.
+    pub(crate) fn hash_shared(
+        &self,
+        rows: std::ops::Range<u64>,
+        col: u32,
+        match_case: bool,
+        trim: bool,
+        progress: &Progress,
+    ) -> Result<Vec<bool>, Error> {
+        let reader = Cols::new(self, &[col]);
+        let rs = RandomState::new();
+        let mut hashed: Vec<(u64, u32)> = self.par_rows(rows.clone(), progress, |r, id, buf| {
+            reader.read(self, id, buf);
+            let mut h = rs.build_hasher();
+            hash_norm(&mut h, reader.get(buf, 0), match_case, trim);
+            Ok(Some((h.finish(), (r - rows.start) as u32)))
+        })?;
+        hashed.par_sort_unstable_by_key(|x| x.0);
+        let mut out = vec![false; hashed.len()];
+        let mut i = 0usize;
+        while i < hashed.len() {
+            let mut j = i + 1;
+            while j < hashed.len() && hashed[j].0 == hashed[i].0 {
+                j += 1;
+            }
+            if j - i > 1 {
+                for x in &hashed[i..j] {
+                    out[x.1 as usize] = true;
+                }
+            }
+            i = j;
+        }
+        Ok(out)
+    }
+
     /// [`Document::group_rows`] over some shown rows only (`at`, in order): for each, the
     /// index in `at` of the first row with the same key.
     pub(crate) fn group_rows_at(
