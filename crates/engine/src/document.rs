@@ -23,6 +23,7 @@ use crate::source::Source;
 use crate::Error;
 
 pub mod ragged;
+pub mod report;
 pub mod repair;
 pub mod since;
 
@@ -67,6 +68,9 @@ pub struct OpenOptions {
     pub line_by_line: bool,
     /// Memory cap for the row index (default `index::DEFAULT_INDEX_BUDGET`).
     pub max_index_bytes: Option<usize>,
+    /// Bytes at the end (of the decoded text) that are lines below the
+    /// table, not rows (a saved file's report notes).
+    pub tail_bytes: Option<usize>,
 }
 
 /// Rows with more fields than this cannot be edited or listed as a whole
@@ -199,6 +203,8 @@ enum Op {
     SetEncoding(Encoding),
     /// Several ops applied in order as one undo step.
     Batch(Vec<Op>),
+    /// Replace the report notes (see [`report`]).
+    SetNotes(Box<report::Notes>),
     /// How many columns the file's own rows reach (`None`: as many as the
     /// widest). Lowered only once every wider row has been cut in the same
     /// step.
@@ -241,6 +247,7 @@ impl Op {
                     .map_or(0, |f| 64 + f.bits.len() * 8 + f.spec.columns.len() * 128)
             }
             Op::Batch(ops) => 32 + ops.iter().map(Op::cost).sum::<usize>(),
+            Op::SetNotes(n) => 32 + n.cost(),
             Op::Remove { .. }
             | Op::MoveRows { .. }
             | Op::ColRemove { .. }
@@ -305,6 +312,8 @@ pub(crate) struct Start {
     pub data: usize,
     pub preamble_len: usize,
     pub preamble_lines: u32,
+    /// Bytes after the table (lines below it).
+    pub tail_len: usize,
 }
 
 /// Where a row's values come from.
@@ -428,6 +437,11 @@ pub struct Document {
     /// Bytes just before `data_start` that hold the lines above the table.
     pub(crate) preamble_len: usize,
     pub(crate) preamble_lines: u32,
+    /// Where the table ends in `source`: the bytes after it are lines below
+    /// the table (see [`report`]).
+    pub(crate) data_end: usize,
+    /// Report notes: lines above and below the table.
+    pub(crate) notes: report::Notes,
     /// What detection found, when it ran.
     detection: Option<Detection>,
     pub(crate) format: Format,
@@ -602,6 +616,12 @@ impl Document {
             + usize::from(!pre.is_empty() && LineBreak::at_end_of(pre).is_none()))
             as u32;
         let data_start = data_start + preamble_len;
+        let len = source.bytes().len();
+        let tail_len = opts
+            .tail_bytes
+            .filter(|&t| t <= len.saturating_sub(data_start))
+            .unwrap_or(0);
+        let data_end = len - tail_len;
         let index = RowIndex::new(
             dialect,
             data_start,
@@ -614,6 +634,8 @@ impl Document {
             data_start,
             preamble_len,
             preamble_lines,
+            data_end,
+            notes: report::Notes::of_source(preamble_len, tail_len),
             detection,
             format: Format {
                 encoding,
@@ -726,7 +748,9 @@ impl Document {
         if self.index.is_complete() {
             return Ok(true);
         }
-        let done = self.index.step(self.source.bytes(), budget)?;
+        let done = self
+            .index
+            .step(&self.source.bytes()[..self.data_end], budget)?;
         self.revision += 1;
         self.data_revision += 1;
         self.rows_changed();
@@ -745,7 +769,7 @@ impl Document {
 
     /// Fraction of the file indexed, 0.0 to 1.0.
     pub fn index_progress(&self) -> f64 {
-        let total = self.source.bytes().len().saturating_sub(self.data_start);
+        let total = self.data_end.saturating_sub(self.data_start);
         if total == 0 || self.index.is_complete() {
             return 1.0;
         }
@@ -2539,6 +2563,7 @@ impl Document {
                 }
                 Op::SetFilter(old)
             }
+            Op::SetNotes(n) => Op::SetNotes(Box::new(std::mem::replace(&mut self.notes, *n))),
             Op::Batch(ops) => {
                 let mut inv: Vec<Op> = ops.into_iter().map(|o| self.apply(o)).collect();
                 inv.reverse();
@@ -2597,6 +2622,8 @@ impl Document {
         self.data_start = start.data;
         self.preamble_len = start.preamble_len;
         self.preamble_lines = start.preamble_lines;
+        self.data_end = self.source.bytes().len() - start.tail_len;
+        self.notes = report::Notes::of_source(start.preamble_len, start.tail_len);
         self.format = format;
         self.lossy = false;
         self.next_id = index.rows() as u32;
@@ -2668,6 +2695,7 @@ impl Document {
             data: self.data_start,
             preamble_len: self.preamble_len,
             preamble_lines: self.preamble_lines,
+            tail_len: self.source.bytes().len() - self.data_end,
         };
         (self.source, start, self.index)
     }

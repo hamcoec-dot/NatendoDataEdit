@@ -82,3 +82,21 @@ export function headerCertainty(rows: string[][]): "yes" | "no" | "unsure" {
   if (titles.every(wordy)) return "yes";
   return "unsure";
 }
+
+/**
+ * Report title lines above the column titles (C4): the number of rows at the
+ * top (1 to 5) that each fill fewer than half the columns, followed by a row
+ * that looks like titles over the rows below it. 0 when there are none, or
+ * when the first row already looks like the titles.
+ */
+export function titleLines(rows: string[][]): number {
+  const width = Math.max(0, ...rows.map((r) => r.filter((v) => v.trim() !== "").length));
+  if (width < 2) return 0;
+  const sparse = (r: string[]) => r.filter((v) => v.trim() !== "").length * 2 < width;
+  for (let k = 1; k <= 5 && k + 2 <= rows.length; k++) {
+    if (!sparse(rows[k - 1]!)) return 0;
+    const rest = rows.slice(k);
+    if (!sparse(rest[0]!) && (looksLikeHeader(rest) || headerCertainty(rest) === "yes")) return k;
+  }
+  return 0;
+}

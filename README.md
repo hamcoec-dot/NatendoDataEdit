@@ -982,6 +982,29 @@ everything is also in command search.
   empty and untitled, **Remove the empty last column** takes it away.
 
   ![The repair bar: a name with an unescaped comma, two fields marked to be joined](docs/screenshots/repair-bar.png)
+- **Report notes** (lines above and below the table that are not rows of it: a
+  report's title, its date, a total line): right-click the row that holds the
+  column titles › **Headers start here** sets the rows above it aside and makes
+  that row the header, in one undo step. Select the last rows › **Set aside rows
+  as footer notes** does the same below the table. When a file opens with title
+  lines above its column titles, the title-row bar offers **Headers start at row
+  N**. Only the first or last rows of the file can be set aside, and not while
+  rows are hidden or filtered; while a sort is on, the menu says which rows of
+  the file are its first or last rows. Saving writes the notes back where they
+  were: the lines above, the table, then the lines below, whatever the sort. A
+  row you did not edit keeps its exact bytes; an edited one is written in the
+  file's separator, quoting and line break. **View › Report notes** (the Notes
+  tab of the side panel) shows them read-only with Copy, lists `Label: value`
+  lines as report info, has the switch **Save report notes with the file**
+  (turning it off asks first and loses nothing) and **Put back into the table**
+  (one undo step; lines with another number of fields come back as ragged
+  rows). Recovery copies and checkpoints keep them. A recipe records only how
+  many rows were set aside, never their text; its dry run lists the lines, and
+  it stops when a row to set aside has more fields than the title row. Export,
+  Append, Join and Combine use only the table and say that the notes are not
+  included.
+
+  ![The Report notes panel: a report title and date set aside above the table, a total line below](docs/screenshots/report-notes.png)
 - **Data checks** per column or row: required, number (with limits, whole
   numbers), date (with limits), length, from a list, pattern, no repeats, or
   your own expression. Cells that fail are marked; show only the rows with

@@ -22,6 +22,8 @@ const RESPECTS_THE_VIEW: Record<string, string> = {
   replaceTitles: "title row only (a preview of new names)",
   matchAccept: "audit: match_accept; a row hidden after the matches were found refuses the accept",
   streetLookup: "audit: street_lookup",
+  setAside: "audit: set_aside (refused while rows are hidden: the first and last rows of the file may not be on screen)",
+  putBackNotes: "audit: put_back_notes (refused while rows are hidden)",
 };
 
 /** Hidden rows are reached, and the screen or the command says so. */

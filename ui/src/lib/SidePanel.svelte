@@ -7,11 +7,12 @@
   import { backend, type DocInfo, type Opened, type ReadOptions, type Rule } from "./backend";
   import FilterPanel from "./FilterPanel.svelte";
   import RecordPanel from "./RecordPanel.svelte";
+  import ReportNotes from "./ReportNotes.svelte";
   import StepsPanel from "./StepsPanel.svelte";
   import type { Tab } from "./tab.svelte";
   import { TYPE_NAMES, fmt, type ColType, type ChartData, type ChartKind, type Listing, type Summary } from "./views";
 
-  export type PanelTab = "summary" | "chart" | "files" | "activity" | "filters" | "steps" | "record";
+  export type PanelTab = "summary" | "chart" | "files" | "activity" | "filters" | "steps" | "record" | "notes";
 
   interface Props {
     tab: Tab | undefined;
@@ -36,9 +37,11 @@
     };
     /** The Record panel's hooks: move the active cell, and take in a changed document. */
     record: { onGo: (row: number, col: number) => void };
+    /** The Report notes panel's hooks: put them back, and the save switch (asks first). */
+    notes: { onPutBack: () => void; onKeep: (keep: boolean) => void };
     onClose: () => void;
   }
-  let { tab, which = $bindable(), titles, activity, read, onOpened, onFilterValue, onSetRule, steps, record, onClose }: Props = $props();
+  let { tab, which = $bindable(), titles, activity, read, onOpened, onFilterValue, onSetRule, steps, record, notes, onClose }: Props = $props();
 
   // ---- summary ----
   let summary = $state<Summary | null>(null);
@@ -213,7 +216,7 @@
 
 <aside class="panel" aria-label="Side panel">
   <div class="tabs" role="tablist">
-    {#each [["summary", "Summary"], ["filters", "Filters"], ["steps", "Steps"], ["record", "Record"], ["chart", "Chart"], ["files", "Files"], ["activity", "Activity"]] as [id, name] (id)}
+    {#each [["summary", "Summary"], ["filters", "Filters"], ["steps", "Steps"], ["record", "Record"], ["notes", "Notes"], ["chart", "Chart"], ["files", "Files"], ["activity", "Activity"]] as [id, name] (id)}
       <button type="button" role="tab" aria-selected={which === id} class:on={which === id} onclick={() => (which = id as PanelTab)}>{name}</button>
     {/each}
     <span class="spacer"></span>
@@ -226,6 +229,8 @@
       <StepsPanel {tab} {...steps} />
     {:else if which === "record"}
       <RecordPanel {tab} {titles} {...record} />
+    {:else if which === "notes"}
+      <ReportNotes {tab} {...notes} />
     {:else if which === "filters"}
       <FilterPanel {tab} {titles} {read} {onSetRule} />
     {:else if which === "summary"}

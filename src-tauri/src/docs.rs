@@ -28,6 +28,7 @@ use natendo_engine::clean::{CleanMatrix, CleanPreview, CleanSpec, MatrixPreview,
 use natendo_engine::coltotals::{ColumnTotal, MAX_COLUMN_TOTALS};
 use natendo_engine::disk::DiskMark;
 use natendo_engine::document::repair::{Repair, RowText, SameShape};
+use natendo_engine::document::report::{NoteCounts, Place, ReportNotes};
 use natendo_engine::editing::{
     Arrange, Extract, GroupCalc, MapValues, TallySpec, ValueTally, MAX_PAIRS,
 };
@@ -1229,6 +1230,7 @@ fn auto_label_op(op: &RecipeOp) -> Option<&'static str> {
         RecipeOp::MapValues { .. } => Some("Change values from a list"),
         // Cheap to undo, or they change only the view: no checkpoint (and no crowding of the 20).
         RecipeOp::Sort { .. }
+        | RecipeOp::SetAside { .. }
         | RecipeOp::Filter { .. }
         | RecipeOp::ClearFilter
         | RecipeOp::InsertCols { .. }
@@ -1548,6 +1550,7 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
         | RecipeOp::RenameColumn { .. }
         | RecipeOp::TidyTitles { .. }
         | RecipeOp::JoinFields { .. }
+        | RecipeOp::SetAside { .. }
         | RecipeOp::ColumnTypes { .. } => unreachable!("handled by its own command"),
     }
 }
@@ -1820,6 +1823,8 @@ pub struct DocInfo {
     pub long_quoted_cells: bool,
     /// First row read line by line after a quote that never closed.
     pub line_bound_from: Option<u64>,
+    /// Report notes: lines above and below the table (C4).
+    pub notes: NoteCounts,
     pub error: Option<String>,
 }
 
@@ -3587,6 +3592,57 @@ impl Docs {
             self.auto_checkpoint(&entry, m, "deleting rows");
         }
         Ok(info)
+    }
+
+    /// Why shown rows `at..at + count` cannot be set aside as report notes at
+    /// `place` (`None`: they can). Cheap, for greying menu entries.
+    pub fn set_aside_check(
+        &self,
+        id: u32,
+        at: u64,
+        count: u64,
+        place: Place,
+    ) -> CmdResult<Option<String>> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.set_aside_check(at, count, place)
+            .err()
+            .map(|e| e.to_string()))
+    }
+
+    /// Set rows aside above (`Head`) or below the table as report notes (one
+    /// undo step, the way deleting rows takes them out).
+    pub fn set_aside(&self, id: u32, at: u64, count: u64, place: Place) -> CmdResult<DocInfo> {
+        let n = u32::try_from(count).unwrap_or(u32::MAX);
+        let step = match place {
+            Place::Head => RecipeOp::SetAside { head: n, foot: 0 },
+            Place::Foot => RecipeOp::SetAside { head: 0, foot: n },
+        };
+        self.recorded(id, Logged::Step(step), || {
+            self.edit(id, |d| d.set_aside_rows(at, count, place))
+        })
+    }
+
+    /// The report notes, for the panel.
+    pub fn report_notes(&self, id: u32) -> CmdResult<ReportNotes> {
+        Ok(self.get(id)?.read().report_notes())
+    }
+
+    /// Put every report note back into the table (one undo step).
+    pub fn put_back_notes(&self, id: u32) -> CmdResult<DocInfo> {
+        self.recorded(
+            id,
+            Logged::LeftOut("putting report notes back into the table".into()),
+            || self.edit(id, |d| d.put_back_notes().map(drop)),
+        )
+    }
+
+    /// Save the report notes, or leave them out (one undo step).
+    pub fn keep_notes(&self, id: u32, keep: bool) -> CmdResult<DocInfo> {
+        self.edit(id, |d| {
+            d.set_keep_notes(keep);
+            Ok(())
+        })
     }
 
     /// Hide shown rows (one undo step; hidden rows are still saved).
@@ -5597,6 +5653,15 @@ impl Docs {
         let out = f();
         let mark_before = natendo_engine::document::capture_mark_take();
         let out = out?;
+        // A first step that sets the title lines aside: the recipe's column
+        // titles are the row that is first after it (see
+        // `Recipe::column_problems`).
+        let first = match &logged {
+            Logged::Step(RecipeOp::SetAside { head, .. }) if *head > 0 => {
+                entry.read().row_values(0).ok()
+            }
+            _ => first,
+        };
         if let (Some(label), Some(mark)) = (auto, mark_before) {
             self.auto_checkpoint(&entry, mark, &label);
         }
@@ -6378,6 +6443,18 @@ impl Docs {
                     d.types_from_step(&types)?
                 };
                 self.set_column_types(id, set).map(|_| ())
+            }
+            RecipeOp::SetAside { head, foot } => {
+                let step = RecipeOp::SetAside { head, foot };
+                self.recorded(id, Logged::Step(step), || {
+                    self.edit(id, |d| d.set_aside_ends(u64::from(head), u64::from(foot)))
+                })?;
+                let n = self.get(id)?.read().note_counts();
+                return Ok(format!(
+                    "Set aside {} above and {} below the table as report notes (View › Report notes shows them)",
+                    lines_word(n.above_set),
+                    lines_word(n.below_set)
+                ));
             }
             RecipeOp::CleanMatrix { spec } => {
                 // Columns are found by title in the file the recipe runs on.
@@ -8697,6 +8774,9 @@ impl Docs {
                 .unwrap_or_default();
             docs.push((name, d));
         }
+        // Only the tables are combined: lines above or below them (report
+        // notes) are not.
+        let with_notes = docs.iter().filter(|(_, d)| d.has_report_notes()).count();
         let refs: Vec<(String, &Document)> = docs.iter().map(|(n, d)| (n.clone(), d)).collect();
         let table = natendo_engine::tools::combine(&refs, spec, &Progress::new())?;
         drop(refs);
@@ -8705,7 +8785,18 @@ impl Docs {
         self.set_title_of(nid, format!("Combined ({} files)", paths.len()));
         let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
         self.inherit_private(nid, &[], &paths);
-        self.info(nid)
+        let mut info = self.info(nid)?;
+        if with_notes > 0 {
+            info.run_notes.push(format!(
+                "Report notes of {} are not included (the lines above their tables).",
+                if with_notes == 1 {
+                    "1 file".to_string()
+                } else {
+                    format!("{with_notes} files")
+                }
+            ));
+        }
+        Ok(info)
     }
 
     /// Type-ahead: the first value of column `col` (in its lower-case
@@ -9486,6 +9577,15 @@ fn check_write(cells: u64, lens: impl Iterator<Item = usize>) -> CmdResult<()> {
 }
 
 /// Thousands separators for messages.
+/// "1 line", "4 lines".
+fn lines_word(n: u32) -> String {
+    if n == 1 {
+        "1 line".into()
+    } else {
+        format!("{} lines", group(u64::from(n)))
+    }
+}
+
 fn group(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
@@ -9579,6 +9679,7 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         unclosed_quotes: flags & scan::UNCLOSED_QUOTE != 0 || d.index().line_bound_from().is_some(),
         long_quoted_cells: flags & scan::LONG_QUOTED_CELL != 0,
         line_bound_from: d.index().line_bound_from(),
+        notes: d.note_counts(),
         error,
     }
 }

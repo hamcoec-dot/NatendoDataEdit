@@ -401,6 +401,41 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
         }
     }
     if a.dry_run {
+        // A "set aside" step shows the lines it would take out of the table
+        // (worked out in memory: the steps run, nothing is written).
+        if recipe.steps.iter().any(|s| {
+            matches!(s, natendo_engine::recipe::RecipeOp::SetAside { .. })
+        }) {
+            match d.run_recipe(&recipe, natendo_engine::clean::now_utc(), 1, &Progress::new()) {
+                Ok(_) => {
+                    let n = d.report_notes();
+                    let lines = |t: &str| t.lines().map(str::to_string).collect::<Vec<_>>();
+                    if json_out {
+                        report["set_aside"] = json!({
+                            "above": lines(&n.above_set),
+                            "below": lines(&n.below_set),
+                        });
+                    } else {
+                        for (what, text) in [("above", &n.above_set), ("below", &n.below_set)] {
+                            if text.is_empty() {
+                                continue;
+                            }
+                            println!("Lines it would set aside {what} the table:");
+                            for l in text.lines() {
+                                println!("  | {l}");
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    if json_out {
+                        report["would_stop"] = json!(e.to_string());
+                    } else {
+                        println!("The recipe would stop: {e}");
+                    }
+                }
+            }
+        }
         let msg = "Dry run: nothing was changed or written.";
         if json_out {
             report["message"] = json!(msg);

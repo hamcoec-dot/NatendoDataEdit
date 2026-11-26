@@ -43,7 +43,7 @@ export interface PrefsData {
   /** Saved views, by name. */
   views: View[];
   /** The side panel is open, and on which tab. */
-  panel: "summary" | "chart" | "files" | "activity" | "filters" | "steps" | "record" | null;
+  panel: "summary" | "chart" | "files" | "activity" | "filters" | "steps" | "record" | "notes" | null;
   /** The Record panel also lists hidden columns (dimmed). */
   recordHidden: boolean;
   /** Which quick total the status bar shows for a selection. */
@@ -209,7 +209,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       agentLink: p.agentLink === true,
       shortcuts: p.shortcuts && typeof p.shortcuts === "object" ? p.shortcuts : {},
       views: Array.isArray(p.views) ? p.views.filter((v) => v && typeof v === "object" && Array.isArray(v.columns)).slice(0, MAX_VIEWS) : [],
-      panel: p.panel === "summary" || p.panel === "chart" || p.panel === "files" || p.panel === "activity" || p.panel === "filters" || p.panel === "steps" || p.panel === "record" ? p.panel : null,
+      panel: p.panel === "summary" || p.panel === "chart" || p.panel === "files" || p.panel === "activity" || p.panel === "filters" || p.panel === "steps" || p.panel === "record" || p.panel === "notes" ? p.panel : null,
       recordHidden: p.recordHidden === true,
       totals: TOTAL_KINDS.includes(p.totals as TotalKind) ? p.totals! : "sum",
       totalsShown: shownTotals(p.totalsShown),
