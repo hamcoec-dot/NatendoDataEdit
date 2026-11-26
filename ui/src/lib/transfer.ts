@@ -135,6 +135,7 @@ export const FORMAT_NAMES: Record<ImportFormat, string> = {
   delimited: "Delimited text (CSV, tab, ...)",
   fixed_width: "Fixed width (columns lined up with spaces)",
   pattern: "Log file (lines cut by a pattern)",
+  dbf: "dBase table (.dbf, a shapefile's attributes)",
 };
 
 const n = (x: number, one: string, many = `${one}s`) => `${x.toLocaleString()} ${x === 1 ? one : many}`;

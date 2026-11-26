@@ -11,6 +11,7 @@
   import { looksLikeHeader } from "./header";
   import { FORMAT_NAMES } from "./transfer";
   import { LOG_PRESETS, toggleStart } from "./m8";
+  import { DBF_ENCODINGS } from "./dbf";
 
   interface Props {
     start: ImportStart;
@@ -29,7 +30,7 @@
 
   /** Fixed width and log files start from what was guessed. */
   function withDefaults(x: ImportOptions, i: ImportInfo): ImportOptions {
-    return { ...x, starts: i.starts ?? [], keep_spaces: false, pattern: i.pattern ?? "", unmatched: "join" };
+    return { ...x, starts: i.starts ?? [], keep_spaces: false, pattern: i.pattern ?? "", unmatched: "join", dbf: { encoding: "", fid: "from0", show_deleted: false } };
   }
 
   function firstVisible(i: ImportInfo): number {
@@ -58,7 +59,8 @@
         if (mine !== seq) return;
         rows = r;
         problem = "";
-        if (!headerTouched) header = looksLikeHeader(r.slice(0, 20));
+        // A dBase table's first row is always its field names.
+        if (!headerTouched) header = info.format === "dbf" || looksLikeHeader(r.slice(0, 20));
       })
       .catch((e: unknown) => {
         if (mine !== seq) return;
@@ -75,7 +77,7 @@
   let nseq = 0;
   let padRecalled = false;
   $effect(() => {
-    if (info.format !== "spreadsheet") {
+    if (info.format !== "spreadsheet" && info.format !== "dbf") {
       notes = null;
       return;
     }
@@ -125,6 +127,7 @@
 </script>
 
 <FormShell title={`Import ${start.name}`} wide {onClose} onEnter={run}>
+  {#if start.note}<p class="note" data-testid="import-why">{start.note}</p>{/if}
   <div class="grid2">
     <label class="row">Read as
       <select value={o.format} onchange={(e) => void changeFormat((e.currentTarget as HTMLSelectElement).value as ImportFormat)}>
@@ -146,6 +149,21 @@
           Write numbers with leading zeros the way the spreadsheet shows them ({paddedCells} {paddedCells === 1 ? "cell" : "cells"} in {notes.padded.map((p) => p.name).slice(0, 3).join(", ")})
         </label>
       {/if}
+    {/if}
+    {#if info.format === "dbf" && o.dbf}
+      <label class="row">Text encoding
+        <select bind:value={o.dbf.encoding}>
+          {#each DBF_ENCODINGS as [v, label] (v)}<option value={v}>{label}</option>{/each}
+        </select>
+      </label>
+      <label class="row">Record number column (FID)
+        <select bind:value={o.dbf.fid}>
+          <option value="from0">from 0, as GIS programs number shapes</option>
+          <option value="from1">from 1</option>
+          <option value="off">none</option>
+        </select>
+      </label>
+      <label class="row"><input type="checkbox" bind:checked={o.dbf.show_deleted} /> Show records marked as deleted</label>
     {/if}
     {#if info.format === "xml" && info.records.length > 0}
       <label class="row">Each row is a
@@ -201,6 +219,9 @@
     {#if notes && notes.summary}
       <p class="note" data-testid="import-notes">{notes.summary}</p>
     {/if}
+  {/if}
+  {#if info.format === "dbf" && notes && notes.summary}
+    <p class="note" data-testid="import-notes">{notes.summary}</p>
   {/if}
   <div class="table-preview" aria-label="Preview of the first rows">
     <table>

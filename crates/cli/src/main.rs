@@ -141,6 +141,13 @@ fn with_json<'a>(rest: &[&'a str], json: bool) -> Vec<&'a str> {
 }
 
 fn open(path: &str) -> Result<Document, String> {
+    // A dBase table is read through the importer.
+    if Path::new(path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("dbf"))
+    {
+        return more::load(path, 0);
+    }
     Document::open_indexed(Path::new(path), OpenOptions::default(), None)
         .map_err(|e| format!("{path}: {e}"))
 }

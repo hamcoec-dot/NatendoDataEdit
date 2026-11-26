@@ -210,6 +210,8 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "open": ["file.import", "file.importClipboard"],
   "numbers stay exactly as written": ["file.import", "file.importClipboard", "file.openSqlite"],
   "sqlite": ["file.openSqlite", "file.saveSqlite"],
+  "shapefile attribute tables": ["file.open", "file.import"],
+  "geopackage": ["file.openSqlite", "file.open"],
   "export": ["file.export"],
   "json lines": ["file.import", "file.export"],
   "split one file into many": ["tools.split", "tools.combine"],

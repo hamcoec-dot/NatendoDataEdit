@@ -3,7 +3,7 @@
   // new tab, or save the shown rows as a table in a database file.
   import { backend, errorText, type DocInfo } from "./backend";
   import FormShell from "./FormShell.svelte";
-  import { tableLabel, tableName, type DbTable } from "./sqlite";
+  import { isHidden, offered, tableLabel, tableName, type DbTable } from "./sqlite";
 
   interface Props {
     mode: "save" | "open";
@@ -11,11 +11,13 @@
     docName: string;
     header: boolean;
     filtered: boolean;
+    /** A database already chosen (opened, dropped or double-clicked). */
+    start?: [string, DbTable[]] | null;
     onSaved: (rows: number) => void;
     onOpened: (info: DocInfo, note: string) => void;
     onClose: () => void;
   }
-  let { mode, doc, docName, header, filtered, onSaved, onOpened, onClose }: Props = $props();
+  let { mode, doc, docName, header, filtered, start = null, onSaved, onOpened, onClose }: Props = $props();
 
   let path = $state<string | null>(null);
   let tables = $state<DbTable[]>([]);
@@ -25,15 +27,24 @@
   let replace = $state(false);
   let problem = $state("");
   let running = $state(false);
+  let all = $state(false);
+  const shown = $derived(offered(tables, all));
+
+  function take(r: [string, DbTable[]]): void {
+    [path, tables] = r;
+    all = false;
+    picked = offered(tables, false)[0]?.name ?? "";
+    problem = picked ? "" : "That database has no tables to show.";
+  }
+  // svelte-ignore state_referenced_locally
+  if (start) take(start);
 
   async function pick(): Promise<void> {
     problem = "";
     try {
       const r = await backend().sqlitePick();
       if (!r) return;
-      [path, tables] = r;
-      picked = tables[0]?.name ?? "";
-      if (!tables.length) problem = "That database has no tables.";
+      take(r);
     } catch (e) {
       problem = errorText(e);
     }
@@ -65,16 +76,19 @@
     <label class="row">Table name <input type="text" bind:value={table} maxlength="128" /></label>
     <label class="row"><input type="checkbox" bind:checked={replace} /> Replace a table of the same name if the database has one</label>
   {:else}
-    <p class="note">Opens one table (or view) of a SQLite database file in a new tab. The database itself is only read, never changed. Reading stops if the database stops answering for a minute (a view is read for at most five minutes).</p>
+    <p class="note">Opens one table (or view) of a SQLite database or GeoPackage in a new tab. Shapes (geometry columns) are not shown. The database itself is only read, never changed. Reading stops if the database stops answering for a minute (a view is read for at most five minutes).</p>
     <label class="row"><button type="button" onclick={() => void pick()}>Choose the database…</button> <span class="path">{path ?? "no file chosen"}</span></label>
     {#if tables.length}
       <label class="row">Table
         <select bind:value={picked}>
-          {#each tables as t (t.name)}
+          {#each shown as t (t.name)}
             <option value={t.name}>{tableLabel(t)}</option>
           {/each}
         </select>
       </label>
+    {/if}
+    {#if tables.some(isHidden)}
+      <label class="row"><input type="checkbox" bind:checked={all} /> Show all tables (the GeoPackage's own and map tiles)</label>
     {/if}
   {/if}
   {#if problem}<p class="warn">{problem}</p>{/if}

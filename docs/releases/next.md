@@ -8,3 +8,9 @@
 - **Find gaps in a sequence:** Data > Find gaps in a sequence lists the numbers or IDs missing from a column as ranges, with repeats and out-of-order rows, and can show the rows next to each gap. Also `natendo-cli gaps`.
 - **Ambiguous dates:** Check dates in this column lights the dates that could be read two ways and says what the column tells about their order.
 - **Clean matrix:** Clean > Clean matrix cleans many columns at once, each with its own ticked steps, with exact preview counts, in one pass, one undo step and one recipe step.
+- **Combine by title no longer loses data.** When a file had two columns with the same title, the second overwrote the first. Both are now kept, as `Note` and `Note (2)`. A file that already has a `Source file` column keeps it when you add the file-name column, which is then numbered.
+- **`natendo-cli cat --by-name` keeps every column.** It had the same loss, and also silently left out columns the first file did not have. The output now has every file's columns.
+- **`natendo-cli --json` works on every command.** It was ignored by `headers`, `select`, `filter`, `sort`, `dedupe`, `stats`, `count`, `sample`, `slice`, `split`, `cat`, `clean`, `convert`, `compute`, `run` and `pivot`. Scripts that already passed it will now get JSON.
+- **Shapefile attribute tables:** open a `.dbf` (or the `.shp` beside it), with the text encoding picked for you and shown, and a FID column to join your edits back to the shapes. The `.dbf` is never written.
+- **GeoPackage:** open a `.gpkg` and pick a layer or attribute table. Shapes are left out; nothing is written beside the file. `.gpkg`, `.sqlite` and `.sqlite3` files now open from Open, drag and drop and double-click.
+- A SQLite database in write-ahead mode with unsaved changes in its `-wal` file (or an unfinished `-journal`) is no longer opened, because reading it could create or change files beside it. Close it in the program using it first.
