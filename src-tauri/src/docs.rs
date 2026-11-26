@@ -474,6 +474,8 @@ pub struct Entry {
     /// Private because of where its data came from (a sample of, a join
     /// from or an import of something private), whatever its own path.
     private_origin: AtomicBool,
+    /// The patch of the last dry run on this tab (memory only).
+    patch: Mutex<Option<patching::PatchKept>>,
     /// The encrypted file this tab was opened from or last saved to
     /// encrypted (Save keeps it encrypted there).
     encrypted_from: Mutex<Option<PathBuf>>,
@@ -1999,6 +2001,7 @@ impl Docs {
             private: AtomicBool::new(false),
             private_origin: AtomicBool::new(false),
             encrypted_from: Mutex::new(None),
+            patch: Mutex::new(None),
             recipe: Mutex::new(RecipeLog::default()),
             checkpoints: Mutex::new(Checkpoints::default()),
             since_plan: Mutex::new(None),
@@ -9139,6 +9142,9 @@ pub fn file_name_of(t: &str) -> String {
         s
     }
 }
+
+#[path = "docs_patch.rs"]
+pub mod patching;
 
 #[cfg(test)]
 mod tests {

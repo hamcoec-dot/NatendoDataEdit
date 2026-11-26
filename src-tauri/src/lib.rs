@@ -2100,6 +2100,125 @@ fn encrypted_origin(docs: DocsState<'_>, doc: u32) -> CmdResult<Option<String>> 
     Ok(docs.encrypted_from(doc)?.map(|p| p.display().to_string()))
 }
 
+/// Where to save a patch of tabs `a` (`None` if cancelled).
+#[tauri::command]
+async fn patch_pick_save(
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    doc: u32,
+) -> CmdResult<Option<String>> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        let base = docs.info(doc)?.name;
+        let stem = base.rsplit_once('.').map_or(base.as_str(), |(b, _)| b);
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Save the differences as a patch")
+            .set_file_name(format!("{stem}.ndpatch"))
+            .add_filter("Natendo patch", &["ndpatch"])
+            .set_parent(&window);
+        if let Some(dir) = docs.path_of(doc)?.as_ref().and_then(|p| p.parent()) {
+            dialog = dialog.set_directory(dir);
+        }
+        Ok(dialog.save_file().map(|p| p.display().to_string()))
+    })
+    .await
+}
+
+/// A patch file to apply, and whether it needs a phrase.
+#[tauri::command]
+async fn patch_pick(window: WebviewWindow) -> CmdResult<Option<String>> {
+    blocking(move || {
+        Ok(rfd::FileDialog::new()
+            .set_title("Apply a patch")
+            .add_filter("Natendo patch", &["ndpatch"])
+            .set_parent(&window)
+            .pick_file()
+            .map(|p| p.display().to_string()))
+    })
+    .await
+}
+
+/// Whether a patch file needs a phrase.
+#[tauri::command]
+async fn patch_protected(path: PathBuf) -> CmdResult<bool> {
+    blocking(move || Ok(natendo_engine::patch::Patch::is_protected(&path)?)).await
+}
+
+/// Write the differences from tab `a` to tab `b` as a patch file.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn patch_make(
+    docs: DocsState<'_>,
+    recent: RecentState<'_>,
+    a: u32,
+    b: u32,
+    spec: natendo_engine::patch::PatchSpec,
+    path: PathBuf,
+    phrase: Option<String>,
+    plain: bool,
+) -> CmdResult<docs::patching::PatchSaved> {
+    let docs = docs.inner().clone();
+    let recent = recent.inner().clone();
+    blocking(move || {
+        let saved = docs.patch_make(a, b, &spec, &path, phrase, plain)?;
+        private_copy(&docs, &recent, a, &path)?;
+        private_copy(&docs, &recent, b, &path)?;
+        Ok(saved)
+    })
+    .await
+}
+
+/// The dry run of a patch file on a tab.
+#[tauri::command]
+async fn patch_preview(
+    docs: DocsState<'_>,
+    doc: u32,
+    path: PathBuf,
+    phrase: Option<String>,
+) -> CmdResult<docs::patching::PatchPreview> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.patch_preview(doc, &path, phrase)).await
+}
+
+#[tauri::command]
+async fn patch_apply(docs: DocsState<'_>, doc: u32) -> CmdResult<docs::patching::PatchApplied> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.patch_apply(doc)).await
+}
+
+/// Save the dry run's lines as CSV (`None` if cancelled).
+#[tauri::command]
+async fn patch_report_save(
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    recent: RecentState<'_>,
+    doc: u32,
+) -> CmdResult<Option<String>> {
+    let docs = docs.inner().clone();
+    let recent = recent.inner().clone();
+    blocking(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Save the patch report")
+            .set_file_name("patch report.csv")
+            .add_filter("CSV", &["csv"])
+            .set_parent(&window)
+            .save_file()
+        else {
+            return Ok(None);
+        };
+        docs.patch_report_save(doc, &path)?;
+        private_copy(&docs, &recent, doc, &path)?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn patch_close(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
+    docs.patch_close(doc);
+    Ok(())
+}
+
 /// Pick an encrypted file to open (`None` if cancelled).
 #[tauri::command]
 async fn pick_encrypted(window: WebviewWindow) -> CmdResult<Option<String>> {
@@ -4671,6 +4790,14 @@ pub fn run() {
             pick_encrypted,
             open_encrypted,
             updates_find,
+            patch_pick_save,
+            patch_pick,
+            patch_protected,
+            patch_make,
+            patch_preview,
+            patch_apply,
+            patch_report_save,
+            patch_close,
             updates_accept,
             updates_close,
             match_find,
