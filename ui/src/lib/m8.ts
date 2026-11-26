@@ -92,6 +92,7 @@ export const CHECK_KINDS: { type: CheckKind["type"]; label: string }[] = [
   { type: "pattern", label: "Matches a pattern" },
   { type: "unique", label: "No repeats" },
   { type: "expression", label: "Row rule (expression)" },
+  { type: "foreign_key", label: "Value must exist in another file" },
 ];
 
 /** A new check of a kind, with empty settings. */
@@ -105,6 +106,7 @@ export function newCheck(type: CheckKind["type"], col: number): Check {
     : type === "list" ? { type, values: [], match_case: false }
     : type === "pattern" ? { type, pattern: { text: "", kind: "regex", match_case: false, whole_cell: true } }
     : type === "unique" ? { type, match_case: false }
+    : type === "foreign_key" ? { type, table: "", column: "", match_case: false, trim: true, allow_blank: true }
     : { type: "expression", expr: "" };
   return { col: type === "expression" ? null : col, kind };
 }
@@ -171,6 +173,8 @@ export function describeCheck(c: Check, titles: string[]): string {
       return `${col}no repeated values`;
     case "expression":
       return `row rule: ${k.expr}`;
+    case "foreign_key":
+      return `${col}must exist in ${k.table || "another file"} > ${k.column || "a column"}`;
   }
 }
 

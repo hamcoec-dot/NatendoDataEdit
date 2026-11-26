@@ -23,8 +23,15 @@
     onClose: () => void;
     /** Set when the rules came from a file beside the table (its name shows, and the file can be removed). */
     rulesFile?: string;
+    /** The open files (this one too), for "value must exist in" rules: name, column titles, data revision. */
+    others?: { id: number; name: string; titles: string[]; data_revision: number }[];
   }
-  let { doc, titles, col, header, checks, marked, onApply, onGoto, onShowProblems, onClose, rulesFile = "" }: Props = $props();
+  let { doc, titles, col, header, checks, marked, onApply, onGoto, onShowProblems, onClose, rulesFile = "", others = [] }: Props = $props();
+  /** A table a rule read has changed since the run (its result is out of date). */
+  const stale = (u: { doc: number; data_revision: number }): boolean => {
+    const o = others.find((x) => x.id === u.doc);
+    return !o || o.data_revision !== u.data_revision;
+  };
 
   let list = $state<Check[]>(untrack(() => structuredClone($state.snapshot(checks))));
   let mark = $state(untrack(() => marked || checks.length === 0));
@@ -212,11 +219,31 @@
               {/each}
             </div>
           </details>
+        {:else if c.kind.type === "foreign_key"}
+          {@const k = c.kind}
+          {@const cols = others.find((o) => o.name === k.table)?.titles}
+          <select aria-label="File the value must exist in" value={k.table} onchange={(e) => { k.table = (e.currentTarget as HTMLSelectElement).value; k.column = ""; report = null; }}>
+            <option value="">Open file…</option>
+            {#if k.table && !others.some((o) => o.name === k.table)}<option value={k.table}>{k.table} (not open)</option>{/if}
+            {#each others as o (o.id)}<option value={o.name}>{o.name}{o.id === doc ? " (this file)" : ""}</option>{/each}
+          </select>
+          {#if cols}
+            <select aria-label="Column the value must exist in" bind:value={k.column}>
+              <option value="">Column…</option>
+              {#each cols as ct, x (x)}<option value={ct}>{ct}</option>{/each}
+            </select>
+          {:else}
+            <input type="text" aria-label="Column the value must exist in" placeholder="column title" bind:value={k.column} />
+          {/if}
+          <label class="row"><input type="checkbox" bind:checked={k.match_case} /> case</label>
+          <label class="row"><input type="checkbox" bind:checked={k.trim} /> ignore spaces at the ends</label>
+          <label class="row"><input type="checkbox" bind:checked={k.allow_blank} /> blank is fine</label>
         {:else if c.kind.type === "expression"}
           {@const k = c.kind}
           <input class="grow mono" type="text" aria-label="Rule" placeholder="true when the row is right, like [Start] <= [End]" bind:value={k.expr} spellcheck="false" />
         {/if}
-        {#if report}<span class="count" class:bad={(report.per_check[i] ?? 0) > 0}>{(report.per_check[i] ?? 0).toLocaleString()}</span>{/if}
+        {#if report && report.not_run?.some((n) => n.check === i)}<span class="count bad" title={report.not_run.find((n) => n.check === i)?.why}>not run</span>
+        {:else if report}<span class="count" class:bad={(report.per_check[i] ?? 0) > 0}>{(report.per_check[i] ?? 0).toLocaleString()}</span>{/if}
         <button type="button" class="x" aria-label="Remove this check" onclick={() => remove(i)}>×</button>
       </div>
     {/each}
@@ -241,9 +268,15 @@
   <p class="note">Blank cells pass every check except "Must not be blank". Checks are kept with saved views.</p>
   <label class="row"><input type="checkbox" bind:checked={mark} /> Mark problem cells on the grid</label>
   {#if report}
-    <p class={report.problems ? "problem" : "good"}>
-      {report.checked.toLocaleString()} rows checked: {report.problems ? `${report.rows.toLocaleString()} with problems (${report.problems.toLocaleString()} in all)` : "no problems"}.
+    <p class={report.problems || report.not_run?.length ? "problem" : "good"}>
+      {report.checked.toLocaleString()} rows checked: {report.problems ? `${report.rows.toLocaleString()} with problems (${report.problems.toLocaleString()} in all)` : report.not_run?.length ? "no problems found by the rules that ran" : "no problems"}.
     </p>
+    {#each report.not_run ?? [] as n (n.check)}
+      <p class="problem">Rule {n.check + 1} did not run: {n.why}. Its rows were not checked by it, so Show only rows with problems waits until it can run.</p>
+    {/each}
+    {#each report.tables ?? [] as u (u.check)}
+      <p class="note">Rule {u.check + 1} read {u.rows.toLocaleString()} rows of {u.table}{u.hidden ? ` (${u.hidden.toLocaleString()} rows hidden by a filter there were not read)` : ""}.{stale(u) ? ` ${u.table} has changed since: run again.` : ""}</p>
+    {/each}
     {#if report.listed.length}
       <div class="table-preview" aria-label="Problems">
         <table>

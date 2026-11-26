@@ -989,6 +989,17 @@ everything is also in command search.
   matches; a row blank in all of them passes. A repeated row marks every key
   cell. Select the columns and use Data > No repeats across these columns
   together (also on the column right-click menu) to make one in a step.
+- **Values that must exist in another file:** a "Value must exist in another
+  file" rule checks each value against a column of another open file (a
+  precinct code must be on the precinct list), or of the same file (a manager
+  ID must be an ID). Choose whether case matters, spaces at the ends count and
+  blank cells are fine. The other file is read once (its rows shown now; rows
+  hidden there by a filter are not read and are counted) and kept while it is
+  unchanged; the results say when it has changed since. When the file is not
+  open, or two open files have that name, the rule does not run and says so,
+  and Show only rows with problems, Sort, the check column, Go To Special and
+  F7 wait until it can run instead of looking clean. Data > Check that values
+  exist in another file (also on the column right-click menu) starts one.
 - **Rules with names, a wavy underline and Jump to next problem:** the Data
   checks dialog takes several rules per column, each with an optional name
   ("5-digit ZIP"), ready-made rules for the column you are in (5 digits, no
@@ -1548,7 +1559,16 @@ Kinds: `required`, `number`, `date`, `date_iso`, `length`, `list`, `pattern`,
 `unique`, `expression`. A `unique` check can name the other columns of its key
 with `"also_columns": ["Last", "Born"]` (titles, or numbers from 1), for
 example `{"column": "First", "also_columns": ["Last"], "kind": {"type": "unique"}}`;
-at most 8 columns in all.
+at most 8 columns in all. A `foreign_key` check names the other file and its
+column, for example
+`{"column": "Precinct", "kind": {"type": "foreign_key", "table": "precincts", "column": "Code"}}`
+(also `match_case`, `trim`, `allow_blank`), and the file is given with
+`--table precincts=C:\data\precincts.csv` (up to 8; split at the first `=`).
+A rule on the input file's own name reads that file. A rule whose file is not
+given, or a `--table` no rule reads, stops with exit code 2, so a script never
+passes because a rule did not run. With `--json`, `foreign_keys` gives each such
+rule's missing count; note that `--json` output contains cell values (the first
+1,000 problems).
 
 ## Agent link
 
