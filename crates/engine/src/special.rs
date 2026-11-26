@@ -35,8 +35,11 @@ pub enum SpecialKind {
     /// cell of its row).
     Problems { checks: CheckSpec },
     /// Rows with a different number of fields than most (every asked cell of
-    /// such a row).
-    WrongWidth,
+    /// such a row). With `header`, the table's first row is never one.
+    WrongWidth {
+        #[serde(default)]
+        header: bool,
+    },
 }
 
 /// What to look through.
@@ -132,7 +135,7 @@ impl Document {
         let reader = Cols::new(self, &read_cols);
         // Found over the whole table before the rows are looked at.
         let ragged = match spec.kind {
-            SpecialKind::WrongWidth => Some(self.ragged_rows(false, progress)?),
+            SpecialKind::WrongWidth { header } => Some(self.ragged_rows(header, progress)?),
             _ => None,
         };
         let n = end - start;
@@ -163,7 +166,7 @@ impl Document {
                         for (k, &col) in cols.iter().enumerate() {
                             let v = reader.get(&buf, k);
                             let hit = match kind {
-                                SpecialKind::WrongWidth => ragged
+                                SpecialKind::WrongWidth { .. } => ragged
                                     .as_ref()
                                     .is_some_and(|r| r.is_short(id) || r.is_long(id)),
                                 SpecialKind::Blanks => blank(v),
@@ -546,7 +549,27 @@ mod tests {
     #[test]
     fn rows_of_the_wrong_width_are_picked_whole() {
         let d = doc("a,b\n1,2\n3\n4,5,6\n7,8\n");
-        let w = pick(&d, SpecialKind::WrongWidth, vec![0, 1]);
+        let w = pick(&d, SpecialKind::WrongWidth { header: true }, vec![0, 1]);
         assert_eq!(w.cells, vec![(2, 0), (2, 1), (3, 0), (3, 1)]);
+    }
+
+    #[test]
+    fn a_title_row_of_another_width_is_not_picked() {
+        // The titles end in a stray comma: one field more than the rows.
+        let d = doc("a,b,\n1,2\n3,4\n5\n");
+        // The whole table is looked through, the first row too.
+        let all = |header| {
+            let spec = SpecialSpec {
+                kind: SpecialKind::WrongWidth { header },
+                row: 0,
+                rows: u64::MAX,
+                cols: vec![0, 1],
+                ..Default::default()
+            };
+            d.special_cells(&spec, &Progress::default()).unwrap().cells
+        };
+        assert_eq!(all(true), vec![(3, 0), (3, 1)]);
+        // Without a title row the first row is a row like any other.
+        assert_eq!(all(false), vec![(0, 0), (0, 1), (3, 0), (3, 1)]);
     }
 }

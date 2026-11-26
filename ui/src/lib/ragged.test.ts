@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
+import rust from "../../../crates/engine/src/document/ragged.rs?raw";
 import type { DocInfo } from "./backend";
-import { raggedAtOpen, raggedNotice, raggedResult } from "./ragged";
+import { COLUMNS_CHANGED, raggedAtOpen, raggedNotice, raggedResult } from "./ragged";
 
 const info = (p: Partial<DocInfo>) => ({ usual_fields: 14, ragged_rows: 212, first_row_ragged: false, column_changes: false, ...p }) as DocInfo;
 
 describe("ragged rows", () => {
+  it("greys the commands with the engine's own words", () => {
+    const found = rust.match(/pub const COLUMNS_CHANGED: &str = "([^"]*)";/);
+    expect(found?.[1]).toBe(COLUMNS_CHANGED);
+  });
   it("counts the file's rows, leaving out a title row of another width", () => {
     expect(raggedAtOpen(info({}), true)).toBe(212);
     expect(raggedAtOpen(info({ first_row_ragged: true }), true)).toBe(211);

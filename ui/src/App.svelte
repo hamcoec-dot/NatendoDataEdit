@@ -3493,7 +3493,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         ? { kind: "row_diff", against: t.cell.col, exact: c.exact }
         : c.pick === "problems"
           ? { kind: "problems", checks: { checks: $state.snapshot(t.checks) as Check[], keep_first: t.header, read, now: localDays() } }
-          : { kind: c.pick };
+          : c.pick === "wrong_width"
+            ? { kind: "wrong_width", header: t.header }
+            : { kind: c.pick };
     const area = specialArea(t, c.inSelection);
     const spec: SpecialSpec = { kind, ...area, read };
     if (c.action === "light") {

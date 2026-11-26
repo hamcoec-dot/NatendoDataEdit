@@ -455,7 +455,7 @@ export type SpecialKind =
   | { kind: "row_diff"; against: number; exact: boolean }
   | { kind: "edited" }
   | { kind: "problems"; checks: CheckSpec }
-  | { kind: "wrong_width" };
+  | { kind: "wrong_width"; header: boolean };
 export interface SpecialSpec {
   kind: SpecialKind;
   row: number;
