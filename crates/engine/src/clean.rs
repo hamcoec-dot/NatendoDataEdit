@@ -970,6 +970,7 @@ impl Compiled {
         let mut cur: Option<String> = None;
         let mut left = false;
         let mut other_order = false;
+        let mut ambiguous_left = false;
         for (i, s) in self.steps.iter().enumerate() {
             let text = cur.as_deref().unwrap_or(cell);
             let ctx = Ctx {
@@ -985,23 +986,26 @@ impl Compiled {
             if guessing.is_some_and(|order| forced_order(text, order)) {
                 other_order = true;
             }
-            if let Some(new) = self.step(s, text, ctx, &mut left)? {
+            let mut this_left = false;
+            let new = self.step(s, text, ctx, &mut this_left)?;
+            // Noted by the step that leaves it, on the text it was given.
+            if this_left
+                && matches!(
+                    s,
+                    CStep::Ambiguous(_, Ambiguous::Leave) | CStep::Reviewed(_, Ambiguous::Leave, _)
+                )
+                && crate::value::classify_date(text).kind == crate::value::DateKind::Ambiguous
+            {
+                ambiguous_left = true;
+            }
+            left |= this_left;
+            if let Some(new) = new {
                 if new.len() > MAX_RESULT_CELL_BYTES {
                     return Err(too_long());
                 }
                 cur = Some(new);
             }
         }
-        // Judged on the text as it ends up: an earlier step may have trimmed
-        // the cell (or found nothing to trim) without reading its date.
-        let ambiguous_left =
-            left && self.steps.iter().any(|s| {
-                matches!(
-                    s,
-                    CStep::Ambiguous(_, Ambiguous::Leave) | CStep::Reviewed(_, Ambiguous::Leave, _)
-                )
-            }) && crate::value::classify_date(cur.as_deref().unwrap_or(cell)).kind
-                == crate::value::DateKind::Ambiguous;
         Ok(Outcome {
             text: cur.filter(|t| t != cell),
             left,
@@ -4360,6 +4364,43 @@ mod tests {
                 past: false
             }
         );
+    }
+
+    #[test]
+    fn ambiguous_dates_are_counted_by_the_step_that_leaves_them() {
+        let dates = Step::Dates {
+            format: "yyyy-mm-dd".into(),
+            from: String::new(),
+            past: false,
+            ambiguous: Some(Ambiguous::Leave),
+            review: Some(DateReview::default()),
+        };
+        let count = |steps: Vec<Step>, cell: &str| {
+            let out = compiled(steps).run(cell, Ctx::default()).unwrap();
+            u8::from(out.ambiguous_left)
+        };
+        assert_eq!(
+            count(
+                vec![Step::Spaces { how: Spaces::Trim }, dates.clone()],
+                " 03/04/2026 "
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                vec![Step::Spaces { how: Spaces::Trim }, dates.clone()],
+                "03/04/2026"
+            ),
+            1
+        );
+        // A later step that makes text readable two ways: nothing was left
+        // by the dates step for that reason.
+        let later = Step::Replace {
+            find: pat("2026-04-25", PatternKind::Plain),
+            with: "03/04/2026".into(),
+        };
+        assert_eq!(count(vec![dates.clone(), later.clone()], "25/04/2026"), 0);
+        assert_eq!(count(vec![dates, later], "soon"), 0);
     }
 
     fn pat(t: &str, kind: PatternKind) -> Pattern {
