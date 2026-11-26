@@ -487,3 +487,10 @@ fn present_and_missing_make_the_whole_range() {
         }
     }
 }
+
+// ---- dates ----
+use crate::coltype::{ColumnType, ColumnTypes};
+use crate::fill::{civil_from_days, days_from_civil};
+use crate::value::DateOrder;
+
+include!("gaps_date_tests.rs");

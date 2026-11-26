@@ -90,6 +90,9 @@ pub struct GapsSpec {
     pub pattern: Option<Pattern>,
     /// Audit every shape as its own series.
     pub each_shape: bool,
+    /// Read the column as dates, expected at this step (the digit run and
+    /// shapes then mean nothing).
+    pub dates: Option<DateStep>,
     /// Typed first and last numbers (bare or in the shape); empty for the
     /// first and last found.
     pub start: String,
@@ -194,6 +197,8 @@ pub struct GapReport {
     pub missing: String,
     /// Most values hold "," or "." between runs of digits.
     pub looks_like_amounts: bool,
+    /// What a date audit left out or read with care.
+    pub dates: Option<DateNotes>,
     #[serde(skip)]
     beside: Vec<u64>,
     #[serde(skip)]
@@ -431,6 +436,9 @@ impl Document {
         let mut cols = vec![spec.col];
         cols.extend(&spec.series);
         check_cols(self, &cols)?;
+        if let Some(step) = spec.dates {
+            return self.gap_dates(spec, step, progress);
+        }
         let reader = Cols::new(self, &cols);
         let rows = self.data_rows(spec.keep_first);
         let (r0, r1) = (rows.start, rows.end);
@@ -509,13 +517,10 @@ impl Document {
                 let series = if spec.series.is_empty() {
                     0
                 } else {
-                    key.clear();
-                    for k in 0..spec.series.len() {
-                        let v = reader.get(&buf, k + 1);
-                        key.push_str(&v.len().to_string());
-                        key.push(':');
-                        key.push_str(v);
-                    }
+                    series_key(
+                        (0..spec.series.len()).map(|k| reader.get(&buf, k + 1)),
+                        &mut key,
+                    );
                     p.series.id(&key)?
                 };
                 p.cells.push(Cell {
@@ -777,10 +782,49 @@ impl Document {
         }
         other_ids.sort_by_key(|&id| id);
         other_ids.truncate(EXAMPLE_ROWS);
+        out.other_rows = self.file_rows_of(&other_ids);
+
+        let keys: Vec<Vec<String>> = group_of
+            .iter()
+            .map(|&(n, shape)| {
+                let mut key = if spec.series.is_empty() {
+                    Vec::new()
+                } else {
+                    series_parts(&series.names[n as usize])
+                };
+                if spec.each_shape {
+                    key.push(shapes[shape].0.label());
+                }
+                key
+            })
+            .collect();
+        let format = |g: u32, n: u64| shapes[group_of[g as usize].1].0.format(n);
+        self.walk(
+            out,
+            cells,
+            Walk {
+                keys,
+                start,
+                end,
+                format: &format,
+            },
+            progress,
+        )
+    }
+
+    /// Order, gaps and repeats of cells already numbered, each in the group
+    /// `c.series`. Nothing is expanded.
+    fn walk(
+        &self,
+        mut out: GapReport,
+        mut cells: Vec<Cell>,
+        w: Walk<'_>,
+        progress: &Progress,
+    ) -> Result<GapReport, Error> {
+        let (start, end) = (w.start, w.end);
         let base = u64::from(self.next_row_id());
         let file_rows = self.original_rows();
         let file_row = |id: u32| (u64::from(id) < file_rows).then_some(u64::from(id) + 1);
-        out.other_rows = other_ids.iter().map(|&i| file_row(i)).collect();
         out.rows = cells.len() as u64;
 
         // Order, in file order (row ids are file rows).
@@ -816,25 +860,9 @@ impl Document {
         cancelled(progress)?;
 
         // Series in a fixed order: by their text.
-        let key_of = |g: u32| -> Vec<String> {
-            let (s, shape) = group_of[g as usize];
-            let mut key = Vec::new();
-            if !spec.series.is_empty() {
-                let mut rest = series.names[s as usize].as_str();
-                while let Some((n, tail)) = rest.split_once(':') {
-                    let n: usize = n.parse().unwrap_or(0);
-                    key.push(tail[..n].to_string());
-                    rest = &tail[n..];
-                }
-            }
-            if spec.each_shape {
-                key.push(shapes[shape].0.label());
-            }
-            key
-        };
         let mut spans: Vec<(u32, usize, usize)> = Vec::new();
         let mut i = 0;
-        for g in 0..group_of.len() as u32 {
+        for g in 0..w.keys.len() as u32 {
             let from = i;
             while i < cells.len() && cells[i].series == g {
                 i += 1;
@@ -843,7 +871,7 @@ impl Document {
         }
         let mut keyed: Vec<(Vec<String>, u32, usize, usize)> = spans
             .into_iter()
-            .map(|(g, a, b)| (key_of(g), g, a, b))
+            .map(|(g, a, b)| (w.keys[g as usize].clone(), g, a, b))
             .collect();
         keyed.sort_by(|x, y| {
             x.0.iter()
@@ -860,7 +888,7 @@ impl Document {
             if n % 1024 == 0 {
                 cancelled(progress)?;
             }
-            let pattern = &shapes[group_of[g as usize].1].0;
+            let format = |n: u64| (w.format)(g, n);
             let own = &cells[a..b];
             let too_few = own.len() < 2 && start.is_none() && end.is_none();
             // The values in order, each with the rows that hold it.
@@ -874,8 +902,8 @@ impl Document {
                 if out.ranges.len() < MAX_RANGES {
                     out.ranges.push(RangeLine {
                         series: key.clone(),
-                        from: pattern.format(from),
-                        to: pattern.format(to),
+                        from: format(from),
+                        to: format(to),
                         count: count.to_string(),
                     });
                 }
@@ -901,7 +929,7 @@ impl Document {
                     if out.duplicates.len() < MAX_DUPLICATES {
                         out.duplicates.push(Duplicate {
                             series: key.clone(),
-                            value: pattern.format(v),
+                            value: format(v),
                             count: (k - j) as u64,
                             rows: own[j..k]
                                 .iter()
@@ -959,7 +987,7 @@ impl Document {
             missing_all += missing;
             out.distinct += distinct;
             if out.series.len() < MAX_SERIES_LINES {
-                let show = |c: Option<&Cell>| c.map_or(String::new(), |c| pattern.format(c.number));
+                let show = |c: Option<&Cell>| c.map_or(String::new(), |c| format(c.number));
                 out.series.push(SeriesLine {
                     key,
                     first: show(own.first()),
@@ -973,6 +1001,14 @@ impl Document {
         }
         out.missing = missing_all.to_string();
         Ok(out)
+    }
+
+    /// Rows by their place in the file.
+    fn file_rows_of(&self, ids: &[u32]) -> Vec<FileRow> {
+        let rows = self.original_rows();
+        ids.iter()
+            .map(|&id| (u64::from(id) < rows).then_some(u64::from(id) + 1))
+            .collect()
     }
 
     /// A plan that shows only the rows next to a gap (and the title row).
@@ -1006,6 +1042,39 @@ impl Document {
         ));
         Ok(plan)
     }
+}
+
+/// The "series by" cells as one key (lengths first, so no text can pose as
+/// two).
+fn series_key<'a>(cells: impl Iterator<Item = &'a str>, key: &mut String) {
+    key.clear();
+    for v in cells {
+        key.push_str(&v.len().to_string());
+        key.push(':');
+        key.push_str(v);
+    }
+}
+
+/// A [`series_key`] back into its cells.
+fn series_parts(key: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = key;
+    while let Some((n, tail)) = rest.split_once(':') {
+        let n: usize = n.parse().unwrap_or(0);
+        out.push(tail[..n].to_string());
+        rest = &tail[n..];
+    }
+    out
+}
+
+/// What the walk needs to know about each group of cells.
+struct Walk<'a> {
+    /// Each group's series values.
+    keys: Vec<Vec<String>>,
+    start: Option<u64>,
+    end: Option<u64>,
+    /// A group's number in words.
+    format: &'a dyn Fn(u32, u64) -> String,
 }
 
 fn too_many_shapes() -> Error {
@@ -1055,7 +1124,12 @@ impl GapReport {
             total(&mut out, "Shape", p.label());
         }
         total(&mut out, "Rows", self.rows.to_string());
-        total(&mut out, "Different numbers", self.distinct.to_string());
+        let what = if self.dates.is_some() {
+            "Different steps"
+        } else {
+            "Different numbers"
+        };
+        total(&mut out, what, self.distinct.to_string());
         total(&mut out, "Missing", self.missing.clone());
         total(
             &mut out,
@@ -1069,6 +1143,11 @@ impl GapReport {
         );
         total(&mut out, "Drops in file order", self.drops.to_string());
         total(&mut out, "Different shape", self.other_shape.to_string());
+        if let Some(d) = &self.dates {
+            for (name, n) in d.counts() {
+                total(&mut out, name, n.to_string());
+            }
+        }
         total(&mut out, "Blank", self.blank.to_string());
         if self.too_many_shapes {
             total(
@@ -1120,6 +1199,10 @@ impl GapReport {
         s
     }
 }
+
+#[path = "gaps_dates.rs"]
+mod dates;
+pub use dates::{DateNotes, DateStep};
 
 #[cfg(test)]
 #[path = "gaps_tests.rs"]
