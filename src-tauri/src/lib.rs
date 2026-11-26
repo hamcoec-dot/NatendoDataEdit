@@ -3649,6 +3649,18 @@ async fn run_checks(
     blocking(move || docs.run_checks(doc, &spec)).await
 }
 
+/// What a clean matrix would change (counts and a few examples).
+#[tauri::command]
+async fn clean_matrix_preview(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::clean::CleanMatrix,
+    now: f64,
+) -> CmdResult<natendo_engine::clean::MatrixPreview> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.clean_matrix_preview(doc, &spec, now)).await
+}
+
 /// Find the numbers missing from a column of numbers or IDs.
 #[tauri::command]
 async fn gap_audit(
@@ -4475,6 +4487,7 @@ pub fn run() {
             save_mail,
             run_checks,
             gap_audit,
+            clean_matrix_preview,
             reopen_encoding,
             encoding_choices,
             encoding_preview,

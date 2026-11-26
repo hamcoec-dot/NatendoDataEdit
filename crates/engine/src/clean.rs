@@ -12,15 +12,15 @@
 //! grows past [`MAX_RESULT_CELL_BYTES`], and a run's plan (new text plus
 //! about 64 bytes per changed cell) stays within [`MAX_REPLACE_BYTES`].
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Progress};
 use crate::find::{
-    short, Change, FindSpec, Matcher, Pattern, Scope, MAX_PATTERN_CHARS, MAX_REPLACEMENT_CHARS,
-    MAX_RESULT_CELL_BYTES,
+    short, Area, Change, FindSpec, Matcher, Pattern, Scope, MAX_PATTERN_CHARS,
+    MAX_REPLACEMENT_CHARS, MAX_RESULT_CELL_BYTES,
 };
 use crate::ops::CellPlan;
 use crate::value::ReadOptions;
@@ -2867,6 +2867,182 @@ pub struct CleanPlan {
     pub preview: Vec<Change>,
 }
 
+/// Most columns in a matrix.
+pub const MAX_MATRIX_COLS: usize = 10_000;
+/// A matrix saved in a recipe is at most this large.
+pub const MAX_MATRIX_BYTES: usize = 4 << 20;
+/// Example changes shown for each column of a matrix.
+pub const MATRIX_EXAMPLES: usize = 3;
+
+/// One column of a clean matrix: its steps, run in the order stored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatrixEntry {
+    pub col: u32,
+    /// The column's title when the matrix was made.
+    #[serde(default)]
+    pub title: String,
+    pub steps: Vec<Step>,
+    /// The name of the cleaner file whose steps were copied in.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from_file: String,
+}
+
+impl MatrixEntry {
+    fn cleaner(&self) -> Cleaner {
+        Cleaner {
+            version: version(),
+            name: String::new(),
+            steps: self.steps.clone(),
+        }
+    }
+}
+
+/// Columns by cleaners: each column with its own steps, run in one pass.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CleanMatrix {
+    pub entries: Vec<MatrixEntry>,
+    /// Leave the first row (column titles) out.
+    #[serde(default)]
+    pub skip_first: bool,
+    #[serde(default)]
+    pub read: ReadOptions,
+}
+
+impl CleanMatrix {
+    /// Check sizes and steps (a recipe file is untrusted).
+    pub fn check(&self) -> Result<(), Error> {
+        if self.entries.is_empty() || self.entries.len() > MAX_MATRIX_COLS {
+            return Err(bad(format!(
+                "tick at least one column and at most {MAX_MATRIX_COLS}"
+            )));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for e in &self.entries {
+            if !seen.insert(e.col) {
+                return Err(bad("a column is in the clean matrix twice"));
+            }
+            if e.steps.is_empty() {
+                return Err(bad("a column of the clean matrix has nothing ticked"));
+            }
+            if e.from_file.chars().count() > MAX_NAME_CHARS
+                || e.title.chars().count() > MAX_REPLACEMENT_CHARS
+            {
+                return Err(bad("a name in the clean matrix is too long"));
+            }
+            if e.steps.iter().any(|s| matches!(s, Step::Scramble { .. })) {
+                return Err(bad(
+                    "the clean matrix cannot scramble (the phrase is never saved): use Data > Clean",
+                ));
+            }
+            if e.steps.len() > MAX_STEPS {
+                return Err(bad(format!("a cleaner can have at most {MAX_STEPS} steps")));
+            }
+            for s in &e.steps {
+                s.check()?;
+            }
+        }
+        let size = serde_json::to_vec(self)
+            .map_err(|e| bad(e.to_string()))?
+            .len();
+        if size > MAX_MATRIX_BYTES {
+            return Err(bad("the clean matrix is too large"));
+        }
+        Ok(())
+    }
+}
+
+/// What a matrix does to one column.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MatrixColumn {
+    pub col: u32,
+    /// Cells that change.
+    pub changed: u64,
+    /// Cells that would change in a protected column: left alone.
+    pub protected: u64,
+    /// Cells a step could not read.
+    pub left: u64,
+    pub other_order: u64,
+    pub homoglyph_cells: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+pub struct MatrixPreview {
+    pub columns: Vec<MatrixColumn>,
+    /// The first changes of each column.
+    pub examples: Vec<Change>,
+}
+
+/// A computed matrix: apply `plan` with [`Document::apply_clean`].
+#[derive(Debug)]
+pub struct MatrixPlan {
+    pub plan: CleanPlan,
+    pub columns: Vec<MatrixColumn>,
+}
+
+/// How [`Document::run_cells`] runs.
+struct Cells<'a> {
+    /// The cleaner of the area's `k`th column.
+    compiled: &'a (dyn Fn(usize) -> &'a Compiled + Sync),
+    seed: u64,
+    /// Keep the new texts (a plan), or only count (a preview).
+    keep: bool,
+    examples: usize,
+    /// `examples` of each column, not in all.
+    per_column: bool,
+    /// Columns whose changed cells are checked for look-alike letters.
+    homoglyphs: &'a [bool],
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Tally {
+    changed: u64,
+    left: u64,
+    other_order: u64,
+    homoglyphs: u64,
+}
+
+struct CellRun {
+    changes: Vec<(u32, Vec<(u32, String)>)>,
+    examples: Vec<Change>,
+    columns: Vec<Tally>,
+}
+
+impl CellRun {
+    fn total(&self) -> Tally {
+        self.columns.iter().fold(Tally::default(), |mut a, b| {
+            a.changed += b.changed;
+            a.left += b.left;
+            a.other_order += b.other_order;
+            a
+        })
+    }
+}
+
+/// Whether a Sanitize step is set to fix look-alike letters.
+fn fixes_homoglyphs(steps: &[Step]) -> bool {
+    steps.iter().any(|s| {
+        matches!(
+            s,
+            Step::Sanitize {
+                options: crate::xray::SanitizeOptions {
+                    homoglyphs: true,
+                    ..
+                }
+            }
+        )
+    })
+}
+
+fn has_homoglyph(t: &str) -> bool {
+    let mut found = Vec::new();
+    crate::xray::scan(t, &mut found);
+    found
+        .iter()
+        .any(|g| g.kind == crate::xray::GremlinKind::Homoglyph)
+}
+
 impl Document {
     /// Plan running a cleaner. `now` is the run's moment (see
     /// [`Compiled::new`]); `seed` makes random text differ between runs.
@@ -2889,48 +3065,89 @@ impl Document {
         })?;
         let (r0, r1) = (area.rows.start, area.rows.end);
         progress.start(r1.saturating_sub(r0));
+        let run = self.run_cells(
+            &area,
+            &Cells {
+                compiled: &|_| &c,
+                seed,
+                keep: true,
+                examples: preview,
+                per_column: false,
+                homoglyphs: &[],
+            },
+            progress,
+        )?;
+        let total = run.total();
+        let mut plan = CellPlan::new(self);
+        plan.changes = run.changes;
+        plan.cells = total.changed;
+        Ok(CleanPlan {
+            cells: plan,
+            changed: total.changed,
+            left: total.left,
+            other_order: total.other_order,
+            preview: run.examples,
+        })
+    }
+
+    /// Run a compiled cleaner (one per searched column) over `area` in one
+    /// parallel pass: the loop under every cleaning run.
+    fn run_cells(
+        &self,
+        area: &Area,
+        how: &Cells<'_>,
+        progress: &Progress,
+    ) -> Result<CellRun, Error> {
+        let (r0, r1) = (area.rows.start, area.rows.end);
         let created = AtomicUsize::new(0);
-        let left = AtomicU64::new(0);
-        let other_order = AtomicU64::new(0);
-        type Part = (Vec<(u32, Vec<(u32, String)>)>, Vec<Change>, u64);
+        let width = area.cols.len();
         let blocks = r1.saturating_sub(r0).div_ceil(BLOCK);
-        let parts: Vec<Part> = (0..blocks)
+        let parts: Vec<CellRun> = (0..blocks)
             .into_par_iter()
-            .map(|b| -> Result<Part, Error> {
+            .map(|b| -> Result<CellRun, Error> {
                 let s = r0 + b * BLOCK;
                 let e = (s + BLOCK).min(r1);
-                let mut changes = Vec::new();
-                let mut shown = Vec::new();
-                let mut cells = 0u64;
+                let mut part = CellRun {
+                    changes: Vec::new(),
+                    examples: Vec::new(),
+                    columns: vec![Tally::default(); width],
+                };
                 let mut buf = Vec::new();
+                let seed = how.seed;
                 for r in s..e {
                     let Some(id) = self.id_at(r) else { continue };
                     let mut row: Vec<(u32, String)> = Vec::new();
                     let mut err = None;
-                    self.each_cell(&area, r, false, &mut buf, |k, t| {
+                    self.each_cell(area, r, false, &mut buf, |k, t| {
                         let col = area.cols[k];
                         let ctx = Ctx {
                             index: r - r0,
                             seed: mix(seed ^ mix(r ^ (u64::from(col) << 40))),
                             run: mix(seed ^ (u64::from(col) << 40)),
                         };
-                        match c.run(t, ctx) {
+                        match (how.compiled)(k).run(t, ctx) {
                             Ok(out) => {
-                                if out.left {
-                                    left.fetch_add(1, Ordering::Relaxed);
-                                }
-                                if out.other_order {
-                                    other_order.fetch_add(1, Ordering::Relaxed);
-                                }
+                                let tally = &mut part.columns[k];
+                                tally.left += u64::from(out.left);
+                                tally.other_order += u64::from(out.other_order);
                                 let new = out.text?;
-                                if !crate::find::charge(&created, new.len()) {
+                                if how.keep && !crate::find::charge(&created, new.len()) {
                                     err = Some(Error::OutOfMemory(
                                         "this would change too much at once; clean a smaller selection",
                                     ));
                                     return Some(());
                                 }
-                                if shown.len() < preview {
-                                    shown.push(Change {
+                                tally.changed += 1;
+                                if how.homoglyphs.get(k) == Some(&true) && has_homoglyph(t) {
+                                    tally.homoglyphs += 1;
+                                }
+                                let room = if how.per_column {
+                                    tally.changed <= how.examples as u64
+                                } else {
+                                    part.examples.len() < how.examples
+                                };
+                                if room {
+                                    part.examples.push(Change {
                                         row: r,
                                         number: self.row_number(r).unwrap_or(r),
                                         col,
@@ -2939,8 +3156,9 @@ impl Document {
                                         hidden: false,
                                     });
                                 }
-                                cells += 1;
-                                row.push((col, new));
+                                if how.keep {
+                                    row.push((col, new));
+                                }
                                 None
                             }
                             Err(e) => {
@@ -2953,31 +3171,185 @@ impl Document {
                         return Err(e);
                     }
                     if !row.is_empty() {
-                        changes.push((id, row));
+                        part.changes.push((id, row));
                     }
                 }
                 progress.step(e - s)?;
-                Ok((changes, shown, cells))
+                Ok(part)
             })
             .collect::<Result<_, _>>()?;
-        let mut plan = CellPlan::new(self);
-        let mut out_preview = Vec::new();
-        let mut changed = 0;
-        for (c, p, n) in parts {
-            plan.changes.extend(c);
-            if out_preview.len() < preview {
-                out_preview.extend(p.into_iter().take(preview - out_preview.len()));
+        let mut out = CellRun {
+            changes: Vec::new(),
+            examples: Vec::new(),
+            columns: vec![Tally::default(); width],
+        };
+        // Examples wanted so far, per column or in all.
+        let mut had = vec![0usize; width];
+        for p in parts {
+            out.changes.extend(p.changes);
+            for x in p.examples {
+                let k = area.cols.binary_search(&x.col).unwrap_or(0);
+                let room = if how.per_column {
+                    had[k] < how.examples
+                } else {
+                    out.examples.len() < how.examples
+                };
+                if room {
+                    had[k] += 1;
+                    out.examples.push(x);
+                }
             }
-            changed += n;
+            for (a, b) in out.columns.iter_mut().zip(p.columns) {
+                a.changed += b.changed;
+                a.left += b.left;
+                a.other_order += b.other_order;
+                a.homoglyphs += b.homoglyphs;
+            }
         }
-        plan.cells = changed;
-        Ok(CleanPlan {
-            cells: plan,
-            changed,
-            left: left.into_inner(),
-            other_order: other_order.into_inner(),
-            preview: out_preview,
+        Ok(out)
+    }
+
+    /// Plan a matrix: every column's steps in one pass over the shown rows.
+    /// Cells of protected columns are counted apart and left alone when the
+    /// plan is applied.
+    pub fn plan_clean_matrix(
+        &self,
+        matrix: &CleanMatrix,
+        now: f64,
+        seed: u64,
+        progress: &Progress,
+    ) -> Result<MatrixPlan, Error> {
+        let (run, columns) = self.run_matrix(matrix, now, seed, true, progress)?;
+        let sum = |f: fn(&MatrixColumn) -> u64| columns.iter().map(f).sum::<u64>();
+        let changed = sum(|c| c.changed);
+        let mut cells = CellPlan::new(self);
+        cells.changes = run.changes;
+        cells.cells = changed;
+        Ok(MatrixPlan {
+            plan: CleanPlan {
+                cells,
+                changed,
+                left: sum(|c| c.left),
+                other_order: sum(|c| c.other_order),
+                preview: Vec::new(),
+            },
+            columns,
         })
+    }
+
+    /// What a matrix would change, column by column, with exact counts and
+    /// the first [`MATRIX_EXAMPLES`] changes of each. Nothing new is stored.
+    pub fn preview_clean_matrix(
+        &self,
+        matrix: &CleanMatrix,
+        now: f64,
+        seed: u64,
+        progress: &Progress,
+    ) -> Result<MatrixPreview, Error> {
+        let (run, columns) = self.run_matrix(matrix, now, seed, false, progress)?;
+        Ok(MatrixPreview {
+            columns,
+            examples: run.examples,
+        })
+    }
+
+    fn run_matrix(
+        &self,
+        matrix: &CleanMatrix,
+        now: f64,
+        seed: u64,
+        keep: bool,
+        progress: &Progress,
+    ) -> Result<(CellRun, Vec<MatrixColumn>), Error> {
+        self.ready_for_bulk()?;
+        matrix.check()?;
+        let mut entries: Vec<&MatrixEntry> = matrix.entries.iter().collect();
+        entries.sort_by_key(|e| e.col);
+        if entries.iter().any(|e| e.col >= self.col_count()) {
+            return Err(Error::OutOfRange);
+        }
+        let compiled = entries
+            .iter()
+            .map(|e| Compiled::new(&e.cleaner(), matrix.read, now))
+            .collect::<Result<Vec<_>, _>>()?;
+        let homoglyphs: Vec<bool> = entries.iter().map(|e| fixes_homoglyphs(&e.steps)).collect();
+        let area = self.area(&FindSpec {
+            pattern: Pattern::default(),
+            scope: Scope::Columns {
+                cols: entries.iter().map(|e| e.col).collect(),
+            },
+            skip_first: matrix.skip_first,
+            skip_cols: Vec::new(),
+            ..Default::default()
+        })?;
+        progress.start(area.rows.end.saturating_sub(area.rows.start));
+        let run = self.run_cells(
+            &area,
+            &Cells {
+                compiled: &|k| &compiled[k],
+                seed,
+                keep,
+                examples: if keep { 0 } else { MATRIX_EXAMPLES },
+                per_column: true,
+                homoglyphs: &homoglyphs,
+            },
+            progress,
+        )?;
+        let columns = area
+            .cols
+            .iter()
+            .zip(&run.columns)
+            .map(|(&col, t)| {
+                let protected = self.is_protected(col);
+                MatrixColumn {
+                    col,
+                    changed: if protected { 0 } else { t.changed },
+                    protected: if protected { t.changed } else { 0 },
+                    left: t.left,
+                    other_order: t.other_order,
+                    homoglyph_cells: t.homoglyphs,
+                }
+            })
+            .collect();
+        Ok((run, columns))
+    }
+
+    /// `matrix` with each column found by its title in this table (case and
+    /// spaces around it ignored). A title the table does not have, or has
+    /// twice and not at the saved place, is an error.
+    pub fn matrix_by_title(&self, matrix: &CleanMatrix) -> Result<CleanMatrix, Error> {
+        let titles = if matrix.skip_first {
+            self.row_values(0).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let norm = |t: &str| t.trim().to_lowercase();
+        let mut out = matrix.clone();
+        for e in &mut out.entries {
+            let want = norm(&e.title);
+            if want.is_empty() || !matrix.skip_first {
+                if e.col >= self.col_count() {
+                    return Err(bad(format!("there is no column {}", e.col + 1)));
+                }
+                continue;
+            }
+            let found: Vec<u32> = (0..titles.len() as u32)
+                .filter(|&c| norm(&titles[c as usize]) == want)
+                .collect();
+            e.col = match found.as_slice() {
+                [one] => *one,
+                [] => return Err(bad(format!("no column titled \"{}\"", e.title))),
+                many if many.contains(&e.col) => e.col,
+                _ => {
+                    return Err(bad(format!(
+                        "more than one column is titled \"{}\"",
+                        e.title
+                    )))
+                }
+            };
+        }
+        out.check()?;
+        Ok(out)
     }
 
     /// The first changes a run would make, looking at no more than
@@ -3007,17 +3379,7 @@ impl Document {
         exact: bool,
     ) -> Result<CleanPreview, Error> {
         // Look-alike cells are counted only when a Sanitize step is set to fix look-alike letters.
-        let sanitizes = spec.cleaner.steps.iter().any(|s| {
-            matches!(
-                s,
-                Step::Sanitize {
-                    options: crate::xray::SanitizeOptions {
-                        homoglyphs: true,
-                        ..
-                    }
-                }
-            )
-        });
+        let sanitizes = fixes_homoglyphs(&spec.cleaner.steps);
         let c = Compiled::new(&spec.cleaner, spec.read, now)?;
         let area = self.area(&FindSpec {
             pattern: Pattern::default(),
@@ -3048,16 +3410,8 @@ impl Document {
                         out.other_order += u64::from(o.other_order);
                         if let Some(new) = o.text {
                             out.changed += 1;
-                            if sanitizes {
-                                let mut found = Vec::new();
-                                crate::xray::scan(t, &mut found);
-                                if found
-                                    .iter()
-                                    .any(|g| g.kind == crate::xray::GremlinKind::Homoglyph)
-                                    && new != t
-                                {
-                                    out.homoglyph_cells += 1;
-                                }
+                            if sanitizes && has_homoglyph(t) {
+                                out.homoglyph_cells += 1;
                             }
                             if out.changed > offset && out.changes.len() < want {
                                 out.changes.push(Change {
@@ -3091,6 +3445,10 @@ impl Document {
         self.apply_cells(plan.cells)
     }
 }
+
+#[cfg(test)]
+#[path = "clean_matrix_tests.rs"]
+mod matrix_tests;
 
 #[cfg(test)]
 mod tests {
