@@ -16,6 +16,7 @@
   // One dialog for the Data menu's operations, Paste Special and Fill
   // Series. Each kind shows only its own options and hands back the request
   // for the engine; nothing changes until the user presses the main button.
+  import HiddenNote from "./HiddenNote.svelte";
   import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import type { Aggregate, DataOp, DateUnit, Duplicates, FillMode, PasteOp, SplitColumn, TableOp } from "./backend";
@@ -382,6 +383,7 @@
       {#if kind === "merge_columns"}<label class="row"><input type="checkbox" bind:checked={skipBlanks} /> Leave out blank cells</label>{/if}
     {/if}
 
+    {#if kind === "split_column" || kind === "merge_columns"}<HiddenNote kind="all" />{/if}
     {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
     <div class="buttons">
       <button type="button" class="primary" onclick={ok}>{kind === "show_duplicates" ? "Show" : kind === "pivot" || kind === "unpivot" ? "Make table" : "OK"}</button>

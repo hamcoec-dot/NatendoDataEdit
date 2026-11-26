@@ -3,6 +3,8 @@
   // choosing and ordering columns, pulling a piece of text into its own
   // column, and building a column without typing a formula (a template
   // like "{First} {Last}", or if-then rules). Each is one undo step.
+  import { hiddenRows, hiddenWords } from "./shown.svelte";
+  import HiddenNote from "./HiddenNote.svelte";
   import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import { backend, errorText, type ComputePreview, type ComputeSpec, type DataOp, type ExtractWhat, type GroupFunc } from "./backend";
@@ -62,6 +64,8 @@
   let preview = $state<ComputePreview | null>(null);
   const built = $derived(buildMode === "template" ? templateExpr(template, titles) : rulesExpr(rules, otherwise, titles));
 
+  /** Fill the built column in hidden rows too (offered only while some are hidden). */
+  let fillHidden = $state(false);
   function computeSpec(): ComputeSpec {
     return {
       expr: built.expr,
@@ -71,6 +75,7 @@
       keep_first: myHeader,
       read: { decimal_comma: false, date_order: "mdy" },
       now: localDays(),
+      hidden: !hiddenRows.hidden || fillHidden,
     };
   }
 
@@ -268,7 +273,13 @@
       </div>
     {/if}
     <p class="note">The new column is added at the end; values are written as text.</p>
+    {#if hiddenRows.hidden}
+      <label class="row"><input type="checkbox" bind:checked={fillHidden} /> Also fill the hidden rows</label>
+      <p class="note" data-testid="hidden-note">{fillHidden ? "Including hidden rows: they are filled too." : hiddenWords("empty", hiddenRows.hidden, hiddenRows.total)}</p>
+    {/if}
   {/if}
+  {#if kind === "group"}<HiddenNote kind="empty" />{/if}
+  {#if kind === "extract"}<HiddenNote kind="all" />{/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#snippet buttons()}
     <button type="button" class="primary" onclick={run}>OK</button>
