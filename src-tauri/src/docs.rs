@@ -11,8 +11,8 @@
 //! lock between steps so the first screen can be drawn while a big file is
 //! still being read.
 
-use natendo_engine::gaps::{GapReport, GapsSpec};
 use natendo_engine::document::since::SincePlan;
+use natendo_engine::gaps::{GapReport, GapsSpec};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -6005,6 +6005,15 @@ impl Docs {
         if self.is_private(id)? {
             crate::recovery::forget(id);
         }
+        let last_gaps = match &op {
+            DataOp::ShowGapRows { .. } => self
+                .get(id)?
+                .gaps
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
+            _ => None,
+        };
         let join_report = std::cell::RefCell::new(None);
         // Cleaners and fill by example: (left or missed, pattern, examples).
         let extra = std::cell::RefCell::new((0u64, None::<String>, 0u64));
@@ -6085,17 +6094,15 @@ impl Docs {
                 }
                 DataOp::ShowShape { spec } => Planned::Rows(d.plan_shape_filter(spec, p)?),
                 DataOp::ShowGapRows { spec } => {
-                    let last = entry.gaps.lock().unwrap_or_else(|p| p.into_inner()).clone();
-                    let report = last
+                    let report = last_gaps
+                        .as_ref()
                         .filter(|(rev, r)| *rev == d.revision() && r.spec() == spec)
-                        .map(|(_, r)| r)
                         .ok_or_else(|| {
-                            CmdError::new(
-                                "changed",
-                                "the table changed since the audit: run the audit again",
+                            Error::Invalid(
+                                "the table changed since the audit: run the audit again".into(),
                             )
                         })?;
-                    Planned::Rows(d.plan_show_gaps(&report)?)
+                    Planned::Rows(d.plan_show_gaps(&report.1)?)
                 }
                 DataOp::ShowRagged { pick, keep_first } => {
                     let found = d.ragged_rows(*keep_first, p)?;
@@ -11896,6 +11903,34 @@ B,y
         }
         drop(job);
         assert_eq!(h.join().unwrap().unwrap().rows[0].cells, ["13"]);
+    }
+
+    #[test]
+    fn gap_audit_shows_rows_and_opens_a_table() {
+        let docs = Docs::default();
+        let path = tmp("gaps.csv", b"N,x\r\n1,a\r\n2,b\r\n5,c\r\n6,d\r\n");
+        let id = docs.open_path(&path, false).unwrap().id;
+        wait(&docs, id);
+        let spec = GapsSpec {
+            keep_first: true,
+            ..Default::default()
+        };
+        let show = || DataOp::ShowGapRows { spec: spec.clone() };
+        assert!(docs.data_op(id, show()).is_err(), "no audit yet");
+        assert_eq!(docs.gap_audit(id, &spec).unwrap().missing, "2");
+        let table = docs
+            .new_table(id, TableOp::Gaps { spec: spec.clone() })
+            .unwrap();
+        assert!(table.name.starts_with("Gaps ("), "{}", table.name);
+        let other = GapsSpec {
+            start: "0".into(),
+            ..spec.clone()
+        };
+        let report = docs.data_op(id, DataOp::ShowGapRows { spec: other });
+        assert!(report.is_err(), "another spec than the one audited");
+        assert_eq!(docs.data_op(id, show()).unwrap().rows, 2);
+        // The table changed: the old audit is not used.
+        assert!(docs.data_op(id, show()).is_err());
     }
 
     #[test]

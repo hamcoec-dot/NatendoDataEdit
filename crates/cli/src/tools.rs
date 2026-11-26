@@ -439,7 +439,9 @@ fn shape_from(label: &str) -> Result<Pattern, String> {
 pub fn gaps(args: &[&str], json_out: bool) -> Result<bool, String> {
     let o = opts(
         args,
-        &["--column", "--series", "--digits", "--shape", "--from", "--to"],
+        &[
+            "--column", "--series", "--digits", "--shape", "--from", "--to",
+        ],
         &["--each-shape", "--fail-on-gap"],
     )?;
     let input = one_input(&o)?;

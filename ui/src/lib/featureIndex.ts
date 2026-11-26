@@ -194,6 +194,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "quick totals": ["view.panel"],
   "charts line bar pie counts": ["view.panelChart", "data.subtotals", "view.highlights"],
   "compare two open files": ["tools.compare"],
+  "find gaps in a sequence": ["data.gaps"],
   "compare two columns": ["data.compareCols"],
   "random and audit samples": ["tools.sample"],
   "value editor": ["data.values"],

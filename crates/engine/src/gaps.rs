@@ -93,7 +93,8 @@ pub struct GapsSpec {
     pub end: String,
 }
 
-/// A row, by its number in the file (0-based); `None` for a row added by hand.
+/// A row, by its place in the file (the first line is 1); `None` for a row
+/// added by hand.
 pub type FileRow = Option<u64>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -622,9 +623,11 @@ impl Document {
             None
         } else {
             match &spec.pattern {
-                Some(want) => Some(shapes.iter().position(|(p, _)| p == want).ok_or_else(
-                    || Error::Invalid("no shown row has the shape picked".into()),
-                )?),
+                Some(want) => {
+                    Some(shapes.iter().position(|(p, _)| p == want).ok_or_else(|| {
+                        Error::Invalid("no shown row has the shape picked".into())
+                    })?)
+                }
                 None => rank.first().copied(),
             }
         };
@@ -637,9 +640,7 @@ impl Document {
         let end = typed(&spec.end, &audited, "end")?;
         if let (Some(a), Some(b)) = (start, end) {
             if a > b {
-                return Err(Error::Invalid(
-                    "the start is greater than the end".into(),
-                ));
+                return Err(Error::Invalid("the start is greater than the end".into()));
             }
         }
 
@@ -689,7 +690,7 @@ impl Document {
         other_ids.truncate(EXAMPLE_ROWS);
         let base = u64::from(self.next_row_id());
         let file_rows = self.original_rows();
-        let file_row = |id: u32| (u64::from(id) < file_rows).then_some(u64::from(id));
+        let file_row = |id: u32| (u64::from(id) < file_rows).then_some(u64::from(id) + 1);
         out.other_rows = other_ids.iter().map(|&i| file_row(i)).collect();
         out.rows = cells.len() as u64;
 
@@ -717,7 +718,10 @@ impl Document {
 
         // The sequence.
         let by_number = |c: &Cell| (c.series, c.number, c.row);
-        if !cells.par_windows(2).all(|w| by_number(&w[0]) <= by_number(&w[1])) {
+        if !cells
+            .par_windows(2)
+            .all(|w| by_number(&w[0]) <= by_number(&w[1]))
+        {
             cells.par_sort_unstable_by_key(by_number);
         }
         cancelled(progress)?;
@@ -958,8 +962,16 @@ impl GapReport {
         total(&mut out, "Rows", self.rows.to_string());
         total(&mut out, "Different numbers", self.distinct.to_string());
         total(&mut out, "Missing", self.missing.clone());
-        total(&mut out, "Repeated numbers", self.duplicate_values.to_string());
-        total(&mut out, "Extra rows of repeats", self.duplicate_extra.to_string());
+        total(
+            &mut out,
+            "Repeated numbers",
+            self.duplicate_values.to_string(),
+        );
+        total(
+            &mut out,
+            "Extra rows of repeats",
+            self.duplicate_extra.to_string(),
+        );
         total(&mut out, "Drops in file order", self.drops.to_string());
         total(&mut out, "Different shape", self.other_shape.to_string());
         total(&mut out, "Blank", self.blank.to_string());
