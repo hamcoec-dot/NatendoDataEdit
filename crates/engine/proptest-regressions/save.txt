@@ -14,3 +14,4 @@ cc 8865e522eddb9ee3ca53c71eae7c5a6e1dfa037bd021edb70d397a3c4e3df6dd # shrinks to
 cc 22a7bc0ba1f5f3d5931769282b07dd4a38732d3ed47ee0d610993f97dfc22807 # shrinks to bytes = [124, 10, 34, 34, 124, 10, 92], which = 0, ops = [(0, 1, 1, 0, "")]
 cc 13bfe8d71a3cd72dc3b6ff0c039271a548be9a0584061866d96158af616e44c7 # shrinks to bytes = [128, 58, 44, 44, 44, 120, 44, 34], ops = [(0, 5, 0, "")]
 cc 95838691edb0b551ebc8f520fc7c6c1098dd6f4bf0864e222d2d3643c875303e # shrinks to bytes = [], ops = [(6, 0, 0, "")]
+cc 4f90c8b1ec6920d6ea01784b80c1fbf9535a7e490f8834735f4ddb96135e5a2f # shrinks to bytes = [128, 13, 44, 13, 44, 34]

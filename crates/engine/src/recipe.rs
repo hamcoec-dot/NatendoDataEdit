@@ -400,7 +400,13 @@ impl RecipeOp {
             },
             RecipeOp::CheckColumn { .. } => "Add a check result column".into(),
             RecipeOp::SetAside { head, foot } => {
-                let rows = |n: u32| if n == 1 { "row".to_string() } else { format!("{n} rows") };
+                let rows = |n: u32| {
+                    if n == 1 {
+                        "row".to_string()
+                    } else {
+                        format!("{n} rows")
+                    }
+                };
                 match (*head, *foot) {
                     (0, f) => format!("Set aside the last {} as report notes", rows(f)),
                     (h, 0) => format!("Set aside the first {} as report notes", rows(h)),
