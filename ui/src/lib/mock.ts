@@ -1326,9 +1326,21 @@ export class MockBackend implements Backend {
     }
   }
 
+  /** Receipt notes from saves, by tab. */
+  private receiptNotes = new Map<number, string>();
+  async receiptNote(doc: number): Promise<string | null> {
+    const n = this.receiptNotes.get(doc) ?? null;
+    this.receiptNotes.delete(doc);
+    return n;
+  }
+  async receiptVerify(_withFiles: boolean, _chain: boolean): Promise<import("./backend").ReceiptReport | null> {
+    this.calls.push("receiptVerify");
+    return { ok: true, lines: [{ what: "the receipt's seal", ok: true, why: "matches its contents" }], summary: { action: "save as", tool: "Natendo Data Edit (preview)", inputs: [], outputs: [] } };
+  }
   async save(doc: number, f: SaveFlags): Promise<DocInfo | null> {
     if (this.get(doc).info.peeking) throw err("peeking", "looking at an earlier recipe step: go back to the latest step to change or save");
     const d = this.get(doc);
+    if (f.receipt) this.receiptNotes.set(doc, `Receipt written: ${d.info.name}.ndreceipt.json`);
     if (!d.info.path && !f.saveAs && d.info.name === "Untitled") {
       d.info.name = "Untitled.csv";
     }

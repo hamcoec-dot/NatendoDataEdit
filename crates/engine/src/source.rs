@@ -262,6 +262,68 @@ impl Source {
         self.hash
     }
 
+    /// SHA-256 of the file this source was read from, covering the bytes that were parsed:
+    /// a mapped file (locked against writers while mapped) is hashed in its mapping; a file
+    /// read into memory is read again and hashed only when it still matches what was read
+    /// (same stamp, same content check). `(None, length)` when it does not, or has no file.
+    pub fn sha256(
+        &self,
+        progress: &crate::document::Progress,
+    ) -> Result<(Option<String>, u64), crate::Error> {
+        use sha2::{Digest, Sha256};
+        let Some(path) = &self.path else {
+            return Ok((None, 0));
+        };
+        let same_stamp = |p: &Path| FileStamp::of(p).ok() == self.stamp;
+        if !same_stamp(path) {
+            return Ok((None, FileStamp::of(path).map_or(0, |s| s.len)));
+        }
+        if self.is_mapped() && !self.gz {
+            let bytes = self.bytes();
+            let mut h = Sha256::new();
+            for piece in bytes.chunks(HASH_CHUNK) {
+                progress.step(0)?;
+                h.update(piece);
+            }
+            let ok = same_stamp(path);
+            return Ok((
+                ok.then(|| crate::hashing::hex(&h.finalize())),
+                bytes.len() as u64,
+            ));
+        }
+        let Some(want) = self.hash else {
+            return Ok((None, self.stamp.map_or(0, |s| s.len)));
+        };
+        let mut f = File::open(path)?;
+        let mut sha = Sha256::new();
+        let mut check = std::hash::DefaultHasher::new();
+        let mut buf = vec![0u8; HASH_CHUNK];
+        let mut length = 0u64;
+        loop {
+            progress.step(0)?;
+            // Whole chunks, as `hash_file` reads them, so the content check matches.
+            let mut n = 0;
+            while n < buf.len() {
+                match f.read(&mut buf[n..])? {
+                    0 => break,
+                    k => n += k,
+                }
+            }
+            if n == 0 {
+                break;
+            }
+            sha.update(&buf[..n]);
+            check.write(&buf[..n]);
+            length += n as u64;
+            if n < buf.len() {
+                break;
+            }
+        }
+        let ok =
+            check.finish() == want && same_stamp(path) && Some(length) == self.stamp.map(|s| s.len);
+        Ok((ok.then(|| crate::hashing::hex(&sha.finalize())), length))
+    }
+
     /// The file was gzip-compressed (its bytes here are unpacked).
     pub fn is_gzipped(&self) -> bool {
         self.gz

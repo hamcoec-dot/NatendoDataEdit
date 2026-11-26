@@ -110,6 +110,7 @@ impl Batch {
         force: bool,
         existing: Option<Existing>,
         recent: Arc<Recent>,
+        receipt: Option<watch::ReceiptAsk>,
     ) -> Result<(), (&'static str, String)> {
         let bad = |m: String| ("invalid", m);
         if self.state.lock().unwrap_or_else(|p| p.into_inner()).running {
@@ -213,13 +214,17 @@ impl Batch {
                 }
                 let name = name_of(f);
                 state.lock().unwrap_or_else(|p| p.into_inner()).current = Some(name.clone());
-                let r = match watch::run_one(f, target, &recipe, force, &recent) {
+                let r = match watch::run_one(f, target, &recipe, force, &recent, receipt) {
                     Ok(done) => FileResult {
                         name,
                         ok: true,
                         rows_in: done.rows_in,
                         rows_out: done.rows_out,
-                        message: format!("written to {}", done.target.display()),
+                        message: format!(
+                            "written to {}{}",
+                            done.target.display(),
+                            watch::receipt_note(&done.receipt)
+                        ),
                     },
                     Err(e) => FileResult {
                         name,
@@ -306,9 +311,9 @@ mod tests {
         }
         let recent = Arc::new(Recent::default());
         // Not into the files' own folder.
-        assert!(b.start(&[], false, None, recent.clone()).is_err());
+        assert!(b.start(&[], false, None, recent.clone(), None).is_err());
         b.setup.lock().unwrap().out = Some(out.clone());
-        b.start(&[], false, None, recent.clone()).unwrap();
+        b.start(&[], false, None, recent.clone(), None).unwrap();
         while b.status().running {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -324,10 +329,10 @@ mod tests {
             "name,x\r\nbo,2\r\ncy,3\r\n"
         );
         // Run again: the results are there now, so it asks first.
-        let e = b.start(&[], false, None, recent.clone()).unwrap_err();
+        let e = b.start(&[], false, None, recent.clone(), None).unwrap_err();
         assert_eq!(e.0, "outputs_exist");
         assert!(e.1.starts_with("2 files"), "{}", e.1);
-        b.start(&[], false, Some(Existing::Number), recent.clone())
+        b.start(&[], false, Some(Existing::Number), recent.clone(), None)
             .unwrap();
         while b.status().running {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -339,7 +344,7 @@ mod tests {
             "the first results are kept"
         );
         std::fs::write(out.join("a.csv"), "old").unwrap();
-        b.start(&[], false, Some(Existing::Replace), recent)
+        b.start(&[], false, Some(Existing::Replace), recent, None)
             .unwrap();
         while b.status().running {
             std::thread::sleep(std::time::Duration::from_millis(20));

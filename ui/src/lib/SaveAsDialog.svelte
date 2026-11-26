@@ -4,18 +4,22 @@
   // shows the first rows as they will be written. The file itself is
   // chosen next, in the system's Save dialog.
   import { untrack } from "svelte";
-  import type { DocInfo, SaveAsOptions } from "./backend";
+  import type { DocInfo, ReceiptAsk, SaveAsOptions } from "./backend";
   import FormShell from "./FormShell.svelte";
+  import ReceiptChoice from "./ReceiptChoice.svelte";
   import { ENCODINGS, QUOTINGS, SEPARATORS, keepsBytes, saveAsDefaults, writeRow } from "./transfer";
 
   interface Props {
     info: DocInfo;
     /** The first rows, for the preview. */
     sample: string[][];
-    onSave: (o: SaveAsOptions) => void;
+    onSave: (o: SaveAsOptions, receipt: ReceiptAsk | null) => void;
     onClose: () => void;
+    /** The tab is private (its receipt keeps file names only). */
+    privateFile?: boolean;
   }
-  let { info, sample, onSave, onClose }: Props = $props();
+  let { info, sample, onSave, onClose, privateFile = false }: Props = $props();
+  let receipt = $state<ReceiptAsk | null>(null);
 
   const start = untrack(() => saveAsDefaults(info));
   let o = $state<SaveAsOptions>(start);
@@ -47,7 +51,7 @@
 
   function save(): void {
     if (problem) return;
-    onSave({ ...$state.snapshot(o), bom: unicode && o.bom });
+    onSave({ ...$state.snapshot(o), bom: unicode && o.bom }, receipt);
   }
 </script>
 
@@ -100,6 +104,7 @@
   {:else}
     <p class="note">Every row is written again in the new format. The saved file is read back and checked before it replaces anything.</p>
   {/if}
+  <ReceiptChoice value={receipt} onChange={(v) => (receipt = v)} {privateFile} />
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#snippet buttons()}
     <button type="button" class="primary" onclick={save} disabled={!!problem}>Choose file and save…</button>

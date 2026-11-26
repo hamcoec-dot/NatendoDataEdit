@@ -82,7 +82,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { remapChecks, renameInChecks } from "./lib/rename";
   import { TOOLS, localNow, type Cleaner, type CleanSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
-  import type { ExportOptions, ImportNotes, ImportOptions, ImportStart, Opened, SaveAsOptions } from "./lib/backend";
+  import type { ExportOptions, ImportNotes, ImportOptions, ImportStart, Opened, ReceiptAsk, SaveAsOptions } from "./lib/backend";
   import SidePanel, { type PanelTab } from "./lib/SidePanel.svelte";
   import CommandSearch from "./lib/CommandSearch.svelte";
   import readme from "../../README.md?raw";
@@ -111,6 +111,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import SqliteDialog from "./lib/SqliteDialog.svelte";
   import NotesDialog from "./lib/NotesDialog.svelte";
   import WatchDialog from "./lib/WatchDialog.svelte";
+  import ReceiptDialog from "./lib/ReceiptDialog.svelte";
   import { streetSummary } from "./lib/streets";
   import PrintDialog from "./lib/PrintDialog.svelte";
   import OptionsDialog from "./lib/OptionsDialog.svelte";
@@ -157,7 +158,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   let opDialog = $state<{ kind: OpKind; clip: string } | null>(null);
   let formRow = $state<number | null>(null);
   /** Save As options screen, waiting for the user's choice. */
-  let saveAsReq = $state<{ sample: string[][]; done: (o: SaveAsOptions | null) => void } | null>(null);
+  let saveAsReq = $state<{ sample: string[][]; done: (o: SaveAsOptions | null, receipt?: ReceiptAsk | null) => void } | null>(null);
+  /** Tools > Verify a receipt is open. */
+  let receiptOpen = $state(false);
   let exportOpen = $state(false);
   let importing = $state<ImportStart | null>(null);
   /** What the last import kept exactly (counts and column names only), for the command of that name. */
@@ -1343,14 +1346,14 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   }
 
   /** Show the Save As options screen; null when cancelled. */
-  async function askSaveOptions(t: Tab): Promise<SaveAsOptions | null> {
+  async function askSaveOptions(t: Tab): Promise<{ options: SaveAsOptions; receipt: ReceiptAsk | null } | null> {
     const sample = await sampleRows(t);
     return new Promise((resolve) => {
       saveAsReq = {
         sample,
-        done: (o) => {
+        done: (o, receipt) => {
           saveAsReq = null;
-          resolve(o);
+          resolve(o ? { options: o, receipt: receipt ?? null } : null);
         },
       };
     });
@@ -1513,23 +1516,27 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     let overwriteChanged = false;
     let allowLossy = false;
     let options: SaveAsOptions | null = null;
+    let receipt: ReceiptAsk | null = null;
     t.busy = "Saving…";
     try {
       for (;;) {
         try {
           if ((saveAs || !t.info.path) && !options) {
             t.busy = null;
-            options = await askSaveOptions(t);
-            if (!options) return false;
+            const picked = await askSaveOptions(t);
+            if (!picked) return false;
+            options = picked.options;
+            receipt = picked.receipt;
             t.busy = "Saving…";
             saveAs = true;
           }
-          const d = await backend().save(t.id, { saveAs, overwriteChanged, allowLossy, options });
+          const d = await backend().save(t.id, { saveAs, overwriteChanged, allowLossy, options, receipt });
           if (!d) return false; // dialog cancelled
           t.update(d, true);
           if (!d.can_undo) t.afterSave();
           void rememberTab(t, true);
-          say(`Saved ${d.name}.`);
+          const note = receipt ? await backend().receiptNote(t.id).catch(() => null) : null;
+          say(`Saved ${d.name}.${note ? ` ${note}.` : ""}`);
           return true;
         } catch (e) {
           if (!isCmdError(e)) throw e;
@@ -6811,6 +6818,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "tools.sample", label: "Random s&ample…", run: () => openTools("sample"), enabled: ready },
     { id: "tools.selectionTab", label: "Selection to a &new tab", run: () => void selectionToTab(), enabled: ready },
     { id: "tools.watch", label: "&Watch a folder (run a recipe on new files)…", run: () => { watchOpen = true; } },
+    { id: "tools.verifyReceipt", label: "&Verify a processing receipt…", run: () => { receiptOpen = true; } },
     { id: "tools.recipeFiles", label: "Run recipe on &files…", run: () => { recipeFilesOpen = true; } },
     { id: "tools.updates", label: "Take &changes from a newer file…", run: () => { updatesOpen = true; }, enabled: ready },
     { id: "tools.compare", label: "Co&mpare with another open file…", run: () => openTools("compare"), enabled: ready },
@@ -6970,7 +6978,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "tools.fillBlanks", "tools.countRepeats", "tools.blankRepeats", "tools.breaks", "-",
         "tools.flip", "tools.deleteHidden", "tools.deleteHiddenCols", "-",
         "tools.reshape", "tools.stack", "tools.sample", "tools.selectionTab", "-",
-        "tools.compare", "tools.updates", "tools.split", "tools.combine", "tools.searchFolder", "tools.recipe", "tools.recipeFiles", "tools.watch", "tools.encoding", "-",
+        "tools.compare", "tools.updates", "tools.split", "tools.combine", "tools.searchFolder", "tools.recipe", "tools.recipeFiles", "tools.watch", "tools.verifyReceipt", "tools.encoding", "-",
         "tools.nextChange", "tools.prevChange", "tools.largest", "tools.smallest", "-",
         "tools.findPrivate",
       ],
@@ -8966,7 +8974,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
 {#if saveAsReq && tab}
   {@const req = saveAsReq}
-  <SaveAsDialog info={tab.info} sample={req.sample} onSave={(o) => req.done(o)} onClose={() => { req.done(null); grid?.focus(); }} />
+  <SaveAsDialog info={tab.info} sample={req.sample} privateFile={tab.private.file || tab.private.folder} onSave={(o, r) => req.done(o, r)} onClose={() => { req.done(null); grid?.focus(); }} />
 {/if}
 
 {#if exportOpen && tab}
@@ -9274,6 +9282,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
 {#if watchOpen}
   <WatchDialog onClose={() => { watchOpen = false; grid?.focus(); }} />
+{/if}
+
+{#if receiptOpen}
+  <ReceiptDialog onClose={() => { receiptOpen = false; grid?.focus(); }} />
 {/if}
 
 {#if notesRow !== null && tab}

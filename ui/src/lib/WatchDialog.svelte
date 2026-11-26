@@ -4,7 +4,8 @@
   // results folder. The screen can be closed; watching goes on until
   // Stop or the app closes.
   import { onDestroy } from "svelte";
-  import { backend, errorText } from "./backend";
+  import { backend, errorText, type ReceiptAsk } from "./backend";
+  import ReceiptChoice from "./ReceiptChoice.svelte";
   import FormShell from "./FormShell.svelte";
   import type { WatchStatus } from "./watch";
 
@@ -15,6 +16,7 @@
 
   let st = $state<WatchStatus | null>(null);
   let force = $state(false);
+  let receipt = $state<ReceiptAsk | null>(null);
   let existing = $state(false);
   let problem = $state("");
 
@@ -40,7 +42,7 @@
   async function start(): Promise<void> {
     problem = "";
     try {
-      st = await backend().watchStart(force, existing);
+      st = await backend().watchStart(force, existing, receipt);
     } catch (e) {
       problem = errorText(e);
     }
@@ -60,6 +62,7 @@
   </div>
   <label class="row"><input type="checkbox" bind:checked={existing} disabled={st?.running} /> Also run the files already in the folder</label>
   <label class="row"><input type="checkbox" bind:checked={force} disabled={st?.running} /> Run even when a file's columns differ from the recipe's</label>
+  <ReceiptChoice value={receipt} onChange={(v) => (receipt = v)} steps disabled={st?.running} />
   {#if st}
     <p><strong>{st.running ? "Watching" : "Not watching"}.</strong> {st.done.toLocaleString()} done, {st.failed.toLocaleString()} not done.</p>
     {#if st.log.length}

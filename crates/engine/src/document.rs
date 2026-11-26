@@ -1653,6 +1653,13 @@ impl Document {
         self.source_len() as u64
     }
 
+    /// SHA-256 of the file this table was read from, over the bytes that were parsed, and the
+    /// file's length; no hash when the file has changed since it was read (or there is none).
+    /// See [`crate::source::Source::sha256`].
+    pub fn source_sha256(&self, progress: &Progress) -> Result<(Option<String>, u64), Error> {
+        self.source.sha256(progress)
+    }
+
     pub fn has_invalid_bytes(&self) -> bool {
         self.invalid_bytes
     }

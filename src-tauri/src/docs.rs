@@ -1850,6 +1850,8 @@ pub struct Docs {
     /// Value sets of "value must exist in" rules by tab, its revision, the column and the
     /// way of comparing (kept while that tab is unchanged; dropped when it closes).
     key_sets: Mutex<Vec<(String, Arc<KeySet>)>>,
+    /// What the last save with a receipt said about its receipt, by tab (read once by the window).
+    receipt_notes: Mutex<HashMap<u32, String>>,
     /// Whether a path is in private file mode (set when the app starts;
     /// the recent list keeps the private files and folders).
     private_check: Mutex<Option<PrivateCheck>>,
@@ -3931,6 +3933,86 @@ impl Docs {
         entry.autosaved.store(u64::MAX, Ordering::Relaxed);
         entry.too_large.store(0, Ordering::Relaxed);
         self.info(id)
+    }
+
+    /// [`Docs::save`] with a processing receipt written beside the saved file: the file the tab
+    /// was read from (hashed over the bytes that were parsed, before the save replaces anything)
+    /// and the file written. A private tab's receipt has no full paths. The save stands even
+    /// when the receipt cannot be written; the note says so (see [`Docs::take_receipt_note`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_with_receipt(
+        &self,
+        id: u32,
+        path: Option<PathBuf>,
+        overwrite_changed: bool,
+        allow_lossy: bool,
+        options: Option<&SaveAs>,
+        ask: crate::watch::ReceiptAsk,
+    ) -> CmdResult<DocInfo> {
+        use natendo_engine::receipt::{FileRecord, Receipt};
+        let private = self.is_private(id)?;
+        let full = ask.full_paths && !private;
+        let mut r = Receipt::start(if path.is_some() { "save as" } else { "save" });
+        {
+            let entry = self.get(id)?;
+            let d = entry.read();
+            if let Some(src) = d.path().map(Path::to_path_buf) {
+                if let Some(mut rec) = FileRecord::of_input(&d, full, &Progress::new())? {
+                    rec.cols = Some(u64::from(d.col_count()));
+                    r.add_input(rec, &src);
+                }
+            }
+        }
+        let info = self.save(id, path, overwrite_changed, allow_lossy, options)?;
+        let written = self
+            .path_of(id)?
+            .ok_or_else(|| CmdError::new("invalid", "the file has no name"));
+        let note = written.and_then(|out| {
+            let mut rec = FileRecord::of_file(&out, full, &Progress::new())?;
+            rec.rows = Some(info.total_rows);
+            rec.cols = Some(u64::from(info.cols));
+            r.outputs.push(rec);
+            Ok(r.write_beside(&out)?)
+        });
+        let note = match note {
+            Ok(p) => format!(
+                "Receipt written: {}",
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ),
+            Err(e) => format!("Saved, but the receipt was not written: {}", e.message),
+        };
+        self.receipt_notes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, note);
+        Ok(info)
+    }
+
+    /// What the last save with a receipt on tab `id` said about it (once).
+    pub fn take_receipt_note(&self, id: u32) -> Option<String> {
+        self.receipt_notes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id)
+    }
+
+    /// Check a receipt (Tools > Verify a receipt): only the files the person picked are read.
+    pub fn receipt_verify(
+        &self,
+        receipt: &Path,
+        inputs: &[PathBuf],
+        outputs: &[PathBuf],
+        chain: bool,
+    ) -> CmdResult<natendo_engine::receipt::VerifyReport> {
+        Ok(natendo_engine::receipt::verify(
+            receipt,
+            inputs,
+            outputs,
+            chain,
+            &Progress::new(),
+        )?)
     }
 
     /// The running long operation of a document, if any.
@@ -13702,6 +13784,59 @@ mod key_binding_tests {
         assert!(docs.checks_sidecar_load(votes).unwrap().is_none());
         docs.close(roster);
         docs.close(votes);
+    }
+
+    #[test]
+    fn save_as_with_a_receipt_records_the_file_read_and_the_file_written() {
+        use natendo_engine::receipt::verify;
+        let docs = Docs::default();
+        let src = file("rc", "voters.csv", "name,n\r\nAnn,1\r\n");
+        let id = open(&docs, &src);
+        docs.set_cells(id, vec![(1, 1, "2".into())]).unwrap();
+        let out = src.with_file_name("voters-fixed.csv");
+        docs.save_with_receipt(
+            id,
+            Some(out.clone()),
+            false,
+            false,
+            None,
+            Default::default(),
+        )
+        .unwrap();
+        let note = docs.take_receipt_note(id).unwrap();
+        assert!(note.contains("voters-fixed.csv.ndreceipt.json"), "{note}");
+        assert!(docs.take_receipt_note(id).is_none(), "said once");
+        let receipt = natendo_engine::receipt::receipt_path(&out);
+        let v = verify(
+            &receipt,
+            std::slice::from_ref(&src),
+            std::slice::from_ref(&out),
+            false,
+            &Progress::new(),
+        )
+        .unwrap();
+        assert!(v.ok, "{:?}", v.lines);
+        assert_eq!(v.summary["action"], "save as");
+        docs.set_cells(id, vec![(1, 1, "3".into())]).unwrap();
+        // The receipt cannot be written (a folder is in its place): the save stands, the note says so.
+        let blocked = out.with_file_name("blocked.csv");
+        std::fs::create_dir_all(natendo_engine::receipt::receipt_path(&blocked)).unwrap();
+        docs.save_with_receipt(
+            id,
+            Some(blocked.clone()),
+            false,
+            false,
+            None,
+            Default::default(),
+        )
+        .unwrap();
+        assert!(std::fs::read_to_string(&blocked).unwrap().contains('3'));
+        let note = docs.take_receipt_note(id).unwrap();
+        assert!(
+            note.starts_with("Saved, but the receipt was not written"),
+            "{note}"
+        );
+        docs.close(id);
     }
 
     #[test]

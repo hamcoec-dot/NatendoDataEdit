@@ -270,6 +270,8 @@ fn parse<'a>(args: &[&'a str], allowed: &[&str]) -> Result<Args<'a>, String> {
 /// the file's columns are checked against the recipe's (`--force` runs it
 /// anyway), and the result is written to `-o` (`--dry-run` only lists).
 pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
+    let (ask, args) = crate::receipt::Ask::take(args)?;
+    let args = args.as_slice();
     // `--set name=value`: answers to the recipe's questions.
     let mut answers: Vec<(String, String)> = Vec::new();
     let mut rest: Vec<&str> = Vec::new();
@@ -358,7 +360,14 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
             println!("  (not in the recipe: {l})");
         }
     }
+    if ask.on && a.dry_run {
+        return Err("--receipt records a run: it does not go with --dry-run".into());
+    }
+    let mut making = crate::receipt::Making::start(ask, "run recipe", input)?;
     let mut d = load(input, a.sheet)?;
+    if let Some(m) = making.as_mut() {
+        m.read(&d)?;
+    }
     let problems = recipe.column_problems(&d);
     if !problems.is_empty() {
         let text = problems.join("; ");
@@ -407,13 +416,31 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
             overwrite: a.overwrite,
         },
     )?;
+    let receipt = match making {
+        Some(m) => {
+            let steps = serde_json::to_value(&recipe.steps).map_err(|e| e.to_string())?;
+            Some(m.finish(
+                out,
+                d.row_count(),
+                d.col_count(),
+                Some((steps, recipe.columns.clone())),
+            )?)
+        }
+        None => None,
+    };
     if json_out {
         report["message"] = json!(msg);
         report["rows"] = json!(d.row_count());
         report["file"] = json!(out);
+        if let Some(r) = &receipt {
+            report["receipt"] = json!(r.to_string_lossy());
+        }
         print_json(&report);
     } else {
         println!("{msg}");
+        if let Some(r) = &receipt {
+            println!("Receipt written: {}", r.display());
+        }
     }
     Ok(())
 }
@@ -487,6 +514,8 @@ fn report_written(json_out: bool, msg: String, rows: u64, file: &str, mut extra:
 }
 
 pub fn convert(args: &[&str], json_out: bool) -> Result<(), String> {
+    let (ask, args) = crate::receipt::Ask::take(args)?;
+    let args = args.as_slice();
     let a = parse(
         args,
         &[
@@ -502,7 +531,11 @@ pub fn convert(args: &[&str], json_out: bool) -> Result<(), String> {
     let ([input], Some(out)) = (a.plain.as_slice(), a.out) else {
         return Err(USAGE.to_string());
     };
+    let mut making = crate::receipt::Making::start(ask, "convert", input)?;
     let mut d = load(input, a.sheet)?;
+    if let Some(m) = making.as_mut() {
+        m.read(&d)?;
+    }
     let msg = write_out(
         &mut d,
         input,
@@ -514,7 +547,17 @@ pub fn convert(args: &[&str], json_out: bool) -> Result<(), String> {
             overwrite: a.overwrite,
         },
     )?;
-    report_written(json_out, msg, d.row_count(), out, json!({}));
+    let extra = match making {
+        Some(m) => {
+            let r = m.finish(out, d.row_count(), d.col_count(), None)?;
+            if !json_out {
+                eprintln!("Receipt written: {}", r.display());
+            }
+            json!({ "receipt": r.to_string_lossy() })
+        }
+        None => json!({}),
+    };
+    report_written(json_out, msg, d.row_count(), out, extra);
     Ok(())
 }
 

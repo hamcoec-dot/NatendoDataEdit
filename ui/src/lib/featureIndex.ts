@@ -291,6 +291,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "recipe questions": ["view.panelSteps", "tools.recipe", "tools.recipeFiles"],
   "run recipe on files": ["tools.recipeFiles", "tools.watch"],
   "watched folder": ["tools.watch"],
+  "processing receipts": ["tools.verifyReceipt", "file.saveAs", "tools.recipeFiles", "tools.watch"],
   // Printing, PDF and labels
   "print with page setup and": ["file.print"],
   "save as pdf": ["file.pdf"],

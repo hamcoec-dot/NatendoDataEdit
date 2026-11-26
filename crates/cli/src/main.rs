@@ -13,6 +13,7 @@ mod app;
 mod join;
 mod more;
 mod patch;
+mod receipt;
 mod tools;
 
 use std::path::Path;
@@ -29,6 +30,8 @@ const USAGE: &str = "usage: natendo-cli --version
        natendo-cli compute <in> -o <out> --expr <expression> [--title <name>] [--no-header] [--overwrite]
        natendo-cli validate <in> --checks <checks.json> [--table name=file]... [--no-header] [--json]
        natendo-cli run <recipe.json> <in> -o <out> [--set <question>=<answer> ...] [--to <format>] [--force] [--dry-run] [--no-header] [--overwrite]
+           [--receipt [--receipt-paths] [--receipt-full-steps]]   (also on convert)
+       natendo-cli receipt verify <receipt> [--input <file>]... [--output <file>]... [--chain] [--json]
        natendo-cli headers <in> [--json]
        natendo-cli select <in> -o <out> --columns <a,b,...>
        natendo-cli filter <in> -o <out> --expr <formula>
@@ -108,6 +111,11 @@ fn main() -> ExitCode {
             Err(e) => Err(e),
         },
         ["app", rest @ ..] => app::run(rest),
+        ["receipt", "verify", rest @ ..] => match receipt::verify_cmd(rest, json) {
+            Ok(true) => Ok(()),
+            Ok(false) => return ExitCode::from(PROBLEMS),
+            Err(e) => Err(e),
+        },
         ["headers", rest @ ..] => tools::headers(&with_json(rest, json)),
         ["select", rest @ ..] => tools::select(&with_json(rest, json)),
         ["filter", rest @ ..] => tools::filter(&with_json(rest, json)),

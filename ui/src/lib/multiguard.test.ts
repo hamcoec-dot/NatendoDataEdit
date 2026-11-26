@@ -182,6 +182,8 @@ const NOT_WRITES = [
   "watchPick",
   "watchStatus",
   "watchStart",
+  "receiptNote",
+  "receiptVerify",
   "watchStop",
   "notesInfo",
   "noteMarks",

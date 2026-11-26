@@ -4,7 +4,8 @@
   // Each file is run and written under its own name to the results
   // folder; the files chosen are never changed.
   import { onDestroy } from "svelte";
-  import { backend, errorText } from "./backend";
+  import { backend, errorText, type ReceiptAsk } from "./backend";
+  import ReceiptChoice from "./ReceiptChoice.svelte";
   import { batchSummary, type BatchStatus } from "./batch";
   import FormShell from "./FormShell.svelte";
   import { answerPairs, keepAnswers, lastAnswers } from "./recipe";
@@ -16,6 +17,7 @@
 
   let st = $state<BatchStatus | null>(null);
   let force = $state(false);
+  let receipt = $state<ReceiptAsk | null>(null);
   let problem = $state("");
   /** The output folder already holds results of these names: ask. */
   let clash = $state("");
@@ -57,7 +59,7 @@
     clash = "";
     try {
       if (st.recipe && !st.private) keepAnswers(st.recipe, answers);
-      take(await backend().batchStart(answerPairs(st.questions, answers), force, existing));
+      take(await backend().batchStart(answerPairs(st.questions, answers), force, existing, receipt));
     } catch (e) {
       if ((e as { kind?: string }).kind === "outputs_exist") clash = errorText(e);
       else problem = errorText(e);
@@ -97,6 +99,7 @@
     </fieldset>
   {/if}
   <label class="row"><input type="checkbox" bind:checked={force} disabled={st?.running} /> Run even when a file's columns differ from the recipe's</label>
+  <ReceiptChoice value={receipt} onChange={(v) => (receipt = v)} steps disabled={st?.running} />
   {#if st && (st.running || st.results.length)}
     <p aria-live="polite">
       {#if st.running}<strong>Running {st.current ?? ""}</strong> ({st.results.length.toLocaleString()} of {st.files.length.toLocaleString()}). {/if}

@@ -91,7 +91,13 @@ impl Watcher {
 
     /// Start watching with the chosen setup. Files already in the folder
     /// are run too when `existing`.
-    pub fn start(&self, force: bool, existing: bool, recent: Arc<Recent>) -> Result<(), String> {
+    pub fn start(
+        &self,
+        force: bool,
+        existing: bool,
+        recent: Arc<Recent>,
+        receipt: Option<ReceiptAsk>,
+    ) -> Result<(), String> {
         let (folder, recipe, out) = {
             let s = self.setup.lock().unwrap_or_else(|p| p.into_inner());
             match (&s.folder, &s.recipe, &s.out) {
@@ -121,7 +127,7 @@ impl Watcher {
         }
         std::thread::spawn(move || {
             run(
-                &folder, &out, &recipe, force, existing, &stop, &state, &recent,
+                &folder, &out, &recipe, force, existing, &stop, &state, &recent, receipt,
             );
             let mut st = state.lock().unwrap_or_else(|p| p.into_inner());
             st.running = false;
@@ -187,6 +193,7 @@ fn run(
     stop: &AtomicBool,
     state: &Mutex<State>,
     recent: &Recent,
+    receipt: Option<ReceiptAsk>,
 ) {
     // Files already there count as done unless asked otherwise.
     let mut done: HashMap<PathBuf, (u64, Option<SystemTime>)> = if existing {
@@ -215,14 +222,15 @@ fn run(
                 Some(n) => out.join(n),
                 None => continue,
             };
-            let line = match run_one(p, &target, recipe, force, recent) {
+            let line = match run_one(p, &target, recipe, force, recent, receipt) {
                 Ok(r) => {
                     let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                     st.done += 1;
                     format!(
-                        "{name}: {} rows written to {}",
+                        "{name}: {} rows written to {}{}",
                         r.rows_out,
-                        r.target.display()
+                        r.target.display(),
+                        receipt_note(&r.receipt)
                     )
                 }
                 Err(e) => {
@@ -248,6 +256,32 @@ pub(crate) struct RunDone {
     pub rows_in: u64,
     pub rows_out: u64,
     pub target: PathBuf,
+    /// The receipt written beside the result, or why it was not (the result is saved either way).
+    pub receipt: Option<Result<PathBuf, String>>,
+}
+
+/// A processing receipt asked for (off unless the person ticks it): full paths and full step
+/// settings are separate, off-by-default choices.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct ReceiptAsk {
+    #[serde(default)]
+    pub full_paths: bool,
+    #[serde(default)]
+    pub full_steps: bool,
+}
+
+/// What a run's log line says about its receipt.
+pub(crate) fn receipt_note(r: &Option<Result<PathBuf, String>>) -> String {
+    match r {
+        None => String::new(),
+        Some(Ok(p)) => format!(
+            "; receipt {}",
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        ),
+        Some(Err(e)) => format!("; the receipt was not written: {e}"),
+    }
 }
 
 /// Run `recipe` on the file at `path` and save the result as `target`.
@@ -257,10 +291,26 @@ pub(crate) fn run_one(
     recipe: &Recipe,
     force: bool,
     recent: &Recent,
+    receipt: Option<ReceiptAsk>,
 ) -> Result<RunDone, String> {
+    use natendo_engine::receipt::{FileRecord, Receipt, StepsRecord};
+    let mut made = receipt.map(|_| Receipt::start("run recipe"));
     let mut d =
         Document::open_indexed(path, OpenOptions::default(), None).map_err(|e| e.to_string())?;
     let rows_in = d.total_rows();
+    let private = recent.is_private(path);
+    let ask = receipt.unwrap_or_default();
+    if let Some(r) = made.as_mut() {
+        // The input's bytes as parsed, before the recipe changes anything.
+        if let Some(mut rec) =
+            FileRecord::of_input(&d, ask.full_paths && !private, &Progress::new())
+                .map_err(|e| e.to_string())?
+        {
+            rec.rows = Some(rows_in);
+            rec.cols = Some(u64::from(d.col_count()));
+            r.add_input(rec, path);
+        }
+    }
     let problems = recipe.column_problems(&d);
     if !problems.is_empty() && !force {
         return Err(format!(
@@ -285,13 +335,30 @@ pub(crate) fn run_one(
         })
         .map_err(|e| e.to_string())?;
     // A private file's result is private too.
-    if recent.is_private(path) && !recent.is_private(&target) {
+    if private && !recent.is_private(&target) {
         let _ = recent.set_private(&target, true);
     }
+    // The receipt comes after the result's own save, and never undoes it.
+    let receipt = made.map(|mut rc| -> Result<PathBuf, String> {
+        let mut out = FileRecord::of_file(&target, ask.full_paths && !private, &Progress::new())
+            .map_err(|e| e.to_string())?;
+        out.rows = Some(r.rows);
+        out.cols = Some(u64::from(d.col_count()));
+        rc.outputs.push(out);
+        let steps = serde_json::to_value(&recipe.steps).map_err(|e| e.to_string())?;
+        rc.steps = Some(StepsRecord::of(
+            &steps,
+            recipe.columns.clone(),
+            private,
+            ask.full_steps,
+        ));
+        rc.write_beside(&target).map_err(|e| e.to_string())
+    });
     Ok(RunDone {
         rows_in,
         rows_out: r.rows,
         target,
+        receipt,
     })
 }
 
@@ -299,6 +366,86 @@ pub(crate) fn run_one(
 mod tests {
     use super::*;
     use natendo_engine::recipe::{RecipeOp, RECIPE_VERSION};
+
+    #[test]
+    fn a_receipt_is_written_beside_the_result_when_asked() {
+        use natendo_engine::receipt::verify;
+        let base = std::env::temp_dir().join(format!("nd-watch-receipt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("a.csv"), b"name,n\r\nAnn Smith,1\r\n").unwrap();
+        std::fs::write(base.join("p.csv"), b"name,n\r\nAnn Smith,1\r\n").unwrap();
+        let recipe = Recipe {
+            version: RECIPE_VERSION,
+            name: String::new(),
+            columns: vec!["name".into(), "n".into()],
+            header: true,
+            steps: vec![RecipeOp::DeleteCols { at: 1, count: 1 }],
+            left_out: Vec::new(),
+            questions: Vec::new(),
+        };
+        let recent = Arc::new(Recent::default());
+        // Not asked: no receipt.
+        let r = run_one(
+            &base.join("a.csv"),
+            &base.join("none.csv"),
+            &recipe,
+            false,
+            &recent,
+            None,
+        )
+        .unwrap();
+        assert!(r.receipt.is_none());
+        assert!(!base.join("none.csv.ndreceipt.json").exists());
+        let r = run_one(
+            &base.join("a.csv"),
+            &base.join("out.csv"),
+            &recipe,
+            false,
+            &recent,
+            Some(ReceiptAsk::default()),
+        )
+        .unwrap();
+        let path = r.receipt.unwrap().unwrap();
+        assert!(receipt_note(&Some(Ok(path.clone()))).contains("out.csv.ndreceipt.json"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("\"delete_cols\"") && text.contains("\"name\"") && !text.contains("Ann"),
+            "{text}"
+        );
+        let v = verify(
+            &path,
+            &[base.join("a.csv")],
+            &[base.join("out.csv")],
+            true,
+            &Progress::new(),
+        )
+        .unwrap();
+        assert!(v.ok, "{:?}", v.lines);
+        // A private file: no titles, no step hash, no paths even when asked.
+        recent.set_private(&base.join("p.csv"), true).unwrap();
+        let r = run_one(
+            &base.join("p.csv"),
+            &base.join("pout.csv"),
+            &recipe,
+            false,
+            &recent,
+            Some(ReceiptAsk {
+                full_paths: true,
+                full_steps: true,
+            }),
+        )
+        .unwrap();
+        let t = std::fs::read_to_string(r.receipt.unwrap().unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+        assert_eq!(v["steps"]["titles"], serde_json::json!([]));
+        assert_eq!(v["steps"]["sha256"], serde_json::Value::Null);
+        assert!(
+            v["steps"].get("full").is_none() && v["inputs"][0].get("path").is_none(),
+            "{t}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn runs_new_files_through_the_recipe() {
@@ -325,6 +472,7 @@ mod tests {
             &recipe,
             false,
             &recent,
+            None,
         )
         .unwrap();
         assert_eq!(r.rows_out, 2);
@@ -338,7 +486,8 @@ mod tests {
             &outbox.join("other.csv"),
             &recipe,
             false,
-            &recent
+            &recent,
+            None
         )
         .is_err());
         // The watcher refuses an output folder inside the watched one.
@@ -349,7 +498,7 @@ mod tests {
             s.recipe = Some((base.join("r.json"), recipe));
             s.out = Some(inbox.join("sub"));
         }
-        assert!(w.start(false, false, recent).is_err());
+        assert!(w.start(false, false, recent, None).is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -406,6 +555,7 @@ mod tests {
             &recipe(vec![sort.clone()]),
             false,
             &recent,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -419,6 +569,7 @@ mod tests {
             &recipe(vec![typed("zip"), sort.clone()]),
             false,
             &recent,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -432,6 +583,7 @@ mod tests {
             &recipe(vec![typed("zap"), sort]),
             false,
             &recent,
+            None,
         ) {
             Ok(_) => panic!("a file without the title must be refused"),
             Err(e) => e,

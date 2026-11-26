@@ -1973,9 +1973,10 @@ fn watch_start(
     recent: RecentState<'_>,
     force: bool,
     existing: bool,
+    receipt: Option<watch::ReceiptAsk>,
 ) -> CmdResult<watch::WatchStatus> {
     WATCHER
-        .start(force, existing, recent.inner().clone())
+        .start(force, existing, recent.inner().clone(), receipt)
         .map_err(|e| CmdError::new("invalid", e))?;
     Ok(WATCHER.status())
 }
@@ -2699,9 +2700,10 @@ fn batch_start(
     answers: Vec<(String, String)>,
     force: bool,
     existing: Option<batch::Existing>,
+    receipt: Option<watch::ReceiptAsk>,
 ) -> CmdResult<batch::BatchStatus> {
     BATCH
-        .start(&answers, force, existing, recent.inner().clone())
+        .start(&answers, force, existing, recent.inner().clone(), receipt)
         .map_err(|(kind, e)| CmdError::new(kind, e))?;
     Ok(BATCH.status())
 }
@@ -3317,6 +3319,7 @@ async fn save(
     overwrite_changed: bool,
     allow_lossy: bool,
     options: Option<SaveAs>,
+    receipt: Option<watch::ReceiptAsk>,
 ) -> CmdResult<Option<DocInfo>> {
     let docs = docs.inner().clone();
     let recent = recent.inner().clone();
@@ -3343,7 +3346,17 @@ async fn save(
         } else {
             None
         };
-        let info = docs.save(doc, path, overwrite_changed, allow_lossy, options.as_ref())?;
+        let info = match receipt {
+            Some(ask) => docs.save_with_receipt(
+                doc,
+                path,
+                overwrite_changed,
+                allow_lossy,
+                options.as_ref(),
+                ask,
+            )?,
+            None => docs.save(doc, path, overwrite_changed, allow_lossy, options.as_ref())?,
+        };
         // A private tab saved somewhere new (a sample of a private list
         // saved as its own file, say) puts that file in private file mode,
         // so it reopens private.
@@ -3356,6 +3369,51 @@ async fn save(
             }
         }
         Ok(Some(info))
+    })
+    .await
+}
+
+/// What the last save with a receipt said about the receipt (once).
+#[tauri::command]
+fn receipt_note(docs: DocsState<'_>, doc: u32) -> Option<String> {
+    docs.take_receipt_note(doc)
+}
+
+/// Tools > Verify a receipt: the receipt and the files to check against it are picked here, in
+/// the app's own dialogs (the webview never names a path); paths written inside the receipt
+/// are never opened. `None`: a dialog was cancelled.
+#[tauri::command]
+async fn receipt_verify(
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    with_files: bool,
+    chain: bool,
+) -> CmdResult<Option<natendo_engine::receipt::VerifyReport>> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        let Some(receipt) = rfd::FileDialog::new()
+            .set_title("Verify a receipt")
+            .add_filter("Receipts", &["json"])
+            .set_parent(&window)
+            .pick_file()
+        else {
+            return Ok(None);
+        };
+        let (mut inputs, mut outputs) = (Vec::new(), Vec::new());
+        if with_files {
+            let dir = receipt.parent().map(std::path::Path::to_path_buf);
+            let pick = |title: &str| {
+                let mut d = rfd::FileDialog::new().set_title(title).set_parent(&window);
+                if let Some(dir) = &dir {
+                    d = d.set_directory(dir);
+                }
+                d.pick_files().unwrap_or_default()
+            };
+            inputs = pick("The files that went in (Cancel for none)");
+            outputs = pick("The files that came out (Cancel for none)");
+        }
+        docs.receipt_verify(&receipt, &inputs, &outputs, chain)
+            .map(Some)
     })
     .await
 }
@@ -4658,6 +4716,8 @@ pub fn run() {
             copy_cells,
             change,
             save,
+            receipt_note,
+            receipt_verify,
             job_progress,
             cancel_job,
             sort_rows,

@@ -1391,6 +1391,19 @@ export interface SaveFlags {
   overwriteChanged: boolean;
   allowLossy: boolean;
   options?: SaveAsOptions | null;
+  /** Write a processing receipt beside the saved file (null: no). */
+  receipt?: ReceiptAsk | null;
+}
+/** A processing receipt asked for: full paths and full step settings are off unless ticked. */
+export interface ReceiptAsk {
+  full_paths: boolean;
+  full_steps: boolean;
+}
+/** What checking a receipt found. */
+export interface ReceiptReport {
+  ok: boolean;
+  lines: { what: string; ok: boolean; why: string }[];
+  summary: Record<string, unknown>;
 }
 
 /** One encoding of the picker. */
@@ -1870,7 +1883,11 @@ export interface Backend {
   /** Watched folder: choose the folder, recipe or results folder. */
   watchPick(which: "folder" | "recipe" | "out"): Promise<import("./watch").WatchStatus>;
   watchStatus(): Promise<import("./watch").WatchStatus>;
-  watchStart(force: boolean, existing: boolean): Promise<import("./watch").WatchStatus>;
+  watchStart(force: boolean, existing: boolean, receipt?: ReceiptAsk | null): Promise<import("./watch").WatchStatus>;
+  /** What the last save with a receipt said about it (once). */
+  receiptNote(doc: number): Promise<string | null>;
+  /** Tools > Verify a receipt: files are picked in the app's own dialogs. Null: cancelled. */
+  receiptVerify(withFiles: boolean, chain: boolean): Promise<ReceiptReport | null>;
   watchStop(): Promise<import("./watch").WatchStatus>;
   /** Notes and flags: settings [key columns, header, count]. */
   notesInfo(doc: number): Promise<[number[], boolean, number]>;
@@ -1959,7 +1976,7 @@ export interface Backend {
   /** `existing`: results already in the output folder are replaced, or the
    *  new ones get (2) and so on; without it, refused with kind
    *  "outputs_exist" when there are any. */
-  batchStart(answers: [string, string][], force: boolean, existing?: "replace" | "number"): Promise<import("./batch").BatchStatus>;
+  batchStart(answers: [string, string][], force: boolean, existing?: "replace" | "number", receipt?: ReceiptAsk | null): Promise<import("./batch").BatchStatus>;
   batchStop(): Promise<import("./batch").BatchStatus>;
   /** Label sheets to choose from. */
   labelSheets(): Promise<[string, import("./mail").LabelSheet][]>;
@@ -2185,7 +2202,14 @@ class TauriBackend implements Backend {
       overwriteChanged: f.overwriteChanged,
       allowLossy: f.allowLossy,
       options: f.options ?? null,
+      receipt: f.receipt ?? null,
     });
+  }
+  receiptNote(doc: number) {
+    return call<string | null>("receipt_note", { doc });
+  }
+  receiptVerify(withFiles: boolean, chain: boolean) {
+    return call<ReceiptReport | null>("receipt_verify", { withFiles, chain });
   }
   jobProgress(doc: number) {
     return call<JobInfo | null>("job_progress", { doc });
@@ -2622,8 +2646,8 @@ class TauriBackend implements Backend {
   watchStatus() {
     return call<import("./watch").WatchStatus>("watch_status");
   }
-  watchStart(force: boolean, existing: boolean) {
-    return call<import("./watch").WatchStatus>("watch_start", { force, existing });
+  watchStart(force: boolean, existing: boolean, receipt?: ReceiptAsk | null) {
+    return call<import("./watch").WatchStatus>("watch_start", { force, existing, receipt: receipt ?? null });
   }
   watchStop() {
     return call<import("./watch").WatchStatus>("watch_stop");
@@ -2772,8 +2796,8 @@ class TauriBackend implements Backend {
   batchStatus() {
     return call<import("./batch").BatchStatus>("batch_status");
   }
-  batchStart(answers: [string, string][], force: boolean, existing?: "replace" | "number") {
-    return call<import("./batch").BatchStatus>("batch_start", { answers, force, existing: existing ?? null });
+  batchStart(answers: [string, string][], force: boolean, existing?: "replace" | "number", receipt?: ReceiptAsk | null) {
+    return call<import("./batch").BatchStatus>("batch_start", { answers, force, existing: existing ?? null, receipt: receipt ?? null });
   }
   batchStop() {
     return call<import("./batch").BatchStatus>("batch_stop");

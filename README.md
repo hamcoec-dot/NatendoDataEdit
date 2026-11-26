@@ -1466,6 +1466,26 @@ selection, a column or the whole table:
 - **Watched folder:** while the app is open, files dropped into a folder are
   run through a recipe and written to a results folder. The files dropped in
   are never changed.
+- **Processing receipts:** tick "Write a processing receipt" in Save As, Run a
+  recipe on files or Watch a folder (or `--receipt` on `natendo-cli run` and
+  `convert`) and a small `name.ndreceipt.json` is written beside each file
+  written: the names, sizes and SHA-256 hashes of the file read and the file
+  written, row and column counts, start and end times (UTC), the app's
+  version, and for recipe runs the kinds of steps, the column titles they use
+  and a hash of the steps. It never holds cell values; folder paths and the
+  steps' settings only when you tick those too (settings can hold data, such
+  as a name being replaced). The input is hashed over the bytes that were
+  read; if it changed meanwhile, the receipt says so and claims no hash for
+  it. A receipt beside the input is chained in by its own hash. For a
+  private file the receipt keeps file names only. Note that the hash of the
+  steps lets someone who has the receipt confirm a guessed setting (a short
+  replaced name, say), so it is left out for private files. Tools > Verify a
+  processing receipt (or `natendo-cli receipt verify`) checks a receipt and
+  the files you pick against it, and the receipt beside each input; it never
+  opens a path written inside a receipt. This shows tampering, **not a
+  signature**: whoever can edit a receipt can also redo its hashes. The
+  receipt is written after the file itself; if it cannot be written, the
+  save still stands and you are told.
 
 ### Printing, PDF and labels
 
@@ -1559,6 +1579,8 @@ natendo-cli join data.csv other.csv -o out.csv --key ID --columns Phone,Email
 natendo-cli clean cleaner.ndclean data.csv -o out.csv
 natendo-cli run monthly.recipe.json data.csv -o out.csv   # --dry-run lists the steps
 natendo-cli run monthly.recipe.json data.csv -o out.csv --set county=Knox   # answer its questions
+natendo-cli run monthly.recipe.json data.csv -o out.csv --receipt  # + out.csv.ndreceipt.json (--receipt-paths, --receipt-full-steps)
+natendo-cli receipt verify out.csv.ndreceipt.json --input data.csv --output out.csv --chain   # exit 0 ok, 1 mismatch
 natendo-cli pivot by-city.ndpivot data.csv -o summary.csv # a layout saved in the pivot builder
 natendo-cli app tabs                              # needs the agent link
 ```

@@ -64,6 +64,7 @@ pub mod pdf;
 pub mod pivot;
 pub mod privacy;
 pub mod profile;
+pub mod receipt;
 pub mod recipe;
 pub mod relations;
 pub mod reshape;
