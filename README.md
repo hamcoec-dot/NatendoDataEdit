@@ -791,7 +791,9 @@ everything is also in command search.
   one total or all of them as a row. A column starts as a Sum only when nearly
   all its filled cells are numbers; columns of IDs, ZIP codes, phone numbers,
   precincts and the like (by their title, by the shape of their values, or set
-  as Text or Id) start as a Count. Sums are compensated, accurate to about 15
+  as Text or Id) start as a Count; a title that names an amount or a count
+  (Votes, Total, Amount) is added even when every value has five digits or
+  more, unless values start with a zero. Sums are compensated, accurate to about 15
   digits. The row is only on screen: it is never saved into the file,
   exported or printed, and copying all totals leaves out hidden columns. The
   choices are kept with saved views.
