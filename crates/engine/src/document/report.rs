@@ -725,7 +725,10 @@ pub(crate) fn total_label<S: AsRef<str>>(
         .enumerate()
         .any(|(c, v)| {
             let v = v.as_ref().trim();
-            c != label && (c as u32) < cols && !v.is_empty() && ctx.reader(c as u32).number(v).is_some()
+            c != label
+                && (c as u32) < cols
+                && !v.is_empty()
+                && ctx.reader(c as u32).number(v).is_some()
         })
         .then_some(label)
 }

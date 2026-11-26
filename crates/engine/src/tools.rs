@@ -666,7 +666,11 @@ impl Document {
     /// The count line of Fill blank cells: how many blanks would be filled and
     /// how many the stops leave blank, in the first [`FILL_COUNT_ROWS`] shown
     /// rows (a capped count says so with `counted < rows`).
-    pub fn count_fill_blanks(&self, spec: &FillBlanks, progress: &Progress) -> Result<FillCount, Error> {
+    pub fn count_fill_blanks(
+        &self,
+        spec: &FillBlanks,
+        progress: &Progress,
+    ) -> Result<FillCount, Error> {
         let all = self.data_rows(spec.keep_first);
         let rows = all.start..all.end.min(all.start + FILL_COUNT_ROWS);
         if !spec.has_stops() {
@@ -727,7 +731,9 @@ impl Document {
         }
         let row = row.min(n - 1);
         let hits = |r: u64| -> Vec<u32> {
-            let Some(id) = self.id_at(r) else { return Vec::new() };
+            let Some(id) = self.id_at(r) else {
+                return Vec::new();
+            };
             let mut cols: Vec<u32> = marks
                 .get(&id)
                 .map(|cs| {
@@ -752,7 +758,11 @@ impl Document {
             return Some((row, c));
         }
         for k in 1..n {
-            let r = if back { (row + n - k) % n } else { (row + k) % n };
+            let r = if back {
+                (row + n - k) % n
+            } else {
+                (row + k) % n
+            };
             let cs = hits(r);
             let c = if back { cs.last() } else { cs.first() };
             if let Some(&c) = c {
@@ -791,8 +801,12 @@ impl Document {
                     .find(|v| !v.trim().is_empty());
                 if first.is_some_and(crate::document::report::total_word) {
                     all.read(self, id, scratch);
-                    let values: Vec<&str> = (0..all.slots().len()).map(|i| all.get(scratch, i)).collect();
-                    if crate::document::report::total_label(&values, self.col_count(), ctx).is_some() {
+                    let values: Vec<&str> = (0..all.slots().len())
+                        .map(|i| all.get(scratch, i))
+                        .collect();
+                    if crate::document::report::total_label(&values, self.col_count(), ctx)
+                        .is_some()
+                    {
                         return true;
                     }
                 }
@@ -852,7 +866,8 @@ impl Document {
         }
         let reader = Cols::new(self, &want);
         let all_cols: Vec<u32> = (0..self.col_count()).collect();
-        let all = (spec.stop_blank_rows || spec.stop_total_rows).then(|| Cols::new(self, &all_cols));
+        let all =
+            (spec.stop_blank_rows || spec.stop_total_rows).then(|| Cols::new(self, &all_cols));
         let lead = spec
             .stop_total_rows
             .then(|| Cols::new(self, &all_cols[..all_cols.len().min(16)]));
@@ -878,7 +893,8 @@ impl Document {
             .map(|c| -> Result<Vec<StopChunk>, Error> {
                 let s = rows.start + (c * chunk) as u64;
                 let e = (s + chunk as u64).min(rows.end);
-                let mut out: Vec<StopChunk> = spec.cols.iter().map(|_| StopChunk::default()).collect();
+                let mut out: Vec<StopChunk> =
+                    spec.cols.iter().map(|_| StopChunk::default()).collect();
                 let mut last: Vec<Option<String>> = vec![None; spec.cols.len()];
                 let mut waiting: Vec<Vec<usize>> = vec![Vec::new(); spec.cols.len()];
                 let mut buf = Vec::new();
@@ -887,7 +903,16 @@ impl Document {
                     let id = self.id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
                     let stop = stops_apply
-                        && self.fill_stop_row(spec, id, &reader, &buf, &lead, &all, &mut scratch, &ctx);
+                        && self.fill_stop_row(
+                            spec,
+                            id,
+                            &reader,
+                            &buf,
+                            &lead,
+                            &all,
+                            &mut scratch,
+                            &ctx,
+                        );
                     for (k, ch) in out.iter_mut().enumerate() {
                         let v = reader.get(&buf, k);
                         if blank(v, spec.spaces) {
@@ -965,7 +990,9 @@ impl Document {
                     let fill = if b.never {
                         None
                     } else {
-                        b.found.as_ref().or(if b.open { carry.as_ref() } else { None })
+                        b.found
+                            .as_ref()
+                            .or(if b.open { carry.as_ref() } else { None })
                     };
                     match fill {
                         Some(t) => {
@@ -973,7 +1000,11 @@ impl Document {
                             cells += 1;
                         }
                         None => {
-                            let side = if below { b.before < ch.values } else { b.before > 0 };
+                            let side = if below {
+                                b.before < ch.values
+                            } else {
+                                b.before > 0
+                            };
                             if seen || side {
                                 plan.skipped += 1;
                                 if plan.marks.len() < crate::reshape::MAX_FILL_MARKS {
@@ -2476,7 +2507,9 @@ mod tests {
         let plan = d.plan_fill_blanks(spec, &Progress::new()).unwrap();
         let skipped = plan.skipped;
         d.apply_rows(plan).unwrap();
-        let out = (0..d.row_count()).map(|r| d.row_values(r).unwrap()).collect();
+        let out = (0..d.row_count())
+            .map(|r| d.row_values(r).unwrap())
+            .collect();
         d.undo();
         (out, skipped)
     }
@@ -2543,7 +2576,9 @@ mod tests {
     }
 
     fn rows_of(d: &Document) -> Vec<Vec<String>> {
-        (0..d.row_count()).map(|r| d.row_values(r).unwrap()).collect()
+        (0..d.row_count())
+            .map(|r| d.row_values(r).unwrap())
+            .collect()
     }
 
     const GROUPED: &str = "region,id,amount\r\nNorth,101,5\r\n,102,7\r\nSubtotal,,12\r\n,,\r\n,103,2\r\nSouth,104,9\r\n,105,1\r\n,,10\r\n";
@@ -2564,23 +2599,44 @@ mod tests {
         let (r, s) = filled(&mut d, &base);
         assert_eq!(
             region(&r),
-            ["region", "North", "North", "Subtotal", "Subtotal", "Subtotal", "South", "South", "South"]
+            [
+                "region", "North", "North", "Subtotal", "Subtotal", "Subtotal", "South", "South",
+                "South"
+            ]
         );
         assert_eq!(s, 0);
         // Guard on id: rows with no id are not filled and cut the carry.
-        let spec = FillBlanks { guard: Some(1), ..base.clone() };
+        let spec = FillBlanks {
+            guard: Some(1),
+            ..base.clone()
+        };
         let (r, s) = filled(&mut d, &spec);
-        assert_eq!(region(&r), ["region", "North", "North", "Subtotal", "", "", "South", "South", ""]);
+        assert_eq!(
+            region(&r),
+            ["region", "North", "North", "Subtotal", "", "", "South", "South", ""]
+        );
         assert_eq!(s, 3);
         // Total rows only: the Subtotal row cuts and is not carried.
-        let spec = FillBlanks { stop_total_rows: true, ..base.clone() };
+        let spec = FillBlanks {
+            stop_total_rows: true,
+            ..base.clone()
+        };
         let (r, s) = filled(&mut d, &spec);
-        assert_eq!(region(&r), ["region", "North", "North", "Subtotal", "", "", "South", "South", "South"]);
+        assert_eq!(
+            region(&r),
+            ["region", "North", "North", "Subtotal", "", "", "South", "South", "South"]
+        );
         assert_eq!(s, 2);
         // Blank rows only.
-        let spec = FillBlanks { stop_blank_rows: true, ..base.clone() };
+        let spec = FillBlanks {
+            stop_blank_rows: true,
+            ..base.clone()
+        };
         let (r, _) = filled(&mut d, &spec);
-        assert_eq!(region(&r), ["region", "North", "North", "Subtotal", "", "", "South", "South", "South"]);
+        assert_eq!(
+            region(&r),
+            ["region", "North", "North", "Subtotal", "", "", "South", "South", "South"]
+        );
         // All three.
         let spec = FillBlanks {
             guard: Some(1),
@@ -2593,16 +2649,25 @@ mod tests {
         let marks: Vec<u32> = plan.marks.iter().map(|m| m.0).collect();
         assert_eq!(marks.len(), 3);
         d.apply_rows(plan).unwrap();
-        assert_eq!(region(&rows_of(&d)), ["region", "North", "North", "Subtotal", "", "", "South", "South", ""]);
+        assert_eq!(
+            region(&rows_of(&d)),
+            ["region", "North", "North", "Subtotal", "", "", "South", "South", ""]
+        );
         d.undo();
         let rows = rows_of(&d);
         assert_eq!(filled(&mut d, &spec), reference(&rows, &spec));
         // Below, mirrored: the label below does not climb over a stop.
-        let spec = FillBlanks { from: FillFrom::Below, ..spec };
+        let spec = FillBlanks {
+            from: FillFrom::Below,
+            ..spec
+        };
         let (r, s) = filled(&mut d, &spec);
         let rows = rows_of(&d);
         assert_eq!((r.clone(), s), reference(&rows, &spec));
-        assert_eq!(region(&r), ["region", "North", "", "Subtotal", "", "South", "South", "", ""]);
+        assert_eq!(
+            region(&r),
+            ["region", "North", "", "Subtotal", "", "South", "South", "", ""]
+        );
     }
 
     /// C5 review 1: the guard column cannot be filled too.
@@ -2615,9 +2680,17 @@ mod tests {
             keep_first: true,
             ..Default::default()
         };
-        let e = d.plan_fill_blanks(&spec, &Progress::new()).err().unwrap().to_string();
+        let e = d
+            .plan_fill_blanks(&spec, &Progress::new())
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("cannot also be filled"), "{e}");
-        let spec = FillBlanks { guard: Some(9), cols: vec![0], ..spec };
+        let spec = FillBlanks {
+            guard: Some(9),
+            cols: vec![0],
+            ..spec
+        };
         assert!(d.plan_fill_blanks(&spec, &Progress::new()).is_err());
     }
 
@@ -2652,17 +2725,37 @@ mod tests {
             ..Default::default()
         };
         let (r, _) = filled(&mut d, &spec);
-        assert_eq!(r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(), ["k", "a", "a", "  ", ""]);
+        assert_eq!(
+            r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(),
+            ["k", "a", "a", "  ", ""]
+        );
         spec.spaces = false;
         let (r, _) = filled(&mut d, &spec);
-        assert_eq!(r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(), ["k", "a", "a", "  ", "  "]);
+        assert_eq!(
+            r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(),
+            ["k", "a", "a", "  ", "  "]
+        );
         // Guard on id with spaces as blank: the "  " id stops.
-        let spec = FillBlanks { stop_blank_rows: false, guard: Some(1), spaces: true, ..spec };
+        let spec = FillBlanks {
+            stop_blank_rows: false,
+            guard: Some(1),
+            spaces: true,
+            ..spec
+        };
         let (r, _) = filled(&mut d, &spec);
-        assert_eq!(r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(), ["k", "a", "a", "  ", ""]);
-        let spec = FillBlanks { spaces: false, ..spec };
+        assert_eq!(
+            r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(),
+            ["k", "a", "a", "  ", ""]
+        );
+        let spec = FillBlanks {
+            spaces: false,
+            ..spec
+        };
         let (r, _) = filled(&mut d, &spec);
-        assert_eq!(r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(), ["k", "a", "a", "  ", "  "]);
+        assert_eq!(
+            r.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(),
+            ["k", "a", "a", "  ", "  "]
+        );
     }
 
     /// C5 review 3: edited rows and a column map are read from their values.
@@ -2693,11 +2786,22 @@ mod tests {
         d.move_cols(2, 1, 0).unwrap();
         // Now: id, (new), k
         assert_eq!(d.row_values(0).unwrap(), ["id", "", "k"]);
-        let spec = FillBlanks { cols: vec![2], guard: Some(0), stop_blank_rows: false, ..base.clone() };
+        let spec = FillBlanks {
+            cols: vec![2],
+            guard: Some(0),
+            stop_blank_rows: false,
+            ..base.clone()
+        };
         let (r, s) = filled(&mut d, &spec);
-        assert_eq!(r.iter().map(|r| r[2].as_str()).collect::<Vec<_>>(), ["k", "a", "a", "", ""]);
+        assert_eq!(
+            r.iter().map(|r| r[2].as_str()).collect::<Vec<_>>(),
+            ["k", "a", "a", "", ""]
+        );
         assert_eq!(s, 2);
-        let spec = FillBlanks { cols: vec![2], ..base };
+        let spec = FillBlanks {
+            cols: vec![2],
+            ..base
+        };
         let rows = rows_of(&d);
         assert_eq!(filled(&mut d, &spec), reference(&rows, &spec));
     }
@@ -2758,16 +2862,33 @@ mod tests {
             ..Default::default()
         };
         let c = d.count_fill_blanks(&spec, &Progress::new()).unwrap();
-        assert_eq!(c, FillCount { fill: 2, skipped: 3, counted: 8, rows: 8 });
-        let none = FillBlanks { guard: None, ..spec };
+        assert_eq!(
+            c,
+            FillCount {
+                fill: 2,
+                skipped: 3,
+                counted: 8,
+                rows: 8
+            }
+        );
+        let none = FillBlanks {
+            guard: None,
+            ..spec
+        };
         assert!(d.count_fill_blanks(&none, &Progress::new()).is_err());
     }
 
     /// C5: an old saved spec (no stop fields) reads with every stop off.
     #[test]
     fn fill_old_spec_has_no_stops() {
-        let s: FillBlanks = serde_json::from_str(r#"{"cols":[0],"from":{"kind":"above"},"spaces":true,"keep_first":true}"#).unwrap();
-        assert_eq!((s.guard, s.stop_blank_rows, s.stop_total_rows), (None, false, false));
+        let s: FillBlanks = serde_json::from_str(
+            r#"{"cols":[0],"from":{"kind":"above"},"spaces":true,"keep_first":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (s.guard, s.stop_blank_rows, s.stop_total_rows),
+            (None, false, false)
+        );
         assert!(!s.has_stops());
     }
 

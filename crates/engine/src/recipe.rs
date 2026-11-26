@@ -362,7 +362,9 @@ impl RecipeOp {
                 let mut stops = Vec::new();
                 if let Some(g) = spec.guard {
                     stops.push(match &spec.guard_title {
-                        Some(t) if !t.trim().is_empty() => format!("rows with no \u{201c}{t}\u{201d}"),
+                        Some(t) if !t.trim().is_empty() => {
+                            format!("rows with no \u{201c}{t}\u{201d}")
+                        }
                         _ => format!("rows with column {} blank", g + 1),
                     });
                 }
@@ -1021,7 +1023,10 @@ mod tests {
         // Same order as recorded.
         let mut d = doc("k,id\na,1\n,2\n,\n,3\n");
         d.run_recipe_step(&step, 0.0, 0, &p).unwrap();
-        assert_eq!((0..5).map(|r| d.cell(r, 0).unwrap()).collect::<Vec<_>>(), ["k", "a", "a", "", ""]);
+        assert_eq!(
+            (0..5).map(|r| d.cell(r, 0).unwrap()).collect::<Vec<_>>(),
+            ["k", "a", "a", "", ""]
+        );
         // Columns in another order: the guard follows its title, not its old place.
         let mut d = doc("id,k\n1,a\n2,\n,\n3,\n");
         let moved = RecipeOp::FillBlanks {
@@ -1035,10 +1040,17 @@ mod tests {
             },
         };
         d.run_recipe_step(&moved, 0.0, 0, &p).unwrap();
-        assert_eq!((0..5).map(|r| d.cell(r, 1).unwrap()).collect::<Vec<_>>(), ["k", "a", "a", "", ""]);
+        assert_eq!(
+            (0..5).map(|r| d.cell(r, 1).unwrap()).collect::<Vec<_>>(),
+            ["k", "a", "a", "", ""]
+        );
         // No such title: refused in the existing words.
         let mut d = doc("k,code\na,1\n,2\n");
-        let e = d.run_recipe_step(&step, 0.0, 0, &p).err().unwrap().to_string();
+        let e = d
+            .run_recipe_step(&step, 0.0, 0, &p)
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("no column titled \"id\""), "{e}");
     }
 

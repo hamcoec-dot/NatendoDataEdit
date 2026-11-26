@@ -3683,7 +3683,12 @@ impl Docs {
     /// Stop the dialog's count (the dialog closed).
     pub fn fill_blanks_count_stop(&self, id: u32) -> CmdResult<()> {
         let entry = self.get(id)?;
-        if let Some(p) = entry.fill_count.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(p) = entry
+            .fill_count
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             p.cancel.store(true, Ordering::Relaxed);
         }
         Ok(())
@@ -3693,7 +3698,11 @@ impl Docs {
     /// `row..row + rows`.
     pub fn fill_marks(&self, id: u32, row: u64, rows: u64) -> CmdResult<Vec<(u64, u32)>> {
         let entry = self.get(id)?;
-        let marks = entry.fill_marks.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let marks = entry
+            .fill_marks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         if marks.is_empty() {
             return Ok(Vec::new());
         }
@@ -3710,7 +3719,11 @@ impl Docs {
         back: bool,
     ) -> CmdResult<Option<(u64, u32)>> {
         let entry = self.get(id)?;
-        let marks = entry.fill_marks.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let marks = entry
+            .fill_marks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let d = entry.read();
         Ok(d.next_marked(&marks, row, col, back))
     }
