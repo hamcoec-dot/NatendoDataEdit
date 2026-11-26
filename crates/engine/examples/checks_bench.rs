@@ -29,11 +29,15 @@ fn main() {
         .expect("open");
     let one = spec(r#"[{"col":1,"kind":{"type":"unique"}}]"#);
     let key = spec(r#"[{"col":1,"kind":{"type":"unique","also":[2,3]}}]"#);
+    // No repeats at all: the id alone, and the id with two more columns (the same problems: none).
+    let id_one = spec(r#"[{"col":0,"kind":{"type":"unique"}}]"#);
+    let id_key = spec(r#"[{"col":0,"kind":{"type":"unique","also":[1,2]}}]"#);
     let old = spec(
         r#"[{"col":0,"kind":{"type":"required"}},{"col":4,"kind":{"type":"number","min":0,"max":500}},{"col":0,"kind":{"type":"unique"}}]"#,
     );
     let p = Progress::new();
     let (mut a, mut b, mut c) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut e, mut g) = (Vec::new(), Vec::new());
     let mut found = (0, 0, 0);
     for _ in 0..runs {
         let t = Instant::now();
@@ -43,12 +47,18 @@ fn main() {
         found.1 = d.run_checks(&key, &p).expect("key").problems;
         b.push(t.elapsed().as_secs_f64() * 1000.0);
         let t = Instant::now();
+        assert_eq!(d.run_checks(&id_one, &p).expect("id").problems, 0);
+        e.push(t.elapsed().as_secs_f64() * 1000.0);
+        let t = Instant::now();
+        assert_eq!(d.run_checks(&id_key, &p).expect("id key").problems, 0);
+        g.push(t.elapsed().as_secs_f64() * 1000.0);
+        let t = Instant::now();
         let r = d.run_checks(&old, &p).expect("old");
         let plan = d.plan_show_problems(&r, true, false).expect("plan");
         found.2 = plan.rows;
         c.push(t.elapsed().as_secs_f64() * 1000.0);
     }
-    let (a, b, c) = (median(a), median(b), median(c));
+    let (a, b, c, e, g) = (median(a), median(b), median(c), median(e), median(g));
     println!(
         "{} rows, medians of {runs}: unique one column {a:.0} ms ({} problems), unique 3 columns together {b:.0} ms ({} problems, ratio {:.3}), show problems with older kinds {c:.0} ms ({} rows)",
         d.row_count() - 1,
@@ -56,5 +66,9 @@ fn main() {
         found.1,
         b / a,
         found.2
+    );
+    println!(
+        "  no repeats: id alone {e:.0} ms, id with 2 more columns {g:.0} ms (ratio {:.3})",
+        g / e
     );
 }

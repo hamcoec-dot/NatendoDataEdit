@@ -219,6 +219,27 @@ fn norm<'a>(v: &'a str, match_case: bool, trim: bool) -> Cow<'a, str> {
     }
 }
 
+/// Feed `norm(v, match_case, trim)` to a hasher (its length, then its bytes) without
+/// making a lower-case copy when the text is ASCII (ASCII lower-cases byte by byte to
+/// the same text `to_lowercase` gives), so equal keys still hash alike.
+fn hash_norm(h: &mut impl Hasher, v: &str, match_case: bool, trim: bool) {
+    let v = if trim { v.trim() } else { v };
+    if match_case || !v.is_ascii() {
+        let v = norm(v, match_case, false);
+        h.write_usize(v.len());
+        h.write(v.as_bytes());
+        return;
+    }
+    h.write_usize(v.len());
+    let mut low = [0u8; 64];
+    for part in v.as_bytes().chunks(64) {
+        for (o, b) in low.iter_mut().zip(part) {
+            *o = b.to_ascii_lowercase();
+        }
+        h.write(&low[..part.len()]);
+    }
+}
+
 fn blank(v: &str, spaces: bool) -> bool {
     if spaces {
         v.trim().is_empty()
@@ -296,9 +317,7 @@ impl Document {
             reader.read(self, id, buf);
             let mut h = rs.build_hasher();
             for k in 0..cols.len() {
-                let v = norm(reader.get(buf, k), match_case, trim);
-                h.write_usize(v.len());
-                h.write(v.as_bytes());
+                hash_norm(&mut h, reader.get(buf, k), match_case, trim);
             }
             Ok(Some((h.finish(), (r - rows.start) as u32)))
         })?;
@@ -1492,5 +1511,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!((plan.rows, plan.groups), (5_000, 5_000));
+    }
+}
+
+#[cfg(test)]
+mod hash_tests {
+    use super::*;
+    use crate::OpenOptions;
+
+    #[test]
+    fn keys_that_match_ignoring_case_group_together_long_short_and_not_ascii() {
+        let long = "Abc".repeat(50);
+        let csv = format!(
+            "k\r\n{long}\r\n{}\r\nK\r\n\u{212A}\r\nk \r\n\u{c9}t\u{e9}\r\n\u{e9}T\u{c9}\r\nother\r\n",
+            long.to_uppercase()
+        );
+        let d =
+            Document::from_bytes(csv.into_bytes(), OpenOptions::default(), Some("csv")).unwrap();
+        let p = Progress::new();
+        let leader = d.group_rows(1..9, &[0], false, true, &p).unwrap();
+        // The long value twice; K, the Kelvin sign (lower-cases to k) and "k "; the accented pair.
+        assert_eq!(leader, vec![0, 0, 2, 2, 2, 5, 5, 7]);
+        let exact = d.group_rows(1..9, &[0], true, false, &p).unwrap();
+        assert_eq!(exact, (0..8).collect::<Vec<u32>>());
     }
 }
