@@ -6,6 +6,8 @@
 //! (no entity expansion, nesting capped), so a hostile file costs bounded
 //! time and memory.
 
+mod odsstyle;
+
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -94,12 +96,10 @@ impl Pad {
     /// `n` written into the pattern, or `None` when it has more digits than the pattern has places.
     fn apply(&self, n: u64) -> Option<String> {
         let d = n.to_string();
-        if d.len() > self.digits {
-            return None;
-        }
-        let digits = format!("{:0>w$}", d, w = self.digits);
-        let mut it = digits.chars();
-        let mut out = String::new();
+        let zeros = self.digits.checked_sub(d.len())?;
+        // Zeros first, then the number, with the literals between them.
+        let mut it = std::iter::repeat_n('0', zeros).chain(d.chars());
+        let mut out = String::with_capacity(self.parts.len());
         for p in &self.parts {
             match p {
                 None => out.push(it.next()?),
@@ -110,8 +110,8 @@ impl Pad {
     }
 }
 
-/// A format made only of zeros (and `-` or space between them) pads: `00000`, `0000`, `000-00-0000`.
-/// `0.00`, `#,##0` and `0%` do not.
+/// A format made only of zeros (and `-` or space between them, written plainly, escaped or in quotes) pads:
+/// `00000`, `0000`, `000-00-0000`, `00"-"000`. `0.00`, `#,##0`, `0%` and other quoted text do not.
 pub(crate) fn pad_by_code(code: &str) -> Option<Pad> {
     let first = code.split(';').next().unwrap_or("");
     let mut parts = Vec::new();
@@ -124,6 +124,13 @@ pub(crate) fn pad_by_code(code: &str) -> Option<Pad> {
                 digits += 1;
             }
             '-' | ' ' => parts.push(Some(c)),
+            '"' => loop {
+                match it.next() {
+                    Some('"') => break,
+                    Some(l @ ('-' | ' ')) => parts.push(Some(l)),
+                    _ => return None,
+                }
+            },
             '\\' => match it.next() {
                 Some(l @ ('-' | ' ')) => parts.push(Some(l)),
                 _ => return None,
@@ -281,7 +288,7 @@ impl<'a> Book<'a> {
         let mut sink = Sink::new(limit);
         match self.kind {
             Kind::Xlsx => self.read_xlsx(index, opts, &mut sink, progress)?,
-            Kind::Ods => self.read_ods(index, &mut sink, progress)?,
+            Kind::Ods => self.read_ods(index, opts, &mut sink, progress)?,
         }
         Ok(sink.finish())
     }
@@ -590,7 +597,13 @@ impl<'a> Book<'a> {
         Ok(out)
     }
 
-    fn read_ods(&self, index: usize, sink: &mut Sink, progress: &Progress) -> Result<(), Error> {
+    fn read_ods(
+        &self,
+        index: usize,
+        opts: SheetOptions,
+        sink: &mut Sink,
+        progress: &Progress,
+    ) -> Result<(), Error> {
         progress.start(self.zip.declared_size("content.xml"));
         let mut r = xml_reader(self.zip.reader("content.xml")?);
         let mut buf = Vec::new();
@@ -604,6 +617,17 @@ impl<'a> Book<'a> {
         let mut col = 0u32;
         let mut cell = OdsCell::default();
         let mut row_bytes = 0usize;
+        // Zero-padding formats, and the default cell styles of the columns
+        // (as runs) and of the row being read.
+        let mut formats = OdsFormats::default();
+        if !opts.raw_dates {
+            if self.zip.has("styles.xml") {
+                formats.styles.read(self.zip.reader("styles.xml")?);
+            }
+            formats.styles.read(self.zip.reader("content.xml")?);
+        }
+        formats.pad_zeros = opts.pad_zeros;
+        let mut next_column = 0u32;
         let mut last_pos = 0u64;
         loop {
             let ev = r.read_event_into(&mut buf).map_err(xml_err)?;
@@ -650,7 +674,21 @@ impl<'a> Book<'a> {
                         }
                     } else {
                         match name.as_str() {
+                            "table-column" if next_column < MAX_COLS => {
+                                let n = repeat(e, "number-columns-repeated")
+                                    .min(u64::from(MAX_COLS - next_column))
+                                    as u32;
+                                if let Some(style) = attr(e, "default-cell-style-name") {
+                                    let pad = formats.styles.pad_of(&style);
+                                    formats.columns.push((next_column, next_column + n, pad));
+                                }
+                                next_column += n;
+                            }
                             "table-row" => {
+                                formats.row = attr(e, "default-cell-style-name")
+                                    .map(|s| formats.styles.pad_of(&s));
+                                formats.copies =
+                                    sink.take(repeat(e, "number-rows-repeated")).max(1);
                                 row.clear();
                                 row_bytes = 0;
                                 col = 0;
@@ -661,10 +699,18 @@ impl<'a> Book<'a> {
                                 }
                             }
                             "table-cell" | "covered-table-cell" => {
+                                let found = ods_cell_attrs(e);
+                                let style = found
+                                    .style
+                                    .filter(|_| !formats.styles.pads.is_empty())
+                                    .map(|s| formats.styles.pad_of(&s));
+                                let (value, float) = (found.value, found.float);
                                 cell = OdsCell {
                                     active: true,
                                     repeat: repeat(e, "number-columns-repeated"),
-                                    value: ods_value(e),
+                                    value,
+                                    float,
+                                    style,
                                     depth,
                                     ..Default::default()
                                 };
@@ -674,6 +720,8 @@ impl<'a> Book<'a> {
                                         &mut col,
                                         &mut row_bytes,
                                         row_room(sink, row_repeat),
+                                        &formats,
+                                        &mut self.stats.borrow_mut(),
                                     )?;
                                 }
                             }
@@ -697,6 +745,8 @@ impl<'a> Book<'a> {
                                 &mut col,
                                 &mut row_bytes,
                                 row_room(sink, row_repeat),
+                                &formats,
+                                &mut self.stats.borrow_mut(),
                             )?;
                         } else if !cell.active {
                             // A row ends when its element closes; rows sit
@@ -787,22 +837,65 @@ fn repeat(e: &quick_xml::events::BytesStart, name: &str) -> u64 {
         .max(1)
 }
 
-/// A typed ODS value from the cell's attributes (`None`: use its text).
-fn ods_value(e: &quick_xml::events::BytesStart) -> Option<String> {
-    let ty = attr(e, "value-type")?;
-    match ty.as_str() {
-        "float" | "percentage" | "currency" => attr(e, "value"),
-        "date" => attr(e, "date-value").map(|v| v.replacen('T', " ", 1)),
-        "time" => attr(e, "time-value").map(|v| ods_time(&v)),
-        "boolean" => attr(e, "boolean-value").map(|v| {
+/// What a cell's start tag says, read in one pass over its attributes.
+struct OdsAttrs {
+    /// The typed value (`None`: use the cell's text).
+    value: Option<String>,
+    /// A plain number (`office:value-type="float"`).
+    float: bool,
+    /// The cell's own style.
+    style: Option<String>,
+}
+
+fn ods_cell_attrs(e: &quick_xml::events::BytesStart) -> OdsAttrs {
+    // The first of each name, as `attr` takes it.
+    let mut kept: [Option<quick_xml::events::attributes::Attribute>; 7] = Default::default();
+    const NAMES: [&str; 7] = [
+        "value-type",
+        "value",
+        "date-value",
+        "time-value",
+        "boolean-value",
+        "string-value",
+        "style-name",
+    ];
+    let mut it = e.attributes();
+    it.with_checks(false);
+    for a in it.flatten() {
+        let name = a.key.local_name();
+        if let Some(i) = NAMES.iter().position(|n| name.as_ref() == *n) {
+            if kept[i].is_none() {
+                kept[i] = Some(a);
+            }
+        }
+    }
+    let get = |i: usize| {
+        kept[i].as_ref().map(
+            |a| match a.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
+                Ok(v) => v.into_owned(),
+                Err(_) => a.value.clone().into_owned(),
+            },
+        )
+    };
+    let ty = get(0);
+    let value = match ty.as_deref() {
+        Some("float" | "percentage" | "currency") => get(1),
+        Some("date") => get(2).map(|v| v.replacen('T', " ", 1)),
+        Some("time") => get(3).map(|v| ods_time(&v)),
+        Some("boolean") => get(4).map(|v| {
             if v == "true" {
                 "TRUE".into()
             } else {
                 "FALSE".into()
             }
         }),
-        "string" => attr(e, "string-value"),
+        Some("string") => get(5),
         _ => None,
+    };
+    OdsAttrs {
+        value,
+        float: ty.as_deref() == Some("float"),
+        style: get(6),
     }
 }
 
@@ -838,8 +931,39 @@ fn ods_time(v: &str) -> String {
     format!("{}:{}:{}", two(&parts[0]), two(&parts[1]), two(&parts[2]))
 }
 
+/// What decides the padding of a cell in an `.ods` sheet.
+#[derive(Default)]
+struct OdsFormats {
+    styles: odsstyle::OdsStyles,
+    /// Columns with a default cell style: (first, past the last, pattern).
+    columns: Vec<(u32, u32, Option<u16>)>,
+    /// The row's default cell style, when it has one.
+    row: Option<Option<u16>>,
+    /// How many times the row is taken.
+    copies: u64,
+    pad_zeros: Option<bool>,
+}
+
+impl OdsFormats {
+    /// The pattern of a cell in column `col` that has no style of its own.
+    fn inherited(&self, col: u32) -> Option<u16> {
+        if let Some(row) = self.row {
+            return row;
+        }
+        let at = self.columns.partition_point(|c| c.1 <= col);
+        match self.columns.get(at) {
+            Some(c) if c.0 <= col => c.2,
+            _ => self.styles.default_pad(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct OdsCell {
+    /// A number (`office:value-type="float"`).
+    float: bool,
+    /// The cell's own style, when it names one: its pattern.
+    style: Option<Option<u16>>,
     active: bool,
     text_done: bool,
     repeat: u64,
@@ -863,12 +987,14 @@ impl OdsCell {
         col: &mut u32,
         row_bytes: &mut usize,
         room: usize,
+        formats: &OdsFormats,
+        stats: &mut SheetStats,
     ) -> Result<(), Error> {
         self.active = false;
-        let value = self
-            .value
-            .take()
-            .unwrap_or_else(|| std::mem::take(&mut self.text));
+        let stored = self.value.take();
+        // Only a stored number can be padded; its displayed text is kept to check against.
+        let number = self.float && stored.is_some() && !formats.styles.pads.is_empty();
+        let value = stored.unwrap_or_else(|| std::mem::take(&mut self.text));
         let n = self.repeat.max(1);
         if !value.is_empty() {
             if u64::from(*col) + n > u64::from(MAX_COLS) {
@@ -876,15 +1002,46 @@ impl OdsCell {
                     "the sheet is wider than a spreadsheet can be".into(),
                 ));
             }
-            let need = (value.len() as u64 + 1).saturating_mul(n);
+            // (A padded number is at most a pattern long.)
+            let longest = if number {
+                value.len().max(odsstyle::LONGEST)
+            } else {
+                value.len()
+            };
+            let need = (longest as u64 + 1).saturating_mul(n);
             if (*row_bytes as u64).saturating_add(need) > room as u64 {
                 return Err(too_big());
             }
             *row_bytes += need as usize;
             // One copy of the text, shared by every repeat.
             let value: Rc<str> = Rc::from(value);
+            // The last padded text, shared by neighbours with the same pattern.
+            let mut last: Option<(u16, Rc<str>)> = None;
             for i in 0..n {
-                row.push((*col + i as u32, Rc::clone(&value)));
+                let c = *col + i as u32;
+                let mut text = Rc::clone(&value);
+                if number {
+                    if let Some(pad) = self.style.unwrap_or_else(|| formats.inherited(c)) {
+                        let padded = padding_of(
+                            value.trim(),
+                            formats.styles.pads.get(pad as usize),
+                            Some(&self.text),
+                        );
+                        if let Some(p) =
+                            count_padded(padded, formats.pad_zeros, c, formats.copies, stats)
+                        {
+                            text = match &last {
+                                Some((at, t)) if *at == pad => Rc::clone(t),
+                                _ => {
+                                    let t: Rc<str> = Rc::from(p);
+                                    last = Some((pad, Rc::clone(&t)));
+                                    t
+                                }
+                            };
+                        }
+                    }
+                }
+                row.push((c, text));
             }
         }
         *col = (u64::from(*col) + n).min(u64::from(MAX_COLS)) as u32;
@@ -1042,27 +1199,55 @@ fn number_text(
             serial_to_text(x, s, date1904).unwrap_or_else(|| short_number(t, x, col, stats))
         }
         Some(Shown::Padded(i)) => {
-            stats.note_col(col, true);
-            // Only a whole, non-negative number that fits the pattern is padded; anything else stays as it is.
-            let whole = t
-                .bytes()
-                .all(|b| b.is_ascii_digit())
-                .then(|| t.parse::<u64>().ok())
-                .flatten();
-            let padded = whole.and_then(|n| pads.get(i as usize).and_then(|p| p.apply(n)));
-            if padded.is_none() {
-                stats.padded_left += 1;
-            }
-            match (pad_zeros, padded) {
-                (Some(true), Some(p)) => {
-                    stats.padded_applied += 1;
-                    stats.kept_col(col);
-                    p
-                }
-                _ => short_number(t, x, col, stats),
-            }
+            let padded = padding_of(t, pads.get(i as usize), None);
+            count_padded(padded, pad_zeros, col, 1, stats)
+                .unwrap_or_else(|| short_number(t, x, col, stats))
         }
         _ => short_number(t, x, col, stats),
+    }
+}
+
+/// The text a cell in a zero-padding format shows for stored number `t`: only a whole, non-negative number that
+/// fits the pattern is padded. With `shown` (the text the file itself says it displays), the two must agree.
+fn padding_of(t: &str, pad: Option<&Pad>, shown: Option<&str>) -> Option<String> {
+    let whole = t
+        .bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| t.parse::<u64>().ok())
+        .flatten();
+    whole
+        .and_then(|n| pad.and_then(|p| p.apply(n)))
+        // (A space may be shown as a non-breaking one.)
+        .filter(|p| {
+            shown.is_none_or(|s| {
+                s.chars()
+                    .map(|c| if c == '\u{a0}' { ' ' } else { c })
+                    .eq(p.chars())
+            })
+        })
+}
+
+/// Count `cells` cells of a padding format in column `col`, and give the padded text when it is to be written.
+fn count_padded(
+    padded: Option<String>,
+    pad_zeros: Option<bool>,
+    col: u32,
+    cells: u64,
+    stats: &mut SheetStats,
+) -> Option<String> {
+    for _ in 0..cells {
+        stats.note_col(col, true);
+    }
+    if padded.is_none() {
+        stats.padded_left += cells;
+    }
+    match (pad_zeros, padded) {
+        (Some(true), Some(p)) => {
+            stats.padded_applied += cells;
+            stats.kept_col(col);
+            Some(p)
+        }
+        _ => None,
     }
 }
 
@@ -1452,6 +1637,291 @@ pub(crate) mod tests {
             ),
             ("content.xml", content.as_bytes(), true),
         ])
+    }
+
+    /// A made-up `.ods` file: `styles` goes in styles.xml, `auto` in the automatic styles of content.xml, `table`
+    /// inside the sheet. Hand-written from the ODF form.
+    fn ods_with(styles: &str, auto: &str, table: &str) -> Vec<u8> {
+        let content = format!(
+            r#"<office:document-content xmlns:office="o" xmlns:table="t" xmlns:text="x" xmlns:style="s" xmlns:number="n"><office:automatic-styles>{auto}</office:automatic-styles><office:body><office:spreadsheet><table:table table:name="S">{table}</table:table></office:spreadsheet></office:body></office:document-content>"#
+        );
+        let styles = format!(
+            r#"<office:document-styles xmlns:office="o" xmlns:style="s" xmlns:number="n"><office:styles>{styles}</office:styles></office:document-styles>"#
+        );
+        build(&[
+            (
+                "mimetype",
+                b"application/vnd.oasis.opendocument.spreadsheet",
+                false,
+            ),
+            ("content.xml", content.as_bytes(), true),
+            ("styles.xml", styles.as_bytes(), true),
+        ])
+    }
+
+    fn number_style(name: &str, inner: &str) -> String {
+        format!(r#"<number:number-style style:name="{name}">{inner}</number:number-style>"#)
+    }
+
+    fn digits(n: u32) -> String {
+        format!(r#"<number:number number:decimal-places="0" number:min-integer-digits="{n}"/>"#)
+    }
+
+    fn cell_style(name: &str, data: &str) -> String {
+        format!(
+            r#"<style:style style:name="{name}" style:family="table-cell" style:data-style-name="{data}"/>"#
+        )
+    }
+
+    fn float(style: &str, value: &str, shown: &str) -> String {
+        let style = if style.is_empty() {
+            String::new()
+        } else {
+            format!(r#" table:style-name="{style}""#)
+        };
+        format!(
+            r#"<table:table-cell{style} office:value-type="float" office:value="{value}"><text:p>{shown}</text:p></table:table-cell>"#
+        )
+    }
+
+    fn ods_read(data: &[u8], pad_zeros: Option<bool>) -> (Vec<Vec<String>>, SheetStats) {
+        let b = Book::open(data).unwrap();
+        let t = b
+            .read(
+                0,
+                SheetOptions {
+                    raw_dates: false,
+                    pad_zeros,
+                },
+                None,
+                &Progress::new(),
+            )
+            .unwrap();
+        (rows(&t), b.stats())
+    }
+
+    #[test]
+    fn ods_zero_padding_formats_are_counted_and_applied_when_asked() {
+        let ssn = r#"<number:number number:decimal-places="0" number:min-decimal-places="0" number:min-integer-digits="9"><number:embedded-text number:position="6">-</number:embedded-text><number:embedded-text number:position="4">-</number:embedded-text></number:number>"#;
+        let spaced = r#"<number:number number:decimal-places="0" number:min-integer-digits="5"><number:embedded-text number:position="3"> </number:embedded-text></number:number>"#;
+        let styles = number_style("N5", &digits(5))
+            + &number_style("NS", ssn)
+            + &number_style("NW", spaced)
+            + &cell_style("base", "N5");
+        let auto = cell_style("zip", "N5")
+            + &cell_style("ssn", "NS")
+            + &cell_style("sp", "NW")
+            + r#"<style:style style:name="child" style:family="table-cell" style:parent-style-name="base"/>"#;
+        let table = format!(
+            "<table:table-row>{}{}{}{}{}{}{}</table:table-row>",
+            float("zip", "123", "00123"),
+            float("ssn", "12345678", "012-34-5678"),
+            float("sp", "1234", "01 234"),
+            float("child", "7", "00007"),
+            // Left as they are: negative, a fraction, too long.
+            float("zip", "-5", "-00005"),
+            float("zip", "1.5", "00002"),
+            float("zip", "123456", "123456"),
+        );
+        let data = ods_with(&styles, &auto, &table);
+        let (rows_asked, st) = ods_read(&data, None);
+        assert_eq!(
+            rows_asked[0],
+            ["123", "12345678", "1234", "7", "-5", "1.5", "123456"]
+        );
+        assert_eq!(st.padded.len(), 7);
+        assert_eq!((st.padded_applied, st.padded_left), (0, 3));
+        let (yes, st) = ods_read(&data, Some(true));
+        assert_eq!(
+            yes[0],
+            [
+                "00123",
+                "012-34-5678",
+                "01 234",
+                "00007",
+                "-5",
+                "1.5",
+                "123456"
+            ]
+        );
+        assert_eq!((st.padded_applied, st.padded_left), (4, 3));
+        assert_eq!(st.kept_columns, [0, 1, 2, 3]);
+        let (no, st) = ods_read(&data, Some(false));
+        assert_eq!(no[0][0], "123");
+        assert_eq!(st.padded_applied, 0);
+    }
+
+    #[test]
+    fn ods_a_pattern_that_disagrees_with_the_shown_text_does_not_pad() {
+        let styles = number_style("N5", &digits(5));
+        let auto = cell_style("zip", "N5");
+        let table = format!(
+            "<table:table-row>{}{}</table:table-row>",
+            float("zip", "123", "000123"),
+            float("zip", "45", "00045"),
+        );
+        let (rows, st) = ods_read(&ods_with(&styles, &auto, &table), Some(true));
+        assert_eq!(rows[0], ["123", "00045"]);
+        assert_eq!((st.padded_applied, st.padded_left), (1, 1));
+    }
+
+    #[test]
+    fn ods_default_styles_go_cell_then_row_then_column_then_family() {
+        let styles = number_style("N3", &digits(3))
+            + &number_style("N4", &digits(4))
+            + &number_style("N6", &digits(6))
+            + r#"<style:default-style style:family="table-cell" style:data-style-name="N6"/>"#;
+        let auto = cell_style("c3", "N3")
+            + &cell_style("r4", "N4")
+            + r#"<style:style style:name="plain" style:family="table-cell" style:data-style-name="none"/>"#;
+        let table = format!(
+            r#"<table:table-column table:default-cell-style-name="c3" table:number-columns-repeated="2"/><table:table-column table:default-cell-style-name="plain"/><table:table-column/><table:table-row>{}{}{}{}</table:table-row><table:table-row table:default-cell-style-name="r4">{}{}{}</table:table-row>"#,
+            // Column default, the cell's own style over it, a column default that does not pad, the family's.
+            float("", "1", "001"),
+            float("r4", "1", "0001"),
+            float("", "1", "1"),
+            float("", "1", "000001"),
+            // The row's default wins over the columns'.
+            float("", "2", "0002"),
+            float("c3", "2", "002"),
+            float("", "2", "0002"),
+        );
+        let (rows, _) = ods_read(&ods_with(&styles, &auto, &table), Some(true));
+        assert_eq!(rows[0], ["001", "0001", "1", "000001"]);
+        assert_eq!(rows[1][..3], ["0002", "002", "0002"]);
+    }
+
+    #[test]
+    fn ods_repeats_are_walked_as_runs() {
+        let styles = number_style("N3", &digits(3));
+        let auto = cell_style("c3", "N3");
+        // A huge run of columns and of empty cells; one repeated value spanning two column defaults.
+        let table = format!(
+            r#"<table:table-column table:number-columns-repeated="2"/><table:table-column table:default-cell-style-name="c3" table:number-columns-repeated="1000000"/><table:table-row><table:table-cell table:number-columns-repeated="1"/><table:table-cell table:number-columns-repeated="3" office:value-type="float" office:value="7"><text:p>007</text:p></table:table-cell><table:table-cell table:number-columns-repeated="1000000"/></table:table-row><table:table-row table:number-rows-repeated="3">{}</table:table-row>"#,
+            float("c3", "5", "005"),
+        );
+        let started = std::time::Instant::now();
+        let (rows, st) = ods_read(&ods_with(&styles, &auto, &table), Some(true));
+        assert!(started.elapsed().as_secs() < 5);
+        // The shown text is "007" for all three, so only the padded columns take it.
+        assert_eq!(rows[0][1..4], ["7", "007", "007"]);
+        assert_eq!(rows[1][0], "005");
+        assert_eq!(rows.len(), 4);
+        assert_eq!(st.padded_applied, 5);
+    }
+
+    #[test]
+    fn ods_other_number_formats_never_pad() {
+        let bad = [
+            r#"<number:number number:decimal-places="2" number:min-integer-digits="5"/>"#.to_string(),
+            r#"<number:number number:min-integer-digits="5"/>"#.to_string(),
+            r#"<number:number number:decimal-places="0" number:min-integer-digits="5" number:grouping="true"/>"#.to_string(),
+            r#"<number:number number:decimal-places="0" number:min-integer-digits="1"/>"#.to_string(),
+            format!("<number:text>ID </number:text>{}", digits(5)),
+            format!("{}<number:text>%</number:text>", digits(5)),
+            format!("<number:currency-symbol>$</number:currency-symbol>{}", digits(5)),
+            r#"<number:scientific-number number:decimal-places="0" number:min-integer-digits="5"/>"#.to_string(),
+        ];
+        for (k, inner) in bad.iter().enumerate() {
+            let data = ods_with(
+                &number_style("N", inner),
+                &cell_style("c", "N"),
+                &format!(
+                    "<table:table-row>{}</table:table-row>",
+                    float("c", "12", "00012")
+                ),
+            );
+            let (rows, st) = ods_read(&data, Some(true));
+            assert_eq!(rows[0], ["12"], "format {k}");
+            assert!(st.padded.is_empty(), "format {k}");
+        }
+        // A parent cycle ends; damaged styles never fail the import.
+        let cycle = r#"<style:style style:name="c" style:family="table-cell" style:parent-style-name="d"/><style:style style:name="d" style:family="table-cell" style:parent-style-name="c"/>"#;
+        let table = format!(
+            "<table:table-row>{}</table:table-row>",
+            float("c", "12", "12")
+        );
+        assert_eq!(
+            ods_read(&ods_with("", cycle, &table), Some(true)).0[0],
+            ["12"]
+        );
+        let broken = ods_with(
+            "<number:number-style style:name=\"N\"><number:number <<",
+            "",
+            &table,
+        );
+        assert_eq!(ods_read(&broken, Some(true)).0[0], ["12"]);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(300))]
+        /// Styles with characters knocked out or swapped never panic the reader.
+        #[test]
+        fn damaged_ods_styles_never_panic(cuts in proptest::collection::vec((0usize..900, 0usize..6), 1..8)) {
+            let mut styles = number_style("N5", &digits(5))
+                + r#"<number:number-style style:name="NS"><number:number number:decimal-places="0" number:min-integer-digits="9"><number:embedded-text number:position="4">-</number:embedded-text></number:number></number:number-style>"#
+                + &cell_style("c", "N5")
+                + &cell_style("d", "NS");
+            for (at, with) in cuts {
+                let mut at = at.min(styles.len().saturating_sub(1));
+                while !styles.is_char_boundary(at) {
+                    at -= 1;
+                }
+                if at < styles.len() {
+                    styles.remove(at);
+                    let add = ["", "<", ">", "\"", "/", "99999999999999999999"][with];
+                    styles.insert_str(at, add);
+                }
+            }
+            let table = format!("<table:table-row>{}{}</table:table-row>", float("c", "12", "00012"), float("d", "12", "000-00-0012"));
+            if let Ok(b) = Book::open(&ods_with(&styles, "", &table)) {
+                let opts = SheetOptions { raw_dates: false, pad_zeros: Some(true) };
+                let _ = b.read(0, opts, None, &Progress::new());
+            }
+        }
+    }
+
+    /// A sheet saved by LibreOffice 24.2 itself (made-up values): its padding styles sit on the column defaults.
+    #[test]
+    fn a_file_saved_by_libreoffice_pads_as_it_shows() {
+        let data: &[u8] = include_bytes!("testdata/libreoffice_zeros.ods");
+        let stored = [
+            ["123", "123456789", "1234", "5", "-12", "1.5", "3"],
+            ["7", "12", "99", "42", "-1", "2.25", "10"],
+        ];
+        for ask in [None, Some(false)] {
+            let (rows, st) = ods_read(data, ask);
+            assert_eq!(rows[1..], stored, "{ask:?}");
+            assert_eq!(st.padded_applied, 0);
+            // Ten cells carry a padding format: six can be padded, the two negatives and two fractions cannot.
+            assert_eq!(st.padded.iter().map(|p| p.1).sum::<u64>(), 10, "{ask:?}");
+            assert_eq!(st.padded_left, 4, "{ask:?}");
+        }
+        let (rows, st) = ods_read(data, Some(true));
+        assert_eq!(
+            rows[1],
+            ["00123", "123-45-6789", "01 234", "5", "-12", "1.5", "3"]
+        );
+        assert_eq!(
+            rows[2],
+            ["00007", "000-00-0012", "00 099", "42", "-1", "2.25", "10"]
+        );
+        assert_eq!((st.padded_applied, st.padded_left), (6, 4));
+    }
+
+    #[test]
+    fn xlsx_quoted_literals_pad_only_dashes_and_spaces() {
+        assert_eq!(
+            pad_by_code("00\"-\"000").and_then(|p| p.apply(1234)),
+            Some("01-234".into())
+        );
+        assert_eq!(
+            pad_by_code("000\" \"00").and_then(|p| p.apply(7)),
+            Some("000 07".into())
+        );
+        for other in ["00\"x\"0", "000\"ID\"", "00\"-", "\"Zip \"00000"] {
+            assert!(pad_by_code(other).is_none(), "{other}");
+        }
     }
 
     #[test]
