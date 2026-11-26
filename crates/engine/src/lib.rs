@@ -24,6 +24,7 @@ pub mod colcompare;
 pub mod coltype;
 pub mod counts;
 pub mod crypt;
+pub mod datescan;
 pub mod detect;
 pub mod dialect;
 pub mod diff;
