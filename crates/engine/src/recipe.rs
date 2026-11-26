@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::clean::{CleanSpec, SplitName};
+use crate::clean::{CleanMatrix, CleanSpec, SplitName};
 use crate::document::{Document, Progress};
 use crate::editing::{Arrange, Extract, GroupCalc, MapValues};
 use crate::example::ExampleSpec;
@@ -179,6 +179,11 @@ pub enum RecipeOp {
     Clean {
         spec: CleanSpec,
     },
+    /// A clean matrix: each column (found by title) with its own steps, in
+    /// the order stored.
+    CleanMatrix {
+        spec: CleanMatrix,
+    },
     SplitName {
         spec: SplitName,
     },
@@ -308,6 +313,27 @@ impl RecipeOp {
                 let steps: Vec<String> = spec.cleaner.steps.iter().map(|s| s.describe()).collect();
                 format!("Clean: {}", steps.join(", "))
             }
+            RecipeOp::CleanMatrix { spec } => {
+                let columns: Vec<String> = spec
+                    .entries
+                    .iter()
+                    .map(|e| {
+                        let name = if e.title.trim().is_empty() {
+                            format!("column {}", e.col + 1)
+                        } else {
+                            e.title.trim().to_string()
+                        };
+                        let steps: Vec<String> = e.steps.iter().map(|s| s.describe()).collect();
+                        let from = if e.from_file.is_empty() {
+                            String::new()
+                        } else {
+                            format!("from {}: ", e.from_file)
+                        };
+                        format!("{name} ({from}{})", steps.join(", "))
+                    })
+                    .collect();
+                format!("Clean matrix: {}", columns.join("; "))
+            }
             RecipeOp::SplitName { .. } => "Split names".into(),
             RecipeOp::FillExample { .. } => "Fill by example".into(),
             RecipeOp::Compute { spec } => format!("Computed column: {}", spec.expr),
@@ -387,6 +413,7 @@ impl RecipeOp {
                 | RecipeOp::FillBlanks { .. }
                 | RecipeOp::Compute { .. }
                 | RecipeOp::Clean { .. }
+                | RecipeOp::CleanMatrix { .. }
                 | RecipeOp::Extract { .. }
                 | RecipeOp::MergeRows { .. }
                 | RecipeOp::GroupCalc { .. }
@@ -452,6 +479,9 @@ impl Recipe {
         for s in &r.steps {
             if let RecipeOp::Clean { spec } = s {
                 spec.cleaner.check()?;
+            }
+            if let RecipeOp::CleanMatrix { spec } = s {
+                spec.check()?;
             }
             if let RecipeOp::SortProblems { spec } | RecipeOp::CheckColumn { spec, .. } = s {
                 crate::validate::check_spec(spec)?;
@@ -585,6 +615,13 @@ impl Recipe {
     /// empty when they match (case and spaces around them ignored).
     pub fn column_problems(&self, doc: &Document) -> Vec<String> {
         let mut out = self.type_problems(doc);
+        for s in &self.steps {
+            if let RecipeOp::CleanMatrix { spec } = s {
+                if let Err(e) = doc.matrix_by_title(spec) {
+                    out.push(e.to_string());
+                }
+            }
+        }
         if self.columns.is_empty() {
             return out;
         }
@@ -733,6 +770,11 @@ impl Document {
             RecipeOp::Clean { spec } => {
                 let p = self.plan_clean(spec, now, seed, 0, progress)?;
                 self.apply_clean(p)
+            }
+            RecipeOp::CleanMatrix { spec } => {
+                let spec = self.matrix_by_title(spec)?;
+                let p = self.plan_clean_matrix(&spec, now, seed, progress)?;
+                self.apply_clean(p.plan)
             }
             RecipeOp::SplitName { spec } => {
                 let p = self.plan_split_name(spec, progress)?;
