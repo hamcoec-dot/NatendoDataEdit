@@ -175,10 +175,13 @@ const proof = async () => {
   ok(/1 hidden row stayed in place/.test(status), `said: ${status.slice(0, 120)}`);
   await cmd(m, "Unhide all rows");
   ok((await column(0)) === "Ann Dee Bo Cy Eve", `the hidden row kept its place (${await column(0)})`);
-  await invoke(m, "change", { doc: 1, change: { op: "undo" } });
-  await invoke(m, "change", { doc: 1, change: { op: "undo" } });
-  await invoke(m, "change", { doc: 1, change: { op: "undo" } });
-  await cmd(m, "Unhide all rows");
+  // Through the screen (so it stays in step): undo the unhide, then the sort, then show every row again.
+  for (let i = 0; i < 2; i++) {
+    await m.keyboard.press("Control+z");
+    await sleep(700);
+  }
+  const info = await invoke(m, "doc_info", { doc: 1 });
+  if (info.hidden_rows) await cmd(m, "Unhide all rows");
   ok((await column(0)) === "Eve Dee Cy Bo Ann", `undo restores the order (${await column(0)})`);
   await m.keyboard.press("Control+Home");
   await m.keyboard.press("ArrowDown");
