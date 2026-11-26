@@ -105,6 +105,13 @@ function generated(row: number, col: number): string {
 let markSeq = 0;
 const markOf = new WeakMap<object, number>();
 
+/** Marks a "value must exist in" rule's value list as read (its file was open). */
+const FK_READ = "\u0000read";
+const fkNorm = (v: string, matchCase: boolean, trim: boolean): string => {
+  const s = trim ? v.trim() : v;
+  return matchCase ? s : s.toLowerCase();
+};
+
 interface MockDoc {
   info: DocInfo;
   /** What the data revision was worked out from (see refresh). */
@@ -4931,6 +4938,13 @@ export class MockBackend implements Backend {
       const key = this.uniqueKey(d, r, c);
       return key !== null && (seen.get(key) ?? 0) > 1;
     }
+    if (k.type === "foreign_key") {
+      // `seen` holds the other file's values (empty and marked not run when it is not open).
+      if (!seen.has(FK_READ)) return false;
+      const raw = this.value(d, r, c.col ?? 0);
+      if (!raw.trim()) return !k.allow_blank;
+      return !seen.has(fkNorm(raw, k.match_case, k.trim));
+    }
     const v = this.value(d, r, c.col ?? 0).trim();
     if (!v) return k.type === "required";
     switch (k.type) {
@@ -4969,9 +4983,33 @@ export class MockBackend implements Backend {
   private names(d: MockDoc, header: boolean): string[] {
     return Array.from({ length: this.colCount(d) }, (_, c) => (header ? this.value(d, 0, c) : "") || `Column ${c + 1}`);
   }
+  /** The open file a "value must exist in" rule names (by name, or name without extension), if exactly one. */
+  private fkDoc(table: string): MockDoc | "none" | "two" {
+    const want = table.trim().toLowerCase();
+    const hits = [...this.docs.values()].filter((x) => {
+      const n = x.info.name.toLowerCase();
+      return n === want || n.replace(/\.[^.]*$/, "") === want;
+    });
+    return hits.length === 1 ? hits[0]! : hits.length ? "two" : "none";
+  }
   private counts(d: MockDoc, spec: CheckSpec): Map<string, number>[] {
     return spec.checks.map((c) => {
       const m = new Map<string, number>();
+      if (c.kind.type === "foreign_key") {
+        const k = c.kind;
+        const o = this.fkDoc(k.table);
+        if (typeof o === "string") return m;
+        const own = o === d;
+        const titles = this.names(o, own ? spec.keep_first : true);
+        const col = titles.findIndex((x) => x.trim().toLowerCase() === k.column.trim().toLowerCase());
+        if (col < 0) return m;
+        m.set(FK_READ, 1);
+        for (let r = (own ? spec.keep_first : true) ? 1 : 0; r < this.rowCount(o); r++) {
+          const v = this.value(o, r, col);
+          if (v.trim()) m.set(fkNorm(v, k.match_case, k.trim), 1);
+        }
+        return m;
+      }
       if (c.kind.type !== "unique") return m;
       for (let r = spec.keep_first ? 1 : 0; r < this.rowCount(d); r++) {
         const key = this.uniqueKey(d, r, c);
@@ -5001,6 +5039,12 @@ export class MockBackend implements Backend {
       });
       if (bad) rep.rows++;
     }
+    spec.checks.forEach((c, i) => {
+      if (c.kind.type !== "foreign_key" || counts[i]!.has(FK_READ)) return;
+      const o = this.fkDoc(c.kind.table);
+      const why = o === "two" ? `two open files are called ${c.kind.table}: close one` : o === "none" ? `open ${c.kind.table}` : `${c.kind.table} has no column ${c.kind.column}`;
+      (rep.not_run ??= []).push({ check: i, why });
+    });
     return rep;
   }
   async checkMarks(doc: number, row: number, rows: number, col: number, cols: number, spec: CheckSpec): Promise<CheckMark[]> {

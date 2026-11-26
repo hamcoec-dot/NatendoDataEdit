@@ -41,6 +41,8 @@ export function describeCheck(c: Check): string {
       return "Unique (no repeats)";
     case "expression":
       return `Row rule: ${k.expr}`;
+    case "foreign_key":
+      return `Value must exist in ${k.table} > ${k.column}`;
   }
 }
 

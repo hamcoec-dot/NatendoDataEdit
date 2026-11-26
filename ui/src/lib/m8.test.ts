@@ -105,3 +105,11 @@ describe("rules follow inserted and deleted columns", () => {
     expect(after).toEqual({ checks: [key], dropped: 0 });
   });
 });
+
+describe("value must exist in another file", () => {
+  it("is described with the file and column", () => {
+    const c = newCheck("foreign_key", 1);
+    expect(c.kind).toEqual({ type: "foreign_key", table: "", column: "", match_case: false, trim: true, allow_blank: true });
+    expect(describeCheck({ ...c, kind: { ...c.kind, table: "precincts.csv", column: "Code" } as typeof c.kind }, ["Name", "Precinct"])).toBe("Precinct: must exist in precincts.csv > Code");
+  });
+});

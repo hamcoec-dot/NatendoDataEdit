@@ -226,3 +226,71 @@ fn validate_finds_rows_that_repeat_several_columns_together() {
         assert_eq!(code, 2, "{bad}");
     }
 }
+
+#[test]
+fn validate_reads_other_tables_for_value_must_exist_rules() {
+    let d = Folder::new("fk");
+    let voters = d.write("voters.csv", "name,precinct\r\nAnn,P1\r\nBo,P9\r\nCy,\r\n");
+    let prec = d.write("prec=1.csv", "code,area\r\nP1,North\r\nP2,South\r\n");
+    let rule = |table: &str| {
+        format!(
+            r#"{{"checks":[{{"column":"precinct","kind":{{"type":"foreign_key","table":"{table}","column":"code"}}}}]}}"#
+        )
+    };
+    let checks = d.write("c.json", &rule("precincts"));
+    let t = format!("precincts={prec}");
+    // A missing value: exit 1, listed with the table it was looked for in.
+    let (code, v) = json(&[
+        "validate",
+        voters.as_str(),
+        "--checks",
+        checks.as_str(),
+        "--table",
+        t.as_str(),
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["problems"], 1);
+    assert_eq!(v["listed"][0]["value"], "P9");
+    assert_eq!(v["foreign_keys"][0]["table"], "precincts");
+    assert_eq!(v["foreign_keys"][0]["missing"], 1);
+    // Every value there: exit 0.
+    let all = d.write("all.csv", "code\r\nP1\r\nP9\r\n");
+    let t2 = format!("precincts={all}");
+    let (code, _) = json(&[
+        "validate",
+        voters.as_str(),
+        "--checks",
+        checks.as_str(),
+        "--table",
+        t2.as_str(),
+    ]);
+    assert_eq!(code, 0);
+    // A rule reading its own file needs no --table.
+    let selfish = d.write("staff.csv", "code,boss\r\n1,\r\n2,1\r\n");
+    let own2 = d.write("own2.json", &rule("staff").replace("precinct", "boss"));
+    let (code, v) = json(&["validate", selfish.as_str(), "--checks", own2.as_str()]);
+    assert_eq!(code, 0, "{v}");
+    // Exit 2: the table not given, an unknown or repeated name, no `=`, an empty name, more than 8.
+    let other = format!("other={prec}");
+    let nine: Vec<String> = (0..9).map(|i| format!("t{i}={prec}")).collect();
+    let mut cases: Vec<Vec<&str>> = vec![
+        vec![],
+        vec!["--table", t.as_str(), "--table", other.as_str()],
+        vec!["--table", t.as_str(), "--table", t.as_str()],
+        vec!["--table", "precincts"],
+        vec!["--table", "=x.csv"],
+        vec!["--table"],
+    ];
+    let mut many = Vec::new();
+    for x in &nine {
+        many.push("--table");
+        many.push(x.as_str());
+    }
+    cases.push(many);
+    for extra in cases {
+        let mut a = vec!["validate", voters.as_str(), "--checks", checks.as_str()];
+        a.extend(&extra);
+        let (code, _) = run(&a);
+        assert_eq!(code, 2, "{extra:?}");
+    }
+}

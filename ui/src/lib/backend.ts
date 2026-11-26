@@ -1050,7 +1050,9 @@ export type CheckKind =
   | { type: "list"; values: string[]; match_case: boolean }
   | { type: "pattern"; pattern: Pattern }
   | { type: "unique"; match_case: boolean; also?: number[] }
-  | { type: "expression"; expr: string };
+  | { type: "expression"; expr: string }
+  /** The value must be one of `column`'s values in the open file called `table` (a foreign key). */
+  | { type: "foreign_key"; table: string; column: string; match_case: boolean; trim: boolean; allow_blank: boolean };
 /** A pivot layout column found by place, not title. */
 export interface PlaceSwap {
   was: string;
@@ -1107,6 +1109,10 @@ export interface CheckReport {
   problems: number;
   per_check: number[];
   listed: Problem[];
+  /** Rules that did not run (a "value must exist in" rule whose file is not open), and why. */
+  not_run?: { check: number; why: string }[];
+  /** The files "value must exist in" rules read: rows read, rows hidden (not read), revisions then. */
+  tables?: { check: number; table: string; column: string; doc: number; revision: number; data_revision: number; rows: number; hidden: number }[];
 }
 /** A cell Replace all would change, as the grid shows it before the change. */
 export interface Ghost {

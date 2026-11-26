@@ -13508,3 +13508,155 @@ B,y
 #[cfg(test)]
 #[path = "audit.rs"]
 mod audit;
+
+#[cfg(test)]
+mod key_binding_tests {
+    use super::*;
+    use natendo_engine::validate::{Check, CheckKind};
+
+    fn file(dir: &str, name: &str, body: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("nde-fk-{}-{dir}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join(name);
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    fn open(docs: &Docs, p: &Path) -> u32 {
+        let id = docs.open_path(p, false).unwrap().id;
+        for _ in 0..500 {
+            if docs.info(id).unwrap().indexed {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        id
+    }
+
+    fn rule(table: &str) -> CheckSpec {
+        CheckSpec {
+            checks: vec![Check::new(
+                Some(1),
+                CheckKind::ForeignKey {
+                    table: table.into(),
+                    column: "code".into(),
+                    match_case: false,
+                    trim: true,
+                    allow_blank: true,
+                },
+            )],
+            keep_first: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rules_read_the_open_tab_by_name_once_and_refuse_when_it_is_not_there() {
+        let docs = Docs::default();
+        let voters = open(
+            &docs,
+            &file(
+                "a",
+                "voters.csv",
+                "name,precinct\r\nAnn,P1\r\nBo,P9\r\nCy,P2\r\n",
+            ),
+        );
+        let spec = rule("precincts");
+        // Not open: the run says so, and every path that would show it as clean refuses.
+        let r = docs.run_checks(voters, &spec).unwrap();
+        assert_eq!(r.not_run.len(), 1);
+        assert!(r.not_run[0].why.contains("open precincts"));
+        for op in [
+            DataOp::ShowProblems {
+                spec: spec.clone(),
+                passing: false,
+            },
+            DataOp::SortProblems { spec: spec.clone() },
+            DataOp::CheckColumn {
+                spec: spec.clone(),
+                title: String::new(),
+            },
+        ] {
+            let e = docs.data_op(voters, op).unwrap_err();
+            assert!(format!("{e:?}").contains("did not run"), "{e:?}");
+        }
+        assert!(docs.next_problem(voters, 1, 0, false, &spec, &[]).is_err());
+        // Open it (by its name without the extension): one problem, P9.
+        let prec = open(
+            &docs,
+            &file(
+                "a",
+                "precincts.csv",
+                "code,area\r\nP1,North\r\nP2,South\r\n",
+            ),
+        );
+        let r = docs.run_checks(voters, &spec).unwrap();
+        assert!(r.not_run.is_empty());
+        assert_eq!(r.per_check, vec![1]);
+        assert_eq!(r.tables[0].source.doc, prec);
+        // The set is kept while the other tab is unchanged, and read again after an edit.
+        let a = docs.key_bindings(voters, &spec).unwrap();
+        let b = docs.key_bindings(voters, &spec).unwrap();
+        assert_eq!(a, b, "the same set, not read twice");
+        docs.set_cells(prec, vec![(2, 0, "P9".into())]).unwrap();
+        let c = docs.key_bindings(voters, &spec).unwrap();
+        assert_ne!(a, c);
+        assert_eq!(
+            docs.key_sets.lock().unwrap().len(),
+            1,
+            "the old set is dropped"
+        );
+        let r = docs.run_checks(voters, &spec).unwrap();
+        assert_eq!(r.per_check, vec![1], "now P2 is missing");
+        let rep = docs
+            .data_op(
+                voters,
+                DataOp::ShowProblems {
+                    spec: spec.clone(),
+                    passing: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(rep.rows, 1);
+        // A second tab with the same name: refused until one is closed.
+        let twin = open(
+            &docs,
+            &file("b", "precincts.csv", "code,area\r\nP1,North\r\n"),
+        );
+        let r = docs.run_checks(voters, &spec).unwrap();
+        assert!(
+            r.not_run[0].why.contains("two open files"),
+            "{:?}",
+            r.not_run
+        );
+        docs.close(twin);
+        // A column that is not there.
+        let r = docs.run_checks(voters, &rule("precincts.csv")).unwrap();
+        assert!(r.not_run.is_empty());
+        let mut bad = rule("precincts");
+        if let CheckKind::ForeignKey { column, .. } = &mut bad.checks[0].kind {
+            *column = "zone".into();
+        }
+        let r = docs.run_checks(voters, &bad).unwrap();
+        assert!(r.not_run[0].why.contains("no column zone"));
+        // Closing the tab lets go of its sets.
+        docs.close(prec);
+        assert!(docs.key_sets.lock().unwrap().is_empty());
+        docs.close(voters);
+    }
+
+    #[test]
+    fn a_rule_can_read_its_own_tab() {
+        let docs = Docs::default();
+        let staff = open(
+            &docs,
+            &file("c", "staff.csv", "code,boss\r\n1,\r\n2,1\r\n3,8\r\n"),
+        );
+        let mut spec = rule("staff");
+        spec.checks[0].col = Some(1);
+        let r = docs.run_checks(staff, &spec).unwrap();
+        assert_eq!(r.per_check, vec![1]);
+        assert_eq!(r.listed[0].value, "8");
+        docs.close(staff);
+    }
+}

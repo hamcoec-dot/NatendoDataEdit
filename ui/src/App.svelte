@@ -5673,6 +5673,20 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     checksOpen = true;
   }
 
+  /** A "value must exist in another file" rule on the active column (the file and its column are picked in
+   *  the checks dialog, which opens on it). */
+  function addExistsCheck(): void {
+    const t = tab;
+    if (!t) return;
+    const other = tabs.find((o) => o.id !== t.id);
+    const check: Check = { col: t.cell.col, kind: { type: "foreign_key", table: other?.info.name ?? "", column: "", match_case: false, trim: true, allow_blank: true } };
+    t.checks = [...t.checks, check];
+    t.checksMarked = true;
+    t.checkVersion++;
+    t.bump();
+    checksOpen = true;
+  }
+
   async function setTypeOfColumns(ty: ColumnType): Promise<void> {
     const t = tab;
     if (!t) return;
@@ -6466,6 +6480,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.changeFormula", label: "Change column with a formula…", run: () => { computeMode = "change"; computeOpen = true; }, enabled: ready },
     { id: "data.filterFormula", label: "Filter by formula…", run: () => { computeMode = "filter"; computeOpen = true; }, enabled: ready },
     { id: "data.checks", label: "Data checks (&validation)…", run: () => { checksOpen = true; }, enabled: ready },
+    { id: "data.existsCheck", label: "Check that values exist in another file…", run: addExistsCheck, enabled: ready },
     { id: "data.uniqueTogether", label: "No repeats across these columns together…", run: addUniqueTogether, enabled: ready },
     { id: "data.typeRule", label: "Data rule from this column's type (must read as a number or date)", run: addTypeRule, enabled: ready },
     { id: "data.fieldCheck", label: "Check &fields with patterns…", run: () => { fieldCheckOpen = true; }, enabled: ready },
@@ -6904,7 +6919,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "data.repairRow", "data.ragged", "data.raggedShort", "data.raggedLong", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
-        "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.uniqueTogether", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
+        "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.uniqueTogether", "data.existsCheck", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.compareLists", "data.gaps", "data.relations", "data.patchSave", "data.patchApply", "-",
         "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",
@@ -6944,7 +6959,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -7375,6 +7390,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       t.lastRun = { rules: t.checks.length, problems: rep.problems, revision: t.info.data_revision };
       t.checkVersion++;
       t.bump();
+      // A "value must exist in" rule whose file is not open did not run: say so, never a clean count alone.
+      const skipped = rep.not_run ?? [];
+      if (skipped.length) say(`${skipped.length === 1 ? "1 rule" : `${skipped.length} rules`} did not run: ${skipped[0]!.why}.`);
       return true;
     } catch (e) {
       say(errorText(e));
@@ -9359,6 +9377,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     marked={tab.checksMarked}
     onApply={keepChecks}
     rulesFile={tab.rulesNote ? tab.rulesNote.replace(/^Loaded .* from /, "").replace(/ \(.*$/, "") : ""}
+    others={tabs.map((o) => ({ id: o.id, name: o.info.name, titles: shownTitles(o), data_revision: o.info.data_revision ?? 0 }))}
     onGoto={(row, col) => { const t = tab; if (t) grid?.select({ row, col: col ?? t.cell.col }); }}
     onShowProblems={(s) => void showProblems(s)}
     onClose={() => { checksOpen = false; grid?.focus(); }}
