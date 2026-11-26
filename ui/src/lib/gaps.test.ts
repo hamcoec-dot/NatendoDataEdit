@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { copyText, grouped, rangeText, rowsText, type GapReport } from "./gaps";
+import { copyText, counted, fileRows, grouped, rangeText, rowsText, type GapReport } from "./gaps";
 
 const range = { series: [], from: "INV-01005", to: "INV-01009", count: "5" };
 
@@ -17,5 +17,6 @@ describe("gap report words", () => {
   it("keeps huge counts exact and names hand-added rows", () => {
     expect(grouped("9223372036854775807").replace(/\D/g, "")).toBe("9223372036854775807");
     expect(rowsText([5, null])).toBe("5, added by hand");
+    expect([counted(1, "row"), counted(0, "row"), fileRows([7]), fileRows([7, 9]), fileRows([])]).toEqual(["1 row", "0 rows", " (file row 7)", " (file rows 7, 9)", ""]);
   });
 });

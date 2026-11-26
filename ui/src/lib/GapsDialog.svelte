@@ -5,7 +5,7 @@
   import { onMount, untrack } from "svelte";
   import AllNone from "./AllNone.svelte";
   import FormShell from "./FormShell.svelte";
-  import { copyText, grouped, rangeText, rowsText, type GapPattern, type GapReport, type GapsSpec } from "./gaps";
+  import { copyText, counted, fileRows, grouped, rangeText, type GapPattern, type GapReport, type GapsSpec } from "./gaps";
 
   /** Ranges listed in the dialog (the tab has the rest). */
   const LISTED = 500;
@@ -116,7 +116,7 @@
       >Shape
       <select bind:value={shape} disabled={busy || eachShape || !shapes.length}>
         <option value={-1}>The most common</option>
-        {#each shapes as p, i (i)}<option value={i}>{p.label} ({p.count.toLocaleString()} rows)</option>{/each}
+        {#each shapes as p, i (i)}<option value={i}>{p.label} ({counted(p.count, "row")})</option>{/each}
       </select></label
     >
   </div>
@@ -148,14 +148,14 @@
         <strong>{grouped(r.missing)} missing</strong> in {r.range_total.toLocaleString()}
         {r.range_total === 1 ? "range" : "ranges"}.
         {#if r.series.length === 1 && r.series[0]!.first}From {r.series[0]!.first} to {r.series[0]!.last}.{:else if r.series_total > 1}{r.series_total.toLocaleString()} series.{/if}
-        {r.rows.toLocaleString()} rows, {r.distinct.toLocaleString()} different numbers.
+        {counted(r.rows, "row")}, {counted(r.distinct, "different number")}.
       </p>
       <ul class="facts">
-        <li>{r.duplicate_values.toLocaleString()} repeated numbers ({r.duplicate_extra.toLocaleString()} extra rows)</li>
-        <li>{r.drops.toLocaleString()} drops in file order{r.drop_rows.length ? ` (file rows ${rowsText(r.drop_rows)})` : ""}</li>
-        <li>{r.other_shape.toLocaleString()} rows of a different shape{r.other_rows.length ? ` (file rows ${rowsText(r.other_rows)})` : ""}</li>
+        <li>{counted(r.duplicate_values, "repeated number")} ({counted(r.duplicate_extra, "extra row")})</li>
+        <li>{counted(r.drops, "drop")} in file order{fileRows(r.drop_rows, r.drops > r.drop_rows.length)}</li>
+        <li>{counted(r.other_shape, "row")} of a different shape{fileRows(r.other_rows, r.other_shape > r.other_rows.length)}</li>
         <li>{r.blank.toLocaleString()} blank</li>
-        {#if r.added}<li>{r.added.toLocaleString()} rows added by hand, left out of the order check</li>{/if}
+        {#if r.added}<li>{counted(r.added, "row")} added by hand, left out of the order check</li>{/if}
         {#if r.outside}<li>{r.outside.toLocaleString()} outside the start and end</li>{/if}
         {#if r.series.some((s) => s.too_few)}<li>A series with fewer than 2 rows is too few to check.</li>{/if}
       </ul>
@@ -169,7 +169,7 @@
         <details>
           <summary>Repeated numbers</summary>
           <ul class="ranges">
-            {#each r.duplicates.slice(0, LISTED) as d, i (i)}<li>{d.series.length ? `${d.series.join(" / ")}: ` : ""}{d.value}: {d.count.toLocaleString()} rows (file rows {rowsText(d.rows)}{d.count > d.rows.length ? ", …" : ""})</li>{/each}
+            {#each r.duplicates.slice(0, LISTED) as d, i (i)}<li>{d.series.length ? `${d.series.join(" / ")}: ` : ""}{d.value}: {counted(d.count, "row")}{fileRows(d.rows, d.count > d.rows.length)}</li>{/each}
           </ul>
         </details>
       {/if}

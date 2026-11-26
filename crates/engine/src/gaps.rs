@@ -939,7 +939,7 @@ impl GapReport {
             head.push("Shape".into());
         }
         let keys = head.len();
-        let cols = keys.max(1) + 3;
+        let cols = keys + 3;
         let mut out = Vec::new();
         let mut rows = 0u64;
         let mut line = |out: &mut Vec<u8>, mut cells: Vec<String>| {
@@ -986,13 +986,7 @@ impl GapReport {
             );
         }
         line(&mut out, Vec::new());
-        if keys == 0 {
-            head.push(String::new());
-        }
         head.extend(["From", "To", "Missing"].map(String::from));
-        if keys == 0 {
-            head.remove(0);
-        }
         line(&mut out, head);
         for r in &self.ranges {
             let mut cells = r.series.clone();
