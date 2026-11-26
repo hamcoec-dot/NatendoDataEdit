@@ -4,6 +4,7 @@
   // back, random samples, comparing two files, splitting into files and
   // combining files. Each asks for its few choices and hands back what to
   // run; the engine does the work.
+  import HiddenNote from "./HiddenNote.svelte";
   import AllNone from "./AllNone.svelte";
   import { untrack } from "svelte";
   import type { Combine, DataOp, DiffSpec, SplitParts, TableOp } from "./backend";
@@ -237,6 +238,7 @@
   {:else if kind !== "combine"}
     <p class="note">Only shown rows change. Undo (Ctrl+Z) puts everything back.</p>
   {/if}
+  {#if kind === "count_repeats"}<HiddenNote kind="empty" />{/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#snippet buttons()}
     <button type="button" class="primary" onclick={run} disabled={kind === "compare" && !choices.length}>{kind === "split" || kind === "combine" ? "Choose…" : "Run"}</button>

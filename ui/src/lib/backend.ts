@@ -562,6 +562,8 @@ export interface SortSpec {
   read?: ReadOptions;
   /** Custom orders, used by `{ list: i }` keys. */
   lists?: string[][];
+  /** Left out: every row. "shown": hidden rows stay where they are. */
+  scope?: "all" | "shown";
 }
 
 export type CmpOp = "eq" | "ne" | "gt" | "ge" | "lt" | "le";
@@ -950,7 +952,7 @@ export type DataOp =
   | { op: "show_gap_rows"; spec: GapsSpec }
   | { op: "clean_matrix"; spec: CleanMatrix; now: number; revision?: number }
   | { op: "show_shape"; spec: ShapeFilter }
-  | { op: "sort_problems"; spec: CheckSpec }
+  | { op: "sort_problems"; spec: CheckSpec; scope?: "all" | "shown" }
   | { op: "check_column"; spec: CheckSpec; title?: string }
   | { op: "fill_blanks"; spec: FillBlanks }
   | { op: "count_repeats"; spec: Repeats }
@@ -980,6 +982,8 @@ export interface ComputeSpec {
   read: ReadOptions;
   /** Local date and time as days since 1970 (TODAY, NOW). */
   now: number;
+  /** A new column is filled in hidden rows too (left out: it is). */
+  hidden?: boolean;
 }
 /** A formula typed in a cell (or filled over a block with Ctrl+Enter). */
 export interface CellFormula {

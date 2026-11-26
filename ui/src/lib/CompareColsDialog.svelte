@@ -6,6 +6,7 @@
   // Data › Compare two columns: for each row, are the two cells the same,
   // different, or is only one filled? Light up the rows that differ, show
   // only them, or add a column saying which.
+  import HiddenNote from "./HiddenNote.svelte";
   import { untrack } from "svelte";
   import FormShell from "./FormShell.svelte";
   import type { CompareCols } from "./backend";
@@ -68,6 +69,7 @@
     <label><input type="radio" name="cmp" value="column" bind:group={action} disabled={readOnly} /> Add a column: Same, Different, Only in first, Only in second</label>
   </fieldset>
   <p class="muted">Shown rows only{init.header ? "; the title row is left out" : ""}. Two empty cells count as the same.</p>
+  <HiddenNote kind="empty" />
   {#snippet buttons()}
     <button type="button" onclick={onClose}>Cancel</button>
     <button type="button" class="primary" onclick={run} disabled={a === b}>Compare</button>
