@@ -75,6 +75,9 @@ pub struct Patch {
     /// New rows, in the patch's columns.
     pub adds: Vec<Vec<String>>,
     pub removes: Vec<Remove>,
+    /// The file's seal (checked before the patch is read; empty otherwise).
+    #[serde(default, rename = "patch_sha256", skip_serializing)]
+    seal: String,
 }
 
 /// How a patch is made.
@@ -253,9 +256,17 @@ impl Patch {
                 "this is not a patch file, or it was changed or damaged after it was made",
             ));
         }
-        map.remove(SEAL);
-        let patch: Patch = serde_json::from_value(value)
-            .map_err(|e| bad(format!("this is not a patch file Natendo can read: {e}")))?;
+        drop(value);
+        // Only the place is reported: serde's own words quote the value it
+        // could not use, which is somebody's data.
+        let mut patch: Patch = serde_json::from_slice(data).map_err(|e| {
+            bad(format!(
+                "this is not a patch file Natendo can read (line {}, column {})",
+                e.line(),
+                e.column()
+            ))
+        })?;
+        patch.seal.clear();
         patch.check()?;
         Ok(patch)
     }
@@ -488,6 +499,7 @@ impl Document {
             changes: Vec::new(),
             adds: Vec::new(),
             removes: Vec::new(),
+            seal: String::new(),
         };
         let old_read = Cols::new(self, &here);
         let new_read = Cols::new(newer, &there);

@@ -187,6 +187,12 @@ fn files_are_sealed_protected_and_checked() {
     assert!(sealed(&|v| v["changes"][0]["cells"][0][0] = 0.into()).contains("does not fit"));
     assert!(sealed(&|v| v["keys"][0] = "zip".into()).contains("not among its columns"));
     assert!(sealed(&|v| v["version"] = 2.into()).contains("newer version"));
+    // A value in the wrong place is not quoted back.
+    let said = sealed(&|v| v["changes"][0]["cells"][0][0] = "Zebedee Quill".into());
+    assert!(said.contains("can read (line 1, column "), "{said}");
+    assert!(!said.contains("Zebedee"), "{said}");
+    let said = sealed(&|v| v["adds"][0] = "Zebedee Quill".into());
+    assert!(!said.contains("Zebedee"), "{said}");
     // With a phrase.
     let phrase = Secret::new("a long made-up phrase");
     let locked = patch.to_bytes(Some(&phrase)).unwrap();
