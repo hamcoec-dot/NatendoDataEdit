@@ -16,6 +16,9 @@ use serde::Serialize;
 pub const MAX_WATCHED: usize = 64;
 /// Longest a round waits.
 pub const ROUND_WAIT: Duration = Duration::from_secs(2);
+/// A missing file is looked for once more after this long: programs that save
+/// by renaming a new file over the old one leave it missing for a moment.
+const GONE_AGAIN: Duration = Duration::from_secs(1);
 
 /// What a look found about one tab's file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -30,7 +33,9 @@ pub struct DiskEvent {
 }
 
 type Answer = (u32, DiskMark, Outside);
-type Look = Arc<dyn Fn(&DiskMark) -> Outside + Send + Sync>;
+/// The stamp a look saw and its answer.
+type Seen = (FileStamp, Outside);
+type Look = Arc<dyn Fn(&DiskMark, Option<Seen>) -> Outside + Send + Sync>;
 
 struct State {
     /// Tabs whose look has not come back.
@@ -38,8 +43,9 @@ struct State {
     /// Answers from every round, late ones too.
     answers: Receiver<Answer>,
     send: Sender<Answer>,
-    /// Files seen written again with the same bytes: their new stamp.
-    touched: HashMap<u32, FileStamp>,
+    /// What the last look at each tab's mark saw, so an unchanged file is
+    /// not read again.
+    seen: HashMap<u32, (DiskMark, Seen)>,
     /// Where the next round starts when there are more files than one asks.
     next: usize,
 }
@@ -48,27 +54,29 @@ pub struct DiskWatch {
     state: Mutex<State>,
     look: Look,
     wait: Duration,
+    gone_again: Duration,
 }
 
 impl Default for DiskWatch {
     fn default() -> Self {
-        DiskWatch::new(Arc::new(DiskMark::look), ROUND_WAIT)
+        DiskWatch::new(Arc::new(DiskMark::look_known), ROUND_WAIT, GONE_AGAIN)
     }
 }
 
 impl DiskWatch {
-    fn new(look: Look, wait: Duration) -> DiskWatch {
+    fn new(look: Look, wait: Duration, gone_again: Duration) -> DiskWatch {
         let (send, answers) = channel();
         DiskWatch {
             state: Mutex::new(State {
                 waiting: HashSet::new(),
                 answers,
                 send,
-                touched: HashMap::new(),
+                seen: HashMap::new(),
                 next: 0,
             }),
             look,
             wait,
+            gone_again,
         }
     }
 
@@ -86,7 +94,7 @@ impl DiskWatch {
         let ids: HashSet<u32> = open.iter().map(|(id, _)| *id).collect();
         // A closed tab is forgotten even if its look never comes back.
         s.waiting.retain(|id| ids.contains(id));
-        s.touched.retain(|id, _| ids.contains(id));
+        s.seen.retain(|id, _| ids.contains(id));
         let mut found: Vec<Answer> = Vec::new();
         while let Ok(a) = s.answers.try_recv() {
             s.waiting.remove(&a.0);
@@ -109,11 +117,22 @@ impl DiskWatch {
                 s.next = (start + k) % count;
                 break;
             }
+            // Only what was seen against this very mark counts.
+            let last = s
+                .seen
+                .get(id)
+                .filter(|(m, _)| m == mark)
+                .map(|(_, seen)| *seen);
             let (id, mark, look, send) = (*id, mark.clone(), self.look.clone(), s.send.clone());
+            let gone_again = self.gone_again;
             let started = std::thread::Builder::new()
                 .name("disk-look".into())
                 .spawn(move || {
-                    let outside = look(&mark);
+                    let mut outside = look(&mark, last);
+                    if outside == Outside::Gone {
+                        std::thread::sleep(gone_again);
+                        outside = look(&mark, last);
+                    }
                     let _ = send.send((id, mark, outside));
                 });
             if started.is_ok() {
@@ -142,15 +161,17 @@ impl DiskWatch {
                 token,
                 modified,
             };
+            match outside {
+                Outside::Touched(stamp) | Outside::Changed(stamp) => {
+                    s.seen.insert(doc, (mark, (stamp, outside)));
+                }
+                Outside::Gone => {
+                    s.seen.remove(&doc);
+                }
+                Outside::Same => {}
+            }
             events.push(match outside {
-                Outside::Same => event("same", String::new(), None),
-                Outside::Touched(stamp) => {
-                    s.touched.insert(doc, stamp);
-                    event("same", String::new(), None)
-                }
-                Outside::Changed(stamp) if s.touched.get(&doc) == Some(&stamp) => {
-                    event("same", String::new(), None)
-                }
+                Outside::Same | Outside::Touched(_) => event("same", String::new(), None),
                 Outside::Changed(stamp) => event("changed", stamp.token(), stamp.modified_ms()),
                 Outside::Gone => event("gone", "gone".into(), None),
             });
@@ -224,14 +245,18 @@ mod tests {
         let held = Mutex::new(held);
         let counted = calls.clone();
         let w = DiskWatch::new(
-            Arc::new(move |_: &DiskMark| {
+            Arc::new(move |_: &DiskMark, _| {
                 if counted.fetch_add(1, Ordering::SeqCst) == 0 {
                     let _ = held.lock().unwrap().recv();
-                    return Outside::Gone;
+                    return Outside::Changed(FileStamp {
+                        len: 1,
+                        modified: None,
+                    });
                 }
                 Outside::Same
             }),
             Duration::from_millis(200),
+            Duration::ZERO,
         );
         let round = |ids: &[u32]| {
             w.round(
@@ -249,9 +274,71 @@ mod tests {
         release.send(()).unwrap();
         std::thread::sleep(Duration::from_millis(100));
         let e = round(&[1]);
-        assert_eq!((e.len(), e[0].state), (1, "gone"));
+        assert_eq!((e.len(), e[0].state), (1, "changed"));
         // Asked again afterwards.
         assert_eq!(round(&[1])[0].state, "same");
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// What a look saw is handed to the next look at the same mark only.
+    #[test]
+    fn the_last_answer_is_remembered_for_the_same_mark() {
+        let (p, mut d) = table("seen");
+        let mark = d.disk_mark().unwrap();
+        let stamp = FileStamp {
+            len: 9,
+            modified: None,
+        };
+        let given = Arc::new(Mutex::new(Vec::new()));
+        let log = given.clone();
+        let w = DiskWatch::new(
+            Arc::new(move |_: &DiskMark, last: Option<Seen>| {
+                log.lock().unwrap().push(last);
+                Outside::Touched(stamp)
+            }),
+            ROUND_WAIT,
+            Duration::ZERO,
+        );
+        for _ in 0..2 {
+            let e = w.round(vec![(1, Some(mark.clone()))], |_| Some(mark.clone()));
+            assert_eq!(e[0].state, "same");
+        }
+        // The app saves: the old answer no longer applies.
+        d.set_cell(1, 0, "999".into()).unwrap();
+        d.save(Default::default()).unwrap();
+        let after = d.disk_mark().unwrap();
+        w.round(vec![(1, Some(after.clone()))], |_| Some(after.clone()));
+        assert_eq!(
+            *given.lock().unwrap(),
+            [None, Some((stamp, Outside::Touched(stamp))), None]
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// A file missing for a moment (saved by renaming) is not reported gone.
+    #[test]
+    fn gone_is_looked_at_twice() {
+        let (p, d) = table("twice");
+        let mark = d.disk_mark().unwrap();
+        for (second, state) in [(Outside::Same, "same"), (Outside::Gone, "gone")] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let counted = calls.clone();
+            let w = DiskWatch::new(
+                Arc::new(move |_: &DiskMark, _| {
+                    if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                        Outside::Gone
+                    } else {
+                        second
+                    }
+                }),
+                ROUND_WAIT,
+                Duration::from_millis(50),
+            );
+            let t = Instant::now();
+            let e = w.round(vec![(1, Some(mark.clone()))], |_| Some(mark.clone()));
+            assert!(t.elapsed() >= Duration::from_millis(50));
+            assert_eq!((e[0].state, calls.load(Ordering::SeqCst)), (state, 2));
+        }
         let _ = std::fs::remove_file(p);
     }
 
@@ -262,17 +349,22 @@ mod tests {
         let (_release, held) = channel::<()>();
         let held = Mutex::new(held);
         let w = DiskWatch::new(
-            Arc::new(move |_: &DiskMark| {
+            Arc::new(move |_: &DiskMark, _| {
                 let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(5));
                 Outside::Same
             }),
             Duration::from_millis(10),
+            Duration::ZERO,
         );
         w.round(vec![(7, Some(mark.clone()))], |_| Some(mark.clone()));
         assert!(w.state.lock().unwrap().waiting.contains(&7));
         w.round(Vec::new(), |_| None);
         assert!(w.state.lock().unwrap().waiting.is_empty());
-        let quick = DiskWatch::new(Arc::new(|_: &DiskMark| Outside::Same), ROUND_WAIT);
+        let quick = DiskWatch::new(
+            Arc::new(|_: &DiskMark, _| Outside::Same),
+            ROUND_WAIT,
+            Duration::ZERO,
+        );
         let all: Vec<_> = (0..100).map(|i| (i, Some(mark.clone()))).collect();
         let mut seen = HashSet::new();
         for _ in 0..2 {
