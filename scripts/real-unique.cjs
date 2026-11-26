@@ -252,6 +252,7 @@ const clean = () => {
     await cmd(m, "No repeats across these columns together");
     const run = m.getByRole("button", { name: "Run checks" });
     ok(!!(await waitFor(() => run.isVisible(), 5000)), "the command opens Data checks with a No repeats rule on First");
+    ok(await m.getByLabel("Mark problem cells on the grid").isChecked(), "problem marks are on for the new rule");
     await run.click();
     await sleep(1200);
     const text = async () => ((await m.locator(".dialog, [role=dialog]").first().textContent()) || "").replace(/\s+/g, " ");
