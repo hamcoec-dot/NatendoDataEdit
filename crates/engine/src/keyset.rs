@@ -5,6 +5,7 @@
 //! way of comparing, while that table is unchanged).
 
 use std::collections::HashSet;
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -12,7 +13,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Progress};
 use crate::ops::{check_cols, Cols};
-use crate::updates::key_hash;
 use crate::Error;
 
 /// Rows per parallel task.
@@ -37,10 +37,60 @@ pub struct KeySource {
     pub hidden: u64,
 }
 
+/// The set's own hasher: its keys are already hashes, so their low bits are used as they are.
+#[derive(Default)]
+struct Pass(u64);
+
+impl Hasher for Pass {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(b);
+        }
+    }
+    fn write_u128(&mut self, v: u128) {
+        self.0 = v as u64;
+    }
+}
+
+type Set = HashSet<u128, BuildHasherDefault<Pass>>;
+
+/// A value's 128-bit hash (two differently seeded SipHashes), compared as the rule asks:
+/// outer spaces left out with `trim`, any case with `match_case` off. ASCII text is
+/// lower-cased byte by byte (the same text `to_lowercase` gives) with no copy made.
+fn value_hash(v: &str, match_case: bool, trim: bool) -> u128 {
+    let v = if trim { v.trim() } else { v };
+    let mut a = std::collections::hash_map::DefaultHasher::new();
+    let mut b = std::collections::hash_map::DefaultHasher::new();
+    0x5a_u8.hash(&mut b);
+    let mut feed = |bytes: &[u8]| {
+        a.write(bytes);
+        b.write(bytes);
+    };
+    if match_case {
+        feed(v.as_bytes());
+    } else if v.is_ascii() {
+        let mut low = [0u8; 64];
+        for part in v.as_bytes().chunks(64) {
+            for (o, c) in low.iter_mut().zip(part) {
+                *o = c.to_ascii_lowercase();
+            }
+            feed(&low[..part.len()]);
+        }
+    } else {
+        feed(v.to_lowercase().as_bytes());
+    }
+    a.write_u8(0xff);
+    b.write_u8(0xff);
+    (u128::from(a.finish()) << 64) | u128::from(b.finish())
+}
+
 /// A column's values, hashed.
 #[derive(Debug)]
 pub struct KeySet {
-    set: HashSet<u128>,
+    set: Set,
     match_case: bool,
     trim: bool,
     pub source: KeySource,
@@ -69,32 +119,32 @@ impl KeySet {
         }
         let reader = Cols::new(other, &[col]);
         progress.start(n);
-        let parts: Vec<HashSet<u128>> = (0..n.div_ceil(CHUNK))
+        // Hashed in parallel, then put in one set (its keys need no hashing again).
+        let parts: Vec<Vec<u128>> = (0..n.div_ceil(CHUNK))
             .into_par_iter()
-            .map(|k| -> Result<HashSet<u128>, Error> {
+            .map(|k| -> Result<Vec<u128>, Error> {
                 let s = rows.start + k * CHUNK;
                 let e = (s + CHUNK).min(rows.end);
-                let mut out = HashSet::new();
+                let mut out = Vec::with_capacity((e - s) as usize);
                 let mut buf = Vec::new();
                 for r in s..e {
                     let id = other.id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(other, id, &mut buf);
                     let v = reader.get(&buf, 0);
                     if !v.trim().is_empty() {
-                        out.insert(key_hash(&[v], match_case, trim));
+                        out.push(value_hash(v, match_case, trim));
                     }
                 }
                 progress.step(e - s)?;
                 Ok(out)
             })
             .collect::<Result<_, _>>()?;
-        let mut set = HashSet::with_capacity(parts.iter().map(HashSet::len).max().unwrap_or(0));
+        let mut set = Set::with_capacity_and_hasher(
+            parts.iter().map(Vec::len).sum(),
+            BuildHasherDefault::default(),
+        );
         for p in parts {
-            if set.is_empty() {
-                set = p;
-            } else {
-                set.extend(p);
-            }
+            set.extend(p);
         }
         Ok(KeySet {
             set,
@@ -113,7 +163,7 @@ impl KeySet {
     /// Whether `v` is among the values (compared the way the set was built).
     pub fn has(&self, v: &str) -> bool {
         self.set
-            .contains(&key_hash(&[v], self.match_case, self.trim))
+            .contains(&value_hash(v, self.match_case, self.trim))
     }
 
     /// Distinct values held.
