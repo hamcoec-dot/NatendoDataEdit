@@ -6,9 +6,14 @@
 //! signature), may be encrypted with a phrase, and never overwrites a value
 //! that is neither the old one nor already the new one.
 
+use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use rayon::prelude::*;
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +21,7 @@ use crate::document::{Document, Progress};
 use crate::export::{write_atomic, ExportReport};
 use crate::hashing::{check_seal, parse_strict, seal, SealKind};
 use crate::join::{norm_key, JoinSpec};
+use crate::ops::{Cols, CHUNK};
 use crate::privacy::Secret;
 use crate::reshape::{push_line, too_big, RowPlan, Table, MAX_TABLE_BYTES};
 use crate::scan::guard_formula;
@@ -276,43 +282,134 @@ pub struct Made {
     pub left_out: Vec<String>,
 }
 
-/// (key, row id) in order, and each key's place in that list.
-type Index = (Vec<(String, u32)>, HashMap<String, usize>);
+/// One table's data rows with their keys under the patch's rules, read in
+/// parallel into one text block per chunk of rows.
+struct Keys {
+    ids: Vec<u32>,
+    /// The chunk's keys, and where each ends.
+    chunks: Vec<(String, Vec<u32>)>,
+}
 
-/// Every data row of a table by key, refusing blanks and repeats.
-fn index(
-    d: &Document,
-    cols: &[u32],
-    rules: &JoinSpec,
-    which: &str,
-    progress: &Progress,
-) -> Result<Index, Error> {
-    let reader = crate::ops::Cols::new(d, cols);
-    let mut rows = Vec::new();
-    let mut at = HashMap::new();
-    let mut buf = Vec::new();
-    for (n, id) in d.ids().enumerate().skip(1) {
-        reader.read(d, id, &mut buf);
-        let parts: Vec<&str> = (0..cols.len()).map(|i| reader.get(&buf, i)).collect();
-        // The row is named by its place, never by its key.
-        let key = key_of(&parts, rules).ok_or_else(|| {
-            bad(format!(
+/// Every row's key to its place in [`Keys::ids`], in shards.
+struct KeyMap<'a> {
+    hasher: RandomState,
+    shards: Vec<HashMap<&'a str, u32>>,
+}
+
+const SHARDS: usize = 64;
+
+fn shard(hasher: &RandomState, key: &str) -> usize {
+    (hasher.hash_one(key) >> 58) as usize % SHARDS
+}
+
+impl Keys {
+    fn key(&self, i: usize) -> &str {
+        let (text, ends) = &self.chunks[i / CHUNK];
+        let k = i % CHUNK;
+        let from = if k == 0 { 0 } else { ends[k - 1] as usize };
+        &text[from..ends[k] as usize]
+    }
+
+    /// Read the keys of every data row; a blank one is kept as "".
+    fn read(
+        d: &Document,
+        cols: &[u32],
+        rules: &JoinSpec,
+        progress: &Progress,
+    ) -> Result<Keys, Error> {
+        let ids: Vec<u32> = d.ids().skip(1).collect();
+        let reader = Cols::new(d, cols);
+        let chunks = ids
+            .par_chunks(CHUNK)
+            .map(|chunk| {
+                progress.step(chunk.len() as u64)?;
+                let (mut text, mut ends) = (String::new(), Vec::with_capacity(chunk.len()));
+                let (mut buf, mut key) = (Vec::new(), String::new());
+                for &id in chunk {
+                    reader.read(d, id, &mut buf);
+                    let mut row: Vec<&str> = Vec::with_capacity(cols.len());
+                    row.extend((0..cols.len()).map(|i| reader.get(&buf, i)));
+                    if norm_key(&row, rules, &[], &mut key) {
+                        text.push_str(&key);
+                    }
+                    ends.push(u32::try_from(text.len()).map_err(|_| too_big())?);
+                }
+                Ok((text, ends))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        Ok(Keys { ids, chunks })
+    }
+
+    /// The map by key, refusing blank and repeated keys: the first such row
+    /// is named by its place, never by its key.
+    fn map(&self, which: &str, progress: &Progress) -> Result<KeyMap<'_>, Error> {
+        let hasher = RandomState::new();
+        // Each chunk's rows by shard, in order, and its first blank key.
+        let split: Vec<(Vec<Vec<u32>>, Option<usize>)> = (0..self.chunks.len())
+            .into_par_iter()
+            .map(|c| {
+                let first = c * CHUNK;
+                let mut by = vec![Vec::new(); SHARDS];
+                let mut blank = None;
+                for i in first..first + self.chunks[c].1.len() {
+                    let key = self.key(i);
+                    if key.is_empty() {
+                        blank = blank.or(Some(i));
+                    } else {
+                        by[shard(&hasher, key)].push(i as u32);
+                    }
+                }
+                (by, blank)
+            })
+            .collect();
+        progress.step(0)?;
+        let built: Vec<(HashMap<&str, u32>, Option<usize>)> = (0..SHARDS)
+            .into_par_iter()
+            .map(|s| {
+                let size = split.iter().map(|c| c.0[s].len()).sum();
+                let mut map = HashMap::with_capacity(size);
+                let mut repeat = None;
+                for &i in split.iter().flat_map(|c| &c.0[s]) {
+                    if map.insert(self.key(i as usize), i).is_some() {
+                        repeat = Some(i as usize);
+                        break;
+                    }
+                }
+                (map, repeat)
+            })
+            .collect();
+        progress.step(0)?;
+        let blank = split.iter().filter_map(|c| c.1).min();
+        let repeat = built.iter().filter_map(|b| b.1).min();
+        // Data row `i` is row `i + 2` of the table.
+        match (blank, repeat) {
+            (Some(b), r) if r.is_none_or(|r| b < r) => Err(bad(format!(
                 "row {} of the {which} table has a blank key",
-                n + 1
-            ))
-        })?;
-        if at.insert(key.clone(), rows.len()).is_some() {
-            return Err(bad(format!(
+                b + 2
+            ))),
+            (_, Some(r)) => Err(bad(format!(
                 "row {} of the {which} table repeats an earlier key: a patch needs each key once",
-                n + 1
-            )));
-        }
-        rows.push((key, id));
-        if n % STEP == 0 {
-            progress.step(STEP as u64)?;
+                r + 2
+            ))),
+            _ => Ok(KeyMap {
+                shards: built.into_iter().map(|b| b.0).collect(),
+                hasher,
+            }),
         }
     }
-    Ok((rows, at))
+}
+
+impl KeyMap<'_> {
+    fn get(&self, key: &str) -> Option<u32> {
+        self.shards[shard(&self.hasher, key)].get(key).copied()
+    }
+}
+
+/// The rows of a table that differ, from one chunk.
+#[derive(Default)]
+struct Differ {
+    changes: Vec<Change>,
+    removes: Vec<Remove>,
 }
 
 impl Document {
@@ -369,10 +466,12 @@ impl Document {
             })
             .collect::<Result<_, _>>()?;
         let rules = rules(spec.match_case, spec.trim);
-        progress.start(2 * (self.row_count() + newer.row_count()));
+        progress.start(2 * (self.total_rows() + newer.total_rows()));
         let pick = |cols: &[u32]| key_at.iter().map(|&k| cols[k]).collect::<Vec<_>>();
-        let (old_rows, old_at) = index(self, &pick(&here), &rules, "older", progress)?;
-        let (new_rows, new_at) = index(newer, &pick(&there), &rules, "newer", progress)?;
+        let old_keys = Keys::read(self, &pick(&here), &rules, progress)?;
+        let old_at = old_keys.map("older", progress)?;
+        let new_keys = Keys::read(newer, &pick(&there), &rules, progress)?;
+        let new_at = new_keys.map("newer", progress)?;
         let mut patch = Patch {
             version: PATCH_VERSION,
             tool: format!("Natendo Data Edit {}", crate::version()),
@@ -390,46 +489,53 @@ impl Document {
             adds: Vec::new(),
             removes: Vec::new(),
         };
-        let old_read = crate::ops::Cols::new(self, &here);
-        let new_read = crate::ops::Cols::new(newer, &there);
-        let (mut a, mut b) = (Vec::new(), Vec::new());
-        let mut bytes = 0usize;
-        let mut room = |patch: &Patch, more: usize| -> Result<(), Error> {
-            bytes += more;
-            if patch.entries() >= MAX_PATCH_ENTRIES || bytes > MAX_PATCH_BYTES {
+        let old_read = Cols::new(self, &here);
+        let new_read = Cols::new(newer, &there);
+        let (entries, bytes) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let room = |more: usize| -> Result<(), Error> {
+            if entries.fetch_add(1, Ordering::Relaxed) >= MAX_PATCH_ENTRIES
+                || bytes.fetch_add(more, Ordering::Relaxed) + more > MAX_PATCH_BYTES
+            {
                 return Err(bad("there are too many differences for one patch file"));
             }
             Ok(())
         };
-        let row = |read: &crate::ops::Cols, buf: &[std::borrow::Cow<'_, str>]| -> Vec<String> {
+        let row = |read: &Cols, buf: &[std::borrow::Cow<'_, str>]| -> Vec<String> {
             (0..here.len())
                 .map(|i| read.get(buf, i).to_string())
                 .collect()
         };
-        for (n, (key, id)) in old_rows.iter().enumerate() {
-            if n % STEP == 0 {
-                progress.step(STEP as u64)?;
-            }
-            old_read.read(self, *id, &mut a);
-            let text: Vec<String> = key_at
-                .iter()
-                .map(|&k| old_read.get(&a, k).to_string())
-                .collect();
-            match new_at.get(key) {
-                None => {
-                    let old = row(&old_read, &a);
-                    room(&patch, old.iter().map(String::len).sum::<usize>() + 32)?;
-                    patch.removes.push(Remove {
-                        key: text,
-                        row: old,
-                    });
-                }
-                Some(&j) => {
-                    new_read.read(newer, new_rows[j].1, &mut b);
-                    let cells: Vec<(u32, String, String)> = (0..here.len())
-                        .filter(|i| !key_at.contains(i))
-                        .filter(|&i| old_read.get(&a, i) != new_read.get(&b, i))
-                        .map(|i| {
+        let compared: Vec<usize> = (0..here.len()).filter(|i| !key_at.contains(i)).collect();
+        let parts = (0..old_keys.chunks.len())
+            .into_par_iter()
+            .map(|c| {
+                let first = c * CHUNK;
+                let end = first + old_keys.chunks[c].1.len();
+                progress.step((end - first) as u64)?;
+                let mut out = Differ::default();
+                let (mut a, mut b) = (Vec::new(), Vec::new());
+                for i in first..end {
+                    old_read.read(self, old_keys.ids[i], &mut a);
+                    let text = || -> Vec<String> {
+                        key_at
+                            .iter()
+                            .map(|&k| old_read.get(&a, k).to_string())
+                            .collect()
+                    };
+                    let Some(j) = new_at.get(old_keys.key(i)) else {
+                        let old = row(&old_read, &a);
+                        room(old.iter().map(String::len).sum::<usize>() + 32)?;
+                        out.removes.push(Remove {
+                            key: text(),
+                            row: old,
+                        });
+                        continue;
+                    };
+                    new_read.read(newer, new_keys.ids[j as usize], &mut b);
+                    let cells: Vec<(u32, String, String)> = compared
+                        .iter()
+                        .filter(|&&i| old_read.get(&a, i) != new_read.get(&b, i))
+                        .map(|&i| {
                             (
                                 i as u32,
                                 old_read.get(&a, i).to_string(),
@@ -438,24 +544,37 @@ impl Document {
                         })
                         .collect();
                     if !cells.is_empty() {
-                        let size: usize = cells.iter().map(|c| c.1.len() + c.2.len() + 16).sum();
-                        room(&patch, size)?;
-                        patch.changes.push(Change { key: text, cells });
+                        room(cells.iter().map(|c| c.1.len() + c.2.len() + 16).sum())?;
+                        out.changes.push(Change { key: text(), cells });
                     }
                 }
-            }
+                Ok(out)
+            })
+            .collect::<Result<Vec<Differ>, Error>>()?;
+        for part in parts {
+            patch.changes.extend(part.changes);
+            patch.removes.extend(part.removes);
         }
-        for (n, (key, id)) in new_rows.iter().enumerate() {
-            if n % STEP == 0 {
-                progress.step(STEP as u64)?;
-            }
-            if !old_at.contains_key(key) {
-                new_read.read(newer, *id, &mut b);
-                let new = row(&new_read, &b);
-                room(&patch, new.iter().map(String::len).sum::<usize>() + 8)?;
-                patch.adds.push(new);
-            }
-        }
+        let adds = (0..new_keys.chunks.len())
+            .into_par_iter()
+            .map(|c| {
+                let first = c * CHUNK;
+                let end = first + new_keys.chunks[c].1.len();
+                progress.step((end - first) as u64)?;
+                let mut out = Vec::new();
+                let mut b = Vec::new();
+                for i in first..end {
+                    if old_at.get(new_keys.key(i)).is_none() {
+                        new_read.read(newer, new_keys.ids[i], &mut b);
+                        let new = row(&new_read, &b);
+                        room(new.iter().map(String::len).sum::<usize>() + 8)?;
+                        out.push(new);
+                    }
+                }
+                Ok(out)
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        patch.adds = adds.into_iter().flatten().collect();
         Ok(Made { patch, left_out })
     }
 }
@@ -659,7 +778,7 @@ impl Document {
         // (rows found, the first of them).
         let added_key =
             |row: &[String]| -> Vec<String> { keys.iter().map(|&k| row[k].clone()).collect() };
-        let mut wanted: HashMap<String, (u32, u32)> = HashMap::with_capacity(patch.entries());
+        let mut wanted: HashMap<String, ()> = HashMap::with_capacity(patch.entries());
         let all = patch
             .changes
             .iter()
@@ -667,36 +786,44 @@ impl Document {
             .chain(patch.removes.iter().map(|r| r.key.clone()))
             .chain(patch.adds.iter().map(|r| added_key(r)));
         for k in all {
-            wanted.insert(key_of(&k, &rules).expect("checked"), (0, 0));
+            wanted.insert(key_of(&k, &rules).expect("checked"), ());
         }
-        let reader = crate::ops::Cols::new(self, &key_cols);
-        let mut buf = Vec::new();
-        let mut key = String::new();
-        progress.start(self.row_count() + patch.entries() as u64);
-        for (n, id) in self.ids().enumerate() {
-            if n % STEP == 0 {
-                progress.step(STEP as u64)?;
-            }
-            if n == 0 {
-                continue;
-            }
-            reader.read(self, id, &mut buf);
-            let parts: Vec<&str> = (0..key_cols.len()).map(|i| reader.get(&buf, i)).collect();
-            if norm_key(&parts, &rules, &[], &mut key) {
-                if let Some(found) = wanted.get_mut(&key) {
-                    if found.0 == 0 {
-                        found.1 = id;
+        let reader = Cols::new(self, &key_cols);
+        progress.start(self.total_rows() + patch.entries() as u64);
+        let ids: Vec<u32> = self.ids().collect();
+        // Rows whose key the patch asks about, in file order.
+        let seen = ids
+            .get(1..)
+            .unwrap_or_default()
+            .par_chunks(CHUNK)
+            .map(|chunk| {
+                progress.step(chunk.len() as u64)?;
+                let mut out = Vec::new();
+                let (mut buf, mut key) = (Vec::new(), String::new());
+                for &id in chunk {
+                    reader.read(self, id, &mut buf);
+                    let parts: Vec<&str> =
+                        (0..key_cols.len()).map(|i| reader.get(&buf, i)).collect();
+                    if norm_key(&parts, &rules, &[], &mut key) {
+                        if let Some((k, _)) = wanted.get_key_value(&key) {
+                            out.push((k.as_str(), id));
+                        }
                     }
-                    found.0 = found.0.saturating_add(1);
                 }
-            }
+                Ok(out)
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let mut found: HashMap<&str, (u32, u32)> = HashMap::with_capacity(wanted.len());
+        for (key, id) in seen.into_iter().flatten() {
+            let f = found.entry(key).or_insert((0, id));
+            f.0 = f.0.saturating_add(1);
         }
         // The patch's columns that are here, to compare whole rows.
         let present: Vec<(usize, u32)> = (0..place.len())
             .filter_map(|i| place[i].map(|c| (i, c)))
             .collect();
         let cols: Vec<u32> = present.iter().map(|p| p.1).collect();
-        let whole = crate::ops::Cols::new(self, &cols);
+        let whole = Cols::new(self, &cols);
         let same_row = |id: u32, row: &[String], buf: &mut Vec<_>| {
             whole.read(self, id, buf);
             present
@@ -705,8 +832,12 @@ impl Document {
                 .all(|(n, &(i, _))| whole.get(buf, n) == row[i])
         };
         let all_here = present.len() == patch.columns.len();
-        let find = |key: &[String]| wanted[&key_of(key, &rules).expect("checked")];
+        let find = |key: &[String]| -> (u32, u32) {
+            let key = key_of(key, &rules).expect("checked");
+            found.get(key.as_str()).copied().unwrap_or_default()
+        };
         let mut plan = RowPlan::new(self);
+        let mut buf = Vec::new();
         for (n, c) in patch.changes.iter().enumerate() {
             if n % STEP == 0 {
                 progress.step(STEP as u64)?;
@@ -721,7 +852,7 @@ impl Document {
                     (_, 0) => Outcome::KeyNotFound,
                     (_, 2..) => Outcome::KeyTwice,
                     (Some(col), 1) => {
-                        let one = crate::ops::Cols::new(self, &[col]);
+                        let one = Cols::new(self, &[col]);
                         one.read(self, id, &mut buf);
                         let now = one.get(&buf, 0);
                         if now == new {
@@ -787,7 +918,7 @@ impl Document {
         if !new_rows.is_empty() {
             // After the table's last row that stays (the title row at least).
             let gone: HashSet<u32> = plan.remove.iter().copied().collect();
-            let last = self.ids().filter(|id| !gone.contains(id)).last();
+            let last = ids.iter().rev().find(|id| !gone.contains(id)).copied();
             plan.after.push((last.ok_or(Error::OutOfRange)?, new_rows));
         }
         plan.rows = report.added + report.removed + plan.changes.len() as u64;

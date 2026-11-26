@@ -20,7 +20,11 @@ fn table(newer: bool) -> Document {
         if newer && r % 100 == 7 {
             continue;
         }
-        let town = if newer && r % 25 < 2 { "Brackwen" } else { "Yarrowby" };
+        let town = if newer && r % 25 < 2 {
+            "Brackwen"
+        } else {
+            "Yarrowby"
+        };
         s.push_str(&format!(
             "V-{r:09},Name {r},{town},{},555-{:07},kept\r\n",
             r % 40,
@@ -116,12 +120,11 @@ fn main() {
             3,
             time(|| loaded = Some(Patch::from_bytes(&bytes, None).unwrap())),
         );
-        // What the app does: the dry run, then Apply plans again.
+        // What the app does: the dry run's plan is what Apply applies.
         let loaded = loaded.unwrap();
         keep(
             4,
             time(|| {
-                target.plan_patch(&loaded, &p).unwrap();
                 let (plan, report) = target.plan_patch(&loaded, &p).unwrap();
                 assert_eq!(report.unapplied(), 0);
                 target.apply_rows(plan).unwrap();
@@ -168,11 +171,19 @@ fn main() {
     for (n, d) in names.iter().zip(best) {
         println!("{n:<32} {:>9.1} ms", ms(d));
     }
-    println!("create / compare by key = {:.2} (gate 1.2)", ms(best[0]) / ms(best[1]));
-    println!("dry run + apply / take changes = {:.2} (gate 1.2)", ms(best[4]) / ms(best[5]));
+    println!(
+        "create / compare by key = {:.2} (gate 1.2)",
+        ms(best[0]) / ms(best[1])
+    );
+    println!(
+        "dry run + apply / take changes = {:.2} (gate 1.2)",
+        ms(best[4]) / ms(best[5])
+    );
     println!(
         "cancel: make {:.0} ms, dry run {:.0} ms (gate 1000)",
         ms(cancel(best[0], |p| old.make_patch(&new, &spec, p).is_err())),
-        ms(cancel(best[4] / 4, |p| target.plan_patch(&made, p).is_err()))
+        ms(cancel(best[4] / 4, |p| target
+            .plan_patch(&made, p)
+            .is_err()))
     );
 }

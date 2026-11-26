@@ -11,6 +11,8 @@ use natendo_engine::privacy::Secret;
 pub(super) struct PatchKept {
     patch: Arc<Patch>,
     report: Arc<PatchReport>,
+    /// The dry run's plan, for Apply (planned again if it is gone).
+    plan: Arc<Mutex<Option<RowPlan>>>,
     /// The tab's revision at the dry run (`u64::MAX`: applied since).
     revision: u64,
     /// The patch file was private, or protected with a phrase.
@@ -151,15 +153,16 @@ impl Docs {
         let job = entry.start("Reading the patch")?;
         let protected = Patch::is_protected(path)?;
         let patch = Patch::load(path, secret(phrase).as_ref())?;
-        let (report, revision) = {
+        let (plan, report, revision) = {
             let d = entry.read();
-            let (_, report) = d.plan_patch(&patch, &job.progress)?;
-            (Arc::new(report), d.revision())
+            let (plan, report) = d.plan_patch(&patch, &job.progress)?;
+            (plan, Arc::new(report), d.revision())
         };
         let private = protected || self.is_private_path(path);
         *entry.patch.lock().unwrap_or_else(|p| p.into_inner()) = Some(PatchKept {
             patch: Arc::new(patch),
             report: report.clone(),
+            plan: Arc::new(Mutex::new(Some(plan))),
             revision,
             private,
         });
@@ -197,7 +200,11 @@ impl Docs {
                         if d.revision() != kept.revision {
                             return Err(Error::Changed);
                         }
-                        Ok(d.plan_patch(&kept.patch, p)?.0)
+                        let held = kept.plan.lock().unwrap_or_else(|p| p.into_inner()).take();
+                        match held {
+                            Some(plan) => Ok(plan),
+                            None => Ok(d.plan_patch(&kept.patch, p)?.0),
+                        }
                     },
                     |d, plan| d.apply_rows(plan),
                 )

@@ -328,3 +328,76 @@ fn files_and_a_guarded_report() {
     assert_eq!(r.table().unwrap().rows, 2);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// More rows than one parallel chunk: file order is kept, and the first bad
+/// row is the one named.
+#[test]
+fn many_chunks_keep_order_and_name_the_first_bad_row() {
+    let n = 3 * crate::ops::CHUNK as u32 + 5;
+    let table = |change: &dyn Fn(u32) -> Option<String>| {
+        let mut s = String::from("id,v\r\n");
+        for i in 0..n {
+            if let Some(line) = change(i) {
+                s.push_str(&line);
+                s.push_str("\r\n");
+            }
+        }
+        s
+    };
+    let old = table(&|i| Some(format!("k{i},a")));
+    let new = table(&|i| match i % 1000 {
+        1 => None,
+        2 => Some(format!("k{i},b")),
+        3 => Some(format!("k{i},a\r\nm{i},c")),
+        _ => Some(format!("k{i},a")),
+    });
+    let patch = make(&old, &new);
+    let ids = |keys: Vec<&String>| {
+        keys.iter()
+            .map(|k| k[1..].parse::<u32>().unwrap())
+            .collect::<Vec<_>>()
+    };
+    let expect = |r: u32| (0..n).filter(|i| i % 1000 == r).collect::<Vec<_>>();
+    assert_eq!(
+        ids(patch.changes.iter().map(|c| &c.key[0]).collect()),
+        expect(2)
+    );
+    assert_eq!(
+        ids(patch.removes.iter().map(|c| &c.key[0]).collect()),
+        expect(1)
+    );
+    assert_eq!(ids(patch.adds.iter().map(|r| &r[0]).collect()), expect(3));
+    let mut d = doc(&old);
+    assert_eq!(apply(&mut d, &patch).unapplied(), 0);
+    assert_eq!(d.row_count(), doc(&new).row_count());
+    let late = 2 * crate::ops::CHUNK as u32 + 7;
+    let refuse = |bad: &str| {
+        doc(bad)
+            .make_patch(&doc(&new), &spec(&[0]), &Progress::new())
+            .unwrap_err()
+            .to_string()
+    };
+    // A repeat before a blank, then a blank before a repeat.
+    let why = refuse(&table(&|i| {
+        Some(match i {
+            i if i == late => "k3,a".into(),
+            i if i == late + 1 => ",a".into(),
+            i => format!("k{i},a"),
+        })
+    }));
+    assert!(
+        why.contains(&format!("row {} of the older table repeats", late + 2)),
+        "{why}"
+    );
+    let why = refuse(&table(&|i| {
+        Some(match i {
+            i if i == late => ",a".into(),
+            i if i == late + 1 || i == n - 1 => "k3,a".into(),
+            i => format!("k{i},a"),
+        })
+    }));
+    assert!(
+        why.contains(&format!("row {} of the older table has a blank", late + 2)),
+        "{why}"
+    );
+}
