@@ -237,6 +237,11 @@ pub enum Step {
         /// 2026 would be after today.
         #[serde(default, skip_serializing_if = "is_false")]
         past: bool,
+        /// Choices made on the date review screen: nothing is guessed. Left
+        /// out (older recipes, Clean > Dates): dates are read by the file's
+        /// day order, as before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        review: Option<DateReview>,
     },
     /// Rewrite numbers: decimals (`None` keeps them), thousands
     /// separators, decimal comma.
@@ -782,12 +787,68 @@ pub struct Outcome {
     pub other_order: bool,
 }
 
+/// What to do with a date both day orders can read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ambiguous {
+    /// Leave the cell exactly as typed.
+    #[default]
+    Leave,
+    Mdy,
+    Dmy,
+}
+
+/// The date review screen's choices. Everything off means: change only the
+/// dates that can be read one way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DateReview {
+    pub ambiguous: Ambiguous,
+    /// Also change eight-digit values that are calendar dates (`20260425`).
+    pub compact: bool,
+    /// Also change dates whose year has two digits.
+    pub two_digit: bool,
+}
+
+/// A cell's date under the review screen's choices (`None`: leave it).
+fn reviewed_date(t: &str, review: DateReview) -> Option<f64> {
+    use crate::value::{classify_date, DateKind, DateOrder};
+    let class = classify_date(t);
+    if class.two_digit_year && !review.two_digit {
+        return None;
+    }
+    let read = |date_order| {
+        crate::coltype::Reader::plain(ReadOptions {
+            date_order,
+            ..Default::default()
+        })
+        .date(t)
+    };
+    match class.kind {
+        DateKind::Ambiguous => match review.ambiguous {
+            Ambiguous::Leave => None,
+            Ambiguous::Mdy => read(DateOrder::Mdy),
+            Ambiguous::Dmy => read(DateOrder::Dmy),
+        },
+        // One reading only: the order given does not matter.
+        DateKind::Iso
+        | DateKind::Written
+        | DateKind::MonthFirstOnly
+        | DateKind::DayFirstOnly
+        | DateKind::SameEither => read(DateOrder::Mdy),
+        DateKind::Compact if review.compact => compact_date(t),
+        DateKind::Compact | DateKind::NotDate => None,
+    }
+}
+
 enum CStep {
     Plain(Step),
     Replace(Matcher, String),
     RemoveMatching(Matcher),
     /// Format, the pattern cells are in (if given), two-digit years in the past.
     Dates(Vec<DatePart>, Option<Vec<DatePart>>, bool),
+    /// Format and the review screen's choices.
+    Reviewed(Vec<DatePart>, DateReview),
     /// The stretched key, and whether spaces, punctuation and case are ignored.
     Scramble(crate::privacy::Keyed, bool),
     DateBand(DateTo),
@@ -819,7 +880,14 @@ impl Compiled {
                 Step::Remove {
                     what: Remove::Matching { find },
                 } => CStep::RemoveMatching(Matcher::new(find)?),
-                Step::Dates { format, from, past } => CStep::Dates(
+                Step::Dates {
+                    format,
+                    review: Some(review),
+                    ..
+                } => CStep::Reviewed(date_format(format)?, *review),
+                Step::Dates {
+                    format, from, past, ..
+                } => CStep::Dates(
                     date_format(format)?,
                     if from.trim().is_empty() {
                         None
@@ -912,6 +980,18 @@ impl Compiled {
                 match read {
                     Some(v) => Some(write_date(v, f)),
                     _ => {
+                        *left = true;
+                        None
+                    }
+                }
+            }
+            CStep::Reviewed(format, review) => {
+                if t.trim().is_empty() {
+                    return Ok(None);
+                }
+                match reviewed_date(t, *review) {
+                    Some(v) => Some(write_date(v, format)),
+                    None => {
                         *left = true;
                         None
                     }
@@ -3684,6 +3764,7 @@ mod tests {
         );
         // Dates read in a pattern.
         let from = |from: &str, format: &str| Step::Dates {
+            review: None,
             format: format.into(),
             from: from.into(),
             past: false,
@@ -3710,6 +3791,7 @@ mod tests {
         assert!(left(iso("dd/mm/yyyy"), "13/11/2026 extra"));
         // Review L2: two-digit years in the past (now is 2026-11-12).
         let past = |from: &str| Step::Dates {
+            review: None,
             format: "yyyy-mm-dd".into(),
             from: from.into(),
             past: true,
@@ -3723,6 +3805,7 @@ mod tests {
         assert_eq!(one(iso("dd.mm.yy"), "13.11.26"), "2026-11-13");
         // Review L3: a date that can only be read the other way is flagged.
         let guess = compiled(vec![Step::Dates {
+            review: None,
             format: "yyyy-mm-dd".into(),
             from: String::new(),
             past: false,
@@ -4079,6 +4162,7 @@ mod tests {
                 },
             },
             Step::Dates {
+                review: None,
                 format: "yyyy-mm-dd".into(),
                 from: "yyyymmdd".into(),
                 past: false,
@@ -4093,6 +4177,7 @@ mod tests {
         assert_eq!(
             old.steps[0],
             Step::Dates {
+                review: None,
                 format: "yyyy".into(),
                 from: String::new(),
                 past: false
@@ -4120,6 +4205,7 @@ mod tests {
             "34/12"
         );
         let dates = |f: &str| Step::Dates {
+            review: None,
             format: f.into(),
             from: String::new(),
             past: false,
@@ -4391,6 +4477,7 @@ mod tests {
         let d = doc("d\r\n2026-01-02\r\nsoon\r\n\"\"\r\n");
         let spec = CleanSpec {
             cleaner: cleaner(vec![Step::Dates {
+                review: None,
                 format: "dd.mm.yyyy".into(),
                 from: String::new(),
                 past: false,
@@ -4789,6 +4876,7 @@ mod prop_tests {
                 with: String::new(),
             },
             Step::Dates {
+                review: None,
                 format: "dddd d mmmm yyyy hh:mm:ss AM/PM".into(),
                 from: String::new(),
                 past: false,
@@ -5076,5 +5164,108 @@ mod review_tests {
         );
         let a = s.chars().filter(|&c| c == 'a').count();
         assert!((4_500..5_500).contains(&a), "{a}");
+    }
+}
+
+#[cfg(test)]
+mod date_review_tests {
+    use super::*;
+
+    fn run(review: Option<DateReview>, cell: &str) -> (Option<String>, bool) {
+        let step = Step::Dates {
+            format: "yyyy-mm-dd".into(),
+            from: String::new(),
+            past: false,
+            review,
+        };
+        let cleaner = Cleaner {
+            version: 1,
+            name: String::new(),
+            steps: vec![step],
+        };
+        let c = Compiled::new(&cleaner, ReadOptions::default(), 20000.0).unwrap();
+        let ctx = Ctx {
+            index: 0,
+            seed: 1,
+            run: 1,
+        };
+        let o = c.run(cell, ctx).unwrap();
+        (o.text, o.left)
+    }
+
+    #[test]
+    fn nothing_is_guessed_unless_chosen() {
+        let leave = Some(DateReview::default());
+        for (cell, want) in [
+            ("25/04/2026", Some("2026-04-25")),
+            ("04/25/2026", Some("2026-04-25")),
+            ("05/05/2026", Some("2026-05-05")),
+            ("Jan 5 2024", Some("2024-01-05")),
+        ] {
+            assert_eq!(run(leave, cell).0.as_deref(), want, "{cell}");
+        }
+        for cell in ["03/04/2026", "20260425", "4/25/26", "soon", "12345678"] {
+            assert_eq!(run(leave, cell), (None, true), "{cell}");
+        }
+        let with = |ambiguous, compact, two_digit| {
+            Some(DateReview {
+                ambiguous,
+                compact,
+                two_digit,
+            })
+        };
+        assert_eq!(
+            run(with(Ambiguous::Mdy, false, false), "03/04/2026")
+                .0
+                .as_deref(),
+            Some("2026-03-04")
+        );
+        assert_eq!(
+            run(with(Ambiguous::Dmy, false, false), "03/04/2026")
+                .0
+                .as_deref(),
+            Some("2026-04-03")
+        );
+        assert_eq!(
+            run(with(Ambiguous::Leave, true, false), "20260425")
+                .0
+                .as_deref(),
+            Some("2026-04-25")
+        );
+        assert_eq!(
+            run(with(Ambiguous::Leave, false, true), "4/25/29")
+                .0
+                .as_deref(),
+            Some("2029-04-25")
+        );
+        assert_eq!(
+            run(with(Ambiguous::Leave, false, true), "4/25/30")
+                .0
+                .as_deref(),
+            Some("1930-04-25")
+        );
+        // A two-digit ambiguous date needs both choices.
+        assert_eq!(
+            run(with(Ambiguous::Mdy, false, false), "4/7/26"),
+            (None, true)
+        );
+    }
+
+    #[test]
+    fn an_older_recipe_step_reads_as_it_did() {
+        // The shape 0.6.0 saved: no review field.
+        let old: Step = serde_json::from_str(r#"{"tool":"dates","format":"yyyy-mm-dd"}"#).unwrap();
+        assert!(matches!(old, Step::Dates { review: None, .. }));
+        assert_eq!(run(None, "03/04/2026").0.as_deref(), Some("2026-03-04"));
+        let json = serde_json::to_string(&old).unwrap();
+        assert!(!json.contains("review"), "{json}");
+        let new = Step::Dates {
+            format: "yyyy-mm-dd".into(),
+            from: String::new(),
+            past: false,
+            review: Some(DateReview::default()),
+        };
+        let back: Step = serde_json::from_str(&serde_json::to_string(&new).unwrap()).unwrap();
+        assert_eq!(back, new);
     }
 }
