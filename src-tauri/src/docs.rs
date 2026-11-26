@@ -754,6 +754,10 @@ pub enum DataOp {
     Clean {
         spec: CleanSpec,
         now: f64,
+        /// Cells the person typed on the date review screen (shown row,
+        /// column, text): part of the same undo step, never in a recipe.
+        #[serde(default)]
+        typed: Vec<(u64, u32, String)>,
     },
     /// A clean matrix: each ticked column with its steps, in one pass.
     CleanMatrix {
@@ -891,6 +895,15 @@ fn check_now(now: f64) -> CmdResult<()> {
         ));
     }
     Ok(())
+}
+
+/// A recipe run's line about ambiguous dates a step left ("" when none).
+fn left_note(what: &str, left: u64) -> String {
+    if left == 0 {
+        return String::new();
+    }
+    let dates = if left == 1 { "date" } else { "dates" };
+    format!("{what}: {} ambiguous {dates} left as typed", group(left))
 }
 
 fn check_clean(spec: &CleanSpec, now: f64) -> CmdResult<()> {
@@ -1354,7 +1367,9 @@ fn recipe_step(op: &DataOp) -> Logged {
         DataOp::Clean { spec, .. } => RecipeOp::Clean {
             spec: spec.recorded(),
         },
-        DataOp::CleanMatrix { spec, .. } => RecipeOp::CleanMatrix { spec: spec.clone() },
+        DataOp::CleanMatrix { spec, .. } => RecipeOp::CleanMatrix {
+            spec: spec.recorded(),
+        },
         DataOp::SplitName { spec } => RecipeOp::SplitName { spec: spec.clone() },
         DataOp::FillExample { spec } => RecipeOp::FillExample { spec: spec.clone() },
         DataOp::Compute { spec } if spec.expr.to_ascii_uppercase().contains("LOOKUP(") => {
@@ -1455,7 +1470,11 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
             count,
             descending,
         },
-        RecipeOp::Clean { spec } => DataOp::Clean { spec, now },
+        RecipeOp::Clean { spec } => DataOp::Clean {
+            typed: Vec::new(),
+            spec,
+            now,
+        },
         RecipeOp::CleanMatrix { spec } => DataOp::CleanMatrix {
             spec,
             now,
@@ -1616,6 +1635,8 @@ pub struct OpReport {
     pub left: u64,
     /// Cleaners: dates read the other way round from the chosen day order.
     pub other_order: u64,
+    /// Cleaners: dates both day orders can read, left as typed.
+    pub ambiguous_left: u64,
     /// Fill by example: the pattern used, in words.
     pub pattern: Option<String>,
     /// Fill by example: examples learned from.
@@ -6007,7 +6028,25 @@ impl Docs {
                     now,
                     revision: None,
                 };
-                self.data_op(id, op).map(|_| ())
+                let left = self.data_op(id, op)?.ambiguous_left;
+                return Ok(left_note("Clean matrix", left));
+            }
+            RecipeOp::Clean { spec } => {
+                let what = spec
+                    .cleaner
+                    .steps
+                    .iter()
+                    .find_map(|s| match s {
+                        natendo_engine::clean::Step::Dates { format, .. } => {
+                            Some(format!("Dates as {format}"))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "Clean".into());
+                let left = self
+                    .data_op(id, recipe_data_op(RecipeOp::Clean { spec }, now))?
+                    .ambiguous_left;
+                return Ok(left_note(&what, left));
             }
             other => self.data_op(id, recipe_data_op(other, now)).map(|_| ()),
         };
@@ -6078,7 +6117,7 @@ impl Docs {
             DataOp::FillSpecial { .. } => "Filling",
             DataOp::ShiftCells { .. } => "Moving cells",
         };
-        if let DataOp::Clean { spec, now } = &op {
+        if let DataOp::Clean { spec, now, .. } = &op {
             check_clean(spec, *now)?;
         }
         if let DataOp::CleanMatrix {
@@ -6166,6 +6205,7 @@ impl Docs {
         let errors = std::cell::Cell::new(0u64);
         let groups = std::cell::Cell::new(0u64);
         let other_order = std::cell::Cell::new(0u64);
+        let ambiguous = std::cell::Cell::new(0u64);
         let report = std::cell::RefCell::new(OpReport::default());
         let plan = |d: &Document, p: &Progress| -> Result<Planned, Error> {
             let planned = match &op {
@@ -6208,10 +6248,12 @@ impl Docs {
                     *join_report.borrow_mut() = Some(rep);
                     Planned::Cells(plan)
                 }
-                DataOp::Clean { spec, now } => {
-                    let plan = d.plan_clean(spec, *now, seed, 0, p)?;
+                DataOp::Clean { spec, now, typed } => {
+                    let mut plan = d.plan_clean(spec, *now, seed, 0, p)?;
+                    plan.set_typed(d, typed)?;
                     *extra.borrow_mut() = (plan.left, None, 0);
                     other_order.set(plan.other_order);
+                    ambiguous.set(plan.ambiguous_left);
                     Planned::Clean(plan)
                 }
                 DataOp::CleanMatrix {
@@ -6226,6 +6268,7 @@ impl Docs {
                     let plan = d.plan_clean_matrix(spec, *now, seed, p)?.plan;
                     *extra.borrow_mut() = (plan.left, None, 0);
                     other_order.set(plan.other_order);
+                    ambiguous.set(plan.ambiguous_left);
                     Planned::Clean(plan)
                 }
                 DataOp::SplitName { spec } => Planned::Cols(d.plan_split_name(spec, p)?),
@@ -6398,6 +6441,7 @@ impl Docs {
         let (left, pattern, examples) = extra.into_inner();
         r.left = r.left.max(left);
         r.other_order = other_order.get();
+        r.ambiguous_left = ambiguous.get();
         r.pattern = pattern;
         r.examples = examples;
         r.errors = errors.get();
@@ -9621,6 +9665,7 @@ mod tests {
             .data_op(
                 id,
                 DataOp::Clean {
+                    typed: Vec::new(),
                     spec,
                     now: 20_000.0,
                 },
@@ -11640,6 +11685,17 @@ ca,California
         assert!(json.contains("\"ambiguous\": \"mdy\""), "{json}");
         let again = Recipe::from_json(json.as_bytes()).unwrap();
         assert_eq!(replay("dates-new.csv", &again).0, want);
+        // A step told to leave ambiguous dates says how many it left.
+        let leave = json.replace("\"ambiguous\": \"mdy\"", "\"ambiguous\": \"leave\"");
+        let leave = Recipe::from_json(leave.as_bytes()).unwrap();
+        let p = tmp("dates-leave.csv", body);
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let info = docs.run_recipe(id, &leave, &[], 20_000.0, true).unwrap();
+        assert_eq!(
+            info.run_notes,
+            ["Dates as yyyy-mm-dd: 1 ambiguous date left as typed"]
+        );
     }
 
     /// C1b b2 review: a recorded fix says that unticked rows are not in the recipe, and running it reports how many

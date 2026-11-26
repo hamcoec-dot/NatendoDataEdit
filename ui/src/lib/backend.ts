@@ -941,7 +941,7 @@ export type DataOp =
   | { op: "sort_columns"; col: number; count: number; descending: boolean }
   | { op: "join"; other: number | null; list?: string | null; list_id?: number | null; spec: JoinSpec }
   | { op: "append"; other: number; spec: AppendSpec }
-  | { op: "clean"; spec: CleanSpec; now: number }
+  | { op: "clean"; spec: CleanSpec; now: number; typed?: [number, number, string][] }
   | { op: "split_name"; spec: SplitName }
   | { op: "fill_example"; spec: ExampleSpec }
   | { op: "compute"; spec: ComputeSpec }

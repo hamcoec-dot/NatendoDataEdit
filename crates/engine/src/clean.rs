@@ -796,6 +796,9 @@ pub struct Outcome {
     /// A date could only be read the other way round from the chosen day
     /// order (13/04/2026 when reading month first).
     pub other_order: bool,
+    /// A date both day orders can read, left as typed because a step was
+    /// told to leave such dates.
+    pub ambiguous_left: bool,
 }
 
 /// What to do with a date both day orders can read.
@@ -989,10 +992,20 @@ impl Compiled {
                 cur = Some(new);
             }
         }
+        let ambiguous_left = left
+            && cur.is_none()
+            && self.steps.iter().any(|s| {
+                matches!(
+                    s,
+                    CStep::Ambiguous(_, Ambiguous::Leave) | CStep::Reviewed(_, Ambiguous::Leave, _)
+                )
+            })
+            && crate::value::classify_date(cell).kind == crate::value::DateKind::Ambiguous;
         Ok(Outcome {
             text: cur.filter(|t| t != cell),
             left,
             other_order,
+            ambiguous_left,
         })
     }
 
@@ -2995,16 +3008,33 @@ impl CleanSpec {
     /// the day order it ran with.
     pub fn recorded(&self) -> CleanSpec {
         let mut spec = self.clone();
-        let order = match spec.read.date_order {
-            crate::value::DateOrder::Mdy => Ambiguous::Mdy,
-            crate::value::DateOrder::Dmy => Ambiguous::Dmy,
-        };
-        for step in &mut spec.cleaner.steps {
-            if let Step::Dates { ambiguous, .. } = step {
-                ambiguous.get_or_insert(order);
-            }
-        }
+        record_ambiguous(&mut spec.cleaner.steps, spec.read.date_order);
         spec
+    }
+}
+
+impl CleanMatrix {
+    /// As a recipe records it (see [`CleanSpec::recorded`]).
+    pub fn recorded(&self) -> CleanMatrix {
+        let mut out = self.clone();
+        for e in &mut out.entries {
+            record_ambiguous(&mut e.steps, self.read.date_order);
+        }
+        out
+    }
+}
+
+/// Every dates step that does not say what it does with ambiguous dates
+/// reads them by `order`: written down.
+fn record_ambiguous(steps: &mut [Step], order: crate::value::DateOrder) {
+    let order = match order {
+        crate::value::DateOrder::Mdy => Ambiguous::Mdy,
+        crate::value::DateOrder::Dmy => Ambiguous::Dmy,
+    };
+    for step in steps {
+        if let Step::Dates { ambiguous, .. } = step {
+            ambiguous.get_or_insert(order);
+        }
     }
 }
 
@@ -3038,6 +3068,8 @@ pub struct CleanPlan {
     /// Dates that could only be read the other way round from the chosen
     /// day order: the column mixes day-first and month-first dates.
     pub other_order: u64,
+    /// Dates both day orders can read, left as typed because a step said so.
+    pub ambiguous_left: u64,
     /// The first changes, for showing before applying.
     pub preview: Vec<Change>,
 }
@@ -3179,6 +3211,7 @@ struct Tally {
     changed: u64,
     left: u64,
     other_order: u64,
+    ambiguous_left: u64,
     homoglyphs: u64,
 }
 
@@ -3194,6 +3227,7 @@ impl CellRun {
             a.changed += b.changed;
             a.left += b.left;
             a.other_order += b.other_order;
+            a.ambiguous_left += b.ambiguous_left;
             a
         })
     }
@@ -3220,6 +3254,41 @@ fn has_homoglyph(t: &str) -> bool {
     found
         .iter()
         .any(|g| g.kind == crate::xray::GremlinKind::Homoglyph)
+}
+
+impl CleanPlan {
+    /// Put cells the person typed themselves (shown row, column, text) into
+    /// the run, over whatever it would have written there: one undo step
+    /// takes back both.
+    pub fn set_typed(&mut self, doc: &Document, typed: &[(u64, u32, String)]) -> Result<(), Error> {
+        let mut at: std::collections::HashMap<u32, usize> = self
+            .cells
+            .changes
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.0, i))
+            .collect();
+        for (row, col, text) in typed {
+            let id = doc.id_at(*row).ok_or(Error::OutOfRange)?;
+            if *col >= doc.col_count() {
+                return Err(Error::OutOfRange);
+            }
+            let i = *at.entry(id).or_insert_with(|| {
+                self.cells.changes.push((id, Vec::new()));
+                self.cells.changes.len() - 1
+            });
+            let cells = &mut self.cells.changes[i].1;
+            match cells.binary_search_by_key(col, |c| c.0) {
+                Ok(k) => cells[k].1 = text.clone(),
+                Err(k) => {
+                    cells.insert(k, (*col, text.clone()));
+                    self.changed += 1;
+                    self.cells.cells += 1;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Document {
@@ -3266,6 +3335,7 @@ impl Document {
             changed: total.changed,
             left: total.left,
             other_order: total.other_order,
+            ambiguous_left: total.ambiguous_left,
             preview: run.examples,
         })
     }
@@ -3310,6 +3380,7 @@ impl Document {
                                 let tally = &mut part.columns[k];
                                 tally.left += u64::from(out.left);
                                 tally.other_order += u64::from(out.other_order);
+                                tally.ambiguous_left += u64::from(out.ambiguous_left);
                                 let new = out.text?;
                                 if how.keep && !crate::find::charge(&created, new.len()) {
                                     err = Some(Error::OutOfMemory(
@@ -3384,6 +3455,7 @@ impl Document {
                 a.changed += b.changed;
                 a.left += b.left;
                 a.other_order += b.other_order;
+                a.ambiguous_left += b.ambiguous_left;
                 a.homoglyphs += b.homoglyphs;
             }
         }
@@ -3412,6 +3484,7 @@ impl Document {
                 changed,
                 left: sum(|c| c.left),
                 other_order: sum(|c| c.other_order),
+                ambiguous_left: run.columns.iter().map(|t| t.ambiguous_left).sum(),
                 preview: Vec::new(),
             },
             columns,
@@ -5410,5 +5483,50 @@ mod date_review_tests {
             }
         ));
         assert_eq!(spec(&new).recorded().cleaner.steps[0], new);
+    }
+
+    /// Dates left because they could be read two ways are counted apart from
+    /// cells that are no date; typed cells go in with the same undo step.
+    #[test]
+    fn typed_cells_and_the_clear_dates_are_one_undo_step() {
+        let body = "d\n03/04/2026\n25/04/2026\nsoon\n07/08/2026\n";
+        let mut d = Document::from_bytes(
+            body.as_bytes().to_vec(),
+            crate::OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        let spec = CleanSpec {
+            cleaner: Cleaner {
+                version: 1,
+                name: String::new(),
+                steps: vec![Step::Dates {
+                    format: "yyyy-mm-dd".into(),
+                    from: String::new(),
+                    past: false,
+                    ambiguous: Some(Ambiguous::Leave),
+                    review: Some(DateReview::default()),
+                }],
+            },
+            scope: Scope::Columns { cols: vec![0] },
+            skip_first: true,
+            read: ReadOptions::default(),
+        };
+        let mut plan = d
+            .plan_clean(&spec, 20_000.0, 1, 0, &Progress::new())
+            .unwrap();
+        assert_eq!((plan.left, plan.ambiguous_left), (3, 2));
+        plan.set_typed(&d, &[(1, 0, "2026-04-03".into())]).unwrap();
+        assert_eq!(plan.changed, 2);
+        let column =
+            |d: &Document| -> Vec<String> { (1..5).map(|r| d.cell(r, 0).unwrap()).collect() };
+        let before = column(&d);
+        d.apply_clean(plan).unwrap();
+        assert_eq!(
+            column(&d),
+            ["2026-04-03", "2026-04-25", "soon", "07/08/2026"]
+        );
+        d.undo();
+        assert_eq!(column(&d), before);
     }
 }

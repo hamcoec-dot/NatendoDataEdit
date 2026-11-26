@@ -144,7 +144,7 @@
       <p>
         <strong>{count(preview.changed)} {preview.changed === 1 ? "cell becomes" : "cells become"} like 2026-04-25.</strong>
         {count(Math.max(0, preview.left - typedCells.length))} stay as typed.
-        {#if typedCells.length}{count(typedCells.length)} typed by you (a second undo step).{/if}
+        {#if typedCells.length}{count(typedCells.length)} typed by you (undone together with the rest).{/if}
       </p>
       {#if preview.changes.length}
         <table>

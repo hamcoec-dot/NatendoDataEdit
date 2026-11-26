@@ -890,9 +890,9 @@ everything is also in command search.
   first or day first, or type each one (the first 500 are listed). When the
   column gives no clue about the order, nothing is picked for you. Eight-digit
   values and two-digit years change only when ticked. A preview shows how many
-  cells change and how many stay as typed. The conversion is one undo step
-  (cells you typed yourself are a second one), and a recorded recipe says what
-  it does with ambiguous dates.
+  cells change and how many stay as typed. The conversion, with the cells you
+  typed yourself, is one undo step; a recorded recipe says what it does with
+  ambiguous dates, and running it reports how many it left.
 
   ![The date review screen: the choices for ambiguous dates and a preview](docs/screenshots/date-review.png)
 

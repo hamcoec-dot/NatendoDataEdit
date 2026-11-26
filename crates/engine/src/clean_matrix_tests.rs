@@ -105,6 +105,8 @@ fn a_matrix_equals_the_columns_cleaned_one_by_one() {
             format: "yyyy-mm-dd".into(),
             from: String::new(),
             past: false,
+            ambiguous: None,
+            review: None,
         },
         Step::Number {
             start: 1.0,

@@ -37,6 +37,9 @@ const backup = () => {
   fs.rmSync(path.join(BACKUP, "no-private-json"), { force: true });
   if (!fs.existsSync(path.join(DATA, "private.json"))) fs.writeFileSync(path.join(BACKUP, "no-private-json"), "");
   else fs.copyFileSync(path.join(DATA, "private.json"), path.join(BACKUP, "private.json"));
+  // The person's recent files and session are moved aside before the app starts, so no screenshot can show a real
+  // file name (they were copied above and are copied back afterwards).
+  for (const f of ["session.json", "recent.json"]) if (fs.existsSync(path.join(DATA, f))) fs.renameSync(path.join(DATA, f), path.join(BACKUP, `${f}.aside-${Date.now()}`));
   const rec = path.join(LOCAL, "recovery");
   const aside = path.join(BACKUP, "recovery");
   if (fs.existsSync(rec) && !fs.existsSync(aside)) fs.renameSync(rec, aside);
@@ -205,6 +208,18 @@ const proof = async () => {
   ok((await text(1, 1)) === "19750612", "the registration numbers are untouched");
   await invoke(m, "change", { doc: 1, change: { op: "undo" } });
   ok((await column()) === before, "one undo restores the column");
+  // Type each: the typed cell and the clear dates go in together, and one undo takes both back.
+  await cmd(m, "Review and convert dates");
+  ok(await waitFor(async () => (await dialog.count()) === 1), "the review screen opens again");
+  await dialog.getByRole("radio", { name: /Type each/ }).check();
+  await dialog.getByRole("button", { name: "2026-04-03" }).click();
+  await sleep(900);
+  await dialog.getByRole("button", { name: "Apply" }).click();
+  await sleep(1500);
+  const mixed = await column();
+  ok(mixed === JSON.stringify(["2026-04-25", "2026-04-03", "2026-04-25", "2026-05-05", "19660305", "2026-01-02", "07/08/2026"]), `typed and clear dates: ${mixed}`);
+  await invoke(m, "change", { doc: 1, change: { op: "undo" } });
+  ok((await column()) === before, "one undo restores typed and clear cells together");
   ok(fs.readFileSync(FILE, "utf8") === BODY, "the file is not written without Save");
 };
 

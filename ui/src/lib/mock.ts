@@ -2703,8 +2703,9 @@ export class MockBackend implements Backend {
         const first = op.spec.cleaner.steps[0];
         const p = this.planClean(d, op.spec, first?.tool === "dates" && first.review ? 1_000_000_000 : 100_000);
         if (p.more) throw err("too_large", "the browser preview cleans at most 100,000 rows");
-        const info = p.changes.length ? await this.setCells(doc, p.changes) : this.refresh(d);
-        return this.report(info, { cells: p.changes.length, left: p.left });
+        const changes = [...p.changes.filter(([r, c]) => !op.typed?.some((t) => t[0] === r && t[1] === c)), ...(op.typed ?? [])];
+        const info = changes.length ? await this.setCells(doc, changes) : this.refresh(d);
+        return this.report(info, { cells: changes.length, left: p.left });
       }
       case "compute": {
         const names = allCols.map((c) => (op.spec.keep_first ? this.value(d, 0, c) : "") || `Column ${c + 1}`);
