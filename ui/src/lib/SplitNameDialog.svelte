@@ -1,6 +1,7 @@
 <script lang="ts">
   // Split a column of people's names into new columns (title, first,
   // middle, last, suffix), inserted to its right. One undo step.
+  import HiddenNote from "./HiddenNote.svelte";
   import { untrack } from "svelte";
   import type { DataOp } from "./backend";
   import type { NamePart } from "./clean";
@@ -58,6 +59,7 @@
   <label class="row"><input type="checkbox" bind:checked={myHeader} /> The first row holds titles</label>
   <p class="note">Reads "Dr. Mary Ann van der Berg Jr." and "Smith, John". Every row is split, hidden ones too.</p>
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
+  <HiddenNote kind="all" />
   {#snippet buttons()}
     <button type="button" class="primary" onclick={run}>Split</button>
     <button type="button" onclick={onClose}>Cancel</button>
