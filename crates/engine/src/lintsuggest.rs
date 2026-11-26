@@ -207,7 +207,10 @@ impl Document {
                 check: Check {
                     col: Some(col),
                     name: None,
-                    kind: CheckKind::Unique { match_case: false },
+                    kind: CheckKind::Unique {
+                        match_case: false,
+                        also: vec![],
+                    },
                 },
                 why: format!("all {filled} filled values looked at are different"),
                 share: 1.0,
