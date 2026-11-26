@@ -32,10 +32,12 @@ const url = process.argv[3] || "http://localhost:5321";
         count: 1,
         label: "Total",
         checks: [
-          { col: 4, total: "123.45", sum: addsUp ? "123.45" : "120.00", matches: addsUp },
-          { col: 0, total: "9", sum: "9", matches: true },
+          { col: 4, total: "123.45", sum: addsUp ? "123.45" : "120.00", matches: addsUp, rounded: false },
+          { col: 0, total: "9", sum: "9", matches: true, rounded: false },
         ],
         adds_up: addsUp,
+        rounded: false,
+        subtotals: 0,
       });
       t.totalRow = await window.__nde.backend.totalRow(t.id, t.header, {});
     }, addsUp);
@@ -49,7 +51,7 @@ const url = process.argv[3] || "http://localhost:5321";
   await mark(true);
   await p.waitForTimeout(400);
   let t = await text();
-  ok(/Row [\d,]+ looks like a total row \(“Total”\), and the rows above add up to it\./.test(t), "the bar says the row adds up");
+  ok(/Row [\d,]+ looks like a total row \(“Total”\), and the rows above add up to it exactly\./.test(t), "the bar says the row adds up");
   ok((await button("Set aside").count()) === 1 && (await button("Delete").count()) === 1 && (await button("Keep").count()) === 1, "Set aside, Delete and Keep are offered");
   if (out) await p.screenshot({ path: path.join(out, "total-bar.png") });
   await button("Set aside").click();

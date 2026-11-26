@@ -6147,10 +6147,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   function totalWords(t: Tab): string {
     const r = t.totalRow!;
     const where = `Row ${(r.row + 1).toLocaleString()} looks like a total row (“${r.label}”)`;
-    if (r.adds_up) return `${where}, and the rows above add up to it.`;
-    const bad = r.checks.filter((c) => !c.matches);
+    const subs = r.subtotals > 0 ? ` (${plural(r.subtotals, "subtotal row")} above ${r.subtotals === 1 ? "is" : "are"} not counted)` : "";
+    if (r.adds_up) return `${where}, and the rows above add up to it exactly${subs}.`;
+    if (r.rounded) return `${where}; the rows above add up to it only when rounded to its own decimals${subs}, so it is not offered for deleting.`;
+    const bad = r.checks.filter((c) => !c.matches && !c.rounded);
     const cols = bad.slice(0, 3).map((c) => `${columnTitle(t, c.col)} (the rows above make ${c.sum ?? "no number"}, it says ${c.total})`);
-    return `${where}, but ${cols.join(", ")}${bad.length > 3 ? ` and ${bad.length - 3} more columns` : ""} ${bad.length === 1 ? "does" : "do"} not add up.`;
+    return `${where}, but ${cols.join(", ")}${bad.length > 3 ? ` and ${bad.length - 3} more columns` : ""} ${bad.length === 1 ? "does" : "do"} not add up${subs}.`;
   }
   /** The bar answered: set the total line aside below the table, delete it, or keep it. */
   async function answerTotal(how: "aside" | "delete" | "keep"): Promise<void> {

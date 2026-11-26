@@ -134,8 +134,13 @@ export interface TotalRow {
   /** Rows from it to the end (blank lines after it go with it). */
   count: number;
   label: string;
-  checks: { col: number; total: string; sum: string | null; matches: boolean }[];
+  checks: { col: number; total: string; sum: string | null; matches: boolean; rounded: boolean }[];
+  /** Every number cell equals its sum exactly (only then is Delete offered). */
   adds_up: boolean;
+  /** Equal only once rounded to the cells' own decimals. */
+  rounded: boolean;
+  /** Subtotal rows above, left out of the sums. */
+  subtotals: number;
 }
 
 /** Which end of the table rows are set aside at. */

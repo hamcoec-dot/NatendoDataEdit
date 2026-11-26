@@ -163,7 +163,7 @@ const proof = async () => {
   fs.writeFileSync(NAME, NAME_BODY);
   let m = await start([GOOD]);
   await opened(m);
-  ok(await waitFor(async () => /Row 5 looks like a total row \(“Total”\), and the rows above add up to it\./.test(await body(m))), "the bar finds the total row and says it adds up");
+  ok(await waitFor(async () => /Row 5 looks like a total row \(“Total”\), and the rows above add up to it exactly\./.test(await body(m))), "the bar finds the total row and says it adds up");
   ok((await m.getByRole("button", { name: "Delete", exact: true }).count()) === 1, "Delete is offered");
   await m.setViewportSize({ width: 1180, height: 420 }).catch(() => {});
   await sleep(400);
@@ -182,6 +182,14 @@ const proof = async () => {
   await m.getByRole("button", { name: "Keep", exact: true }).click();
   await sleep(600);
   ok(!/looks like a total row/.test(await body(m)) && (await facts(m)).rows === 5, "Keep leaves the row");
+
+  // A whole-number total over cents: adds up only when rounded, no Delete.
+  const ROUND = path.join(OUT, "shop-totals-rounded.csv");
+  fs.writeFileSync(ROUND, ["shop,amount", "Harbour St,1849.80", "Mill Lane,1849.80", "Total,3700", ""].join("\r\n"));
+  m = await start([ROUND]);
+  await opened(m);
+  ok(await waitFor(async () => /add up to it only when rounded to its own decimals/.test(await body(m))), "a rounded total is said apart");
+  ok((await m.getByRole("button", { name: "Delete", exact: true }).count()) === 0, "and is not offered for deleting");
 
   m = await start([NAME]);
   await opened(m);

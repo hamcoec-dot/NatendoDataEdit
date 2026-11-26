@@ -672,8 +672,14 @@ pub struct TotalRow {
     pub label: String,
     /// The number cells and what the rows above add up to.
     pub checks: Vec<TotalCheck>,
-    /// Every number cell matches its column's sum.
+    /// Every number cell equals its column's sum exactly.
     pub adds_up: bool,
+    /// Not exactly, but every cell equals its sum rounded to the cell's own
+    /// decimals (whole numbers for a cell with none): never deleted.
+    pub rounded: bool,
+    /// Rows above that are themselves totals (first filled cell Total,
+    /// Subtotal...): left out of the sums.
+    pub subtotals: u64,
 }
 
 /// One number cell of a total row.
@@ -685,7 +691,10 @@ pub struct TotalCheck {
     /// The rows above, added up and written with as many decimals as the
     /// cell (`None`: no numbers to add).
     pub sum: Option<String>,
+    /// Exactly equal (up to the far smaller error of adding binary numbers).
     pub matches: bool,
+    /// Equal only once the sum is rounded to the cell's decimals.
+    pub rounded: bool,
 }
 
 /// Rows at the end looked at for a total line.
@@ -746,38 +755,114 @@ impl Document {
                 continue;
             }
             let sums = self.column_totals_in(&cols, first..pos, header, read, progress)?;
+            // Subtotal rows above (their first filled cell a total word) are
+            // taken out of the sums again.
+            let sub = self.subtotal_rows(first..pos, label_col as u32, progress)?;
+            let mut less = vec![(0.0f64, 0u64); cols.len()];
+            if !sub.is_empty() {
+                let reader = crate::ops::Cols::new(self, &cols);
+                let mut buf = Vec::new();
+                for &id in &sub {
+                    reader.read(self, id, &mut buf);
+                    for (k, &c) in cols.iter().enumerate() {
+                        if let Some(x) = ctx.reader(c).number(reader.get(&buf, k).trim()) {
+                            less[k].0 += x;
+                            less[k].1 += 1;
+                        }
+                    }
+                }
+            }
             let mut checks = Vec::with_capacity(cols.len());
-            for (s, &c) in sums.iter().zip(&cols) {
+            for ((s, &c), (minus, gone)) in sums.iter().zip(&cols).zip(&less) {
                 let text = values[c as usize].trim().to_string();
                 let want = ctx.reader(c).number(&text).unwrap_or(f64::NAN);
-                let dec = decimals(&text);
-                let sum = s.totals.sum.filter(|_| s.totals.numbers > 0);
-                let matches = sum.is_some_and(|x| {
-                    (x - want).abs() <= 0.5 * 10f64.powi(-(dec as i32)) + want.abs() * 1e-12
-                });
+                let dec = decimals(&text, read.decimal_comma);
+                let sum = s
+                    .totals
+                    .sum
+                    .filter(|_| s.totals.numbers > *gone)
+                    .map(|x| x - minus);
+                // Exact: far below any decimal place (binary sums of decimal
+                // values are off by about 1e-16 of the total per row).
+                let matches = sum.is_some_and(|x| (x - want).abs() <= want.abs().max(1.0) * 1e-9);
+                let rounded = !matches
+                    && sum.is_some_and(|x| {
+                        let f = 10f64.powi(dec as i32);
+                        ((x * f).round() - (want * f).round()).abs() < 0.5
+                    });
                 checks.push(TotalCheck {
                     col: c,
                     total: text,
-                    sum: sum.map(|x| format!("{x:.dec$}")),
+                    sum: sum.map(|x| {
+                        let t = format!("{x:.dec$}");
+                        if read.decimal_comma {
+                            t.replace('.', ",")
+                        } else {
+                            t
+                        }
+                    }),
                     matches,
+                    rounded,
                 });
             }
+            let adds_up = checks.iter().all(|c| c.matches);
             return Ok(Some(TotalRow {
                 row: pos,
                 count: n - pos,
                 label: values[label_col].trim().to_string(),
-                adds_up: checks.iter().all(|c| c.matches),
+                adds_up,
+                rounded: !adds_up && checks.iter().all(|c| c.matches || c.rounded),
+                subtotals: sub.len() as u64,
                 checks,
             }));
         }
         Ok(None)
     }
+
+    /// Ids of rows in `rows` whose first filled cell, up to column `upto`,
+    /// is a total word (subtotals above a grand total). At most 1,000,000.
+    fn subtotal_rows(
+        &self,
+        rows: std::ops::Range<u64>,
+        upto: u32,
+        progress: &Progress,
+    ) -> Result<Vec<u32>, Error> {
+        use rayon::prelude::*;
+        const CHUNK: u64 = 8_192;
+        let lead: Vec<u32> = (0..=upto.min(self.col_count().saturating_sub(1)).min(15)).collect();
+        let reader = crate::ops::Cols::new(self, &lead);
+        let (s0, e0) = (rows.start, rows.end);
+        let parts = (0..(e0.saturating_sub(s0)).div_ceil(CHUNK))
+            .into_par_iter()
+            .map(|k| -> Result<Vec<u32>, Error> {
+                progress.step(0)?;
+                let s = s0 + k * CHUNK;
+                let e = (s + CHUNK).min(e0);
+                let mut buf = Vec::new();
+                let mut out = Vec::new();
+                for r in s..e {
+                    let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                    reader.read(self, id, &mut buf);
+                    let first = (0..lead.len())
+                        .map(|i| reader.get(&buf, i))
+                        .find(|v| !v.trim().is_empty());
+                    if first.is_some_and(total_word) {
+                        out.push(id);
+                    }
+                }
+                Ok(out)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(parts.into_iter().flatten().take(1_000_000).collect())
+    }
 }
 
-/// Digits after the decimal point of a number as written ("1,234.50" -> 2).
-fn decimals(text: &str) -> usize {
+/// Digits after the decimal mark of a number as written ("1,234.50" -> 2;
+/// with a decimal comma "3.700,50" -> 2).
+fn decimals(text: &str, decimal_comma: bool) -> usize {
     let t = text.trim().trim_end_matches('%');
-    match t.rfind('.') {
+    let mark = if decimal_comma { ',' } else { '.' };
+    match t.rfind(mark) {
         Some(i) => t[i + 1..]
             .chars()
             .take_while(char::is_ascii_digit)
@@ -1417,6 +1502,92 @@ mod tests {
         let mut d = doc(b"name,amount\nann,1\nbo,2\nTotal,3\n");
         d.hide_rows(1, 1).unwrap();
         assert_eq!(d.find_total_row(true, read, &p).unwrap(), None);
+    }
+
+    /// Review b1: a whole-number total is not "adds up" for 3699.60; it adds
+    /// up only when rounded, and that is said apart (no Delete).
+    #[test]
+    fn adds_up_means_exactly() {
+        let read = crate::value::ReadOptions::default();
+        let p = Progress::new();
+        let d = doc(b"name,amount\nann,1849.80\nbo,1849.80\nTotal,3700\n");
+        let t = d.find_total_row(true, read, &p).unwrap().unwrap();
+        assert!(!t.adds_up && t.rounded, "{t:?}");
+        assert!(!t.checks[0].matches && t.checks[0].rounded);
+        assert_eq!(t.checks[0].sum.as_deref(), Some("3700"));
+        // Far off is neither.
+        let d = doc(b"name,amount\nann,1\nbo,2\nTotal,4\n");
+        let t = d.find_total_row(true, read, &p).unwrap().unwrap();
+        assert!(!t.adds_up && !t.rounded);
+        // Many cents add up exactly.
+        let mut src = String::from("name,amount\n");
+        for i in 0..10_000 {
+            src.push_str(&format!("r{i},0.10\n"));
+        }
+        src.push_str("Total,1000.00\n");
+        let d = doc(src.as_bytes());
+        assert!(d.find_total_row(true, read, &p).unwrap().unwrap().adds_up);
+    }
+
+    /// Review b2: a decimal comma counts the decimals after the comma.
+    #[test]
+    fn decimal_comma_totals() {
+        let read = crate::value::ReadOptions {
+            decimal_comma: true,
+            ..Default::default()
+        };
+        let p = Progress::new();
+        let d = Document::from_bytes(
+            b"name;amount\nann;1.850,25\nbo;1.850,25\nTotal;3.700,50\n".to_vec(),
+            OpenOptions {
+                delimiter: Some(b';'),
+                ..Default::default()
+            },
+            Some("csv"),
+        )
+        .unwrap();
+        assert_eq!(decimals("3.700,50", true), 2);
+        let t = d.find_total_row(true, read, &p).unwrap().unwrap();
+        assert!(t.adds_up, "{t:?}");
+        assert_eq!(t.checks[0].sum.as_deref(), Some("3700,50"));
+        let d = Document::from_bytes(
+            b"name;amount\nann;1.850,25\nbo;1.850,25\nTotal;3.700,40\n".to_vec(),
+            OpenOptions {
+                delimiter: Some(b';'),
+                ..Default::default()
+            },
+            Some("csv"),
+        )
+        .unwrap();
+        let t = d.find_total_row(true, read, &p).unwrap().unwrap();
+        assert!(!t.adds_up && !t.rounded);
+    }
+
+    /// Review b3: subtotal rows above a grand total are left out, and counted.
+    #[test]
+    fn subtotals_are_left_out_of_a_grand_total() {
+        let read = crate::value::ReadOptions::default();
+        let p = Progress::new();
+        let d = doc(
+            b"shop,amount\nnorth,10\nnorth,5\nSubtotal,15\nsouth,7\nSubtotal:,7\nGrand total,22\n",
+        );
+        let t = d.find_total_row(true, read, &p).unwrap().unwrap();
+        assert!(t.adds_up, "{t:?}");
+        assert_eq!((t.subtotals, t.label.as_str()), (2, "Grand total"));
+    }
+
+    /// Review b4: a voter list where a person's first name is "Total" and the
+    /// ID column is all numbers never adds up, so Delete is never offered.
+    #[test]
+    fn a_voter_named_total_never_adds_up() {
+        let read = crate::value::ReadOptions::default();
+        let p = Progress::new();
+        let d = doc(
+            b"first_name,last_name,voter_id,precinct\nAnn,Lee,100231,12\nBo,Wu,100232,12\nCy,Ray,100233,7\nTotal,Smith,100234,7\n",
+        );
+        if let Some(t) = d.find_total_row(true, read, &p).unwrap() {
+            assert!(!t.adds_up && !t.rounded, "{t:?}");
+        }
     }
 
     #[test]
