@@ -521,6 +521,25 @@ impl Document {
             }
             Ok(())
         };
+        // Each changed or added row's number in the second table (as the
+        // first's: the title row is 1), whatever its filter or order shows.
+        let second: HashMap<u32, u64> = {
+            let wanted: std::collections::HashSet<u32> = listed
+                .changed
+                .iter()
+                .map(|c| c.2)
+                .chain(listed.added.iter().copied())
+                .collect();
+            let first = 1 + u64::from(spec.keep_first);
+            index
+                .rows
+                .iter()
+                .zip(first..)
+                .filter(|(row, _)| wanted.contains(&row.2))
+                .map(|(row, number)| (row.2, number))
+                .collect()
+        };
+        let number_b = |id: u32| second.get(&id).map_or_else(String::new, u64::to_string);
         // Removed rows: in the first table only.
         for ri in 0..removed.len() {
             let ra = removed.row(ri);
@@ -609,7 +628,7 @@ impl Document {
                     line.extend([
                         "changed".to_string(),
                         ra.number().to_string(),
-                        String::new(),
+                        number_b(nid),
                     ]);
                     line.extend(newer.iter().cloned());
                     line.extend((0..only_b_cols.len()).map(|i| reader_b.get(&bbuf, i).to_string()));
@@ -669,7 +688,7 @@ impl Document {
             let vals = values.row(listed.changed.len() + i);
             reader_b.read(other, nid, &mut bbuf);
             line.clear();
-            line.extend(["added".to_string(), String::new(), String::new()]);
+            line.extend(["added".to_string(), String::new(), number_b(nid)]);
             line.extend(vals);
             line.extend((0..only_b_cols.len()).map(|i| reader_b.get(&bbuf, i).to_string()));
             line.push(String::new());
@@ -897,6 +916,28 @@ mod tests {
     const B: &str = "city,id,name,zip\r\nDayton,1,Ann,45402\r\nOsaka,2,Bo,100\r\nPerth,3,Cyd,6000\r\nNew,5,Eve,1\r\n";
 
     #[test]
+    fn both_row_numbers_are_each_tables_own() {
+        let a = doc("id,v\r\n1,a\r\n2,b\r\n3,c\r\n");
+        let mut b = doc("id,v\r\n9,new\r\n3,C\r\n2,b\r\n1,A\r\n");
+        // Rows hidden in the second table still count.
+        b.hide_rows(1, 1).unwrap();
+        let o = a.diff_files(&b, &spec(&[0]), &Progress::new()).unwrap();
+        let l = lines(&o);
+        for want in ["changed,2,5,1,A,", "changed,4,3,3,C,", "added,,2,9,new,"] {
+            assert!(l.iter().any(|x| x.starts_with(want)), "{want}: {l:?}");
+        }
+        // With no title rows the numbers start at 1.
+        let a = doc("1,a\r\n2,b\r\n");
+        let b = doc("2,B\r\n1,a\r\n");
+        let spec = DiffSpec {
+            keys: vec![0],
+            ..Default::default()
+        };
+        let l = lines(&a.diff_files(&b, &spec, &Progress::new()).unwrap());
+        assert!(l.iter().any(|x| x.starts_with("changed,2,1,2,B")), "{l:?}");
+    }
+
+    #[test]
     fn rows_are_paired_by_key_and_columns_by_title() {
         let (a, b) = (doc(A), doc(B));
         let o = a.diff_files(&b, &spec(&[0]), &Progress::new()).unwrap();
@@ -923,12 +964,13 @@ mod tests {
             "{l:?}"
         );
         assert!(
-            l.iter().any(|x| x.starts_with("changed,3,,2,Bo,Osaka,100,")
-                && x.contains("city: Lisbon → Osaka")),
+            l.iter()
+                .any(|x| x.starts_with("changed,3,3,2,Bo,Osaka,100,")
+                    && x.contains("city: Lisbon → Osaka")),
             "{l:?}"
         );
         assert!(
-            l.iter().any(|x| x.starts_with("added,,,5,Eve,New,1,")),
+            l.iter().any(|x| x.starts_with("added,,5,5,Eve,New,1,")),
             "{l:?}"
         );
     }
@@ -994,8 +1036,20 @@ mod tests {
             .diff_files(&sorted, &spec(&[0]), &Progress::new())
             .unwrap();
         assert_eq!(x.report, y.report);
-        let mut lx = lines(&x);
-        let mut ly = lines(&y);
+        // The same but for the second table's row numbers, which the re-sort
+        // moves.
+        let but_second = |o: &DiffOutcome| -> Vec<String> {
+            lines(o)
+                .iter()
+                .map(|l| {
+                    let mut cells: Vec<&str> = l.split(',').collect();
+                    cells.remove(2);
+                    cells.join(",")
+                })
+                .collect()
+        };
+        let mut lx = but_second(&x);
+        let mut ly = but_second(&y);
         lx.sort();
         ly.sort();
         assert_eq!(lx, ly);

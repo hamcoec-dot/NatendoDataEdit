@@ -1403,7 +1403,7 @@ export class MockBackend implements Backend {
       }
       rep.changed++;
       rep.cells += cols.length;
-      changedRows.push(["changed", String(this.pos(da, r) + 1), "", ...newer.map((v, c) => (map[c] === null ? (vals[c] ?? "") : v)), ...onlyB.map((x) => this.value(db, j!, x.j)), what.join("; ")]);
+      changedRows.push(["changed", String(this.pos(da, r) + 1), String(this.pos(db, j) + 1), ...newer.map((v, c) => (map[c] === null ? (vals[c] ?? "") : v)), ...onlyB.map((x) => this.value(db, j!, x.j)), what.join("; ")]);
       aSide.set(k, { kind: 0, cols });
       bSide.set(k, { kind: 0, cols: cols.map((c) => map[c]!) });
     }
@@ -1416,7 +1416,7 @@ export class MockBackend implements Backend {
       if (used.has(r)) continue;
       rep.added++;
       const vals = map.map((m) => (m === null ? "" : this.value(db, r, m)));
-      addedRows.push(["added", "", "", ...vals, ...onlyB.map((x) => this.value(db, r, x.j)), ""]);
+      addedRows.push(["added", "", String(this.pos(db, r) + 1), ...vals, ...onlyB.map((x) => this.value(db, r, x.j)), ""]);
       bSide.set(key(db, r, keysB), { kind: 1, cols: [] });
     }
     for (const [k, n] of seenA) if (n > 1) rep.dup_a.push(k.split("\u001f").join(" | "));

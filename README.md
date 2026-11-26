@@ -1024,7 +1024,7 @@ everything is also in command search.
   first ones and pairs them in order), rows with an empty key (never paired
   with each other), and columns that are only in one file (or moved). The
   result opens as a new tab: Change (changed, added, removed), the row numbers
-  in both files, every column of both files, and "What changed" (`city:
+  in both files (each file's own, counting its title row), every column of both files, and "What changed" (`city:
   Lisbon → Osaka`). The same colours mark the differences in the first file,
   the second file and the result: amber cells for changed values, green rows
   that are only in the second file, red rows that are not in it. **Alt+F7**
