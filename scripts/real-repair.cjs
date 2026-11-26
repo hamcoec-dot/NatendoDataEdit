@@ -138,7 +138,7 @@ const waitFor = async (fn, ms = 15000, step = 250) => {
 const OUT = path.join(WORK, `out-${Date.now()}`);
 fs.mkdirSync(OUT, { recursive: true });
 const FILE = path.join(OUT, "broken.csv");
-const BODY = ["id,name,city", "1,ann,Oslo", "2,Smith, John,Rome", "3,bo,New ", "York", "4,eve,Turin", "5,dee,Lima", ""].join("\r\n");
+const BODY = ["id,name,city", "1,ann,Oslo", "2,Smith, John,Rome", "3,b", "o,Lima", "4,eve,Turin", "5,dee,Lima", ""].join("\r\n");
 fs.writeFileSync(FILE, BODY);
 const read = () => fs.readFileSync(FILE, "utf8");
 const body = async (m) => ((await m.textContent("body")) || "").replace(/\s+/g, " ");
@@ -174,12 +174,12 @@ const proof = async () => {
   await sleep(400);
   ok((await m.getByTestId("repair").count()) === 0, "Esc closes the bar");
   // Undo takes back one repair; redo puts it back.
-  await invoke(m, "undo", { doc: 1 });
-  ok((await invoke(m, "ragged_list", { doc: 1, keepFirst: true })).total === 2, "one undo step brings the broken line back");
-  await invoke(m, "redo", { doc: 1 });
+  await invoke(m, "change", { doc: 1, change: { op: "undo" } });
+  ok((await invoke(m, "ragged_list", { doc: 1, keepFirst: true })).total === 2, "one undo step brings the broken line back (both halves)");
+  await invoke(m, "change", { doc: 1, change: { op: "redo" } });
   await invoke(m, "save", { doc: 1, saveAs: false, overwriteChanged: true, allowLossy: false });
   await sleep(800);
-  const want = ["id,name,city", "1,ann,Oslo", '2,"Smith, John",Rome', "3,bo,New York", "4,eve,Turin", "5,dee,Lima", ""].join("\r\n");
+  const want = ["id,name,city", "1,ann,Oslo", '2,"Smith, John",Rome', "3,bo,Lima", "4,eve,Turin", "5,dee,Lima", ""].join("\r\n");
   ok(read() === want, `saved: ${JSON.stringify(read())}`);
 
   // A stray quote read as text, and reopening the saved file.
