@@ -266,6 +266,15 @@ pub enum RecipeOp {
         #[serde(default, skip_serializing_if = "is_zero")]
         unticked: u32,
     },
+    /// Set the first `head` and last `foot` rows aside as report notes
+    /// (lines above and below the table). Counts only: the lines themselves
+    /// are never in a recipe.
+    SetAside {
+        #[serde(default)]
+        head: u32,
+        #[serde(default)]
+        foot: u32,
+    },
 }
 
 /// One typed column of a [`RecipeOp::ColumnTypes`] step: its title (and where it was, used only when the
@@ -390,6 +399,18 @@ impl RecipeOp {
                 }
             },
             RecipeOp::CheckColumn { .. } => "Add a check result column".into(),
+            RecipeOp::SetAside { head, foot } => {
+                let rows = |n: u32| if n == 1 { "row".to_string() } else { format!("{n} rows") };
+                match (*head, *foot) {
+                    (0, f) => format!("Set aside the last {} as report notes", rows(f)),
+                    (h, 0) => format!("Set aside the first {} as report notes", rows(h)),
+                    (h, f) => format!(
+                        "Set aside the first {} and the last {} as report notes",
+                        rows(h),
+                        rows(f)
+                    ),
+                }
+            }
         }
     }
 }
@@ -645,7 +666,10 @@ impl Recipe {
             return out;
         }
         let cols: Vec<u32> = (0..doc.col_count()).collect();
-        let now = doc.titles(&cols, self.header);
+        let now = match self.title_row() {
+            0 => doc.titles(&cols, self.header),
+            r => doc.row_values(r).unwrap_or_default(),
+        };
         let norm = |s: &str| s.trim().to_lowercase();
         for (i, want) in self.columns.iter().enumerate() {
             match now.get(i) {
@@ -679,9 +703,18 @@ fn column_by_title(titles: &[String], title: &str, col: u32, width: u32) -> Opti
 }
 
 impl Recipe {
+    /// The row that holds the column titles before the recipe runs: below
+    /// the lines a first "set aside" step takes out of the table.
+    fn title_row(&self) -> u64 {
+        match self.steps.first() {
+            Some(RecipeOp::SetAside { head, .. }) if self.header => u64::from(*head),
+            _ => 0,
+        }
+    }
+
     /// A typed column the file has no title for, in words (empty when every one is there).
     fn type_problems(&self, doc: &Document) -> Vec<String> {
-        let titles = doc.row_values(0).unwrap_or_default();
+        let titles = doc.row_values(self.title_row()).unwrap_or_default();
         let mut out = Vec::new();
         for s in &self.steps {
             if let RecipeOp::ColumnTypes { types } = s {
@@ -826,6 +859,9 @@ impl Document {
             RecipeOp::DeleteHidden => {
                 let p = self.plan_delete_hidden()?;
                 self.apply_rows(p)
+            }
+            RecipeOp::SetAside { head, foot } => {
+                self.set_aside_ends(u64::from(*head), u64::from(*foot))
             }
             RecipeOp::JoinFields {
                 usual,

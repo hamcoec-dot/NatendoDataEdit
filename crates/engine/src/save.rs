@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::dialect::{Dialect, LineBreak};
+use crate::document::report::{self, Place};
 use crate::document::{Document, Format, OpenOptions, RowSource, Start};
 use crate::encoding::{self, Encoding};
 use crate::index::RowIndex;
@@ -78,6 +79,13 @@ struct Counts {
     bytes: u64,
     rows: u64,
     raw_rows: u64,
+    /// Lines written above the table (report notes).
+    head_lines: u32,
+    /// Bytes written below the table, as the file reads back (decoded).
+    tail: usize,
+    /// The lines above and below, decoded, as written.
+    head_text: String,
+    tail_text: String,
 }
 
 struct CountingWriter<W> {
@@ -134,7 +142,7 @@ impl Document {
     /// them can still be recovered.
     pub fn write_copy(&self, out: &mut impl Write) -> Result<u64, Error> {
         let mut w = CountingWriter { inner: out, n: 0 };
-        self.write_rows(&mut w, self.format, false, true, Quoting::Keep)?;
+        self.write_rows(&mut w, self.format, false, true, Quoting::Keep, true)?;
         Ok(w.n)
     }
 
@@ -147,7 +155,7 @@ impl Document {
         quoting: Quoting,
     ) -> Result<u64, Error> {
         let mut w = CountingWriter { inner: out, n: 0 };
-        self.write_rows(&mut w, target, convert_line_breaks, false, quoting)?;
+        self.write_rows(&mut w, target, convert_line_breaks, false, quoting, false)?;
         Ok(w.n)
     }
 
@@ -158,6 +166,9 @@ impl Document {
         convert: bool,
         allow_lossy: bool,
         quoting: Quoting,
+        // Report notes even while the switch says leave them out (recovery
+        // copies keep everything).
+        all_notes: bool,
     ) -> Result<Counts, Error> {
         if !self.is_indexed() {
             return Err(Error::StillLoading);
@@ -180,8 +191,11 @@ impl Document {
             quoting,
         };
         let original_rows = self.index.rows() as u32;
-        // The last row ends with a line break if the file's last row did.
-        let ends_with_break = self.index.stats().unterminated_rows == 0;
+        let head = self.note_bytes(Place::Head, all_notes);
+        let foot = self.note_bytes(Place::Foot, all_notes);
+        // The last row ends with a line break if the file's last row did, or
+        // when lines follow below the table.
+        let ends_with_break = self.index.stats().unterminated_rows == 0 || !foot.is_empty();
         let n = self.total_rows();
         let mut counts = Counts::default();
         let mut text = String::new();
@@ -195,29 +209,17 @@ impl Document {
         if target.bom {
             w.write_all(target.encoding.bom())?;
         }
-        // The lines above the table, unchanged (re-encoded if need be).
-        let pre = self.preamble();
-        if !pre.is_empty() {
-            if plan.raw_ok || (src.encoding.is_direct() && target.encoding == src.encoding) {
-                w.write_all(pre)?;
-            } else {
-                let (text, bad) = encoding::decode_direct_checked(pre, self.working_encoding());
-                if bad && !allow_lossy {
-                    return Err(Error::Lossy { row: None });
-                }
-                let mut out = Vec::new();
-                encoding::encode(&text, target.encoding, &mut out).map_err(|u| {
-                    Error::Unmappable {
-                        row: 0,
-                        ch: u.0,
-                        encoding: target.encoding.name(),
-                    }
-                })?;
-                w.write_all(&out)?;
+        // The lines above the table (report notes), unchanged (re-encoded if
+        // need be).
+        if !head.is_empty() {
+            let mut head = head;
+            if (n > 0 || !foot.is_empty()) && LineBreak::at_end_of(&head).is_none() {
+                head.extend_from_slice(self.format.line_break.bytes());
             }
-            if n > 0 && LineBreak::at_end_of(pre).is_none() {
-                w.write_all(target.line_break.bytes())?;
-            }
+            let (out, _, text) = self.note_out(&head, &plan, src)?;
+            counts.head_lines = report::lines_in(&head) as u32;
+            counts.head_text = text;
+            w.write_all(&out)?;
         }
         // Columns were inserted, deleted or moved: every row is rewritten
         // through the column map. Unedited rows in the same encoding and
@@ -482,7 +484,48 @@ impl Document {
         if let Some((s, e)) = run.take() {
             w.write_all(&data[s..e])?;
         }
+        // The lines below the table, after the last row whatever the order.
+        if !foot.is_empty() {
+            let (out, tail, text) = self.note_out(&foot, &plan, src)?;
+            counts.tail = tail;
+            counts.tail_text = text;
+            w.write_all(&out)?;
+        }
         Ok(counts)
+    }
+
+    /// Report-note bytes (working encoding) in the target encoding, with the
+    /// length they read back as (decoded) and their text.
+    fn note_out(
+        &self,
+        b: &[u8],
+        plan: &Plan,
+        src: Format,
+    ) -> Result<(Vec<u8>, usize, String), Error> {
+        let target = plan.target;
+        let (text, bad) = encoding::decode_direct_checked(b, self.working_encoding());
+        if bad && !plan.allow_lossy {
+            return Err(Error::Lossy { row: None });
+        }
+        let mut text = text.into_owned();
+        if plan.raw_ok || (src.encoding.is_direct() && target.encoding == src.encoding) {
+            return Ok((b.to_vec(), b.len(), text));
+        }
+        if plan.fffd_as_question && text.contains('\u{FFFD}') {
+            text = text.replace('\u{FFFD}', "?");
+        }
+        let mut out = Vec::new();
+        encoding::encode(&text, target.encoding, &mut out).map_err(|u| Error::Unmappable {
+            row: 0,
+            ch: u.0,
+            encoding: target.encoding.name(),
+        })?;
+        let back = if target.encoding.is_direct() {
+            out.len()
+        } else {
+            text.len()
+        };
+        Ok((out, back, text))
     }
 
     /// True for a line-bound row whose quote never closed.
@@ -674,6 +717,7 @@ impl Document {
                     opts.convert_line_breaks,
                     opts.allow_lossy,
                     opts.quoting,
+                    false,
                 )?;
                 c.bytes = cw.n;
                 gz.finish()?;
@@ -689,6 +733,7 @@ impl Document {
                     opts.convert_line_breaks,
                     opts.allow_lossy,
                     opts.quoting,
+                    false,
                 )?;
                 c.bytes = cw.n;
                 c
@@ -707,7 +752,7 @@ impl Document {
         };
 
         // 2. Read it back and compare every row before touching the original.
-        let check = match self.verify(&temp, format, opts.allow_lossy) {
+        let check = match self.verify(&temp, format, opts.allow_lossy, &counts) {
             Ok(c) => c,
             Err(e) => {
                 let _ = fs::remove_file(&temp);
@@ -722,6 +767,7 @@ impl Document {
         // 3. Release our hold on the file being replaced (a mapped file is
         //    locked against writers, including us).
         let released = same_file && self.source.is_mapped();
+        let my_tail = self.source.bytes().len() - self.data_end;
         if released {
             drop(self.take_source());
         }
@@ -739,7 +785,7 @@ impl Document {
                     });
                 }
                 if let Ok(s) = Source::open(&target) {
-                    if s.bytes().len() == self.index.reached() || self.index.rows() == 0 {
+                    if s.bytes().len() == self.index.reached() + my_tail || self.index.rows() == 0 {
                         self.put_source(s);
                         let _ = fs::remove_file(&temp);
                         return Err(Error::SaveIncomplete {
@@ -777,7 +823,7 @@ impl Document {
                 s
             }
             None => match Source::open(&target) {
-                Ok(s) if s.bytes().len() == check_index.reached() => s,
+                Ok(s) if s.bytes().len() == check_index.reached() + check_start.tail_len => s,
                 Ok(_) => {
                     return Err(self.reload_failed(&target, "the file changed after saving".into()))
                 }
@@ -797,11 +843,18 @@ impl Document {
 
     /// Open the written file the way it will be reopened and compare every
     /// row's values with the document.
-    fn verify(&self, temp: &Path, format: Format, allow_lossy: bool) -> Result<Document, Error> {
+    fn verify(
+        &self,
+        temp: &Path,
+        format: Format,
+        allow_lossy: bool,
+        counts: &Counts,
+    ) -> Result<Document, Error> {
         let opts = OpenOptions {
             encoding: Some(format.encoding),
             dialect: Some(format.dialect),
-            skip_lines: Some(self.preamble_lines),
+            skip_lines: Some(counts.head_lines),
+            tail_bytes: Some(counts.tail),
             ..Default::default()
         };
         let mut check = Document::from_source(Source::open(temp)?, opts, None)?;
@@ -816,10 +869,15 @@ impl Document {
             let n = LineBreak::at_end_of(t.as_bytes()).map_or(0, |l| l.bytes().len());
             t[..t.len() - n].to_owned()
         };
-        if check.preamble_lines != self.preamble_lines
-            || trim(check.preamble_text()) != trim(self.preamble_text())
+        if check.preamble_lines != counts.head_lines
+            || trim(check.preamble_text()) != trim(counts.head_text.clone())
         {
             return fail(0);
+        }
+        // And the lines below it.
+        let tail = &check.source_ref().bytes()[check.data_end..];
+        if encoding::decode_direct(tail, check.working_encoding()) != counts.tail_text.as_str() {
+            return fail(check.total_rows());
         }
         if let Some(r) = check.index.line_bound_from() {
             return fail(r);
@@ -923,7 +981,9 @@ impl Document {
     ) {
         let src = kept.or_else(|| Source::open(temp).ok());
         match src {
-            Some(s) if s.bytes().len() == index.reached() => self.reset_to(s, start, format, index),
+            Some(s) if s.bytes().len() == index.reached() + start.tail_len => {
+                self.reset_to(s, start, format, index)
+            }
             _ => self.make_empty(format),
         }
     }

@@ -3011,6 +3011,52 @@ async fn date_list(
     blocking(move || docs.date_list(doc, col, keep_first)).await
 }
 
+/// Report notes (C4): why rows cannot be set aside (`None`: they can).
+#[tauri::command]
+async fn set_aside_check(
+    docs: DocsState<'_>,
+    doc: u32,
+    at: u64,
+    count: u64,
+    place: natendo_engine::document::report::Place,
+) -> CmdResult<Option<String>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.set_aside_check(doc, at, count, place)).await
+}
+
+#[tauri::command]
+async fn set_aside(
+    docs: DocsState<'_>,
+    doc: u32,
+    at: u64,
+    count: u64,
+    place: natendo_engine::document::report::Place,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.set_aside(doc, at, count, place)).await
+}
+
+#[tauri::command]
+async fn report_notes(
+    docs: DocsState<'_>,
+    doc: u32,
+) -> CmdResult<natendo_engine::document::report::ReportNotes> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.report_notes(doc)).await
+}
+
+#[tauri::command]
+async fn put_back_notes(docs: DocsState<'_>, doc: u32) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.put_back_notes(doc)).await
+}
+
+#[tauri::command]
+async fn keep_notes(docs: DocsState<'_>, doc: u32, keep: bool) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.keep_notes(doc, keep)).await
+}
+
 #[tauri::command]
 async fn gap_hidden(docs: DocsState<'_>, doc: u32, row: u64) -> CmdResult<u64> {
     let docs = docs.inner().clone();
@@ -4700,6 +4746,11 @@ pub fn run() {
             date_find,
             date_list,
             gap_hidden,
+            set_aside_check,
+            set_aside,
+            report_notes,
+            put_back_notes,
+            keep_notes,
             row_text,
             repair_row,
             same_shape,

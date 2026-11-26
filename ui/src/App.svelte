@@ -22,7 +22,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { colLetters, parseGoto } from "./lib/goto";
   import { cellCount, type Rect, cellCountAreas, colsOfAreas, disjoint, MAX_AREAS } from "./lib/selection";
   import { dropIndex, MOUSE_MOVES } from "./lib/dragmove";
-  import { headerCertainty, looksLikeHeader } from "./lib/header";
+  import { headerCertainty, looksLikeHeader, titleLines } from "./lib/header";
+  import type { NotePlace } from "./lib/backend";
   import { separatorName } from "./lib/layout";
   import Grid from "./lib/Grid.svelte";
   import LayoutDialog from "./lib/LayoutDialog.svelte";
@@ -441,6 +442,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       }
       // A change after undoing a rename ends its redo.
       if (!undoBusy.has(t) && t.refEdits.some((e) => !e.applied)) t.refEdits = t.refEdits.filter((e) => e.applied);
+      if (!undoBusy.has(t) && t.headerEdits.some((e) => !e.applied)) t.headerEdits = t.headerEdits.filter((e) => e.applied);
       return true;
     } catch (e) {
       say(errorText(e));
@@ -742,6 +744,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       for (const r of rows) for (let c = r.length - 1; c >= width; c--) if (r[c] !== "") width = c + 1;
       const sample = rows.map((r) => r.slice(0, width));
       if (t.headerTouched) return;
+      // Report title lines above the column titles: the bar offers
+      // "Headers start at row N" (C4).
+      t.titleLines = t.info.filtered ? 0 : titleLines(sample);
       const sure = headerCertainty(sample);
       t.headerSure = sure;
       const guess = sure === "unsure" ? looksLikeHeader(sample) : sure === "yes";
@@ -753,7 +758,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       // A file with no remembered choice asks, in the bar (the guess is
       // already applied, so it can be ignored).
       // Private files remember nothing, so they are not asked either.
-      if (prefs.data.askHeader && t.info.path && !priv && sample.length >= 2) {
+      if ((prefs.data.askHeader || t.titleLines > 0) && t.info.path && !priv && sample.length >= 2) {
         t.headerAsk = sure;
         t.headerAskClosed = false;
       }
@@ -1395,7 +1400,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         const r = await runJob("Exporting", () => (tabIds ? backend().exportBook(tabIds, o, tabIds.map(widthsOf)) : backend().exportFile(t.id, o)));
         if (!r) return;
         if (r.files?.length) say(`Exported ${plural(r.rows, "row")} to ${plural(r.files.length, "file")}: ${r.files[0]} to ${r.files[r.files.length - 1]}, each with the title row.`);
-        else say(`Exported ${plural(r.rows, "row")}${r.sheets > 1 ? ` on ${plural(r.sheets, "sheet")}` : ""}.`);
+        else say(`Exported ${plural(r.rows, "row")}${r.sheets > 1 ? ` on ${plural(r.sheets, "sheet")}` : ""}.${noteLines(t) > 0 ? " The report notes (lines above and below the table) are not in the export: only Save writes them." : ""}`);
       }
     } catch (e) {
       say(errorText(e));
@@ -2966,7 +2971,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       case "join":
       case "append":
         if (op.op === "join" && rep.join?.cols && op.spec.place === "after_key") t.shiftCols(Math.max(...op.spec.keys) + 1, rep.join.cols);
-        if (rep.join) say(`${joinSummary(op.op, rep.join, op.op === "join" ? op.spec : undefined)} Undo (Ctrl+Z) takes it back.`);
+        if (rep.join) {
+          const other = op.other === null ? undefined : tabs.find((x) => x.id === op.other);
+          say(`${joinSummary(op.op, rep.join, op.op === "join" ? op.spec : undefined)}${other && other !== t && noteLines(other) > 0 ? " The report notes of the other file are not included." : ""} Undo (Ctrl+Z) takes it back.`);
+        }
         break;
       case "map_values":
         say(rep.cells ? `Changed ${plural(rep.cells, "cell")}. Undo (Ctrl+Z) takes it back.` : "No cell held those values.");
@@ -4750,7 +4758,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           nt.headerTouched = true;
           nt.bump();
         }
-        say(`Combined into a new table of ${plural(Math.max(0, d.rows - (spec.header ? 1 : 0)), "row")}. It is not saved yet (Ctrl+S).`);
+        say(`Combined into a new table of ${plural(Math.max(0, d.rows - (spec.header ? 1 : 0)), "row")}. It is not saved yet (Ctrl+S).${d.run_notes?.length ? ` ${d.run_notes.join(" ")}` : ""}`);
         return;
       }
       if (r.split) {
@@ -5934,12 +5942,14 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         // positions, not presses).
         if (!(await apply(jump.run, true, t))) return;
         followRefEdits(t, op);
+        followHeaderEdits(t);
       } else {
         for (;;) {
           const at = t.info.history_pos;
           await change({ op });
           // Data-check rules a rename rewrote follow each step.
           followRefEdits(t, op);
+          followHeaderEdits(t);
           if (t.info.history_pos === at || t.info.history_pos === target) break;
         }
       }
@@ -6018,6 +6028,185 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     await undoRedo(fresh.steps < 0 ? "undo" : "redo", { target, looks: t.checkpointLooks.get(c.id), run: (x) => backend().checkpointRestore(x.id, c.id) });
     t.checkpointTick++;
     say(`Went to the checkpoint “${c.name}”. Ctrl+Z steps back through what was undone.`);
+  }
+
+  /** "First row is header" follows the undo position across the steps that
+   *  set it together with rows set aside or put back (C4): undo, redo,
+   *  checkpoints and the steps panel. */
+  function followHeaderEdits(t: Tab): void {
+    const pos = t.info.history_pos;
+    let header: boolean | null = null;
+    for (const e of [...t.headerEdits].reverse()) {
+      if (e.applied && pos < e.at) {
+        e.applied = false;
+        header = e.before;
+      }
+    }
+    for (const e of t.headerEdits) {
+      if (!e.applied && pos >= e.at) {
+        e.applied = true;
+        header = e.after;
+      }
+    }
+    if (header !== null && header !== t.header) {
+      t.header = header;
+      t.cache.invalidate();
+      grid?.select(t.sel.anchor, t.sel.focus, true, t.sel.active);
+      t.bump();
+    }
+  }
+
+  // ---- report notes (C4) ----------------------------------------------------------
+  /** The rows a "set aside" would take: above the cursor row ("head"), or
+   *  the selected rows ("foot"). */
+  function asideSpan(t: Tab, place: NotePlace): { at: number; count: number } | null {
+    if (place === "head") return { at: 0, count: t.cell.row };
+    const r = oneBlock(t);
+    if (!r) return null;
+    return { at: r.row, count: Math.max(0, Math.min(r.rows, t.info.rows - r.row)) };
+  }
+  function asideKey(t: Tab): string {
+    const h = asideSpan(t, "head");
+    const f = asideSpan(t, "foot");
+    return `${t.id}:${t.info.history_pos}:${t.info.step_mark}:${t.info.total_rows}:${h?.count}:${f?.at}:${f?.count}`;
+  }
+  /** The engine's answer for the current selection (a sort may have put other
+   *  rows at the ends), asked shortly after the selection settles. */
+  let asideChecked = $state<{ key: string; head: string | null; foot: string | null } | null>(null);
+  let asideTimer = 0;
+  $effect(() => {
+    const t = tab;
+    if (!t || !t.info.indexed || t.info.filtered) return;
+    const key = asideKey(t);
+    const h = asideSpan(t, "head");
+    const f = asideSpan(t, "foot");
+    window.clearTimeout(asideTimer);
+    asideTimer = window.setTimeout(() => {
+      const doc = t.id;
+      const one = (s: { at: number; count: number } | null, place: NotePlace) =>
+        s && s.count > 0 ? backend().setAsideCheck(doc, s.at, s.count, place).catch((e) => errorText(e)) : Promise.resolve(null);
+      void Promise.all([one(h, "head"), one(f, "foot")]).then(([head, foot]) => {
+        if (tab?.id === doc) asideChecked = { key, head, foot };
+      });
+    }, 120);
+  });
+  /** Why "Headers start here" / "Set aside rows as footer notes" is greyed ("" when it is not). */
+  function asideWhy(place: NotePlace): string {
+    const t = tab;
+    if (!t) return "open a file first";
+    if (!t.info.indexed) return "the file is still being read";
+    if (t.info.read_only) return "the file is open read-only";
+    if (t.info.filtered) return "show all rows first: some rows are hidden or filtered out, so the first and last rows of the file may not be on screen";
+    const s = asideSpan(t, place);
+    if (place === "head" && s?.count === 0) return t.header ? "this row already holds the column titles" : "";
+    if (!s || s.count === 0) return "select the rows to set aside";
+    const c = asideChecked;
+    if (c && c.key === asideKey(t)) return (place === "head" ? c.head : c.foot) ?? "";
+    return "";
+  }
+  /** Lines of report notes, in words, for messages. */
+  function notesWords(n: NoteCountsLike): string {
+    const parts: string[] = [];
+    if (n.above_file) parts.push(`the ${plural(n.above_file, "line")} above the table when the file was opened`);
+    if (n.above_set + n.below_set) parts.push(`the ${plural(n.above_set + n.below_set, "line")} you set aside`);
+    if (n.below_file) parts.push(`the ${plural(n.below_file, "line")} below the table in the file`);
+    return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : (parts[0] ?? "no lines");
+  }
+  type NoteCountsLike = { above_file: number; above_set: number; below_file: number; below_set: number };
+  const noteLines = (t: Tab | undefined): number => {
+    const n = t?.info.notes;
+    return n ? n.above_file + n.above_set + n.below_file + n.below_set : 0;
+  };
+  /** "Headers start here": the rows above the cursor row (or the first
+   *  `count` rows) go aside as report notes and the row becomes the header,
+   *  in one undo step. */
+  async function headersStartHere(count?: number): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const n = count ?? t.cell.row;
+    if (n <= 0) {
+      if (!t.header) {
+        t.header = true;
+        t.headerTouched = true;
+        t.bump();
+      }
+      say("The first row holds the column titles; there is nothing above it to set aside.");
+      return;
+    }
+    const why = t.info.filtered ? asideWhy("head") : await backend().setAsideCheck(t.id, 0, n, "head").catch((e) => errorText(e));
+    if (why) {
+      say(`The rows above cannot be set aside: ${why}.`);
+      return;
+    }
+    const before = t.header;
+    t.whatNext = "setting the title lines aside";
+    if (!t.rowHeights.empty) t.pendingRows = { kind: "delete", at: 0, count: n };
+    const ok = await apply((x) => backend().setAside(x.id, 0, n, "head"));
+    t.pendingRows = null;
+    if (!ok) return;
+    t.header = true;
+    t.headerTouched = true;
+    t.headerAskClosed = true;
+    t.titleLines = 0;
+    t.headerEdits.push({ at: t.info.history_pos, before, after: true, applied: true });
+    t.cache.invalidate();
+    grid?.select({ row: Math.min(1, Math.max(0, t.info.rows - 1)), col: t.cell.col });
+    t.bump();
+    say(`Set ${plural(n, "row")} aside above the table as report notes; the first row now holds the column titles. Saving writes them back above the table (View › Report notes shows them). Ctrl+Z undoes it.`);
+  }
+  /** The selected last rows of the file go aside below the table. */
+  async function setAsideFoot(): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const s = asideSpan(t, "foot");
+    if (!s || s.count === 0) return;
+    const why = t.info.filtered ? asideWhy("foot") : await backend().setAsideCheck(t.id, s.at, s.count, "foot").catch((e) => errorText(e));
+    if (why) {
+      say(`Those rows cannot be set aside: ${why}.`);
+      return;
+    }
+    t.whatNext = "setting rows aside as footer notes";
+    if (!t.rowHeights.empty) t.pendingRows = { kind: "delete", at: s.at, count: s.count };
+    const ok = await apply((x) => backend().setAside(x.id, s.at, s.count, "foot"));
+    t.pendingRows = null;
+    if (!ok) return;
+    grid?.select({ row: Math.max(0, Math.min(s.at, t.info.rows) - 1), col: t.cell.col });
+    say(`Set ${plural(s.count, "row")} aside below the table as report notes. Saving writes them after the last row, whatever the sort (View › Report notes shows them). Ctrl+Z undoes it.`);
+  }
+  /** Every report note goes back into the table (one undo step). */
+  async function putBackNotes(): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const above = (t.info.notes?.above_file ?? 0) + (t.info.notes?.above_set ?? 0);
+    const before = t.header;
+    t.whatNext = "putting the report notes back";
+    if (!t.rowHeights.empty) t.pendingRows = { kind: "reset" };
+    const ok = await apply((x) => backend().putBackNotes(x.id));
+    t.pendingRows = null;
+    if (!ok) return;
+    // The lines above the table are its first rows again: they are not titles.
+    const after = above > 0 ? false : before;
+    if (after !== before) {
+      t.header = after;
+      t.headerTouched = true;
+      t.cache.invalidate();
+    }
+    t.headerEdits.push({ at: t.info.history_pos, before, after, applied: true });
+    t.bump();
+    say(`The report notes are rows of the table again${above > 0 ? ' (at the top, so "First row is header" is off)' : ""}. Lines with another number of fields than the rest are ragged rows: Data › Show only rows with the wrong number of fields finds them. Ctrl+Z undoes it.`);
+  }
+  /** The switch that leaves the report notes out of saves (asks first). */
+  async function setKeepNotes(keep: boolean): Promise<void> {
+    const t = tab;
+    if (!t || !t.info.notes || t.info.notes.keep === keep) return;
+    if (!keep) {
+      const a = await ask("Leave out the report notes?", `Leave out the report notes when saving: ${notesWords(t.info.notes)}. They stay here (switch it back on and nothing is lost); Ctrl+Z undoes the switch.`, [
+        { id: "off", label: "Leave them out" },
+        { id: "keep", label: "Keep them", primary: true },
+      ], "keep");
+      if (a !== "off") return;
+    }
+    if (await apply((x) => backend().keepNotes(x.id, keep))) say(keep ? "Saving writes the report notes above and below the table again." : "Saving leaves the report notes out; they are kept here until then.");
   }
 
   /** Undo/redo of a rename: the data-check rules it rewrote go back, or
@@ -6701,6 +6890,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.raggedShort", label: "Show only rows with too few fields", run: () => void showRagged("short"), enabled: raggedReady, why: raggedWhy },
     { id: "data.raggedLong", label: "Show only rows with too many fields", run: () => void showRagged("long"), enabled: raggedReady, why: raggedWhy },
     { id: "format.makeHeader", label: "&Make this row the header", run: makeHeader, enabled: ready },
+    { id: "data.headersStartHere", label: "Headers start here (set the rows above aside as report notes)", run: () => void headersStartHere(), enabled: () => ready() && asideWhy("head") === "", why: () => asideWhy("head") },
+    { id: "data.setAsideFoot", label: "Set aside rows as footer notes (the last rows: a total line)", run: () => void setAsideFoot(), enabled: () => ready() && asideWhy("foot") === "", why: () => asideWhy("foot") },
+    { id: "data.putBackNotes", label: "Put the report notes back into the table", run: () => void putBackNotes(), enabled: () => ready() && noteLines(tab) > 0 && !tab?.info.filtered && !tab?.info.read_only, why: () => (noteLines(tab) === 0 ? "this file has no report notes" : tab?.info.filtered ? "show all rows first" : tab?.info.read_only ? "the file is open read-only" : "") },
+    { id: "file.keepNotes", label: "Save report notes with the file", run: () => void setKeepNotes(!(tab?.info.notes?.keep ?? true)), enabled: () => ready() && noteLines(tab) > 0, why: () => (noteLines(tab) === 0 ? "this file has no report notes" : ""), checked: () => tab?.info.notes?.keep ?? true },
     { id: "format.renameCol", label: "Re&name column…", run: () => void askRename(menuCol ?? undefined), enabled: () => ready() && !tab?.info.read_only && (tab?.info.cols ?? 0) > 0 },
 
     { id: "view.freeze", label: "&Freeze panes at cursor", run: freezeAtCursor, enabled: hasTab },
@@ -6900,6 +7093,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "view.panelSummary", label: "Column summary", run: () => showPanel("summary"), checked: () => prefs.data.panel === "summary" },
     { id: "view.panelFilters", label: "Filter panel", keys: ["Alt+Shift+L"], run: () => showPanel("filters"), checked: () => prefs.data.panel === "filters" },
     { id: "view.panelRecord", label: "&Record panel (this row as a list of fields)", keys: ["Alt+R"], run: () => showPanel(prefs.data.panel === "record" ? null : "record"), checked: () => prefs.data.panel === "record" },
+    { id: "view.panelNotes", label: "Report notes (lines above and below the table)", run: () => showPanel(prefs.data.panel === "notes" ? null : "notes"), checked: () => prefs.data.panel === "notes" },
     { id: "view.recordNext", label: "Record: next row", keys: ["Ctrl+Alt+ArrowDown"], run: () => recordFlip(1), enabled: hasTab },
     { id: "view.recordPrev", label: "Record: previous row", keys: ["Ctrl+Alt+ArrowUp"], run: () => recordFlip(-1), enabled: hasTab },
     { id: "view.panelSteps", label: "Recipe steps", keys: ["Alt+Shift+R"], run: () => showPanel("steps"), checked: () => prefs.data.panel === "steps" },
@@ -6940,7 +7134,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       label: "&View",
       items: [
         "view.freeze", "view.freezeRow", "view.freezeCol", "view.unfreeze", "-", "view.splitRows", "view.splitCols", "-", "view.zoomIn", "view.zoomOut", "view.zoomReset", "-",
-        "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelRecord", "view.recordPrev", "view.recordNext", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
+        "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelRecord", "view.panelNotes", "view.recordPrev", "view.recordNext", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
         "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.whichRows", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.totalsRow", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
@@ -6955,6 +7149,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.sortAsc", "data.sortDesc", "data.sort", "data.sortColsAsc", "data.sortColsDesc", "data.shuffle", "-",
         "data.filter", "data.filterMenu", "data.filterBySel", "data.filterFormula", "view.panelFilters", "data.clearFilter", "data.reapply", "-",
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "data.repairRow", "data.ragged", "data.raggedShort", "data.raggedLong", "-",
+        "data.headersStartHere", "data.setAsideFoot", "data.putBackNotes", "file.keepNotes", "view.panelNotes", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
         "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
@@ -6995,7 +7190,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     totals: [...TOTAL_CHOICES.map(([c]) => `view.total.${c}`), "view.total.auto", "-", "view.copyTotal", "view.copyTotals", "-", "view.totalsRow"],
     tab: ["file.save", "file.saveAs", "-", "data.compareLists", "data.patchSave", "data.patchApply", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
-    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
+    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "data.headersStartHere", "data.setAsideFoot", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
@@ -8758,10 +8953,14 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         onOpened={opened}
         onSetRule={(col, rule) => setRule(col, rule)}
         record={{ onGo: (row, col) => grid?.select({ row, col }) }}
+        notes={{ onPutBack: () => void putBackNotes(), onKeep: (keep) => void setKeepNotes(keep) }}
         steps={{
           onInfo: (info) => {
             const t = tab;
-            if (t) t.update(info, true);
+            if (t) {
+              t.update(info, true);
+              followHeaderEdits(t);
+            }
           },
           run: runJob,
           confirmLoss: async (what) =>
@@ -8783,6 +8982,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         <span role="status" aria-live="polite">{headerQuestion}</span>
         <button type="button" class="small" title="Alt+Shift+Y" aria-keyshortcuts="Alt+Shift+Y" onclick={() => void answerHeader(true)}>Yes, column names</button>
         <button type="button" class="small" title="Alt+Shift+N" aria-keyshortcuts="Alt+Shift+N" onclick={() => void answerHeader(false)}>No, it's data</button>
+        {#if tab.titleLines > 0 && !tab.info.filtered}
+          <button type="button" class="small" title="Set the {tab.titleLines === 1 ? 'line' : `${tab.titleLines} lines`} above aside as report notes (saved back above the table)" onclick={() => void headersStartHere(tab?.titleLines)}>Headers start at row {tab.titleLines + 1}</button>
+        {/if}
         <button type="button" class="small close" aria-label="Close: keep the guess" title="Keep the guess (Esc)" onclick={() => void closeHeaderAsk()}><Icon name="close" size={12} /></button>
       </div>
     {/if}

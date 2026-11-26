@@ -89,10 +89,47 @@ export interface DocInfo {
   usual_fields?: number;
   ragged_rows?: number;
   first_row_ragged?: boolean;
+  /** Report notes: lines above and below the table (C4). */
+  notes?: NoteCounts;
   long_quoted_cells: boolean;
   line_bound_from: number | null;
   error: string | null;
 }
+
+/** How many lines of report notes a tab has: lines that are not rows of the
+ *  table (a report's title above it, a total line below it). */
+export interface NoteCounts {
+  /** Lines above the table that were in the file when it was opened (or saved). */
+  above_file: number;
+  /** Lines set aside above the table since ("Headers start here"). */
+  above_set: number;
+  /** Lines below the table that were in the file (after a save). */
+  below_file: number;
+  /** Lines set aside below the table since. */
+  below_set: number;
+  /** Saving writes them. */
+  keep: boolean;
+}
+
+/** The Report notes panel: the lines themselves, read-only. */
+export interface ReportNotes {
+  above_file: string;
+  above_file_lines: number;
+  above_set: string;
+  above_set_lines: number;
+  below_file: string;
+  below_file_lines: number;
+  below_set: string;
+  below_set_lines: number;
+  keep: boolean;
+  /** "Label: value" lines and lines of two fields. */
+  info: [string, string][];
+  /** The text was cut short for showing (Copy copies what is shown). */
+  cut: boolean;
+}
+
+/** Which end of the table rows are set aside at. */
+export type NotePlace = "head" | "foot";
 
 /** How a file is laid out. */
 export interface Layout {
@@ -1600,6 +1637,15 @@ export interface Backend {
   dateList(doc: number, col: number, keepFirst: boolean): Promise<[number, number, string][]>;
   /** Rows hidden by hand in the gap just above shown row `row` (the row count: after the last). */
   gapHidden(doc: number, row: number): Promise<number>;
+  /** Why rows `at..at+count` cannot be set aside as report notes (null: they can). */
+  setAsideCheck(doc: number, at: number, count: number, place: NotePlace): Promise<string | null>;
+  /** Set rows aside above ("head") or below the table as report notes (one undo step). */
+  setAside(doc: number, at: number, count: number, place: NotePlace): Promise<DocInfo>;
+  reportNotes(doc: number): Promise<ReportNotes>;
+  /** Put every report note back into the table (one undo step). */
+  putBackNotes(doc: number): Promise<DocInfo>;
+  /** Save the report notes, or leave them out (one undo step; nothing is lost). */
+  keepNotes(doc: number, keep: boolean): Promise<DocInfo>;
   raggedList(doc: number, keepFirst: boolean): Promise<RaggedList>;
   rowText(doc: number, row: number | null, rowId: number | null, keepFirst: boolean): Promise<RowText>;
   sameShape(doc: number, keepFirst: boolean, fields: number, groups: number[]): Promise<SameShape>;
@@ -2145,6 +2191,21 @@ class TauriBackend implements Backend {
   }
   gapHidden(doc: number, row: number) {
     return call<number>("gap_hidden", { doc, row });
+  }
+  setAsideCheck(doc: number, at: number, count: number, place: NotePlace) {
+    return call<string | null>("set_aside_check", { doc, at, count, place });
+  }
+  setAside(doc: number, at: number, count: number, place: NotePlace) {
+    return call<DocInfo>("set_aside", { doc, at, count, place });
+  }
+  reportNotes(doc: number) {
+    return call<ReportNotes>("report_notes", { doc });
+  }
+  putBackNotes(doc: number) {
+    return call<DocInfo>("put_back_notes", { doc });
+  }
+  keepNotes(doc: number, keep: boolean) {
+    return call<DocInfo>("keep_notes", { doc, keep });
   }
   dateList(doc: number, col: number, keepFirst: boolean) {
     return call<[number, number, string][]>("date_list", { doc, col, keepFirst });
@@ -2945,6 +3006,8 @@ export const WRITE_METHODS: readonly string[] = [
   "checkpointRestore",
   "stepsChange",
   "streetLookup",
+  "setAside",
+  "putBackNotes",
 ];
 
 /** The writes that MAY run while several blocks are selected, but only when the

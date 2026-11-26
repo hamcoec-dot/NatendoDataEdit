@@ -143,6 +143,22 @@ struct Meta {
     saved: u64,
     rows: u64,
     bytes: u64,
+    /// Bytes at the end of the copy that are lines below the table (report
+    /// notes; absent in older copies).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    tail: usize,
+    /// The report notes were switched off for saving (the copy holds them
+    /// all the same).
+    #[serde(default, skip_serializing_if = "is_false")]
+    notes_off: bool,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A recovery copy, for the UI.
@@ -328,10 +344,12 @@ pub fn write_copy(
             .path()
             .and_then(|p| p.extension())
             .map(|e| e.to_string_lossy().chars().take(16).collect()),
-        layout: Layout::of(&d.format().dialect, d.preamble_lines()),
+        layout: Layout::of(&d.format().dialect, d.copy_layout().0),
         saved: at,
         rows: d.total_rows(),
         bytes,
+        tail: d.copy_layout().1,
+        notes_off: !d.keeps_report_notes(),
     };
     let json = serde_json::to_vec(&m).map_err(|e| CmdError::new("error", e.to_string()))?;
     write_small(&meta, &json).map_err(io_err)?;
@@ -611,7 +629,10 @@ pub fn open(index: u32) -> CmdResult<(Document, String)> {
     let m = read_meta(&meta)
         .ok_or_else(|| CmdError::new("error", "the recovery copy cannot be read"))?;
     let bytes = read_capped(&data, MAX_COPY_BYTES)?;
-    let doc = document_from(bytes, &m.layout, m.ext.as_deref())?;
+    let mut doc = document_from(bytes, &m.layout, m.ext.as_deref(), m.tail)?;
+    if m.notes_off {
+        doc.set_keep_notes(false);
+    }
     Ok((doc, format!("{} (recovered)", m.title)))
 }
 
@@ -654,10 +675,16 @@ fn read_capped(p: &Path, cap: u64) -> CmdResult<Vec<u8>> {
     Ok(buf)
 }
 
-fn document_from(bytes: Vec<u8>, layout: &Layout, ext: Option<&str>) -> CmdResult<Document> {
+fn document_from(
+    bytes: Vec<u8>,
+    layout: &Layout,
+    ext: Option<&str>,
+    tail: usize,
+) -> CmdResult<Document> {
     let opts = natendo_engine::OpenOptions {
         dialect: Some(layout.dialect()?),
         skip_lines: Some(layout.skip_lines),
+        tail_bytes: (tail > 0).then_some(tail),
         ..Default::default()
     };
     let mut d = Document::from_bytes(bytes, opts, ext)?;
@@ -891,7 +918,7 @@ pub fn open_version(
             .ok_or_else(|| CmdError::new("bad_request", "list the earlier saves again"))?
     };
     let bytes = read_capped(&path, MAX_VERSION_BYTES)?;
-    document_from(bytes, layout, ext)
+    document_from(bytes, layout, ext, 0)
 }
 
 #[cfg(test)]
@@ -968,6 +995,49 @@ mod tests {
         assert!(!data.exists() && !meta.exists());
         forget_session();
         assert!(!names(s, &s.session, 9).0.exists());
+
+        // Report notes (C4): set-aside rows are only in the notes, so the copy
+        // holds them (even with the save switch off) and the recovered tab has
+        // them as notes; saving it gives the original bytes back.
+        let report = "Sales\r\nname,n\r\nann,1\r\nTotal,1\r\n";
+        let mut d = Document::from_bytes(
+            report.as_bytes().to_vec(),
+            OpenOptions {
+                skip_lines: Some(1),
+                ..Default::default()
+            },
+            Some("csv"),
+        )
+        .unwrap();
+        d.set_aside_rows(2, 1, natendo_engine::document::report::Place::Foot)
+            .unwrap();
+        d.set_keep_notes(false);
+        cancel.store(false, Ordering::Relaxed);
+        let r = write_copy(&d, 11, "r.csv", &stop).unwrap();
+        assert!(matches!(r, Autosaved::Written { .. }), "{r:?}");
+        let (data, meta) = names(s, &s.session, 11);
+        assert_eq!(fs::read_to_string(&data).unwrap(), report);
+        let (od, om) = names(s, "dead-2", 4);
+        fs::rename(&data, &od).unwrap();
+        let mut m = read_meta(&meta).unwrap();
+        m.session = "dead-2".into();
+        m.doc = 4;
+        fs::write(&om, serde_json::to_vec(&m).unwrap()).unwrap();
+        fs::remove_file(&meta).unwrap();
+        assert_eq!(list().unwrap().len(), 1);
+        let (mut rd, _) = open(0).unwrap();
+        assert_eq!(rd.total_rows(), 2);
+        let n = rd.note_counts();
+        assert_eq!((n.above_file, n.below_file, n.keep), (1, 1, false));
+        rd.set_keep_notes(true);
+        let out = base.join("recovered.csv");
+        rd.save(natendo_engine::save::SaveOptions {
+            path: Some(out.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(fs::read_to_string(&out).unwrap(), report);
+        discard(0).unwrap();
 
         // Earlier saves: none while the switch is off...
         let file = base.join("data.csv");

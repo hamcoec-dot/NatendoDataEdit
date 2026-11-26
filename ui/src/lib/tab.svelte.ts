@@ -202,6 +202,13 @@ export class Tab {
    *  rename: undoing the rename puts the rules back as they were, redo
    *  rewrites them again (only while nobody changed the rules since). */
   refEdits: { at: number; before: Check[]; after: Check[]; applied: boolean }[] = [];
+  /** "Headers start here" switched "First row is header" in the same undo step as the rows it set aside
+   *  (by the undo position just after it): undo, redo, checkpoints and the steps panel put the switch back
+   *  with the rows. */
+  headerEdits: { at: number; before: boolean; after: boolean; applied: boolean }[] = [];
+  /** Report title lines found above the column titles when the file was opened (0: none): the title-row
+   *  bar offers "Headers start at row N+1". */
+  titleLines = $state(0);
   /** Data rows (after the header) and columns kept in view while scrolling. */
   frozenRows = $state(0);
   frozenCols = $state(0);

@@ -29,6 +29,8 @@ import type {
   DataOp,
   Dir,
   DocInfo,
+  NotePlace,
+  ReportNotes,
   ExportOptions,
   ExportReport,
   FilterSpec,
@@ -142,6 +144,8 @@ interface MockDoc {
   visible: number[] | null;
   /** Ids of rows the user hid. */
   hidden: Set<number> | null;
+  /** Report notes (C4): set-aside rows (ids and their text), lines from the file, the save switch. */
+  notes?: { head: { ids: number[]; text: string[] }[]; foot: { ids: number[]; text: string[] }[]; fileAbove: string[]; keep: boolean };
 }
 
 interface MockPatch {
@@ -788,6 +792,121 @@ export class MockBackend implements Backend {
     for (let r = Math.max(row, keepFirst ? 1 : 0); r < Math.min(row + rows, this.rowCount(d)); r++) if (this.twoWays(d, r, col)) out.push(r);
     return out;
   }
+  private notesOf(d: MockDoc): NonNullable<MockDoc["notes"]> {
+    d.notes ??= { head: [], foot: [], fileAbove: [], keep: true };
+    return d.notes;
+  }
+  async setAsideCheck(doc: number, at: number, count: number, place: NotePlace): Promise<string | null> {
+    const d = this.get(doc);
+    if (d.shown !== null || d.hidden !== null) return "show all rows first: some rows are hidden or filtered out, so the first and last rows of the file may not be on screen";
+    const total = this.totalRows(d);
+    if (count <= 0 || at + count > total) return "out of range";
+    if (count >= total) return "at least one row has to stay in the table";
+    const edge = place === "head" ? at === 0 : at + count === total;
+    if (!edge) {
+      const from = place === "head" ? 1 : total - count + 1;
+      const span = count === 1 ? from.toLocaleString("en-US") : `${from.toLocaleString("en-US")}-${(from + count - 1).toLocaleString("en-US")}`;
+      return `only the ${place === "head" ? "first" : "last"} rows of the table can be set aside ${place === "head" ? "above" : "below"} it: select rows ${span}`;
+    }
+    if (count > 1000) return `report notes can hold at most 1000 lines above and 1000 below the table (${count} asked for)`;
+    // Like the engine: a sort may have put other rows at the ends.
+    if (d.order) {
+      const ids = this.orderOf(d);
+      const picked = ids.slice(at, at + count).filter((i) => i >= 0);
+      const rest = [...ids.slice(0, at), ...ids.slice(at + count)].filter((i) => i >= 0);
+      const ok = place === "head" ? picked.length === 0 || rest.every((i) => i > Math.max(...picked)) : picked.length === 0 || rest.every((i) => i < Math.min(...picked));
+      if (!ok) return `the table is sorted or rows were moved: your selection (rows ${at + 1}${count > 1 ? `-${at + count}` : ""} on screen) is not the ${place === "head" ? "first" : "last"} rows of the file; undo the sort or move first`;
+    }
+    return null;
+  }
+  async setAside(doc: number, at: number, count: number, place: NotePlace): Promise<DocInfo> {
+    const why = await this.setAsideCheck(doc, at, count, place);
+    if (why) throw err("invalid", why);
+    const d = this.get(doc);
+    this.calls.push(`setAside:${place}:${at}:${count}`);
+    const sep = d.info.delimiter ?? ",";
+    const block = { ids: [] as number[], text: [] as string[] };
+    for (let p = at; p < at + count; p++) {
+      const id = this.orderOf(d)[p]!;
+      block.ids.push(id);
+      block.text.push(Array.from({ length: this.colCount(d) }, (_, c) => this.valueAt(d, p, c)).join(sep));
+    }
+    return this.push(d, () => {
+      const n = this.notesOf(d);
+      this.orderOf(d).splice(at, count);
+      if (place === "head") n.head.push(block);
+      else n.foot.unshift(block);
+      return () => {
+        if (place === "head") n.head.pop();
+        else n.foot.shift();
+        this.orderOf(d).splice(at, 0, ...block.ids);
+      };
+    });
+  }
+  async reportNotes(doc: number): Promise<ReportNotes> {
+    const d = this.get(doc);
+    const n = this.notesOf(d);
+    const lines = (bs: { text: string[] }[]) => bs.flatMap((b) => b.text);
+    const text = (l: string[]) => l.map((x) => `${x}\r\n`).join("");
+    const all = [...n.fileAbove, ...lines(n.head), ...lines(n.foot)];
+    const info: [string, string][] = [];
+    for (const l of all) {
+      const parts = l.split(d.info.delimiter ?? ",").map((x) => x.trim()).filter((x) => x !== "");
+      if (parts.length === 2) info.push([parts[0]!.replace(/:$/, ""), parts[1]!]);
+      else if (parts.length === 1 && /^[^:]{1,60}:\s*\S/.test(parts[0]!)) {
+        const [a, ...b] = parts[0]!.split(":");
+        info.push([a!.trim(), b.join(":").trim()]);
+      }
+    }
+    return {
+      above_file: text(n.fileAbove),
+      above_file_lines: n.fileAbove.length,
+      above_set: text(lines(n.head)),
+      above_set_lines: lines(n.head).length,
+      below_file: "",
+      below_file_lines: 0,
+      below_set: text(lines(n.foot)),
+      below_set_lines: lines(n.foot).length,
+      keep: n.keep,
+      info: info.slice(0, 50),
+      cut: false,
+    };
+  }
+  async putBackNotes(doc: number): Promise<DocInfo> {
+    const d = this.get(doc);
+    if (d.shown !== null || d.hidden !== null) throw err("invalid", "show all rows first: some rows are hidden or filtered out");
+    const n = this.notesOf(d);
+    if (!n.head.length && !n.foot.length && !n.fileAbove.length) throw err("invalid", "there are no report notes");
+    this.calls.push("putBackNotes");
+    const was = { head: [...n.head], foot: [...n.foot], fileAbove: [...n.fileAbove] };
+    return this.push(d, () => {
+      const head = was.head.flatMap((b) => b.ids);
+      const foot = was.foot.flatMap((b) => b.ids);
+      const o = this.orderOf(d);
+      o.splice(0, 0, ...head);
+      o.push(...foot);
+      n.head = [];
+      n.foot = [];
+      n.fileAbove = [];
+      return () => {
+        o.splice(0, head.length);
+        o.splice(o.length - foot.length, foot.length);
+        n.head = [...was.head];
+        n.foot = [...was.foot];
+        n.fileAbove = [...was.fileAbove];
+      };
+    });
+  }
+  async keepNotes(doc: number, keep: boolean): Promise<DocInfo> {
+    const d = this.get(doc);
+    const n = this.notesOf(d);
+    if (n.keep === keep) return this.refresh(d);
+    this.calls.push(`keepNotes:${keep}`);
+    return this.push(d, () => {
+      n.keep = keep;
+      return () => void (n.keep = !keep);
+    });
+  }
   async gapHidden(doc: number, row: number): Promise<number> {
     const d = this.get(doc);
     const from = row === 0 ? 0 : this.pos(d, row - 1) + 1;
@@ -1009,6 +1128,14 @@ export class MockBackend implements Backend {
         ? d.undo.slice(d.clean).some((s) => !VIEW_STEPS.has(s.apply))
         : d.clean - n > d.redo.length || d.redo.slice(d.redo.length - (d.clean - n)).some((a) => !VIEW_STEPS.has(a)));
     d.info.column_changes = d.cols !== null;
+    const n0 = d.notes;
+    d.info.notes = {
+      above_file: n0?.fileAbove.length ?? 0,
+      above_set: n0?.head.reduce((a, b) => a + b.text.length, 0) ?? 0,
+      below_file: 0,
+      below_set: n0?.foot.reduce((a, b) => a + b.text.length, 0) ?? 0,
+      keep: n0?.keep ?? true,
+    };
     // The data revision moves when a step that changes data is done or undone.
     const sig = `${d.undo.filter((s) => !VIEW_STEPS.has(s.apply)).length}/${d.redo.filter((a) => !VIEW_STEPS.has(a)).length}`;
     if (sig !== d.dataSig) {
