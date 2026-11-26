@@ -232,6 +232,10 @@
   .repair { border-top: 1px solid var(--border); background: var(--panel, var(--bg)); padding: 6px 10px; max-height: 45vh; overflow: auto; font-size: 0.95em; }
   header, .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .spacer { flex: 1; }
+  button, select { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 10px; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: 0.5; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text, #fff); }
   p { margin: 4px 0; }
   .muted, .note { opacity: 0.75; }
   .raw { font-family: var(--mono, monospace); white-space: pre; overflow: auto; max-height: 4.5em; border: 1px solid var(--border); padding: 3px 6px; }

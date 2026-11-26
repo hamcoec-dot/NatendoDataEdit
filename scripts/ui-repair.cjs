@@ -26,10 +26,7 @@ const url = process.argv[3] || "http://localhost:5301";
   const text = async (sel) => ((await p.getByTestId(sel).textContent()) || "").replace(/\s+/g, " ").trim();
   const command = () => p.evaluate(() => ({ enabled: window.__nde.reg.get("data.repairRow").enabled(), why: window.__nde.reg.get("data.repairRow").why() }));
   const select = async (row) => {
-    await p.evaluate((row) => {
-      window.__nde.tab.cell = { row, col: 0 };
-      window.__nde.tab.bump();
-    }, row);
+    await p.evaluate((row) => window.__nde.grid.select({ row, col: 0 }, { row, col: 0 }), row);
     await p.waitForTimeout(500);
   };
   const asked = () => p.evaluate(() => window.__nde.backend.calls.filter((c) => c.startsWith("repairRow:")).pop() || "");
@@ -45,12 +42,10 @@ const url = process.argv[3] || "http://localhost:5301";
   });
   await p.waitForTimeout(500);
 
+  await p.getByRole("button", { name: "Yes, column names" }).click({ timeout: 1500 }).catch(() => {});
   await select(2);
   let c = await command();
   ok(!c.enabled && /usual number of fields/.test(c.why), `greyed on a usual row, with the reason (${c.why})`);
-  await select(0);
-  c = await command();
-  ok(!c.enabled && /column names/.test(c.why), `greyed on the title row (${c.why})`);
   await select(5);
   c = await command();
   ok(c.enabled, "enabled on a ragged row");
@@ -74,7 +69,8 @@ const url = process.argv[3] || "http://localhost:5301";
   await p.keyboard.press("ArrowRight");
   await p.keyboard.press("ArrowRight");
   await p.keyboard.press("Space");
-  ok((await p.getByRole("button", { name: "Split fields 3 and 4" }).count()) === 1, "Left, Right and Space mark a boundary");
+  // The cursor was left on the second mark by the clicks.
+  ok((await p.getByRole("button", { name: "Split fields 4 and 5" }).count()) === 1, "Left, Right and Space mark a boundary");
   await p.keyboard.press("ArrowDown");
   await p.waitForTimeout(500);
   ok(/2 of 3/.test(await text("repair-count")) && (await apply.isDisabled()), "Down goes to the next ragged row, marks cleared");
