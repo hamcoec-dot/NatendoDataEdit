@@ -5,6 +5,7 @@
   // text box over the active cell.
   import { TotalsCache, totalParts } from "./totalsRow";
   import { dateTip } from "./dates";
+  import { gapBetween, seamWords } from "./shown.svelte";
   import { onMount, tick, untrack } from "svelte";
   import type { Tab } from "./tab.svelte";
   import { enterStep, prefs } from "./prefs.svelte";
@@ -52,6 +53,8 @@
   const TOTALS_READ = { decimal_comma: false, date_order: "mdy" as const };
 
   interface Props {
+    /** The dotted line before shown row `row` was clicked (`count` rows are hidden there). */
+    onSeam?: (row: number, count: number) => void;
     tab: Tab;
     /** Commit an edit of one cell (or, with `fill`, of every selected cell). */
     onCommit: (row: number, col: number, value: string, fill: boolean) => Promise<boolean>;
@@ -107,7 +110,7 @@
     /** A click on a cell of the totals row (column -1: beside the columns). */
     onTotals?: (col: number, x: number, y: number) => void;
   }
-  let { pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onCellsOver, onCellsDropOutside, onRenameCol, onInsight, onPill, onXray, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0, onTotals }: Props = $props();
+  let { onSeam, pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onCellsOver, onCellsDropOutside, onRenameCol, onInsight, onPill, onXray, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0, onTotals }: Props = $props();
   // Where this pane is scrolled to (a split view's second pane keeps its own).
   const view = $derived(pane === "split" ? tab.splitScroll : tab);
 
@@ -663,6 +666,9 @@
         ctx.fillStyle = tab.info.filtered ? colors.accent : inSel ? colors.text : colors.muted;
         const label = rowLabel(r);
         ctx.fillText(label, rowHeaderW - 10 - ctx.measureText(label).width, y + rh / 2);
+        // A dotted line where file rows are missing between two shown rows.
+        if (gapAbove(r)) seamLine(ctx, y + 1);
+        if (r === tab.info.rows - 1 && gapAbove(r + 1)) seamLine(ctx, y + rh - 2);
         const note = tab.rowNotes.get(r);
         if (note) {
           if (note.flag) {
@@ -1895,6 +1901,38 @@
     ctx.fill();
   }
 
+  /** File rows hidden between shown row `r - 1` and shown row `r` (`r` = the row count: after the last one). */
+  function gapAbove(r: number): number {
+    if (!tab.info.filtered) return 0;
+    const before = r === 0 ? -1 : tab.cache.rowNumber(r - 1);
+    const place = r >= tab.info.rows ? tab.info.total_rows : tab.cache.rowNumber(r);
+    return gapBetween(before, place);
+  }
+
+  function seamLine(ctx: CanvasRenderingContext2D, y: number): void {
+    ctx.save();
+    ctx.strokeStyle = colors.accent;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(rowHeaderW - 1, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** The seam within 4 pixels of `py` in the row numbers: the shown row below it and the rows hidden there. */
+  function seamAt(py: number, r: number): { row: number; count: number } | null {
+    if (!tab.info.filtered || r < 0) return null;
+    const rows = visibleRows();
+    const top = rowY(r, rows);
+    const row = Math.abs(py - top) <= 4 ? r : Math.abs(py - (top + geom.h(r))) <= 4 ? r + 1 : -1;
+    // Between two rows, or past the last one.
+    if (row < 0) return null;
+    const count = gapAbove(row);
+    return count ? { row, count } : null;
+  }
+
   /** The number shown for row `r`: its place in the whole file. */
   function rowLabel(r: number): string {
     if (!tab.info.filtered) return String(r + 1);
@@ -2335,6 +2373,11 @@
         if (e.detail === 2 && !(onActivate?.() ?? false)) startEdit();
         break;
       case "row": {
+        const seam = seamAt(y, h.row);
+        if (seam) {
+          onSeam?.(seam.row, seam.count);
+          break;
+        }
         if (h.edge !== undefined) {
           const rows = selectedRowsWith(h.edge);
           if (e.detail === 2) {
@@ -2521,6 +2564,12 @@
       if (dm !== undefined && !gh) rule = DIFF_TIPS[dm] ?? "";
       if (!link && !gh && cellHit && tab.dateCheck?.col === cellHit.col && tab.dateMarks.has(cellHit.row)) rule = dateTip(tab.cache.get(cellHit.row, cellHit.col) ?? "");
       tip = link ? `${link}\nCtrl+click to open` : gh ? `Replace all would change this cell:\n${tab.cache.get(cellHit!.row, cellHit!.col) ?? ""}\n\u2192 ${gh.after}${gh.cut ? "\u2026" : ""}` : rule;
+      const seam = h.area === "row" ? seamAt(y, h.row) : null;
+      if (seam) {
+        tip = seamWords(seam.count, tab.info.has_filter, tab.info.hidden_rows > 0);
+        cursor = tab.info.hidden_rows ? "pointer" : "default";
+        return;
+      }
       const pointer = h.area === "cell" && ((e.ctrlKey && !!linkAt(h.row, h.col)) || onTickBox(x, y, h.row, h.col) || onPickButton(x, y, h.row, h.col));
       const r = tab.drawRect;
       const grab =
