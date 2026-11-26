@@ -132,8 +132,8 @@ impl Dictionary {
         if bytes.len() > MAX_DICTIONARY_BYTES {
             return Err(bad("the dictionary file is larger than 16 MB"));
         }
-        let text = std::str::from_utf8(bytes)
-            .map_err(|_| bad("the dictionary file is not UTF-8 text"))?;
+        let text =
+            std::str::from_utf8(bytes).map_err(|_| bad("the dictionary file is not UTF-8 text"))?;
         let file: File = serde_json::from_str(text.trim_start_matches('\u{feff}'))
             .map_err(|_| bad("this is not a dictionary file"))?;
         if file.kind != DICTIONARY_KIND {
@@ -184,13 +184,20 @@ mod tests {
             name: "Counties".into(),
             match_case: false,
             trim: true,
-            pairs: pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
+            pairs: pairs
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect(),
         }
     }
 
     #[test]
     fn round_trip() {
-        let a = d(&[("Hamilton Co.", "Hamilton"), ("Ham", "Hamilton"), ("Knox Co", "Knox")]);
+        let a = d(&[
+            ("Hamilton Co.", "Hamilton"),
+            ("Ham", "Hamilton"),
+            ("Knox Co", "Knox"),
+        ]);
         let text = a.to_json().unwrap();
         assert!(text.contains("\"kind\": \"natendo-dictionary\""));
         let b = Dictionary::parse(text.as_bytes()).unwrap();
@@ -204,14 +211,24 @@ mod tests {
         assert!(e(&[0xff, 0xfe, 0x00]).contains("not UTF-8"));
         assert!(e(b"{\"a\":1}").contains("not a dictionary"));
         assert!(e(b"{\"kind\":\"other\",\"version\":1,\"pairs\":[]}").contains("not a dictionary"));
-        assert!(e(b"{\"kind\":\"natendo-dictionary\",\"version\":9,\"pairs\":[]}").contains("newer version"));
+        assert!(
+            e(b"{\"kind\":\"natendo-dictionary\",\"version\":9,\"pairs\":[]}")
+                .contains("newer version")
+        );
         let big = vec![b' '; MAX_DICTIONARY_BYTES + 1];
         assert!(e(&big).contains("16 MB"));
         let many = Dictionary {
-            pairs: (0..=MAX_DICTIONARY_PAIRS).map(|i| (format!("a{i}"), "b".into())).collect(),
+            pairs: (0..=MAX_DICTIONARY_PAIRS)
+                .map(|i| (format!("a{i}"), "b".into()))
+                .collect(),
             ..d(&[])
         };
-        assert!(many.checked().err().unwrap().to_string().contains("at most 100000"));
+        assert!(many
+            .checked()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("at most 100000"));
         assert!(d(&[("a", "")]).checked().is_err());
     }
 
@@ -222,7 +239,9 @@ mod tests {
         assert!(msg(d(&[("A", "B"), ("B", "C")])).contains("chain"));
         assert!(msg(d(&[("A", "B"), ("b", "a")])).contains("circle"));
         // Self-pairs and repeats are left out and counted.
-        let r = d(&[("A", "a"), ("X", "Y"), ("x", "y"), ("Q", "Q")]).checked().unwrap();
+        let r = d(&[("A", "a"), ("X", "Y"), ("x", "y"), ("Q", "Q")])
+            .checked()
+            .unwrap();
         assert_eq!(r.dict.pairs, vec![("X".to_string(), "Y".to_string())]);
         assert_eq!((r.self_pairs, r.repeats), (2, 1));
         // With match case on, A and a differ.
@@ -234,10 +253,21 @@ mod tests {
     #[test]
     fn unmatched_lists_new_values() {
         let t = |v: &[(&str, u64)]| -> Vec<Tally> {
-            v.iter().map(|(s, c)| Tally { value: s.to_string(), count: *c }).collect()
+            v.iter()
+                .map(|(s, c)| Tally {
+                    value: s.to_string(),
+                    count: *c,
+                })
+                .collect()
         };
         let dict = d(&[("Hamilton Co.", "Hamilton")]);
-        let values = t(&[("Hamilton", 9), ("hamilton co.", 3), ("Knox", 2), (" Hamilton ", 1), ("", 4)]);
+        let values = t(&[
+            ("Hamilton", 9),
+            ("hamilton co.", 3),
+            ("Knox", 2),
+            (" Hamilton ", 1),
+            ("", 4),
+        ]);
         assert_eq!(dict.unmatched(&values), t(&[("Knox", 2)]));
         let mut strict = dict.clone();
         strict.match_case = true;

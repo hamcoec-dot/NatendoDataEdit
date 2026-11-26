@@ -4223,15 +4223,32 @@ async fn dictionary_list(app: tauri::AppHandle) -> CmdResult<(String, Vec<Dictio
             .map_err(|_| docs::CmdError::new("io", "the Dictionaries folder could not be read"))?;
         for e in read.flatten().take(1_000) {
             let p = e.path();
-            if p.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("ndmap") {
+            if p.extension()
+                .and_then(|x| x.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+                != Some("ndmap")
+            {
                 continue;
             }
-            let file = p.file_name().and_then(|f| f.to_str()).unwrap_or("").to_string();
-            let read = extras::read_capped(&p, natendo_engine::dictionary::MAX_DICTIONARY_BYTES as u64, "A dictionary")
-                .and_then(|b| Ok(natendo_engine::dictionary::Dictionary::parse(&b)?));
+            let file = p
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("")
+                .to_string();
+            let read = extras::read_capped(
+                &p,
+                natendo_engine::dictionary::MAX_DICTIONARY_BYTES as u64,
+                "A dictionary",
+            )
+            .and_then(|b| Ok(natendo_engine::dictionary::Dictionary::parse(&b)?));
             out.push(match read {
                 Ok(r) => DictionaryItem {
-                    name: if r.dict.name.trim().is_empty() { file.trim_end_matches(".ndmap").to_string() } else { r.dict.name.clone() },
+                    name: if r.dict.name.trim().is_empty() {
+                        file.trim_end_matches(".ndmap").to_string()
+                    } else {
+                        r.dict.name.clone()
+                    },
                     file,
                     path: p.to_string_lossy().into_owned(),
                     pairs: r.dict.pairs.len() as u64,
@@ -4246,7 +4263,12 @@ async fn dictionary_list(app: tauri::AppHandle) -> CmdResult<(String, Vec<Dictio
                 },
             });
         }
-        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.file.cmp(&b.file)));
+        out.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.file.cmp(&b.file))
+        });
         Ok((dir.to_string_lossy().into_owned(), out))
     })
     .await
@@ -4269,13 +4291,19 @@ fn dictionary_path_ok(app: &tauri::AppHandle, path: &std::path::Path) -> CmdResu
     if picked || inside {
         Ok(())
     } else {
-        Err(docs::CmdError::new("bad_request", "choose the dictionary file in the file window"))
+        Err(docs::CmdError::new(
+            "bad_request",
+            "choose the dictionary file in the file window",
+        ))
     }
 }
 
 /// Pick a dictionary file to load.
 #[tauri::command]
-async fn dictionary_pick(app: tauri::AppHandle, window: WebviewWindow) -> CmdResult<Option<String>> {
+async fn dictionary_pick(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> CmdResult<Option<String>> {
     blocking(move || {
         let mut d = rfd::FileDialog::new()
             .set_title("Load a dictionary")
@@ -4287,7 +4315,10 @@ async fn dictionary_pick(app: tauri::AppHandle, window: WebviewWindow) -> CmdRes
         let Some(path) = d.pick_file() else {
             return Ok(None);
         };
-        DICT_PICKED.lock().unwrap_or_else(|p| p.into_inner()).push(path.clone());
+        DICT_PICKED
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(path.clone());
         Ok(Some(path.display().to_string()))
     })
     .await
@@ -4317,10 +4348,19 @@ async fn dictionary_pick_save(
         let Some(mut path) = d.save_file() else {
             return Ok(None);
         };
-        if path.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("ndmap") {
+        if path
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+            != Some("ndmap")
+        {
             path.set_extension("ndmap");
         }
-        DICT_PICKED.lock().unwrap_or_else(|p| p.into_inner()).push(path.clone());
+        DICT_PICKED
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(path.clone());
         Ok(Some(path.display().to_string()))
     })
     .await
@@ -4364,9 +4404,16 @@ async fn dictionary_write(
         }
         let p = PathBuf::from(&path);
         if !p.is_absolute()
-            || p.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("ndmap")
+            || p.extension()
+                .and_then(|x| x.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+                != Some("ndmap")
         {
-            return Err(docs::CmdError::new("bad_request", "choose where to save the dictionary"));
+            return Err(docs::CmdError::new(
+                "bad_request",
+                "choose where to save the dictionary",
+            ));
         }
         dictionary_path_ok(&app, &p)?;
         docs.check_writable(&p)?;

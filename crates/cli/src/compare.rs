@@ -364,7 +364,11 @@ pub fn lookalikes(args: &[&str]) -> Result<(), String> {
         "spelling" => Method::Spelling,
         "both" => Method::Both,
         "abbreviations" => Method::Abbreviations,
-        m => return Err(format!("unknown method {m}: use sounds, spelling, both or abbreviations")),
+        m => {
+            return Err(format!(
+                "unknown method {m}: use sounds, spelling, both or abbreviations"
+            ))
+        }
     };
     let d = load(input, sheet(&o)?)?;
     let col = col_of(

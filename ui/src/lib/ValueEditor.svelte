@@ -313,7 +313,8 @@
       const [dir, items] = await backend().dictionaryList();
       dictDir = dir;
       dictItems = items;
-      if (!dictPick && items.length) dictPick = items.find((i) => !i.problem)?.path ?? "";
+      // A dictionary no longer there (moved or deleted) is not offered.
+      if (!items.some((i) => i.path === dictPick && !i.problem)) dictPick = items.find((i) => !i.problem)?.path ?? "";
     } catch (e) {
       dictNote = errorText(e);
     }
@@ -370,7 +371,7 @@
   }
   async function saveDict(confirmed = false): Promise<void> {
     saveNote = "";
-    const d = saveAsk?.dict ?? dictToSave();
+    const d: Dictionary = $state.snapshot(saveAsk?.dict ?? dictToSave());
     if (!d.pairs.length) {
       saveNote = "There are no merges to save yet.";
       return;
@@ -612,7 +613,7 @@
           </select>
           <button type="button" class="small" disabled={!dictPick} title={dictPick ? "" : "Save a dictionary first, or choose a file"} onclick={() => void loadDict(dictPick)}>Load</button>
           <button type="button" class="small" onclick={() => void loadOther()}>Choose a file…</button>
-          <button type="button" class="small" disabled={!editPairs(edits).length} title={editPairs(edits).length ? "" : "Merge some values first: the merges are what a dictionary saves"} onclick={() => { saveOpen = true; saveName = dict?.read.dict.name ?? ""; saveNote = ""; }}>Save as dictionary…</button>
+          <button type="button" class="small" disabled={!editPairs(edits).length} title={editPairs(edits).length ? "" : "Merge some values first: the merges are what a dictionary saves"} onclick={() => { saveOpen = true; saveName = saveName || (dict?.read.dict.name ?? ""); saveNote = ""; }}>Save as dictionary…</button>
         </div>
         {#if saveOpen}
           <div class="row">
@@ -676,7 +677,7 @@
       {#if pairs.length}<p class="good">{pairs.length.toLocaleString()} value{pairs.length === 1 ? "" : "s"} will change ({changing.toLocaleString()} cells).</p>{/if}
       {#if drag?.moving}
         <div class="drag-chip" style:left="{drag.x + 14}px" style:top="{drag.y + 10}px" data-testid="drag-chip">
-          {drag.values.length.toLocaleString()} {drag.values.length === 1 ? "value" : "values"} ({drag.cells.toLocaleString()} cells) → {drag.over ?? "…"}
+          {drag.values.length.toLocaleString()} {drag.values.length === 1 ? "value" : "values"} ({drag.cells.toLocaleString()} {drag.cells === 1 ? "cell" : "cells"}) → {drag.over ?? "…"}
         </div>
       {/if}
     {/if}
@@ -720,7 +721,7 @@
   .values {
     max-height: 300px;
   }
-  .values input {
+  .values input[type="text"] {
     width: 14em;
   }
   td.num {
@@ -738,6 +739,7 @@
   }
   .grip-cell {
     white-space: nowrap;
+    width: 1%;
   }
   .grip {
     cursor: grab;

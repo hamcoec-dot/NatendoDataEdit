@@ -921,6 +921,8 @@ everything is also in command search.
   never saved by itself. Files with a value merged two ways, a chain (A to B
   and B to C) or a circle are refused with what to fix. A recipe keeps its
   pairs in itself, so it never needs the dictionary file.
+
+  ![Edit values with a dictionary loaded: one value being dragged onto another, and the values not in the dictionary](docs/screenshots/value-dictionary.png)
 - **Group look-alikes by sound or spelling:** Data > Group look-alike values
   by sound or spelling (also in the column heading's right-click menu, or
   the Look-alikes choice in the value editor) finds names that sound alike

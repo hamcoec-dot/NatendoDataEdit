@@ -100,8 +100,14 @@ const STATES: &[(&str, &str)] = &[
 /// also US state codes (CA, DE, IN...) are left out, and so are codes that
 /// are everyday words or names (can, per, ken).
 const COUNTRIES: &[(&[&str], &str)] = &[
-    (&["us", "usa", "unitedstatesofamerica", "america"], "United States"),
-    (&["uk", "gb", "gbr", "greatbritain", "britain"], "United Kingdom"),
+    (
+        &["us", "usa", "unitedstatesofamerica", "america"],
+        "United States",
+    ),
+    (
+        &["uk", "gb", "gbr", "greatbritain", "britain"],
+        "United Kingdom",
+    ),
     (&["uae"], "United Arab Emirates"),
     (&["canada"], "Canada"),
     (&["mex"], "Mexico"),
@@ -328,7 +334,15 @@ mod tests {
     #[test]
     fn keys_bring_variants_together() {
         let us = abbrev_key("United States");
-        for v in ["USA", "U.S.A.", "usa.", "U S A", "United States of America", "US", "u.s."] {
+        for v in [
+            "USA",
+            "U.S.A.",
+            "usa.",
+            "U S A",
+            "United States of America",
+            "US",
+            "u.s.",
+        ] {
             assert_eq!(abbrev_key(v), us, "{v}");
         }
         let main = abbrev_key("Main Street");
@@ -362,7 +376,14 @@ mod tests {
 
     #[test]
     fn groups_take_the_full_form_first() {
-        let t = tallies(&[("NY", 40), ("New York", 3), ("Main St", 9), ("Main Street", 2), ("Ward 1", 50), ("Ward 2", 50)]);
+        let t = tallies(&[
+            ("NY", 40),
+            ("New York", 3),
+            ("Main St", 9),
+            ("Main Street", 2),
+            ("Ward 1", 50),
+            ("Ward 2", 50),
+        ]);
         let (g, maybe) = group(&t, &[], &Progress::new()).unwrap();
         assert_eq!(
             named(&t, &g),
@@ -380,7 +401,13 @@ mod tests {
         let (g, maybe) = group(&status, &[], &Progress::new()).unwrap();
         assert_eq!(named(&status, &g), vec![vec!["Oklahoma", "OK"]]);
         assert_eq!(maybe, vec![true]);
-        let states = tallies(&[("TN", 50), ("Tennessee", 30), ("OK", 3), ("Oklahoma", 1), ("GA", 5)]);
+        let states = tallies(&[
+            ("TN", 50),
+            ("Tennessee", 30),
+            ("OK", 3),
+            ("Oklahoma", 1),
+            ("GA", 5),
+        ]);
         let (g, maybe) = group(&states, &[], &Progress::new()).unwrap();
         assert_eq!(g.len(), 2);
         assert_eq!(maybe, vec![false, false]);
@@ -392,13 +419,20 @@ mod tests {
 
     #[test]
     fn dictionary_pairs_group_and_win() {
-        let t = tallies(&[("Hamilton Co.", 7), ("Hamilton County", 2), ("Ham. Cnty", 1)]);
+        let t = tallies(&[
+            ("Hamilton Co.", 7),
+            ("Hamilton County", 2),
+            ("Ham. Cnty", 1),
+        ]);
         let extra = vec![
             ("Hamilton Co.".to_string(), "Hamilton County".to_string()),
             ("Ham. Cnty".to_string(), "Hamilton County".to_string()),
         ];
         let (g, maybe) = group(&t, &extra, &Progress::new()).unwrap();
-        assert_eq!(named(&t, &g), vec![vec!["Hamilton County", "Hamilton Co.", "Ham. Cnty"]]);
+        assert_eq!(
+            named(&t, &g),
+            vec![vec!["Hamilton County", "Hamilton Co.", "Ham. Cnty"]]
+        );
         assert_eq!(maybe, vec![false]);
     }
 }
