@@ -1881,6 +1881,34 @@ pub(crate) mod tests {
         }
     }
 
+    /// A sheet saved by LibreOffice 24.2 itself (made-up values): its padding styles sit on the column defaults.
+    #[test]
+    fn a_file_saved_by_libreoffice_pads_as_it_shows() {
+        let data: &[u8] = include_bytes!("testdata/libreoffice_zeros.ods");
+        let stored = [
+            ["123", "123456789", "1234", "5", "-12", "1.5", "3"],
+            ["7", "12", "99", "42", "-1", "2.25", "10"],
+        ];
+        for ask in [None, Some(false)] {
+            let (rows, st) = ods_read(data, ask);
+            assert_eq!(rows[1..], stored, "{ask:?}");
+            assert_eq!(st.padded_applied, 0);
+            // Ten cells carry a padding format: six can be padded, the two negatives and two fractions cannot.
+            assert_eq!(st.padded.iter().map(|p| p.1).sum::<u64>(), 10, "{ask:?}");
+            assert_eq!(st.padded_left, 4, "{ask:?}");
+        }
+        let (rows, st) = ods_read(data, Some(true));
+        assert_eq!(
+            rows[1],
+            ["00123", "123-45-6789", "01 234", "5", "-12", "1.5", "3"]
+        );
+        assert_eq!(
+            rows[2],
+            ["00007", "000-00-0012", "00 099", "42", "-1", "2.25", "10"]
+        );
+        assert_eq!((st.padded_applied, st.padded_left), (6, 4));
+    }
+
     #[test]
     fn xlsx_quoted_literals_pad_only_dashes_and_spaces() {
         assert_eq!(
