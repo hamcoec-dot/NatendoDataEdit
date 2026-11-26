@@ -102,6 +102,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import UpdatesDialog from "./lib/UpdatesDialog.svelte";
   import EncryptDialog from "./lib/EncryptDialog.svelte";
   import { MAX_ASKED, TOTAL_CHOICES, totalCopy, type TotalChoice } from "./lib/totalsRow";
+  import DiskBanner from "./lib/DiskBanner.svelte";
+  import { DISK_AGAIN, DISK_EVERY, diskBanner, takeDisk } from "./lib/disk";
   import SqliteDialog from "./lib/SqliteDialog.svelte";
   import NotesDialog from "./lib/NotesDialog.svelte";
   import WatchDialog from "./lib/WatchDialog.svelte";
@@ -1065,7 +1067,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
 
-  async function applyViewSteps(v: View, t: Tab): Promise<void> {
+  /** `strict`: columns not found by title are left out without asking (a reload never guesses). */
+  async function applyViewSteps(v: View, t: Tab, strict = false): Promise<void> {
     const headerWas = t.header;
     if (v.header !== t.header) {
       t.header = v.header;
@@ -1097,7 +1100,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       const c = map[k];
       return c !== null && c !== undefined && vc.title.trim() && norm(titles[c] ?? "") !== norm(vc.title) ? [{ k, c, was: vc.title }] : [];
     });
-    if (byPlace.length) {
+    if (strict) for (const x of byPlace) map[x.k] = null;
+    else if (byPlace.length) {
       const list = byPlace.slice(0, 8).map((x) => `“${x.was}” → column ${x.c + 1}, “${titles[x.c]}”`).join("; ");
       const a = await ask(
         "Use columns in the same place?",
@@ -1951,6 +1955,104 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           .then((x) => nt.update(x, false))
           .catch(() => {});
       }
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  // ---- another program changed a file ------------------------------------------------
+
+  let diskLooking = false;
+  let diskLooked = 0;
+  /** Look at every open file; `say`s the result when the person asked. */
+  async function checkDisk(asked = false): Promise<void> {
+    if (diskLooking || !tabs.length) return;
+    diskLooking = true;
+    diskLooked = Date.now();
+    try {
+      if (asked) {
+        for (const t of tabs) {
+          t.diskIgnored = "";
+          t.diskMuted = false;
+        }
+      }
+      const found = await backend().diskCheck();
+      for (const e of found) {
+        const t = tabs.find((x) => x.id === e.doc);
+        if (t) takeDisk(t, e);
+      }
+      if (asked) {
+        const n = tabs.filter((t) => t.diskNote).length;
+        say(n ? `${plural(n, "open file")} changed or removed outside the app: see the banner on its tab.` : "No outside changes found in the open files.");
+      }
+    } catch (e) {
+      if (asked) say(errorText(e));
+    } finally {
+      diskLooking = false;
+    }
+  }
+
+  // A look on switching tabs, on coming back to the window, and every little while it has the focus.
+  $effect(() => {
+    void tab?.id;
+    // Flipping through tabs asks once, not at every tab.
+    untrack(() => {
+      if (Date.now() - diskLooked >= DISK_AGAIN) void checkDisk();
+    });
+  });
+  $effect(() => {
+    const look = () => void checkDisk();
+    const timer = setInterval(() => {
+      if (document.hasFocus()) look();
+    }, DISK_EVERY);
+    window.addEventListener("focus", look);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", look);
+    };
+  });
+
+  async function reloadFromDisk(t: Tab): Promise<void> {
+    if (t.info.modified) {
+      const a = await ask(
+        "Reload and lose your changes?",
+        `${t.info.name} has changes you have not saved. Reloading reads the file on disk and drops them.`,
+        [
+          { id: "reload", label: "Reload and lose them", danger: true },
+          { id: "compare", label: "Compare first" },
+          { id: "keep", label: "Keep mine", primary: true },
+        ],
+        "keep",
+      );
+      if (a === "compare") return compareWithDisk(t);
+      if (a !== "reload") {
+        t.diskIgnored = t.diskNote?.token ?? "";
+        return;
+      }
+    }
+    const view = $state.snapshot(currentView(t, "before the reload")) as View;
+    const before = view.columns.map((c) => c.title.trim().toLowerCase()).filter(Boolean);
+    const i = tabs.indexOf(t);
+    if (i < 0) return;
+    await reopenTab(t, t.info.line_by_line, null);
+    const nt = tabs[i];
+    if (!nt || nt === t) return;
+    for (let k = 0; k < 600 && !nt.info.indexed; k++) await new Promise((r) => setTimeout(r, 100));
+    if (tab !== nt || !nt.info.indexed) return;
+    await applyViewSteps(view, nt, true);
+    const now = new Set(shownTitles(nt).map((x) => x.trim().toLowerCase()));
+    const gone = nt.header ? before.filter((x) => !now.has(x)).length : 0;
+    say(`Reloaded ${nt.info.name}.${gone ? ` ${plural(gone, "column")} from before ${gone === 1 ? "is" : "are"} not there any more; settings that pointed at ${gone === 1 ? "it" : "them"} were dropped.` : ""}`);
+  }
+
+  async function compareWithDisk(t: Tab): Promise<void> {
+    try {
+      if (tabs.indexOf(t) < 0) return;
+      active = tabs.indexOf(t);
+      const r = await runJob("Comparing with the file on disk", () => backend().diskCompare(t.id, t.header));
+      if (!r) return;
+      for (const d of r) addTab(d, false);
+      say("Opened the file as it is on disk, and the differences from what you opened (your unsaved edits are not part of it). Tools > Take changes from a newer file brings chosen ones into your tab.");
     } catch (e) {
       say(errorText(e));
     }
@@ -6545,6 +6647,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "clean.suggest", label: "Clean-up &suggestions…", run: () => void openSuggestions(), enabled: ready },
     { id: "file.recover", label: "Recover unsaved &work…", run: () => void showRecovery(false) },
     { id: "file.versions", label: "Earlier sa&ves of this file…", run: () => void showVersions(), enabled: () => !!tab?.info.path },
+    { id: "file.checkDisk", label: "Check open files for o&utside changes", run: () => void checkDisk(true), enabled: hasTab },
     { id: "data.filterBySel", label: "Filter by &selected value", run: filterBySelection, enabled: ready },
     { id: "data.clearFilter", label: "C&lear filter", run: clearFilter, enabled: () => ready() && !!tab?.info.has_filter },
     { id: "data.reapply", label: "&Reapply filter", keys: ["Ctrl+Alt+L"], run: reapplyFilter, enabled: () => ready() && !!tab?.filter },
@@ -6622,7 +6725,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   reg.setOverrides(cleanShortcuts(prefs.data.shortcuts, (id) => !!reg.get(id)));
 
   const menus: Menu[] = [
-    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.importNotes", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "-", "file.recover", "file.versions", "-", "window.moveToNew", "window.moveToMain", "-", "file.options", "-", "file.close", "file.closeOthers", "file.closeUnchanged", "file.reopenClosed", "file.quit"] },
+    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.importNotes", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "file.checkDisk", "-", "file.recover", "file.versions", "-", "window.moveToNew", "window.moveToMain", "-", "file.options", "-", "file.close", "file.closeOthers", "file.closeUnchanged", "file.reopenClosed", "file.quit"] },
     {
       label: "&Edit",
       items: [
@@ -8269,6 +8372,21 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       {/each}
       <button type="button" class="small dismiss" aria-label="Dismiss notices" onclick={() => { if (tab) tab.dismissed = true; }}><Icon name="close" size={12} /></button>
     </div>
+  {/if}
+
+  {#if tab}
+    {@const dn = diskBanner(tab)}
+    {#if dn}
+      <DiskBanner
+        name={tab.info.name}
+        note={dn}
+        onReload={() => { if (tab) void reloadFromDisk(tab); }}
+        onCompare={() => { if (tab) void compareWithDisk(tab); }}
+        onSaveAs={() => void runCmd("file.saveAs")}
+        onIgnore={() => { if (tab) tab.diskIgnored = dn.token; }}
+        onMute={() => { if (tab) tab.diskMuted = true; }}
+      />
+    {/if}
   {/if}
 
   <main class="body" class:with-panel={!!prefs.data.panel}>

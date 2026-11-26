@@ -228,6 +228,13 @@ export interface ColumnTotals {
   filtered: boolean;
   columns: ColumnTotal[];
 }
+/** What a look at one tab's file on disk found. */
+export interface DiskEvent {
+  doc: number;
+  state: "same" | "changed" | "gone";
+  token: string;
+  modified: number | null;
+}
 export interface Totals {
   cells: number;
   filled: number;
@@ -1803,6 +1810,10 @@ export interface Backend {
   /** Write a share-safe copy to a file the user picks (null: cancelled). */
   saveSafeCopy(doc: number, spec: SafeCopy, now: number): Promise<SafeCopyReport | null>;
   /** What changed since the file was opened or last saved. */
+  /** Look whether another program changed an open file (waits at most 2 s). */
+  diskCheck(): Promise<DiskEvent[]>;
+  /** The disk's version of the tab's file, and its differences from what the tab read, as two new tabs. */
+  diskCompare(doc: number, header: boolean): Promise<[DocInfo, DocInfo]>;
   changeList(doc: number): Promise<ChangeList>;
   /** Folder search: pick the folder, run, follow, stop, open a result. */
   pickSearchFolder(doc: number | null): Promise<string | null>;
@@ -2508,6 +2519,12 @@ class TauriBackend implements Backend {
   }
   saveSafeCopy(doc: number, spec: SafeCopy, now: number) {
     return call<SafeCopyReport | null>("save_safe_copy", { doc, spec, now });
+  }
+  diskCheck() {
+    return call<DiskEvent[]>("disk_check");
+  }
+  diskCompare(doc: number, header: boolean) {
+    return call<[DocInfo, DocInfo]>("disk_compare", { doc, header });
   }
   changeList(doc: number) {
     return call<ChangeList>("change_list", { doc });

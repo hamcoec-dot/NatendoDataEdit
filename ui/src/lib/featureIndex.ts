@@ -97,6 +97,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "title row or not": ["format.header", "format.makeHeader", "format.renameCol", "format.forgetHeader", "format.forgetHeaders", "format.askHeader", "format.askHeaderAgain", "file.options"],
   "save as options": ["file.saveAs"],
   "never lose work": ["file.recover", "file.versions", "file.revert"],
+  "outside changes": ["file.checkDisk", "tools.updates"],
   "big files": ["file.open"],
   "zipped and gzipped files": ["file.open", "file.recent"],
   "pick up where you left off": ["file.options", "file.recent"],

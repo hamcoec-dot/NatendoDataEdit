@@ -222,6 +222,20 @@ everything is also in command search.
 - **Never lose work:** automatic recovery copies after a crash, a list of
   earlier saves to go back to, Revert, and saves written to a temporary file
   first and then moved into place.
+- **Outside changes:** when another program saves, deletes or moves an open
+  file, a banner under the tabs says so (the app looks when you come back to
+  it, switch tabs, and every 20 seconds). **Reload** reads the file again and
+  keeps column widths, filter and sort (settings for columns that are gone are
+  dropped), asking first if you have unsaved changes. **Compare with disk**
+  opens the file as it is now and the differences from what you opened, so
+  your unsaved edits stay out of it; Tools > Take changes from a newer file
+  brings chosen ones into your tab. **Ignore** hides the banner until the file
+  changes again, and "Don't warn for this file" for as long as the tab is open.
+  The app never warns about its own saves, and a network share that stops
+  answering is left alone without freezing anything. Large files on a local
+  drive are locked while open, so other programs cannot change them.
+
+  ![A banner under the tab of a made-up list: changed on disk, with Reload, Compare with disk, Ignore](docs/screenshots/outside-change.png)
 - **Big files:** opens files of several gigabytes; every long job shows
   progress and can be stopped.
 - **Zipped and gzipped files:** open `voters.csv.gz` or `export.zip` without
@@ -1506,6 +1520,9 @@ request must carry the key. Requests are one JSON object per line:
 
 ## Known limits
 
+- On drives with coarse file times (FAT, some network shares) a change that
+  keeps the file the same length within two seconds of your save can go
+  unnoticed until the next one.
 - A `.dbf` file is read, never written. FoxPro memo files (`.fpt`) are not
   read, and of the old DOS code pages only 437, 850 and 866 are.
 - GeoPackage shapes are not shown, and a GeoPackage is never written.

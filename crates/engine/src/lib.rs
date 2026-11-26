@@ -30,6 +30,7 @@ pub mod dbf;
 pub mod detect;
 pub mod dialect;
 pub mod diff;
+pub mod disk;
 pub mod document;
 pub mod editing;
 pub mod encoding;
