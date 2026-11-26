@@ -216,6 +216,9 @@ pub enum RecipeOp {
     /// Data checks: rows that fail first.
     SortProblems {
         spec: crate::validate::CheckSpec,
+        /// Left out (older recipes): every row.
+        #[serde(default)]
+        scope: crate::sort::SortScope,
     },
     /// Data checks: a "Check result" column.
     CheckColumn {
@@ -315,6 +318,10 @@ impl RecipeOp {
             }
             RecipeOp::SplitName { .. } => "Split names".into(),
             RecipeOp::FillExample { .. } => "Fill by example".into(),
+            RecipeOp::Compute { spec } if spec.target.is_none() && !spec.hidden => format!(
+                "Computed column: {} (shown rows only; hidden rows left empty)",
+                spec.expr
+            ),
             RecipeOp::Compute { spec } => format!("Computed column: {}", spec.expr),
             RecipeOp::FillBlanks { .. } => "Fill blank cells".into(),
             RecipeOp::CountRepeats { .. } => "Count repeats".into(),
@@ -348,7 +355,14 @@ impl RecipeOp {
             RecipeOp::GroupCalc { .. } => "Group figures".into(),
             RecipeOp::Arrange { .. } => "Arrange columns".into(),
             RecipeOp::Extract { .. } => "Extract a piece into a column".into(),
-            RecipeOp::SortProblems { .. } => "Put rows that fail the checks first".into(),
+            RecipeOp::SortProblems { scope, .. } => match scope {
+                crate::sort::SortScope::All => {
+                    "Put rows that fail the checks first (all rows, hidden ones too)".into()
+                }
+                crate::sort::SortScope::Shown => {
+                    "Put rows that fail the checks first (shown rows; hidden rows stay)".into()
+                }
+            },
             RecipeOp::CheckColumn { .. } => "Add a check result column".into(),
         }
     }
@@ -458,7 +472,7 @@ impl Recipe {
             if let RecipeOp::Clean { spec } = s {
                 spec.cleaner.check()?;
             }
-            if let RecipeOp::SortProblems { spec } | RecipeOp::CheckColumn { spec, .. } = s {
+            if let RecipeOp::SortProblems { spec, .. } | RecipeOp::CheckColumn { spec, .. } = s {
                 crate::validate::check_spec(spec)?;
             }
         }
@@ -807,13 +821,13 @@ impl Document {
                 let p = self.plan_extract(spec, progress)?;
                 self.apply_cols(p)
             }
-            RecipeOp::SortProblems { spec } => {
+            RecipeOp::SortProblems { spec, scope } => {
                 let spec = crate::validate::CheckSpec {
                     now,
                     ..spec.clone()
                 };
                 let rep = self.run_checks(&spec, progress)?;
-                let p = self.plan_sort_problems(&rep, spec.keep_first)?;
+                let p = self.plan_sort_problems(&rep, spec.keep_first, *scope)?;
                 self.apply_sort(p)
             }
             RecipeOp::CheckColumn { spec, title } => {
