@@ -187,6 +187,22 @@ impl Document {
         Ok(book.key(&vals))
     }
 
+    /// Whether the row with id `id`, shown or not, has a note.
+    pub fn row_noted(&self, book: &NoteBook, id: u32) -> bool {
+        if book.notes.is_empty() {
+            return false;
+        }
+        let Ok(reader) = self.note_reader(book) else {
+            return false;
+        };
+        let mut buf = Vec::new();
+        reader.read(self, id, &mut buf);
+        let vals: Vec<&str> = (0..book.key_cols.len())
+            .map(|i| reader.get(&buf, i))
+            .collect();
+        book.notes.contains_key(&book.key(&vals))
+    }
+
     /// Noted rows among shown rows `row..row+rows`.
     pub fn note_marks(&self, book: &NoteBook, row: u64, rows: u64) -> Result<Vec<NoteMark>, Error> {
         if book.notes.is_empty() {

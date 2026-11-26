@@ -49,7 +49,7 @@ import { encodeViewport, decodeViewport, type ViewportData } from "./binary";
 import { parseTsv, toTsv } from "./tsv";
 import { runCleaner, type Cleaner, type CleanPreview, type CleanSpec } from "./clean";
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, Summary, View } from "./views";
-import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, Written, TableReport, Totals } from "./backend";
+import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, Written, TableReport, RaggedList, RowText, RowRepair, Totals } from "./backend";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
 import { tidyTitleList } from "./titles";
 import { compareCells } from "./colcompare";
@@ -736,6 +736,63 @@ export class MockBackend implements Backend {
     const d = this.get(doc);
     Object.assign(d.info, { usual_fields: usual, ragged_rows: short.length + long.length });
     return this.refresh(d);
+  }
+
+  async raggedList(doc: number): Promise<RaggedList> {
+    const d = this.get(doc);
+    if (d.info.column_changes) throw err("invalid", COLUMNS_CHANGED);
+    const m = this.fakeRagged.get(doc) ?? { short: [], long: [] };
+    const ids = [...m.short, ...m.long].sort((a, b) => a - b);
+    return { ids, total: ids.length };
+  }
+  /** The stand-in's repair bar: a marked row has one field fewer or more than the table. */
+  private fields(d: MockDoc, doc: number, id: number): string[] {
+    const m = this.fakeRagged.get(doc) ?? { short: [], long: [] };
+    const row = Array.from({ length: d.info.cols }, (_, c) => this.value(d, id, c));
+    if (m.short.includes(id)) return row.slice(0, -1);
+    return m.long.includes(id) ? [...row, "extra"] : row;
+  }
+  async rowText(doc: number, row: number | null, rowId: number | null): Promise<RowText> {
+    const d = this.get(doc);
+    if (d.info.column_changes) throw err("invalid", COLUMNS_CHANGED);
+    const id = rowId ?? this.rowId(d, row ?? 0);
+    const fields = this.fields(d, doc, id);
+    const shown = Array.from({ length: this.rowCount(d) }, (_, r) => r).find((r) => this.rowId(d, r) === id) ?? null;
+    const next = { id: id + 1, file_row: id + 2, edited: false, hidden: false, noted: false, fields: this.fields(d, doc, id + 1) };
+    return {
+      id,
+      row: shown,
+      file_row: id + 1,
+      revision: d.undo.length,
+      edited: false,
+      raw: fields.join(d.info.delimiter ?? ","),
+      cut: false,
+      fields,
+      width: fields.length,
+      usual: d.info.usual_fields ?? d.info.cols,
+      line_by_line: false,
+      no_join: "",
+      quoted_as_text: [],
+      next,
+      no_next: "",
+    };
+  }
+  async rowWidth(doc: number, row: number): Promise<[number, number]> {
+    const d = this.get(doc);
+    const usual = d.info.usual_fields || d.info.cols;
+    return [this.fields(d, doc, this.rowId(d, row)).length - d.info.cols + usual, usual];
+  }
+  async repairRow(doc: number, rowId: number, revision: number, repair: RowRepair): Promise<DocInfo> {
+    const d = this.get(doc);
+    if (revision !== d.undo.length) throw err("invalid", "the table changed since the row was read; look again");
+    this.calls.push(`repairRow:${rowId}:${JSON.stringify(repair)}`);
+    const m = this.fakeRagged.get(doc) ?? { short: [], long: [] };
+    const before = m;
+    const after = { short: m.short.filter((r) => r !== rowId), long: m.long.filter((r) => r !== rowId) };
+    return this.push(d, () => {
+      this.fakeRagged.set(doc, after);
+      return () => void this.fakeRagged.set(doc, before);
+    });
   }
 
   async newDocument(): Promise<DocInfo> {

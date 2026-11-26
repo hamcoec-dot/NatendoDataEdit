@@ -861,6 +861,16 @@ everything is also in command search.
   give it a value past its end. After columns are added, removed or moved,
   saving writes every row at the same width, so the commands are greyed until
   that change is undone.
+- **Repair bar** (Data menu or the right-click menu on a ragged row, **Repair
+  this row**, or **Repair…** on the note): the row's text as it is in the file,
+  its fields with a mark between each two, and what the row will be. Click marks
+  to join fields (the file's separator stays in the cell), join the row with the
+  next row of the file with a space, a line break or nothing between, or read a
+  stray quote mark as ordinary text. Each repair is one undo step; Up and Down
+  walk the ragged rows. The text shown is cut at 64 KB, and nothing about it is
+  stored.
+
+  ![The repair bar: a name with an unescaped comma, two fields marked to be joined](docs/screenshots/repair-bar.png)
 - **Data checks** per column or row: required, number (with limits, whole
   numbers), date (with limits), length, from a list, pattern, no repeats, or
   your own expression. Cells that fail are marked; show only the rows with

@@ -52,6 +52,8 @@ pub struct NextRow {
     pub edited: bool,
     /// Not on screen (hidden or filtered out).
     pub hidden: bool,
+    /// It has a note (filled in by the caller, who holds the notes).
+    pub noted: bool,
     pub fields: Vec<String>,
 }
 
@@ -174,6 +176,17 @@ impl Document {
         Ok(out)
     }
 
+    /// The fields of shown row `row` and the usual number, reading that row
+    /// only.
+    pub fn row_width(&self, row: u64) -> Result<(u64, u32), Error> {
+        let id = self.id_at(row).ok_or(Error::OutOfRange)?;
+        let width = match self.overlay.get(id) {
+            Some(edit) => u64::from(edit.width()),
+            None => self.file_fields(id),
+        };
+        Ok((width, self.index.stats().usual_fields()))
+    }
+
     /// What the repair bar shows for row `id`.
     pub fn row_text(&self, id: u32) -> Result<RowText, Error> {
         self.ready_for_bulk()?;
@@ -228,6 +241,7 @@ impl Document {
                         file_row: u64::from(n) + 1,
                         edited: self.overlay.get(n).is_some(),
                         hidden: self.shown_at(n, next_at).is_none(),
+                        noted: false,
                         fields,
                     }),
                     String::new(),
@@ -433,6 +447,8 @@ mod tests {
         assert_eq!(t.raw, "1,Smith, John,Rome");
         assert_eq!(t.fields, ["1", "Smith", " John", "Rome"]);
         assert_eq!((t.width, t.usual, t.edited, t.cut), (4, 3, false, false));
+        assert_eq!(d.row_width(1).unwrap(), (4, 3));
+        assert_eq!(d.row_width(2).unwrap(), (3, 3));
         let next = t.next.unwrap();
         assert_eq!((next.id, next.file_row, next.hidden), (2, 3, false));
         assert_eq!(

@@ -328,6 +328,42 @@ export interface TableReport {
   /** A sample's audit record (seed, method, file fingerprint, groups). */
   record?: DocInfo | null;
 }
+/** What goes between two rows joined into one (never the file's separator). */
+export type Between = "space" | "line_break" | "nothing";
+export type RowRepair = { kind: "join"; groups: number[] } | { kind: "next"; between: Between } | { kind: "quote_as_text" };
+/** The next row of the file, as the repair bar shows it. */
+export interface NextRow {
+  id: number;
+  file_row: number;
+  edited: boolean;
+  hidden: boolean;
+  noted: boolean;
+  fields: string[];
+}
+/** A row as the repair bar shows it. */
+export interface RowText {
+  id: number;
+  /** Where it is on screen (null: hidden or filtered out). */
+  row: number | null;
+  file_row: number;
+  revision: number;
+  edited: boolean;
+  raw: string;
+  cut: boolean;
+  fields: string[];
+  width: number;
+  usual: number;
+  line_by_line: boolean;
+  no_join: string;
+  quoted_as_text: string[];
+  next: NextRow | null;
+  no_next: string;
+}
+export interface RaggedList {
+  /** Row ids in table order. */
+  ids: number[];
+  total: number;
+}
 export interface SplitParts {
   col: number | null;
   every: number;
@@ -1406,6 +1442,11 @@ export interface Backend {
   onFreshInfo(listener: (info: DocInfo) => void): void;
   viewport(doc: number, row: number, rows: number, col: number, cols: number, maxChars: number): Promise<ViewportData>;
   cellText(doc: number, row: number, col: number): Promise<{ text: string; truncated: boolean }>;
+  raggedList(doc: number, keepFirst: boolean): Promise<RaggedList>;
+  rowText(doc: number, row: number | null, rowId: number | null): Promise<RowText>;
+  /** A shown row's fields and the usual number. */
+  rowWidth(doc: number, row: number): Promise<[number, number]>;
+  repairRow(doc: number, rowId: number, revision: number, repair: RowRepair): Promise<DocInfo>;
   setCells(doc: number, cells: [number, number, string][]): Promise<DocInfo>;
   /** `skip`: columns left as they are (hidden ones). */
   fillCells(doc: number, row: number, rows: number, col: number, cols: number, value: string, skip?: number[]): Promise<DocInfo>;
@@ -1895,6 +1936,18 @@ class TauriBackend implements Backend {
   }
   cellText(doc: number, row: number, col: number) {
     return call<{ text: string; truncated: boolean }>("cell_text", { doc, row, col });
+  }
+  raggedList(doc: number, keepFirst: boolean) {
+    return call<RaggedList>("ragged_list", { doc, keepFirst });
+  }
+  rowText(doc: number, row: number | null, rowId: number | null) {
+    return call<RowText>("row_text", { doc, row, rowId });
+  }
+  rowWidth(doc: number, row: number) {
+    return call<[number, number]>("row_width", { doc, row });
+  }
+  repairRow(doc: number, rowId: number, revision: number, repair: RowRepair) {
+    return call<DocInfo>("repair_row", { doc, rowId, revision, repair });
   }
   setCells(doc: number, cells: [number, number, string][]) {
     return call<DocInfo>("set_cells", { doc, cells });
@@ -2558,6 +2611,7 @@ let instance: Backend | null = null;
  *  document's state and makes sure each is on this list or on the safe one. */
 export const WRITE_METHODS: readonly string[] = [
   "setCells",
+  "repairRow",
   "encodingApply",
   "fillCells",
   "fillAreas",

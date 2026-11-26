@@ -11,7 +11,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { SECOND_WINDOW } from "./lib/windowRole";
   import { invisibleNote, xrayNote } from "./lib/invisible";
   import { GUARD_LABEL, guardNote } from "./lib/csvguard";
-  import { COLUMNS_CHANGED, raggedNotice, raggedResult, type RaggedPick } from "./lib/ragged";
+  import { COLUMNS_CHANGED, raggedNotice, raggedResult, repairWhy, type RaggedPick } from "./lib/ragged";
+  import RepairBar from "./lib/RepairBar.svelte";
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu, SELECTION_FREE } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
@@ -6163,6 +6164,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "format.headerNo", label: "Title-row question: no, it's data", keys: ["Alt+Shift+N"], run: () => void answerHeader(false), enabled: headerAsking },
     { id: "format.forgetHeader", label: "Forget this file's title-row choice", run: () => void forgetHeaderOf(), enabled: () => !!tab?.info.path },
     { id: "format.forgetHeaders", label: "Forget remembered title rows…", run: () => void forgetAllHeaders() },
+    { id: "data.repairRow", label: "Repair this row…", run: () => { if (tab) repairFrom = { doc: tab.id, row: tab.cell.row }; }, enabled: () => ready() && repairWhyNow() === "", why: repairWhyNow },
     { id: "data.ragged", label: "Show only rows with the wrong number of fields", run: () => void showRagged("all"), enabled: raggedReady, why: raggedWhy },
     { id: "data.raggedShort", label: "Show only rows with too few fields", run: () => void showRagged("short"), enabled: raggedReady, why: raggedWhy },
     { id: "data.raggedLong", label: "Show only rows with too many fields", run: () => void showRagged("long"), enabled: raggedReady, why: raggedWhy },
@@ -6405,7 +6407,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       items: [
         "data.sortAsc", "data.sortDesc", "data.sort", "data.sortColsAsc", "data.sortColsDesc", "data.shuffle", "-",
         "data.filter", "data.filterMenu", "data.filterBySel", "data.filterFormula", "view.panelFilters", "data.clearFilter", "data.reapply", "-",
-        "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "data.ragged", "data.raggedShort", "data.raggedLong", "-",
+        "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "data.repairRow", "data.ragged", "data.raggedShort", "data.raggedLong", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
         "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
@@ -6444,8 +6446,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
-    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
@@ -7059,6 +7061,36 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     void tick().then(() => grid?.focus());
   }
 
+  /** The repair bar, open on this file (row: the shown row to start at, null for the first ragged one). */
+  let repairFrom = $state<{ doc: number; row: number | null } | null>(null);
+  /** Whether "Repair this row" can run on the active row; read for that row only, as it changes. */
+  let repairState = $state<{ doc: number; row: number; why: string }>({ doc: -1, row: -1, why: "" });
+  $effect(() => {
+    const t = tab;
+    if (!t) return;
+    const row = t.cell.row;
+    const info = t.info;
+    void t.version;
+    const doc = t.id;
+    if (info.column_changes || !info.indexed || row >= info.rows) {
+      repairState = { doc, row, why: repairWhy(info, 0, 1) || "choose a row" };
+      return;
+    }
+    const wait = setTimeout(() => {
+      void backend()
+        .rowWidth(doc, row)
+        .then(([w, u]) => {
+          repairState = { doc, row, why: row === 0 && t.header ? "the first row holds the column names" : repairWhy(info, w, u) };
+        })
+        .catch((e) => {
+          repairState = { doc, row, why: errorText(e) };
+        });
+    }, 120);
+    return () => clearTimeout(wait);
+  });
+  function repairWhyNow(): string {
+    return !tab || repairState.doc !== tab.id || repairState.row !== tab.cell.row ? "looking at the row" : repairState.why;
+  }
   function raggedReady(): boolean {
     return ready() && !tab?.info.column_changes;
   }
@@ -7545,7 +7577,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         run: () => void reopenLineByLine(),
       });
     const ragged = raggedNotice(d, t.header);
-    if (ragged) out.push({ text: ragged, action: "Review", run: () => void showRagged("all") });
+    if (ragged) out.push({ text: ragged, action: "Review", run: () => void showRagged("all"), actions: [{ label: "Repair…", run: () => { repairFrom = { doc: t.id, row: null }; } }] });
     if (d.lossy) out.push({ text: "Some characters could not be read in this file's encoding and show as �. Saving will ask before replacing them." });
     if (d.invalid_bytes) out.push({ text: "Some bytes are not valid text and show as �. They are kept unchanged unless you edit their row." });
     if (d.repair_count > 0 && !d.unclosed_quotes && !d.long_quoted_cells)
@@ -8018,6 +8050,20 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       </div>
     {/if}
   </main>
+
+  {#if tab && repairFrom && repairFrom.doc === tab.id}
+    {#key `${repairFrom.doc}:${repairFrom.row}`}
+      <RepairBar
+        {tab}
+        titles={Array.from({ length: Math.min(tab.info.cols, 200) }, (_, c) => columnTitle(tab!, c))}
+        start={repairFrom.row}
+        onGo={(row) => grid?.select({ row, col: tab!.cell.col }, { row, col: tab!.cell.col })}
+        onDone={(info, what) => { tab!.update(info, true); say(`${what} Undo (Ctrl+Z) takes it back.`); }}
+        onReopenLines={() => { repairFrom = null; void reopenLineByLine(); }}
+        onClose={() => { repairFrom = null; void tick().then(() => grid?.focus()); }}
+      />
+    {/key}
+  {/if}
 
   <footer class="status">
     {#if message}

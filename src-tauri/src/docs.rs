@@ -2691,11 +2691,28 @@ impl Docs {
     /// bar from the grid) by the shown row. Nothing is stored or logged.
     pub fn row_text(&self, id: u32, row: Option<u64>, row_id: Option<u32>) -> CmdResult<RowText> {
         let entry = self.get(id)?;
+        let mut found = {
+            let d = entry.read();
+            let wanted = row_id
+                .or_else(|| row.and_then(|r| d.row_id(r)))
+                .ok_or_else(|| CmdError::new("bad_request", "choose a row"))?;
+            d.row_text(wanted)?
+        };
+        // (Notes that cannot be read do not stop the row from showing.)
+        if let Some(next) = &mut found.next {
+            let n = next.id;
+            next.noted = self
+                .with_notes(id, |d, book, _| Ok(d.row_noted(book, n)))
+                .unwrap_or(false);
+        }
+        Ok(found)
+    }
+
+    /// The fields of a shown row and the usual number (that row only).
+    pub fn row_width(&self, id: u32, row: u64) -> CmdResult<(u64, u32)> {
+        let entry = self.get(id)?;
         let d = entry.read();
-        let wanted = row_id
-            .or_else(|| row.and_then(|r| d.row_id(r)))
-            .ok_or_else(|| CmdError::new("bad_request", "choose a row"))?;
-        Ok(d.row_text(wanted)?)
+        Ok(d.row_width(row)?)
     }
 
     /// One repair of one row, one undo step. Left out of recipes: it is about

@@ -2707,6 +2707,12 @@ async fn row_text(
 }
 
 #[tauri::command]
+async fn row_width(docs: DocsState<'_>, doc: u32, row: u64) -> CmdResult<(u64, u32)> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.row_width(doc, row)).await
+}
+
+#[tauri::command]
 async fn repair_row(
     docs: DocsState<'_>,
     doc: u32,
@@ -4167,6 +4173,7 @@ pub fn run() {
             ragged_list,
             row_text,
             repair_row,
+            row_width,
             set_cells,
             set_column_type,
             set_column_types,
