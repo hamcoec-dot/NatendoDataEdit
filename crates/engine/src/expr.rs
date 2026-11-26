@@ -2354,6 +2354,10 @@ pub struct ComputeSpec {
     /// Tables for LOOKUP, filled in by the app (never saved or sent).
     #[serde(skip)]
     pub tables: Lookups,
+    /// A new column is filled in hidden rows too. Left out (recipes saved
+    /// before this was recorded): it is. Writing over a column only ever
+    /// changes shown rows.
+    pub hidden: bool,
 }
 
 impl Default for ComputeSpec {
@@ -2367,6 +2371,7 @@ impl Default for ComputeSpec {
             read: ReadOptions::default(),
             now: 0.0,
             tables: Lookups::default(),
+            hidden: true,
         }
     }
 }
@@ -2623,22 +2628,23 @@ impl Document {
             }
             Ok(Some((id, vec![(slot, t.into_owned())])))
         };
-        // A new column fills every row, hidden ones too (PREV and NEXT: the
-        // rows above and below in the file). Changing a column touches the
-        // shown rows only (PREV and NEXT: the shown rows above and below).
-        let changes: Vec<(u32, Vec<(u32, String)>)> = match spec.target {
-            None => {
-                self.par_all_rows_near(first, &reader, near, progress, |p, id, buf, prev, next| {
-                    one(p, id, buf, prev, next)
-                })?
-            }
-            Some(_) => self.par_rows_near(
+        // A new column filled in hidden rows too reads every row (PREV and
+        // NEXT: the rows above and below in the file). Otherwise, and always
+        // when changing a column, the shown rows only (PREV and NEXT: the
+        // shown rows above and below).
+        let every = spec.target.is_none() && spec.hidden;
+        let changes: Vec<(u32, Vec<(u32, String)>)> = if every {
+            self.par_all_rows_near(first, &reader, near, progress, |p, id, buf, prev, next| {
+                one(p, id, buf, prev, next)
+            })?
+        } else {
+            self.par_rows_near(
                 self.data_rows(spec.keep_first),
                 &reader,
                 near,
                 progress,
                 |r, id, buf, prev, next| one(self.row_number(r).unwrap_or(r), id, buf, prev, next),
-            )?,
+            )?
         };
         let mut plan = ColPlan::new(self);
         if spec.target.is_none() {
@@ -2669,6 +2675,32 @@ impl Document {
 mod tests {
     use super::*;
     use crate::OpenOptions;
+
+    #[test]
+    fn a_new_column_can_be_filled_in_shown_rows_only() {
+        let mut d = Document::from_bytes(
+            b"n\r\n1\r\n2\r\n3\r\n".to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        d.hide_rows(2, 1).unwrap(); // the 2
+        let spec = ComputeSpec {
+            expr: "\"x\"".into(),
+            title: "t".into(),
+            hidden: false,
+            ..Default::default()
+        };
+        let (plan, report) = d.plan_compute(&spec, &Progress::new()).unwrap();
+        assert_eq!(report.cells, 3, "the title and two shown rows");
+        d.apply_cols(plan).unwrap();
+        d.show_rows(crate::rows::ShowRows::All).unwrap();
+        let col: Vec<String> = (0..4).map(|r| d.cell(r, 1).unwrap()).collect();
+        assert_eq!(col, ["t", "x", "", "x"]);
+        // A step saved before the choice existed fills every row.
+        let old: ComputeSpec = serde_json::from_str(r#"{"expr":"1"}"#).unwrap();
+        assert!(old.hidden);
+    }
 
     fn run(src: &str, cells: &[&str]) -> String {
         let names: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
