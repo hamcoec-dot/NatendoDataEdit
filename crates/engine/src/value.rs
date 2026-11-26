@@ -435,14 +435,20 @@ fn date_form(s: &str) -> Option<(Form, Option<f64>)> {
                 return None;
             }
         }
-        [a] if a.len() == 8 && numeric(a) => {
-            let year = year_of(&a[..4])?;
-            date_days(year, a[4..6].parse().ok()?, a[6..].parse().ok()?)?;
-            Form::Compact
-        }
+        [a] if compact_days(a).is_some() => Form::Compact,
         _ => return None,
     };
     Some((form, secs))
+}
+
+/// The day of an eight-digit date (`yyyymmdd`): the one reading of that
+/// form, for the classifier and for whoever is told such cells are dates.
+pub(crate) fn compact_days(s: &str) -> Option<i64> {
+    if s.len() != 8 || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let year = year_of(&s[..4])?;
+    date_days(year, s[4..6].parse().ok()?, s[6..].parse().ok()?)
 }
 
 /// Month and day of a slash date read in `order`: a part over 12 is the day

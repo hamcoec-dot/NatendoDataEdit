@@ -123,6 +123,37 @@ fn weeks_and_every_n_days_list_dates_off_the_step() {
 }
 
 #[test]
+fn each_series_counts_weeks_from_its_own_first_date() {
+    // Tuesdays in one precinct, Thursdays in the other.
+    let d = doc("P,Day\r\na,2026-03-03\r\nb,2026-03-05\r\na,2026-03-17\r\nb,2026-03-12\r\nb,2026-03-26\r\n");
+    let mut s = dated(DateStep::Week);
+    s.col = 1;
+    s.series = vec![0];
+    let r = run_with(&d, &s);
+    assert_eq!(r.dates.clone().unwrap().off_step, 0);
+    assert_eq!(
+        lines(&r),
+        ["a: 2026-03-10 (1 missing)", "b: 2026-03-19 (1 missing)"]
+    );
+    // A typed end is counted in each series' own weeks.
+    s.end = "2026-03-31".into();
+    assert_eq!(
+        lines(&run_with(&d, &s)),
+        [
+            "a: 2026-03-10 (1 missing)",
+            "a: 2026-03-24 to 2026-03-31 (2 missing)",
+            "b: 2026-03-19 (1 missing)"
+        ]
+    );
+    // A typed start anchors every series.
+    s.start = "2026-03-03".into();
+    s.end = String::new();
+    let r = run_with(&d, &s);
+    assert_eq!(r.dates.clone().unwrap().off_step, 3);
+    assert_eq!(lines(&r), ["a: 2026-03-10 (1 missing)"]);
+}
+
+#[test]
 fn ambiguous_dates_are_never_guessed() {
     let values = [
         "2026-03-01",

@@ -13,7 +13,7 @@ use super::{EXAMPLE_ROWS, MAX_SERIES};
 use crate::document::{Document, Progress};
 use crate::fill::civil_from_days;
 use crate::ops::{Cols, CHUNK};
-use crate::value::{classify_date, date_days, DateKind, DateOrder, ReadOptions};
+use crate::value::{classify_date, compact_days, date_days, DateKind, DateOrder, ReadOptions};
 use crate::Error;
 
 /// Longest "every N days" step.
@@ -188,13 +188,6 @@ struct Found {
     two_digit_ids: Vec<u32>,
 }
 
-/// The day of an eight-digit date (`yyyymmdd`, a time may follow).
-fn compact_day(v: &str) -> Option<i64> {
-    let d = v.trim().get(..8)?;
-    let part = |a: usize, b: usize| d.get(a..b)?.parse::<u32>().ok();
-    date_days(i64::from(part(0, 4)?), part(4, 6)?, part(6, 8)?)
-}
-
 fn keep(rows: &mut Vec<u32>, id: u32) {
     if rows.len() < EXAMPLE_ROWS {
         rows.push(id);
@@ -272,7 +265,10 @@ impl Document {
                         _ if !readable => None,
                         // The date reader leaves eight digits as a number;
                         // the radar's scan said they are dates here.
-                        DateKind::Compact => compact_day(v).map(|d| d as f64),
+                        // A time may follow the eight digits.
+                        DateKind::Compact => {
+                            v.trim().get(..8).and_then(compact_days).map(|d| d as f64)
+                        }
                         _ => read.date(v),
                     };
                     let Some(day) = day else {
@@ -308,26 +304,41 @@ impl Document {
             ..Default::default()
         };
         let mut notes = DateNotes::default();
-        let anchor = start.or_else(|| parts.iter().flat_map(|p| p.cells.iter().map(|c| c.0)).min());
-        let scale = Scale {
-            step,
-            anchor: anchor.unwrap_or(0),
-        };
         let mut names = Names::default();
+        // Each part's series in the whole table's numbering.
+        let globals: Vec<Vec<u32>> = parts
+            .iter()
+            .map(|p| p.series.names.iter().map(|n| names.id(n)).collect())
+            .collect::<Result<_, _>>()?;
+        // Weeks and every N days count from the typed start, else from each
+        // series' own earliest date.
+        let mut earliest: HashMap<u32, i64> = HashMap::new();
+        if start.is_none() && matches!(step, DateStep::Week | DateStep::Days { .. }) {
+            for (p, global) in parts.iter().zip(&globals) {
+                progress.step(0)?;
+                for &(day, _, series) in &p.cells {
+                    let series = global.get(series as usize).copied().unwrap_or(0);
+                    let first = earliest.entry(series).or_insert(day);
+                    *first = (*first).min(day);
+                }
+            }
+        }
+        let scale_of = |series: u32| Scale {
+            step,
+            anchor: start
+                .or_else(|| earliest.get(&series).copied())
+                .unwrap_or(0),
+        };
+        // Each group's way of counting.
+        let mut scales: Vec<Scale> = Vec::new();
         // Groups in the order met: one for each series with a date.
         let mut groups: HashMap<u32, u32> = HashMap::new();
         let mut keys: Vec<Vec<String>> = Vec::new();
         let mut cells = Vec::with_capacity(parts.iter().map(|p| p.cells.len()).sum());
         let (mut other_ids, mut ambiguous, mut two_digit) = (Vec::new(), Vec::new(), Vec::new());
         let (mut weekend, mut off) = (Vec::new(), Vec::new());
-        for p in parts {
+        for (p, global) in parts.into_iter().zip(&globals) {
             progress.step(0)?;
-            let global: Vec<u32> = p
-                .series
-                .names
-                .iter()
-                .map(|n| names.id(n))
-                .collect::<Result<_, _>>()?;
             out.blank += p.blank;
             out.other_shape += p.other;
             other_ids.extend(p.other_rows);
@@ -341,6 +352,12 @@ impl Document {
                     keep(&mut weekend, row);
                     continue;
                 }
+                let series = if spec.series.is_empty() {
+                    0
+                } else {
+                    global[series as usize]
+                };
+                let scale = scale_of(series);
                 let n = scale.floor(day);
                 if matches!(step, DateStep::Week | DateStep::Days { .. })
                     && (day - scale.anchor).rem_euclid(scale.days()) != 0
@@ -349,11 +366,6 @@ impl Document {
                     keep(&mut off, row);
                     continue;
                 }
-                let series = if spec.series.is_empty() {
-                    0
-                } else {
-                    global[series as usize]
-                };
                 let group = match groups.get(&series) {
                     Some(&g) => g,
                     None => {
@@ -362,6 +374,7 @@ impl Document {
                         }
                         let g = keys.len() as u32;
                         groups.insert(series, g);
+                        scales.push(scale);
                         keys.push(if spec.series.is_empty() {
                             Vec::new()
                         } else {
@@ -391,19 +404,22 @@ impl Document {
         notes.off_step_rows = first(off);
         out.dates = Some(notes);
         // A typed range with nothing in it is still a gap.
-        let number = |day: i64| (scale.floor(day) + OFFSET) as u64;
-        let (start, end) = (start.map(number), end.map(number));
         if keys.is_empty() && spec.series.is_empty() && start.is_some() && end.is_some() {
             keys.push(Vec::new());
+            scales.push(scale_of(0));
         }
-        let format = |_: u32, n: u64| scale.words(n);
+        let number = |scale: Scale, day: i64| (scale.floor(day) + OFFSET) as u64;
+        // A typed start anchors every series alike, so one number serves.
+        let first = start.map(|d| number(scale_of(0), d));
+        let last = |g: u32| end.map(|d| number(scales[g as usize], d));
+        let format = |g: u32, n: u64| scales[g as usize].words(n);
         self.walk(
             out,
             cells,
             Walk {
                 keys,
-                start,
-                end,
+                start: first,
+                end: &last,
                 format: &format,
             },
             progress,
