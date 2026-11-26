@@ -7,19 +7,57 @@
 //! table by key, or keep or drop rows on a list), `validate` (run data checks), `app`
 //! (talk to the running app's agent link), and the toolkit: `headers`,
 //! `select`, `filter`, `sort`, `dedupe`, `stats`, `count`, `sample`,
-//! `slice`, `split` and `cat`.
+//! `slice`, `split` and `cat`; `compare`, `match`, `lookalikes`, `xray`,
+//! `encoding`, `private`, `share-safe`, `encrypt` and `decrypt`. Secrets
+//! (phrases, passwords) are never arguments: see `secret.rs`.
 
 mod app;
+mod compare;
+mod inspect;
 mod join;
 mod more;
 mod patch;
 mod receipt;
+mod safe;
+mod secret;
 mod tools;
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
-use natendo_engine::{Dialect, Document, OpenOptions};
+use natendo_engine::{Dialect, Document, Encoding, OpenOptions};
+
+/// `--encoding <label>`: how every delimited text file is read (detected
+/// when not given).
+pub(crate) static READ_AS: OnceLock<Encoding> = OnceLock::new();
+
+/// An encoding by its label, or an error that lists the usual ones.
+pub(crate) fn encoding_named(label: &str) -> Result<Encoding, String> {
+    Encoding::from_label(label).ok_or_else(|| {
+        let known: Vec<&str> = natendo_engine::encscan::picker_encodings()
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
+        format!("unknown encoding {label}; for example {}", known.join(", "))
+    })
+}
+
+/// Refuse an encrypted file (found by its first bytes, whatever its name):
+/// only `decrypt` reads one, so ciphertext is never read as text.
+pub(crate) fn refuse_encrypted(path: &str) -> Result<(), String> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    if let Ok(f) = std::fs::File::open(path) {
+        let _ = f.take(16).read_to_end(&mut head);
+    }
+    if natendo_engine::crypt::is_encrypted(&head) {
+        return Err(format!(
+            "{path} is an encrypted file: decrypt it first (natendo-cli decrypt)"
+        ));
+    }
+    Ok(())
+}
 
 const USAGE: &str = "usage: natendo-cli --version
        natendo-cli sniff <file> [--json]
@@ -62,6 +100,23 @@ const USAGE: &str = "usage: natendo-cli --version
            [--prefix <text>] [--add-unmatched] [--no-header] [--other-no-header] [--to <format>] [--overwrite] [--json]
        natendo-cli join <in> --list <keys.txt> -o <out> --key <col> [--keep matched|unmatched] [--write new] ...
        natendo-cli app tabs | info <tab> | read <tab> [first] [count] | open <file> | goto <tab> <row> <col>
+       natendo-cli compare <a> <b> --key <col>[,<col>] [--match-case] [--no-trim] [-o diff.csv] [--fail-on-diff] [--values] [--json]
+           (exit 1 with --fail-on-diff when they differ; --values puts keys and values in --json)
+       natendo-cli match <in> [<other>] --field <col>[=<other col>][:name|text|exact][:weight] [--field ...]
+           [--min-score 80] [--other-no-header] [-o pairs.csv] [--json]
+       natendo-cli lookalikes <in> --column <c> [--method sounds|spelling|both] [-o groups.csv] [--json]
+       natendo-cli xray <in> [--columns a,b] [--fail-on-found] [--json]
+       natendo-cli xray <in> --sanitize [--zero-width] [--odd-spaces] [--smart-quotes] [--tabs-breaks] [--homoglyphs]
+           [--columns a,b] -o <out> [--overwrite]
+       natendo-cli encoding detect <in> [--json]
+       natendo-cli encoding scan <in> [--as <label>] [--fail-on-found] [--json]
+       natendo-cli private <in> [--fail-on-found] [--json]
+       natendo-cli share-safe <in> --spec <spec.json> -o <out> [--phrase-stdin | --phrase-file <f>] [--allow-phrase-in-file] [--overwrite]
+       natendo-cli encrypt <in> -o <out.ndenc> (--password-stdin | --password-file <f>) [--overwrite]
+       natendo-cli decrypt <in.ndenc> -o <out.csv> (--password-stdin | --password-file <f>) [--overwrite]
+           (a phrase or password can also come from NATENDO_PHRASE / NATENDO_PASSWORD; never as an argument)
+       natendo-cli --encoding <label> <command> ...   (read delimited text as this encoding)
+       natendo-cli convert ... --to-encoding <label>   (write delimited text in this encoding)
 
 The command line gives no private data warnings: check what you write before sharing it.
 `app read` is refused for tabs in private file mode.";
@@ -70,6 +125,9 @@ The command line gives no private data warnings: check what you write before sha
 const PROBLEMS: u8 = 1;
 
 fn main() -> ExitCode {
+    // First, while main is the only thread (P3): take the secrets out of
+    // the environment.
+    secret::take_env();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let json = match args.iter().position(|a| a == "--json") {
         Some(i) => {
@@ -78,8 +136,22 @@ fn main() -> ExitCode {
         }
         None => false,
     };
+    let read_as = match args.iter().position(|a| a == "--encoding") {
+        Some(i) => {
+            let label = args.get(i + 1).cloned();
+            args.drain(i..(i + 2).min(args.len()));
+            match label {
+                Some(l) => encoding_named(&l).map(|e| {
+                    let _ = READ_AS.set(e);
+                }),
+                None => Err("--encoding needs a label, like windows-1252".into()),
+            }
+        }
+        None => Ok(()),
+    };
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match argv.as_slice() {
+        _ if read_as.is_err() => read_as,
         ["--version"] | ["-V"] => {
             println!("natendo-cli {}", natendo_engine::version());
             Ok(())
@@ -139,6 +211,32 @@ fn main() -> ExitCode {
         ["slice", rest @ ..] => tools::slice(&with_json(rest, json)),
         ["split", rest @ ..] => tools::split(&with_json(rest, json)),
         ["cat", rest @ ..] => tools::cat(&with_json(rest, json)),
+        ["compare", rest @ ..] => match compare::compare(&with_json(rest, json)) {
+            Ok(true) => Ok(()),
+            Ok(false) => return ExitCode::from(PROBLEMS),
+            Err(e) => Err(e),
+        },
+        ["match", rest @ ..] => compare::matches(&with_json(rest, json)),
+        ["lookalikes", rest @ ..] => compare::lookalikes(&with_json(rest, json)),
+        ["xray", rest @ ..] => match inspect::xray(&with_json(rest, json)) {
+            Ok(true) => Ok(()),
+            Ok(false) => return ExitCode::from(PROBLEMS),
+            Err(e) => Err(e),
+        },
+        ["encoding", "detect", rest @ ..] => inspect::detect_cmd(&with_json(rest, json)),
+        ["encoding", "scan", rest @ ..] => match inspect::scan(&with_json(rest, json)) {
+            Ok(true) => Ok(()),
+            Ok(false) => return ExitCode::from(PROBLEMS),
+            Err(e) => Err(e),
+        },
+        ["private", rest @ ..] => match inspect::private(&with_json(rest, json)) {
+            Ok(true) => Ok(()),
+            Ok(false) => return ExitCode::from(PROBLEMS),
+            Err(e) => Err(e),
+        },
+        ["share-safe", rest @ ..] => safe::share_safe(&with_json(rest, json)),
+        ["encrypt", rest @ ..] => safe::encrypt(&with_json(rest, json)),
+        ["decrypt", rest @ ..] => safe::decrypt(&with_json(rest, json)),
         _ => Err(USAGE.to_string()),
     };
     match result {
@@ -164,6 +262,7 @@ fn with_json<'a>(rest: &[&'a str], json: bool) -> Vec<&'a str> {
 }
 
 fn open(path: &str) -> Result<Document, String> {
+    refuse_encrypted(path)?;
     // A dBase table is read through the importer.
     if Path::new(path)
         .extension()
@@ -171,8 +270,11 @@ fn open(path: &str) -> Result<Document, String> {
     {
         return more::load(path, 0);
     }
-    Document::open_indexed(Path::new(path), OpenOptions::default(), None)
-        .map_err(|e| format!("{path}: {e}"))
+    let opts = OpenOptions {
+        encoding: READ_AS.get().copied(),
+        ..Default::default()
+    };
+    Document::open_indexed(Path::new(path), opts, None).map_err(|e| format!("{path}: {e}"))
 }
 
 /// The separator in words: `tab`, `space`, `spaces (lined up)`, `0x1F`, `,`.
@@ -284,6 +386,13 @@ fn clean(args: &[&str], json: bool) -> Result<(), String> {
     use natendo_engine::clean::{CleanSpec, Cleaner, MAX_CLEANER_BYTES};
     use natendo_engine::find::Scope;
     use natendo_engine::{Progress, SaveOptions};
+    let (phrase, args) = secret::take(
+        args,
+        secret::Kind::Phrase,
+        natendo_engine::privacy::MIN_PHRASE_CHARS,
+    )?;
+    let (allow_secret, args) = secret::take_flag(&args, secret::ALLOW_IN_FILE);
+    let args = args.as_slice();
     let mut plain: Vec<&str> = Vec::new();
     let (mut out, mut cols, mut skip, mut overwrite) = (None, None, false, false);
     let mut it = args.iter();
@@ -321,7 +430,20 @@ fn clean(args: &[&str], json: bool) -> Result<(), String> {
         ));
     }
     let bytes = std::fs::read(cleaner_path).map_err(|e| format!("{cleaner_path}: {e}"))?;
-    let cleaner = Cleaner::from_json(&bytes).map_err(|e| format!("{cleaner_path}: {e}"))?;
+    secret::refuse_secret_in_file(cleaner_path, &bytes, allow_secret)?;
+    let mut cleaner = Cleaner::from_json(&bytes).map_err(|e| format!("{cleaner_path}: {e}"))?;
+    if let Some(p) = &phrase {
+        if secret::fill_scramble(&mut cleaner, p) == 0 {
+            return Err(format!(
+                "{cleaner_path} scrambles nothing: leave the phrase out"
+            ));
+        }
+    }
+    if secret::scramble_without_phrase(&cleaner) {
+        return Err(format!(
+            "{cleaner_path} scrambles values: give the phrase with --phrase-stdin, --phrase-file <file> or NATENDO_PHRASE"
+        ));
+    }
     let out_path = Path::new(output);
     let same = match (
         std::fs::canonicalize(input),

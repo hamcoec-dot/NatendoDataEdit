@@ -1606,7 +1606,70 @@ natendo-cli sample data.csv -o out.csv --rows 500 --seed 7 # or --percent 5, --e
 natendo-cli slice data.csv -o out.csv --rows 1001-2000     # with the title row
 natendo-cli split data.csv -o parts --by county            # or --rows 50000
 natendo-cli cat jan.csv feb.csv mar.csv -o q1.csv --by-name
+natendo-cli compare old.csv new.csv --key ID -o differences.csv --fail-on-diff   # exit 1 when they differ
+natendo-cli match voters.csv mailed.csv --field "Name=Full name:name" --field "Born:exact" -o pairs.csv
+natendo-cli lookalikes data.csv --column City --method both    # Smith / Smyth / SMITH
+natendo-cli xray data.csv --fail-on-found                       # hidden and look-alike characters
+natendo-cli xray data.csv --sanitize -o clean.csv               # fix them (the app's X-ray Fix)
+natendo-cli encoding detect data.csv
+natendo-cli encoding scan data.csv --as utf-8 --fail-on-found  # rows that do not read cleanly
+natendo-cli --encoding windows-1252 convert old.csv -o new.csv --to-encoding utf-8
+natendo-cli private data.csv --fail-on-found                    # columns that look like private data
+natendo-cli share-safe data.csv --spec share.json -o share.csv --phrase-file phrase.txt
+natendo-cli encrypt data.csv -o data.ndenc --password-file pw.txt
+natendo-cli decrypt data.ndenc -o data.csv --password-stdin
 ```
+
+`compare`, `match`, `lookalikes`, `xray`, `encoding`, `private`, `share-safe`,
+`encrypt` and `decrypt` run the engine calls the app's Compare, Match, Value
+editor, X-ray, encoding, private data finder, share-safe copy and encrypted
+save make, so the results are the same. `xray`, `encoding scan` and `private`
+report counts, column titles and row numbers, never cell text, and exit with 1
+when something is found only with `--fail-on-found`; `compare` exits with 1 when
+the files differ only with `--fail-on-diff`. `compare --json` holds counts and
+column titles, and no cell values unless `--values` is given (then the repeated
+keys and the first 1,000 differing rows' keys); `--values` changes only
+`--json`. The differences file (`compare -o`), the pairs file (`match -o`) and
+the look-alike groups hold cell values by design, as `validate --json` does.
+`match` takes up to 8 `--field` options, each `<column>[=<other file's
+column>][:name|text|exact][:weight]` (a title with a colon goes by its number).
+
+A share-safe spec names each column by its title (or its number from 1) with
+an action, as the app's share-safe dialog does:
+`{"columns": [{"title": "ID", "action": "keep"}, {"title": "Notes", "action": "drop"},
+{"title": "Name", "action": "clean", "cleaner": {"steps": [{"tool": "scramble"}]}},
+{"title": "Born", "action": "clean", "cleaner": {"steps": [{"tool": "mask", "keep_last": 4}]}}]}`
+(also `"guard": false` to leave formula-like cells as they are, and `"header"`).
+It fails closed: when a column of the spec is not in the file, when the file has
+a column the spec gives no action for, when two columns of the file share a
+title the spec uses, or when a column gets two actions, nothing is written and
+the message names the columns. A list that gained a column is never shared with
+it kept by accident.
+
+**Phrases and passwords** (a scramble phrase for `share-safe` and `clean`, a
+patch phrase, a password for `encrypt` and `decrypt`) are never taken as
+arguments, which would show in the process list and the shell's history. Give
+exactly one of: `--phrase-stdin` / `--password-stdin` (the first line of
+standard input; standard input carries one thing only), `--phrase-file` /
+`--password-file <file>` (its first line; keep it in a private folder, and on
+Linux and macOS a file others can read gets a warning), or the environment
+variable `NATENDO_PHRASE` / `NATENDO_PASSWORD`. The program removes the variable
+from its own environment as it starts, but that does not remove it from the
+shell that set it, nor hide it from tools that can read a process's
+environment: standard input or a file is safer. A scramble phrase is at least
+16 characters and a password at least 12, checked before any file is opened. A
+share-safe spec, cleaner or recipe file that holds a `"phrase"`, `"password"`
+or `"passphrase"` (any case, anywhere in it) is refused, because a secret in a
+file next to the data travels with it; `--allow-phrase-in-file` reads it anyway.
+
+Every command that writes a file writes it beside its target and moves it into
+place only when it is complete, so a wrong password, an error or a cancel
+leaves no output file; `decrypt` checks the whole file before writing anything.
+An encrypted file (found by its first bytes, whatever its name) is refused by
+every command but `decrypt`. `--encoding <label>` (for example `windows-1252`,
+`utf-16le`, `shift_jis`) reads every delimited text file of the command as that
+encoding; `convert --to-encoding <label>` writes one (UTF-16 and UTF-32 with a
+byte order mark).
 
 `patch create` protects the patch with a phrase read from standard input
 (`--phrase-stdin`) or a file (`--phrase-file`), never from the command line;

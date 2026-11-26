@@ -1046,6 +1046,31 @@ pub(crate) fn create_temp(target: &Path) -> io::Result<(PathBuf, File)> {
     Err(io::Error::other("could not create a temporary file"))
 }
 
+/// Write a new file through a temp file beside `target`, moved into place
+/// only once `write` has succeeded and the bytes are on disk: an error or a
+/// cancel part way leaves no file that looks complete (the temp file is
+/// removed, and a file already at `target` stays as it was).
+pub fn write_atomic<T>(
+    target: &Path,
+    write: impl FnOnce(&mut BufWriter<&File>) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let (temp, file) = create_temp(target)?;
+    let done = (|| -> Result<T, Error> {
+        let mut w = BufWriter::with_capacity(1 << 20, &file);
+        let r = write(&mut w)?;
+        w.flush()?;
+        drop(w);
+        file.sync_all()?;
+        Ok(r)
+    })();
+    drop(file);
+    let done = done.and_then(|r| replace(&temp, target).map(|()| r).map_err(Error::from));
+    if done.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    done
+}
+
 /// The start of the app's temporary file names.
 pub const TEMP_PREFIX: &str = ".ndtmp-";
 
@@ -2543,5 +2568,49 @@ mod tests {
             drop(back);
             let _ = fs::remove_dir_all(&dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod write_atomic_tests {
+    use super::*;
+
+    fn temps(dir: &Path) -> usize {
+        fs::read_dir(dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .is_ok_and(|e| own_temp(&e.file_name().to_string_lossy()).is_some())
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_failure_part_way_leaves_no_file_and_no_temp() {
+        let dir = std::env::temp_dir().join(format!("nd-atomic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("out.csv");
+        let r: Result<(), Error> = write_atomic(&target, |w| {
+            w.write_all(&[b'x'; 3 << 20])?;
+            Err(Error::Cancelled)
+        });
+        assert!(r.is_err());
+        assert!(!target.exists());
+        assert_eq!(temps(&dir), 0);
+        // A file already there is left as it was.
+        fs::write(&target, b"before").unwrap();
+        let r: Result<(), Error> = write_atomic(&target, |w| {
+            w.write_all(b"half")?;
+            Err(Error::Invalid("stop".into()))
+        });
+        assert!(r.is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"before");
+        assert_eq!(temps(&dir), 0);
+        // And a good write replaces it.
+        write_atomic(&target, |w| Ok(w.write_all(b"after")?)).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"after");
+        assert_eq!(temps(&dir), 0);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

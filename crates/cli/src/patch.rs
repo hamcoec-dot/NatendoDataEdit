@@ -3,7 +3,6 @@
 //! the phrase is read from standard input or a file, never from the command
 //! line.
 
-use std::io::BufRead;
 use std::path::Path;
 
 use natendo_engine::patch::{Patch, PatchReport, PatchSpec};
@@ -20,7 +19,6 @@ struct Args<'a> {
     out: Option<&'a str>,
     to: Option<&'a str>,
     sheet: u32,
-    phrase_file: Option<&'a str>,
     flags: Vec<&'a str>,
 }
 
@@ -37,7 +35,6 @@ fn parse<'a>(args: &[&'a str], flags: &[&str]) -> Result<Args<'a>, String> {
         out: None,
         to: None,
         sheet: 0,
-        phrase_file: None,
         flags: Vec::new(),
     };
     let mut it = args.iter();
@@ -51,7 +48,6 @@ fn parse<'a>(args: &[&'a str], flags: &[&str]) -> Result<Args<'a>, String> {
             "-o" | "--out" => a.out = Some(value()?),
             "--key" => a.keys.push(value()?),
             "--to" => a.to = Some(value()?),
-            "--phrase-file" => a.phrase_file = Some(value()?),
             "--sheet" => {
                 a.sheet = value()?
                     .parse::<u32>()
@@ -72,32 +68,10 @@ fn parse<'a>(args: &[&'a str], flags: &[&str]) -> Result<Args<'a>, String> {
     Ok(a)
 }
 
-/// The phrase from standard input or a file (its first line), if asked for.
-fn phrase(a: &Args) -> Result<Option<Secret>, String> {
-    let line = match (a.has("--phrase-stdin"), a.phrase_file) {
-        (true, Some(_)) => return Err("give --phrase-stdin or --phrase-file, not both".into()),
-        (true, None) => {
-            let mut line = String::new();
-            std::io::stdin()
-                .lock()
-                .read_line(&mut line)
-                .map_err(|e| format!("could not read the phrase: {e}"))?;
-            line
-        }
-        (false, Some(path)) => {
-            let text = std::fs::read_to_string(path)
-                .map_err(|e| format!("could not read the phrase file: {e}"))?;
-            text.lines().next().unwrap_or_default().to_string()
-        }
-        (false, None) => return Ok(None),
-    };
-    let line = line
-        .trim_start_matches('\u{feff}')
-        .trim_end_matches(['\r', '\n']);
-    if line.is_empty() {
-        return Err("the phrase is empty".into());
-    }
-    Ok(Some(Secret::new(line)))
+/// The phrase from standard input, a file or `NATENDO_PHRASE`, if given
+/// (see `secret.rs`), and the other arguments.
+fn secret<'a>(args: &[&'a str]) -> Result<(Option<Secret>, Vec<&'a str>), String> {
+    crate::secret::take(args, crate::secret::Kind::Phrase, 1)
 }
 
 fn same_file(a: &str, b: &str) -> bool {
@@ -109,14 +83,14 @@ fn same_file(a: &str, b: &str) -> bool {
 
 /// `patch create <old> <new> --key <col> -o <file.ndpatch>`.
 pub fn create(args: &[&str], json_out: bool) -> Result<(), String> {
+    let (phrase, args) = secret(args)?;
     let a = parse(
-        args,
+        &args,
         &[
             "--match-case",
             "--no-trim",
             "--leave-out",
             "--plain",
-            "--phrase-stdin",
             "--overwrite",
         ],
     )?;
@@ -140,7 +114,6 @@ pub fn create(args: &[&str], json_out: bool) -> Result<(), String> {
             "{out} already exists; add --overwrite to replace it"
         ));
     }
-    let phrase = phrase(&a)?;
     match (&phrase, a.has("--plain")) {
         (None, false) => return Err(
             "a patch holds data: protect it with --phrase-stdin or --phrase-file, or say --plain"
@@ -242,7 +215,8 @@ fn words(r: &PatchReport, dry: bool) -> String {
 /// `patch apply <file.ndpatch> <data> -o <out>`. `Ok(false)` when something
 /// could not be applied.
 pub fn apply(args: &[&str], json_out: bool) -> Result<bool, String> {
-    let a = parse(args, &["--dry-run", "--phrase-stdin", "--overwrite"])?;
+    let (phrase, args) = secret(args)?;
+    let a = parse(&args, &["--dry-run", "--overwrite"])?;
     let [patch_path, data] = a.plain.as_slice() else {
         return Err(USAGE.to_string());
     };
@@ -255,7 +229,6 @@ pub fn apply(args: &[&str], json_out: bool) -> Result<bool, String> {
             return Err("write to a different file than the input".into());
         }
     }
-    let phrase = phrase(&a)?;
     let patch = Patch::load(Path::new(patch_path), phrase.as_ref())
         .map_err(|e| format!("{patch_path}: {e}"))?;
     let mut d = load(data, a.sheet)?;
@@ -276,6 +249,7 @@ pub fn apply(args: &[&str], json_out: bool) -> Result<bool, String> {
                 header: true,
                 landscape: false,
                 overwrite: a.has("--overwrite"),
+                encoding: None,
             },
         )?;
         msg.push('\n');

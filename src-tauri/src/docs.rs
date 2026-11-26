@@ -5048,13 +5048,12 @@ impl Docs {
         spec: &natendo_engine::fuzzy::MatchSpec,
         bring: &[u32],
     ) -> CmdResult<natendo_engine::fuzzy::MatchReport> {
-        use natendo_engine::fuzzy::{find_matches, FieldKind, MatchSide};
+        use natendo_engine::fuzzy::{find_matches, MatchSide};
         if spec.fields.is_empty() || spec.fields.len() > natendo_engine::fuzzy::MAX_FIELDS {
             return Err(CmdError::new("invalid", "choose the columns to compare"));
         }
-        let kinds: Vec<FieldKind> = spec.fields.iter().map(|f| f.kind).collect();
-        let here: Vec<u32> = spec.fields.iter().map(|f| f.col).collect();
-        let there: Vec<u32> = spec.fields.iter().map(|f| f.other_col).collect();
+        // The same columns the command line's `match` builds its sides from.
+        let (here, there, kinds) = spec.columns();
         let entry = self.get(id)?;
         let job = entry.start("Matching")?;
         // The other list is copied under its own lock first (two tabs are
@@ -11015,6 +11014,59 @@ Cy
             best = best.min(t.elapsed().as_secs_f64() * 1e6 / 20_000.0);
         }
         println!("INFOCOST {best:.2} microseconds per info() call (best of 7 x 20,000)");
+    }
+
+    /// The app's share-safe copy and encrypted save write what the engine
+    /// calls `natendo-cli share-safe` and `encrypt` make write (the CLI tests
+    /// compare the CLI's output with those engine calls byte for byte).
+    #[test]
+    fn share_safe_and_encrypt_match_the_engine_calls_the_cli_makes() {
+        use natendo_engine::privacy::{ColumnAction, SafeCopy, Secret};
+        let a = tmp(
+            "cli-parity.csv",
+            b"id,name,dob\r\n1,Ann Lee,1980-01-02\r\n2,Bob Ray,=1+2\r\n",
+        );
+        let docs = Docs::default();
+        let id = docs.open_path(&a, false).unwrap().id;
+        wait(&docs, id);
+        let mut scramble: natendo_engine::clean::Cleaner =
+            serde_json::from_str(r#"{"steps":[{"tool":"scramble"}]}"#).unwrap();
+        if let natendo_engine::clean::Step::Scramble { phrase, .. } = &mut scramble.steps[0] {
+            *phrase = Secret::new("correct horse battery staple");
+        }
+        let spec = SafeCopy {
+            columns: vec![
+                ColumnAction::Keep,
+                ColumnAction::Clean { cleaner: scramble },
+                ColumnAction::Keep,
+            ],
+            header: true,
+            read: Default::default(),
+            guard: true,
+        };
+        let app = a.with_file_name("cli-parity-app.csv");
+        let eng = a.with_file_name("cli-parity-engine.csv");
+        docs.save_safe_copy(id, &app, &spec, 20_000.0).unwrap();
+        let d = natendo_engine::Document::open_indexed(&a, Default::default(), None).unwrap();
+        d.save_safe_copy(&eng, &spec, 20_000.0, &natendo_engine::Progress::new())
+            .unwrap();
+        let bytes = std::fs::read(&app).unwrap();
+        assert_eq!(bytes, std::fs::read(&eng).unwrap());
+        assert!(!String::from_utf8_lossy(&bytes).contains("Ann Lee"));
+        // Encrypted: the salt differs, the plain text is the same.
+        let pw = "a long test password";
+        let app_enc = a.with_file_name("cli-parity-app.ndenc");
+        let eng_enc = a.with_file_name("cli-parity-engine.ndenc");
+        docs.save_encrypted(id, &app_enc, pw).unwrap();
+        d.save_encrypted(&eng_enc, &Secret::new(pw), &natendo_engine::Progress::new())
+            .unwrap();
+        let plain = |p: &std::path::Path| {
+            natendo_engine::crypt::decrypt(&std::fs::read(p).unwrap(), &Secret::new(pw)).unwrap()
+        };
+        assert_eq!(plain(&app_enc), plain(&eng_enc));
+        for f in [app, eng, app_enc, eng_enc] {
+            let _ = std::fs::remove_file(f);
+        }
     }
 
     #[test]
