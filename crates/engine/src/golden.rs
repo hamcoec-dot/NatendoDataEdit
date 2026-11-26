@@ -594,6 +594,15 @@ impl Document {
         }
     }
 
+    /// Match people's accepted pairs (row id, the other row as shown, score)
+    /// as pairs of row ids. Only right while the table is as it was matched.
+    pub fn golden_pairs(&self, accepted: &[(u32, u64, f32)]) -> Result<Vec<(u32, u32)>, Error> {
+        accepted
+            .iter()
+            .map(|&(id, row, _)| Ok((id, self.id_at(row).ok_or(Error::Changed)?)))
+            .collect()
+    }
+
     /// Cluster the accepted `pairs` (row ids) and choose each merged row's
     /// values. Nothing changes.
     pub fn plan_golden(

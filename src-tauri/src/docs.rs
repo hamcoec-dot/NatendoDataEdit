@@ -474,6 +474,8 @@ pub struct Entry {
     /// Private because of where its data came from (a sample of, a join
     /// from or an import of something private), whatever its own path.
     private_origin: AtomicBool,
+    /// The golden records last previewed (memory only).
+    golden: Mutex<Option<Arc<natendo_engine::golden::GoldenPlan>>>,
     /// The patch of the last dry run on this tab (memory only).
     patch: Mutex<Option<patching::PatchKept>>,
     /// The encrypted file this tab was opened from or last saved to
@@ -1112,6 +1114,8 @@ struct MatchKept {
     keep_first: bool,
     /// The tab's revision when run.
     revision: u64,
+    /// Pairs above the score that were not listed.
+    never_offered: u64,
 }
 
 /// A step noted for a recipe.
@@ -2006,6 +2010,7 @@ impl Docs {
             private: AtomicBool::new(false),
             private_origin: AtomicBool::new(false),
             encrypted_from: Mutex::new(None),
+            golden: Mutex::new(None),
             patch: Mutex::new(None),
             recipe: Mutex::new(RecipeLog::default()),
             checkpoints: Mutex::new(Checkpoints::default()),
@@ -4961,6 +4966,7 @@ impl Docs {
             bring_titles,
             keep_first: spec.keep_first,
             revision,
+            never_offered: rep.total.saturating_sub(rep.listed.len() as u64),
         });
         Ok(rep)
     }
@@ -9147,6 +9153,9 @@ pub fn file_name_of(t: &str) -> String {
         s
     }
 }
+
+#[path = "docs_golden.rs"]
+pub mod golden;
 
 #[path = "docs_patch.rs"]
 pub mod patching;
