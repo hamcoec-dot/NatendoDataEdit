@@ -3,8 +3,8 @@
   // boundaries to click, and what the row will be. Join fields, join with the next row of the file, or read a quote
   // mark as text; each is one undo step. Previous and Next walk the ragged rows by their ids.
   import { tick, untrack } from "svelte";
-  import { backend, errorText, type Between, type DocInfo, type RowText } from "./backend";
-  import { joinPreview, groups, nextNotes, nextPreview, rowHeading, stepRow } from "./repair";
+  import { backend, errorText, type Between, type DocInfo, type RowRepair, type RowText } from "./backend";
+  import { joinPreview, groups, nextNotes, nextPreview, noteWarning, previousNotes, rowHeading, stepRow } from "./repair";
   import type { Tab } from "./tab.svelte";
 
   interface Props {
@@ -28,7 +28,7 @@
   let total = $state(0);
   let joined = $state<Set<number>>(new Set());
   let cursor = $state(0);
-  let mode = $state<"join" | "next" | "quote">("join");
+  let mode = $state<"join" | "next" | "previous" | "quote">("join");
   let between = $state<Between>("space");
   let problem = $state("");
   let busy = $state(false);
@@ -41,10 +41,19 @@
   const result = $derived.by(() => {
     if (!row) return [] as string[];
     if (mode === "next") return row.next ? nextPreview(row.fields, row.next.fields, between) : [];
+    if (mode === "previous") return row.previous ? nextPreview(row.previous.fields, row.fields, between) : [];
     if (mode === "quote") return row.quoted_as_text;
     return joinPreview(row.fields, joined, separator);
   });
-  const ready = $derived(!!row && !busy && (mode === "next" ? !!row.next : mode === "quote" ? row.quoted_as_text.length > 0 : joined.size > 0));
+  const ready = $derived(
+    !!row && !busy && (mode === "next" ? !!row.next : mode === "previous" ? !!row.previous : mode === "quote" ? row.quoted_as_text.length > 0 : joined.size > 0),
+  );
+  /** The row that keeps the result has a note matched on a column this repair changes. */
+  const warning = $derived.by(() => {
+    if (!row || !ready) return "";
+    const kept = mode === "previous" ? row.previous : row;
+    return kept ? noteWarning(kept.fields, result, kept.note_keys, (c) => titles[c] ?? `Column ${c + 1}`) : "";
+  });
 
   const shown = (v: string) => {
     const t = v.replace(/\r?\n/g, "⏎").replace(/\t/g, "→");
@@ -54,7 +63,7 @@
   async function show(wanted: { row?: number; id?: number }): Promise<void> {
     const mine = ++seq;
     try {
-      const t = await backend().rowText(tab.id, wanted.row ?? null, wanted.id ?? null);
+      const t = await backend().rowText(tab.id, wanted.row ?? null, wanted.id ?? null, tab.header);
       if (mine !== seq) return;
       row = t;
       joined = new Set();
@@ -121,11 +130,18 @@
     busy = true;
     problem = "";
     try {
-      const repair =
-        mode === "next" ? { kind: "next" as const, between } : mode === "quote" ? { kind: "quote_as_text" as const } : { kind: "join" as const, groups: groups(r.fields.length, joined) };
+      const repair: RowRepair =
+        mode === "next"
+          ? { kind: "next", between }
+          : mode === "previous"
+            ? { kind: "previous", between, header: tab.header }
+            : mode === "quote"
+              ? { kind: "quote_as_text" }
+              : { kind: "join", groups: groups(r.fields.length, joined) };
       const place = Math.max(0, ids.indexOf(r.id));
       const info = await backend().repairRow(tab.id, r.id, r.revision, $state.snapshot(repair));
-      onDone(info, mode === "next" ? "Joined the row with the next one." : mode === "quote" ? "Read the quote marks of the row as text." : "Joined the fields of the row.");
+      const done = { next: "Joined the row with the next one.", previous: "Joined the row onto the previous one.", quote: "Read the quote marks of the row as text.", join: "Joined the fields of the row." };
+      onDone(info, done[mode]);
       // Found again; stay on the next one (or this one while it is still ragged).
       const found = await list();
       const to = found.includes(r.id) ? r.id : stepRow(found, r.id, place, 1);
@@ -200,17 +216,21 @@
     <div class="actions">
       <label><input type="radio" value="join" bind:group={mode} /> Join the fields marked ⇔</label>
       <label class:off={!row.next}><input type="radio" value="next" bind:group={mode} disabled={!row.next} /> Join with the next row, with
-        <select aria-label="Put between the two rows" bind:value={between} onchange={() => (mode = "next")} disabled={!row.next}>
+        <select aria-label="Put between the two rows" bind:value={between} onchange={() => (mode = mode === "previous" ? mode : "next")} disabled={!row.next && !row.previous}>
           <option value="space">a space</option>
           <option value="line_break">a line break</option>
           <option value="nothing">nothing</option>
         </select>
         between</label>
+      <label class:off={!row.previous}><input type="radio" value="previous" bind:group={mode} disabled={!row.previous} /> Join with the previous row</label>
       {#if row.quoted_as_text.length}<label><input type="radio" value="quote" bind:group={mode} /> Treat the quote marks as text</label>{/if}
       {#if tab.info.unclosed_quotes || tab.info.long_quoted_cells}<button type="button" class="small" onclick={onReopenLines}>Reopen reading line by line</button>{/if}
     </div>
     {#if row.no_next}<p class="note">{row.no_next}</p>{/if}
+    {#if row.no_previous}<p class="note">{row.no_previous}</p>{/if}
     {#if mode === "next" && row.next}<p class="note" data-testid="repair-next">{nextNotes(row.next)}</p>{/if}
+    {#if mode === "previous" && row.previous}<p class="note" data-testid="repair-next">{previousNotes(row.previous, row.note_keys.length > 0)}</p>{/if}
+    {#if warning}<p class="problem" data-testid="repair-warning">{warning}</p>{/if}
     <div class="result">
       <span class="muted">The row will be ({result.length.toLocaleString()} fields):</span>
       <table data-testid="repair-result">

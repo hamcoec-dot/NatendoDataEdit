@@ -752,13 +752,15 @@ export class MockBackend implements Backend {
     if (m.short.includes(id)) return row.slice(0, -1);
     return m.long.includes(id) ? [...row, "extra"] : row;
   }
-  async rowText(doc: number, row: number | null, rowId: number | null): Promise<RowText> {
+  async rowText(doc: number, row: number | null, rowId: number | null, keepFirst = true): Promise<RowText> {
     const d = this.get(doc);
     if (d.info.column_changes) throw err("invalid", COLUMNS_CHANGED);
     const id = rowId ?? this.rowId(d, row ?? 0);
     const fields = this.fields(d, doc, id);
     const shown = Array.from({ length: this.rowCount(d) }, (_, r) => r).find((r) => this.rowId(d, r) === id) ?? null;
-    const next = { id: id + 1, file_row: id + 2, edited: false, hidden: false, noted: false, fields: this.fields(d, doc, id + 1) };
+    const near = (n: number) => ({ id: n, file_row: n + 1, edited: false, hidden: false, noted: false, note_keys: [], fields: this.fields(d, doc, n) });
+    const next = near(id + 1);
+    const first = keepFirst ? 1 : 0;
     return {
       id,
       row: shown,
@@ -775,6 +777,9 @@ export class MockBackend implements Backend {
       quoted_as_text: [],
       next,
       no_next: "",
+      previous: id - 1 >= first ? near(id - 1) : null,
+      no_previous: id - 1 >= first ? "" : "the row before this one holds the column names",
+      note_keys: [],
     };
   }
   async rowWidth(doc: number, row: number): Promise<[number, number]> {

@@ -865,8 +865,10 @@ everything is also in command search.
   this row**, or **Repair…** on the note): the row's text as it is in the file,
   its fields with a mark between each two, and what the row will be. Click marks
   to join fields (the file's separator stays in the cell), join the row with the
-  next row of the file with a space, a line break or nothing between, or read a
-  stray quote mark as ordinary text. Each repair is one undo step; Up and Down
+  next or the previous row of the file with a space, a line break or nothing
+  between (the previous one for a line broken inside its last field), or read a
+  stray quote mark as ordinary text. A warning says when a row's note is matched
+  on a column the repair changes. Each repair is one undo step; Up and Down
   walk the ragged rows. The text shown is cut at 64 KB, and nothing about it is
   stored.
 

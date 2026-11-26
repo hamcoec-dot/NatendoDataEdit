@@ -4,4 +4,4 @@
 - **Shifted rows:** a note on opening counts the rows with a different number of fields than most, and the Data menu shows only those, the short ones or the long ones.
 - Emptying a cell past the end of a short row no longer adds empty fields to it.
 - **Leading zeros from LibreOffice sheets:** a number an `.ods` sheet shows as `00123` can now be imported that way, with the same question as for Excel files. Excel formats written with quoted dashes or spaces (`00"-"000`) are recognised too.
-- **Repair bar:** fix a shifted row where it broke: join fields, join it with the next row of the file, or read a stray quote mark as text, with a preview and one undo step.
+- **Repair bar:** fix a shifted row where it broke: join fields, join it with the next or previous row of the file, or read a stray quote mark as text, with a preview and one undo step.

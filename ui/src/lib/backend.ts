@@ -330,7 +330,11 @@ export interface TableReport {
 }
 /** What goes between two rows joined into one (never the file's separator). */
 export type Between = "space" | "line_break" | "nothing";
-export type RowRepair = { kind: "join"; groups: number[] } | { kind: "next"; between: Between } | { kind: "quote_as_text" };
+export type RowRepair =
+  | { kind: "join"; groups: number[] }
+  | { kind: "next"; between: Between }
+  | { kind: "previous"; between: Between; header: boolean }
+  | { kind: "quote_as_text" };
 /** The next row of the file, as the repair bar shows it. */
 export interface NextRow {
   id: number;
@@ -338,6 +342,8 @@ export interface NextRow {
   edited: boolean;
   hidden: boolean;
   noted: boolean;
+  /** The columns its note is matched on (empty without a note). */
+  note_keys: number[];
   fields: string[];
 }
 /** A row as the repair bar shows it. */
@@ -358,6 +364,9 @@ export interface RowText {
   quoted_as_text: string[];
   next: NextRow | null;
   no_next: string;
+  previous: NextRow | null;
+  no_previous: string;
+  note_keys: number[];
 }
 export interface RaggedList {
   /** Row ids in table order. */
@@ -1443,7 +1452,7 @@ export interface Backend {
   viewport(doc: number, row: number, rows: number, col: number, cols: number, maxChars: number): Promise<ViewportData>;
   cellText(doc: number, row: number, col: number): Promise<{ text: string; truncated: boolean }>;
   raggedList(doc: number, keepFirst: boolean): Promise<RaggedList>;
-  rowText(doc: number, row: number | null, rowId: number | null): Promise<RowText>;
+  rowText(doc: number, row: number | null, rowId: number | null, keepFirst: boolean): Promise<RowText>;
   /** A shown row's fields and the usual number. */
   rowWidth(doc: number, row: number): Promise<[number, number]>;
   repairRow(doc: number, rowId: number, revision: number, repair: RowRepair): Promise<DocInfo>;
@@ -1940,8 +1949,8 @@ class TauriBackend implements Backend {
   raggedList(doc: number, keepFirst: boolean) {
     return call<RaggedList>("ragged_list", { doc, keepFirst });
   }
-  rowText(doc: number, row: number | null, rowId: number | null) {
-    return call<RowText>("row_text", { doc, row, rowId });
+  rowText(doc: number, row: number | null, rowId: number | null, keepFirst: boolean) {
+    return call<RowText>("row_text", { doc, row, rowId, keepFirst });
   }
   rowWidth(doc: number, row: number) {
     return call<[number, number]>("row_width", { doc, row });

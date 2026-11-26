@@ -182,13 +182,37 @@ const proof = async () => {
   const want = ["id,name,city", "1,ann,Oslo", '2,"Smith, John",Rome', "3,bo,Lima", "4,eve,Turin", "5,dee,Lima", ""].join("\r\n");
   ok(read() === want, `saved: ${JSON.stringify(read())}`);
 
+  // A line broken inside its last field: the second half is listed and joins onto the previous row.
+  const broken = path.join(OUT, "last.csv");
+  fs.writeFileSync(broken, ["id,name,city", "1,ann,Os", "lo", "2,bo,Rome", "3,cy,Lima", ""].join("\r\n"));
+  const mp = await start([broken]);
+  await waitFor(async () => (await invoke(mp, "doc_info", { doc: 1 })).indexed, 60000, 300);
+  await sleep(1000);
+  await dismiss(mp);
+  const yes2 = mp.getByRole("button", { name: "Yes, column names" });
+  if (await yes2.isVisible().catch(() => false)) await yes2.click();
+  await sleep(400);
+  await mp.getByRole("button", { name: "Repair…" }).click();
+  await mp.getByTestId("repair-heading").waitFor({ timeout: 8000 });
+  await sleep(500);
+  await mp.getByRole("combobox", { name: "Put between the two rows" }).selectOption("nothing");
+  await mp.getByRole("radio", { name: "Join with the previous row" }).check();
+  const said = ((await mp.getByTestId("repair-next").textContent()) || "").trim();
+  ok(/Joins onto row 2 of the file/.test(said), said);
+  await mp.getByTestId("repair").getByRole("button", { name: "Apply" }).click();
+  await sleep(900);
+  await invoke(mp, "save", { doc: 1, saveAs: false, overwriteChanged: true, allowLossy: false });
+  await sleep(800);
+  const joined = fs.readFileSync(broken, "utf8");
+  ok(joined === ["id,name,city", "1,ann,Oslo", "2,bo,Rome", "3,cy,Lima", ""].join("\r\n"), `saved: ${JSON.stringify(joined)}`);
+
   // A stray quote read as text, and reopening the saved file.
   const quoted = path.join(OUT, "quote.csv");
   fs.writeFileSync(quoted, ["a,b,c", '1,"x, y",3', "4,5,6", "7,8,9", ""].join("\r\n"));
   const m2 = await start([quoted]);
   await waitFor(async () => (await invoke(m2, "doc_info", { doc: 1 })).indexed, 60000, 300);
   await sleep(800);
-  const row = await invoke(m2, "row_text", { doc: 1, row: 1, rowId: null });
+  const row = await invoke(m2, "row_text", { doc: 1, row: 1, rowId: null, keepFirst: true });
   await invoke(m2, "repair_row", { doc: 1, rowId: row.id, revision: row.revision, repair: { kind: "quote_as_text" } });
   const stale = await invoke(m2, "repair_row", { doc: 1, rowId: row.id, revision: row.revision, repair: { kind: "quote_as_text" } }).then(() => "", (e) => String(e));
   ok(/changed since/.test(stale), "a second repair from the old reading is refused");
@@ -196,7 +220,7 @@ const proof = async () => {
   await sleep(800);
   const m3 = await start([quoted]);
   await waitFor(async () => (await invoke(m3, "doc_info", { doc: 1 })).indexed, 60000, 300);
-  const again = await invoke(m3, "row_text", { doc: 1, row: 1, rowId: null });
+  const again = await invoke(m3, "row_text", { doc: 1, row: 1, rowId: null, keepFirst: true });
   ok(JSON.stringify(again.fields) === JSON.stringify(row.quoted_as_text), `reopened, the same cells: ${JSON.stringify(again.fields)}`);
   const fixed = await invoke(m3, "doc_info", { doc: 1 });
   info(`reopened file: ${fixed.ragged_rows} rows of another width than ${fixed.usual_fields}`);

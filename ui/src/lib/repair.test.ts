@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NextRow, RowText } from "./backend";
-import { groups, joinPreview, nextNotes, nextPreview, rowHeading, stepRow } from "./repair";
+import { groups, joinPreview, nextNotes, nextPreview, noteWarning, previousNotes, rowHeading, stepRow } from "./repair";
 
 describe("repair bar", () => {
   const fields = ["1", "Smith", " John", "Rome"];
@@ -16,8 +16,18 @@ describe("repair bar", () => {
     expect(nextPreview(["1", "2", ""], ["3", "4"], "nothing")).toEqual(["1", "2", "3", "4"]);
   });
   it("says what the next row takes with it", () => {
-    const next = { id: 3, file_row: 4, edited: true, hidden: true, noted: true, fields: [] } as NextRow;
+    const next = { id: 3, file_row: 4, edited: true, hidden: true, noted: true, note_keys: [0], fields: [] } as NextRow;
     expect(nextNotes(next)).toMatch(/row 4 of the file.*hidden; it will be joined.*changed.*note/);
+  });
+  it("names the previous row and what stays or goes", () => {
+    const previous = { id: 2, file_row: 3, edited: false, hidden: true, noted: true, fields: [] } as unknown as NextRow;
+    expect(previousNotes(previous, true)).toMatch(/onto row 3 of the file.*hidden.*stays with it.*This row has a note/);
+  });
+  it("warns when a repair changes a column the row's note is matched on", () => {
+    const title = (c: number) => ["id", "name", "city"][c] ?? "?";
+    expect(noteWarning(["1", "Os", "x"], ["1", "Os", "x"], [2], title)).toBe("");
+    expect(noteWarning(["1", "ann", "Os"], ["1", "ann", "Oslo"], [2], title)).toContain("matched on city, and this repair changes city");
+    expect(noteWarning(["1", "a"], ["1", "b"], [], title)).toBe("");
   });
   it("names the row", () => {
     expect(rowHeading({ file_row: 2, row: 1, width: 4, usual: 3 } as RowText)).toBe("Row 2 of the file: 4 fields, usual 3.");

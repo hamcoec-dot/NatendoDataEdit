@@ -36,6 +36,23 @@ export function nextNotes(next: NextRow): string {
   return out.join(" ");
 }
 
+/** What to know before joining this row onto the previous one (which keeps the result). */
+export function previousNotes(previous: NextRow, thisNoted: boolean): string {
+  const out = [`Joins onto row ${previous.file_row.toLocaleString()} of the file.`];
+  if (previous.hidden) out.push("The previous row is hidden; this row will be joined onto it.");
+  if (previous.edited) out.push("It has been changed; its cells as they are now are joined.");
+  if (previous.noted) out.push("It has a note, which stays with it.");
+  if (thisNoted) out.push("This row has a note, which goes with it when the row is removed.");
+  return out.join(" ");
+}
+
+/** The warning when the row that keeps the result has a note matched on a column the repair changes ("" if not). */
+export function noteWarning(before: readonly string[], after: readonly string[], keys: readonly number[], title: (col: number) => string): string {
+  const changed = keys.filter((k) => (before[k] ?? "") !== (after[k] ?? ""));
+  if (!changed.length) return "";
+  return `This row's note is matched on ${keys.map(title).join(", ")}, and this repair changes ${changed.map(title).join(", ")}: the note will no longer match the row.`;
+}
+
 /** The line about the row itself. */
 export function rowHeading(t: RowText): string {
   const which = t.file_row ? `Row ${t.file_row.toLocaleString()} of the file` : "A row added by hand";

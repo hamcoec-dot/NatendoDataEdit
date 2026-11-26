@@ -2689,21 +2689,36 @@ impl Docs {
 
     /// What the repair bar shows for a row, asked by its id or (to open the
     /// bar from the grid) by the shown row. Nothing is stored or logged.
-    pub fn row_text(&self, id: u32, row: Option<u64>, row_id: Option<u32>) -> CmdResult<RowText> {
+    pub fn row_text(
+        &self,
+        id: u32,
+        row: Option<u64>,
+        row_id: Option<u32>,
+        header: bool,
+    ) -> CmdResult<RowText> {
         let entry = self.get(id)?;
         let mut found = {
             let d = entry.read();
             let wanted = row_id
                 .or_else(|| row.and_then(|r| d.row_id(r)))
                 .ok_or_else(|| CmdError::new("bad_request", "choose a row"))?;
-            d.row_text(wanted)?
+            d.row_text(wanted, header)?
         };
         // (Notes that cannot be read do not stop the row from showing.)
-        if let Some(next) = &mut found.next {
-            let n = next.id;
-            next.noted = self
-                .with_notes(id, |d, book, _| Ok(d.row_noted(book, n)))
-                .unwrap_or(false);
+        let keys = |wanted: u32| {
+            self.with_notes(id, |d, book, _| {
+                Ok(if d.row_noted(book, wanted) {
+                    book.key_cols.clone()
+                } else {
+                    Vec::new()
+                })
+            })
+            .unwrap_or_default()
+        };
+        found.note_keys = keys(found.id);
+        for near in [&mut found.next, &mut found.previous].into_iter().flatten() {
+            near.note_keys = keys(near.id);
+            near.noted = !near.note_keys.is_empty();
         }
         Ok(found)
     }
@@ -10947,12 +10962,12 @@ ca,California
         wait(&docs, id);
         let list = docs.ragged_list(id, true).unwrap();
         assert_eq!((list.ids.as_slice(), list.total), (&[1u32, 3][..], 2));
-        let t = docs.row_text(id, None, Some(1)).unwrap();
+        let t = docs.row_text(id, None, Some(1), true).unwrap();
         assert_eq!(
             (t.row, t.file_row, t.raw.as_str()),
             (Some(1), 2, "1,Smith, John,Rome")
         );
-        assert_eq!(docs.row_text(id, Some(3), None).unwrap().id, 3);
+        assert_eq!(docs.row_text(id, Some(3), None, true).unwrap().id, 3);
         let join = Repair::Join { groups: vec![1, 2] };
         let info = docs.repair_row(id, 1, t.revision, &join).unwrap();
         assert!(info.modified && info.can_undo);
@@ -10965,6 +10980,11 @@ ca,California
         );
         docs.undo(id).unwrap();
         assert_eq!(docs.ragged_list(id, true).unwrap().ids, [1, 3]);
+        // A note on a row says which columns match it, for the bar's warning.
+        docs.note_set(id, 2, 0, "check").unwrap();
+        let t = docs.row_text(id, None, Some(3), true).unwrap();
+        assert!(t.note_keys.is_empty() && t.previous.as_ref().unwrap().noted);
+        assert_eq!(t.previous.unwrap().note_keys, [0]);
     }
 
     /// B4: risky bulk changes name a moment first; cheap ones do not; the automatic ones are capped at 20 and

@@ -39,6 +39,9 @@ pub enum Repair {
     Join { groups: Vec<u32> },
     /// With the next row of the file.
     Next { between: Between },
+    /// With the previous row of the file, which keeps the result. With
+    /// `header`, the table's first row holds titles and is never joined.
+    Previous { between: Between, header: bool },
     /// Split the file's text again with quote marks read as ordinary text.
     QuoteAsText,
 }
@@ -54,6 +57,8 @@ pub struct NextRow {
     pub hidden: bool,
     /// It has a note (filled in by the caller, who holds the notes).
     pub noted: bool,
+    /// The columns its note is matched on (empty without a note).
+    pub note_keys: Vec<u32>,
     pub fields: Vec<String>,
 }
 
@@ -87,32 +92,25 @@ pub struct RowText {
     pub next: Option<NextRow>,
     /// Why there is no next row to join ("" when there is one).
     pub no_next: String,
+    /// The previous row of the file, and why there is none to join.
+    pub previous: Option<NextRow>,
+    pub no_previous: String,
+    /// The columns this row's note is matched on (empty without a note;
+    /// filled in by the caller).
+    pub note_keys: Vec<u32>,
 }
 
 const MERGED: &str =
     "this file treats runs of separators as one, so the original separator between two fields is not known";
 
 impl Document {
-    /// Where row `id` is in the whole table, shown or not. Looked for outward
-    /// from its own number: rows rarely move far.
+    /// Where row `id` is in the whole table, shown or not.
     fn position_of(&self, id: u32) -> Option<u64> {
-        let total = self.total_rows();
-        let at = u64::from(id).min(total.saturating_sub(1));
-        let is = |p: u64| self.doc_id_at(p) == Some(id);
-        for off in 0..total {
-            let below = at.checked_sub(off);
-            let above = at + off;
-            if below.is_none() && above >= total {
-                break;
-            }
-            if let Some(p) = below.filter(|&p| is(p)) {
-                return Some(p);
-            }
-            if above < total && is(above) {
-                return Some(above);
-            }
+        match &self.order {
+            // One pass over the ids: well under a millisecond for a million.
+            Some(order) => order.iter().position(|&i| i == id).map(|p| p as u64),
+            None => (u64::from(id) < self.index.rows()).then_some(u64::from(id)),
         }
-        None
     }
 
     fn file_row(&self, id: u32) -> bool {
@@ -134,24 +132,58 @@ impl Document {
         }
     }
 
-    /// Where row `id` is on screen, looked for outward from `near` (a row
-    /// is never below its place in the whole table).
-    fn shown_at(&self, id: u32, near: u64) -> Option<u64> {
-        let total = self.row_count();
-        if total == self.total_rows() {
-            return Some(near);
+    /// Where the row at place `at` of the whole table is on screen.
+    fn shown_at(&self, at: u64) -> Option<u64> {
+        match &self.view {
+            None => Some(at),
+            // The shown places are in order.
+            Some(v) => self
+                .visible(v)
+                .binary_search(&u32::try_from(at).ok()?)
+                .ok()
+                .map(|r| r as u64),
         }
-        let from = near.min(total.saturating_sub(1));
-        (0..=from)
-            .rev()
-            .chain(from + 1..total)
-            .find(|&r| self.id_at(r) == Some(id))
     }
 
     /// The id of shown row `row` (kept by the row through sorts and
     /// deletes).
     pub fn row_id(&self, row: u64) -> Option<u32> {
         self.id_at(row)
+    }
+
+    /// The previous row of the file before row `id`, or why it cannot be
+    /// joined.
+    fn previous_of(&self, id: u32, header: bool) -> Result<(u32, u64), &'static str> {
+        if !self.file_row(id) {
+            return Err("this row was added by hand: it has no previous row in the file");
+        }
+        let Some(previous) = id.checked_sub(1) else {
+            return Err("this is the first row of the file");
+        };
+        match self.position_of(previous) {
+            Some(0) if header => Err("the row before this one holds the column names"),
+            Some(at) => Ok((previous, at)),
+            None => Err("the previous row of the file was removed"),
+        }
+    }
+
+    /// A neighbouring row as the bar shows it.
+    fn neighbour(&self, id: u32, at: u64) -> Result<NextRow, Error> {
+        let mut fields = self.logical_values(id)?;
+        let mut used = 0usize;
+        fields.retain(|v| {
+            used += v.len() + 1;
+            used <= MAX_SHOWN
+        });
+        Ok(NextRow {
+            id,
+            file_row: u64::from(id) + 1,
+            edited: self.overlay.get(id).is_some(),
+            hidden: self.shown_at(at).is_none(),
+            noted: false,
+            note_keys: Vec::new(),
+            fields,
+        })
     }
 
     /// The raw bytes of a file row that no edit has touched, without its line
@@ -188,7 +220,8 @@ impl Document {
     }
 
     /// What the repair bar shows for row `id`.
-    pub fn row_text(&self, id: u32) -> Result<RowText, Error> {
+    /// With `header`, the table's first row holds titles.
+    pub fn row_text(&self, id: u32, header: bool) -> Result<RowText, Error> {
         self.ready_for_bulk()?;
         if self.col_map().is_some() {
             return Err(Error::Invalid(COLUMNS_CHANGED.into()));
@@ -228,30 +261,16 @@ impl Document {
         }
         values.truncate(shown);
         let (next, no_next) = match self.next_of(id) {
-            Ok((n, next_at)) => {
-                let mut fields = self.logical_values(n)?;
-                let mut used = 0usize;
-                fields.retain(|v| {
-                    used += v.len() + 1;
-                    used <= MAX_SHOWN
-                });
-                (
-                    Some(NextRow {
-                        id: n,
-                        file_row: u64::from(n) + 1,
-                        edited: self.overlay.get(n).is_some(),
-                        hidden: self.shown_at(n, next_at).is_none(),
-                        noted: false,
-                        fields,
-                    }),
-                    String::new(),
-                )
-            }
+            Ok((n, at)) => (Some(self.neighbour(n, at)?), String::new()),
+            Err(why) => (None, why.to_string()),
+        };
+        let (previous, no_previous) = match self.previous_of(id, header) {
+            Ok((n, at)) => (Some(self.neighbour(n, at)?), String::new()),
             Err(why) => (None, why.to_string()),
         };
         Ok(RowText {
             id,
-            row: self.shown_at(id, at),
+            row: self.shown_at(at),
             file_row: if self.file_row(id) {
                 u64::from(id) + 1
             } else {
@@ -273,6 +292,9 @@ impl Document {
             quoted_as_text,
             next,
             no_next,
+            previous,
+            no_previous,
+            note_keys: Vec::new(),
         })
     }
 
@@ -297,6 +319,36 @@ impl Document {
             }
         }
         Ok((id, Some(Edit::Full(values))))
+    }
+
+    /// Two rows made one: refused when either is longer than the bar shows.
+    fn joined(
+        first: Vec<String>,
+        second: Vec<String>,
+        between: Between,
+    ) -> Result<Vec<String>, Error> {
+        for row in [&first, &second] {
+            if row.iter().map(|v| v.len() + 1).sum::<usize>() > MAX_SHOWN + 1 {
+                return Err(Error::Invalid(
+                    "one of the two rows is longer than what the bar can show".into(),
+                ));
+            }
+        }
+        let mut out = first;
+        let mut rest = second.into_iter();
+        let head = rest.next().unwrap_or_default();
+        match out.last_mut() {
+            Some(last) => {
+                last.push_str(between.text());
+                last.push_str(&head);
+            }
+            None => out.push(head),
+        }
+        out.extend(rest);
+        if out.len() as u64 > MAX_ROW_FIELDS {
+            return Err(Error::Invalid("the joined row would be too wide".into()));
+        }
+        Ok(out)
     }
 
     /// Apply one repair to row `id`, as one undo step. Refused when the table
@@ -349,24 +401,27 @@ impl Document {
             Repair::Next { between } => {
                 let (next, at) = self.next_of(id).map_err(|why| Error::Invalid(why.into()))?;
                 let after = self.logical_values(next)?;
-                let from = width.saturating_sub(1);
-                self.unprotected_from(from, width + after.len())?;
-                let mut out = values;
-                let mut after = after.into_iter();
-                let head = after.next().unwrap_or_default();
-                match out.last_mut() {
-                    Some(last) => {
-                        last.push_str(between.text());
-                        last.push_str(&head);
-                    }
-                    None => out.push(head),
-                }
-                out.extend(after);
-                if out.len() as u64 > MAX_ROW_FIELDS {
-                    return Err(Error::Invalid("the joined row would be too wide".into()));
-                }
-                let state = self.state_for(id, out)?;
-                // The row first: its position does not matter to a cell state.
+                self.unprotected_from(width.saturating_sub(1), width + after.len())?;
+                let state = self.state_for(id, Self::joined(values, after, *between)?)?;
+                // (The cell state goes by id, so the removal's place holds.)
+                self.push(Op::Batch(vec![
+                    Op::Restore(vec![state]),
+                    Op::Remove {
+                        at: at as usize,
+                        count: 1,
+                    },
+                ]));
+            }
+            Repair::Previous { between, header } => {
+                let (previous, _) = self
+                    .previous_of(id, *header)
+                    .map_err(|why| Error::Invalid(why.into()))?;
+                let at = self
+                    .position_of(id)
+                    .ok_or_else(|| Error::Invalid(CHANGED.into()))?;
+                let before = self.logical_values(previous)?;
+                self.unprotected_from(before.len().saturating_sub(1), before.len() + width)?;
+                let state = self.state_for(previous, Self::joined(before, values, *between)?)?;
                 self.push(Op::Batch(vec![
                     Op::Restore(vec![state]),
                     Op::Remove {
@@ -443,7 +498,7 @@ mod tests {
     #[test]
     fn shows_the_file_text_and_cells_of_a_row() {
         let (d, _) = open(BODY);
-        let t = d.row_text(1).unwrap();
+        let t = d.row_text(1, true).unwrap();
         assert_eq!(t.raw, "1,Smith, John,Rome");
         assert_eq!(t.fields, ["1", "Smith", " John", "Rome"]);
         assert_eq!((t.width, t.usual, t.edited, t.cut), (4, 3, false, false));
@@ -452,7 +507,7 @@ mod tests {
         let next = t.next.unwrap();
         assert_eq!((next.id, next.file_row, next.hidden), (2, 3, false));
         assert_eq!(
-            d.row_text(2).unwrap().no_next,
+            d.row_text(2, true).unwrap().no_next,
             "this is the last row of the file"
         );
     }
@@ -541,7 +596,7 @@ mod tests {
         let body = "a,b\n1\n2,x\n3,y\n";
         let (mut d, _) = open(body);
         d.set_cell(2, 1, "edited".into()).unwrap();
-        let t = d.row_text(1).unwrap();
+        let t = d.row_text(1, true).unwrap();
         assert!(t.next.as_ref().unwrap().edited);
         d.move_rows(2, 1, 3).unwrap();
         apply(
@@ -557,7 +612,7 @@ mod tests {
         let (mut d, _) = open(body);
         d.delete_rows(2, 1).unwrap();
         assert_eq!(
-            d.row_text(1).unwrap().no_next,
+            d.row_text(1, true).unwrap().no_next,
             "the next row of the file was removed"
         );
         assert!(apply(
@@ -571,14 +626,18 @@ mod tests {
         // A row added by hand has no next row in the file.
         d.insert_rows(1, vec![vec!["new".into()]]).unwrap();
         let id = d.doc_id_at(1).unwrap();
-        assert!(d.row_text(id).unwrap().no_next.contains("added by hand"));
+        assert!(d
+            .row_text(id, true)
+            .unwrap()
+            .no_next
+            .contains("added by hand"));
     }
 
     #[test]
     fn a_quote_treated_as_text_saves_and_reopens_the_same() {
         let body = "a,b,c\n1,\"x, y\",3\n4,5,6\n";
         let (mut d, p) = open(body);
-        let t = d.row_text(1).unwrap();
+        let t = d.row_text(1, true).unwrap();
         assert_eq!(t.quoted_as_text, ["1", "\"x", " y\"", "3"]);
         apply(&mut d, 1, Repair::QuoteAsText).unwrap();
         assert_eq!(all(&d)[1], t.quoted_as_text);
@@ -586,7 +645,7 @@ mod tests {
         let again = Document::open_indexed(&p, OpenOptions::default(), None).unwrap();
         assert_eq!(all(&again), all(&d));
         // Not offered once the row was changed.
-        assert!(d.row_text(2).unwrap().quoted_as_text.is_empty());
+        assert!(d.row_text(2, true).unwrap().quoted_as_text.is_empty());
     }
 
     #[test]
@@ -594,10 +653,115 @@ mod tests {
         let long = "x".repeat(MAX_SHOWN);
         let body = format!("a,b\n1,{long},tail\n2,3\n");
         let (mut d, _) = open(&body);
-        let t = d.row_text(1).unwrap();
+        let t = d.row_text(1, true).unwrap();
         assert!(t.cut && t.raw.len() <= MAX_SHOWN && t.fields.len() == 1 && t.width == 3);
         assert!(apply(&mut d, 1, join(&[3])).is_err());
         // Fields before the cut can still be joined.
         apply(&mut d, 1, join(&[1])).unwrap();
+    }
+
+    #[test]
+    fn joins_with_the_previous_row_of_the_file_three_ways() {
+        for (between, cell) in [
+            (Between::Space, "Os lo"),
+            (Between::LineBreak, "Os\nlo"),
+            (Between::Nothing, "Oslo"),
+        ] {
+            // The line broke inside its last field: the first half has the usual width.
+            let body = "id,name,city\n1,ann,Os\nlo\n2,bo,Rome\n";
+            let (mut d, p) = open(body);
+            let t = d.row_text(2, true).unwrap();
+            let previous = t.previous.unwrap();
+            assert_eq!((previous.id, previous.file_row), (1, 2));
+            let repair = Repair::Previous {
+                between,
+                header: true,
+            };
+            apply(&mut d, 2, repair).unwrap();
+            assert_eq!(all(&d)[1], ["1", "ann", cell], "{between:?}");
+            assert_eq!(d.total_rows(), 3);
+            assert!(d.undo());
+            assert_eq!(d.total_rows(), 4);
+            assert_eq!(all(&d)[1], ["1", "ann", "Os"]);
+            assert!(d.redo());
+            let text = saved(&mut d, &p);
+            let again = Document::open_indexed(&p, OpenOptions::default(), None).unwrap();
+            assert_eq!(all(&again), all(&d), "{between:?} {text:?}");
+        }
+    }
+
+    #[test]
+    fn the_previous_row_must_be_there_and_never_the_titles() {
+        let previous = Repair::Previous {
+            between: Between::Space,
+            header: true,
+        };
+        let body = "a,b\n1\n2\n3,y\n";
+        let (mut d, _) = open(body);
+        assert!(d
+            .row_text(1, true)
+            .unwrap()
+            .no_previous
+            .contains("column names"));
+        assert!(apply(&mut d, 1, previous.clone()).is_err());
+        // Without a title row the first row is a row like any other.
+        assert!(d.row_text(1, false).unwrap().previous.is_some());
+        assert!(d
+            .row_text(0, false)
+            .unwrap()
+            .no_previous
+            .contains("first row"));
+        d.delete_rows(1, 1).unwrap();
+        assert_eq!(
+            d.row_text(2, true).unwrap().no_previous,
+            "the previous row of the file was removed"
+        );
+        assert!(apply(&mut d, 2, previous.clone()).is_err());
+        d.insert_rows(2, vec![vec!["new".into()]]).unwrap();
+        let id = d.doc_id_at(2).unwrap();
+        assert!(d
+            .row_text(id, true)
+            .unwrap()
+            .no_previous
+            .contains("added by hand"));
+        d.set_protected(&[0]);
+        assert!(apply(&mut d, 3, previous)
+            .unwrap_err()
+            .to_string()
+            .contains("protected"));
+    }
+
+    #[test]
+    fn a_row_longer_than_the_bar_shows_is_not_joined_to_a_neighbour() {
+        let long = "x".repeat(MAX_SHOWN + 10);
+        let (mut d, _) = open(&format!("a,b\n1,{long}\n2\n3,{long}\n"));
+        for repair in [
+            Repair::Previous {
+                between: Between::Space,
+                header: true,
+            },
+            Repair::Next {
+                between: Between::Space,
+            },
+        ] {
+            let e = apply(&mut d, 2, repair).unwrap_err();
+            assert!(e.to_string().contains("longer than"), "{e}");
+        }
+    }
+
+    #[test]
+    fn rows_are_found_after_a_descending_sort_and_under_a_filter() {
+        let (mut d, _) = open("n,x\n1,a\n2\n3,c\n4,d\n");
+        d.move_rows(1, 1, 4).unwrap();
+        let t = d.row_text(2, true).unwrap();
+        assert_eq!((t.row, t.previous.unwrap().id), (Some(1), 1));
+        let found = d.ragged_rows(true, &Progress::new()).unwrap();
+        let plan = d
+            .plan_show_ragged(&found, true, crate::document::ragged::RaggedPick::All)
+            .unwrap();
+        d.apply_rows(plan).unwrap();
+        let t = d.row_text(2, true).unwrap();
+        assert_eq!(t.row, Some(1));
+        assert!(t.previous.unwrap().hidden);
     }
 }

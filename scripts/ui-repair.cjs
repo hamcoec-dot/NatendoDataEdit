@@ -90,6 +90,12 @@ const url = process.argv[3] || "http://localhost:5301";
   await p.waitForTimeout(800);
   ok(/"kind":"next","between":"nothing"/.test(await asked()), "join with the next row, nothing between");
   ok(/Undo \(Ctrl\+Z\) takes it back/.test((await p.textContent("footer.status")) || ""), "the status line says how to undo");
+  // Onto the previous row.
+  await p.getByRole("radio", { name: "Join with the previous row" }).check();
+  ok(/Joins onto row \d+ of the file/.test(await text("repair-next")), `the previous row is named (${await text("repair-next")})`);
+  await apply.click();
+  await p.waitForTimeout(800);
+  ok(/"kind":"previous","between":"nothing","header":true/.test(await asked()), `join onto the previous row (${await asked()})`);
   await p.getByTestId("repair").focus();
   await p.keyboard.press("Escape");
   await p.waitForTimeout(300);

@@ -2701,9 +2701,10 @@ async fn row_text(
     doc: u32,
     row: Option<u64>,
     row_id: Option<u32>,
+    keep_first: bool,
 ) -> CmdResult<natendo_engine::document::repair::RowText> {
     let docs = docs.inner().clone();
-    blocking(move || docs.row_text(doc, row, row_id)).await
+    blocking(move || docs.row_text(doc, row, row_id, keep_first)).await
 }
 
 #[tauri::command]
