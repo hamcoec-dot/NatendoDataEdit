@@ -1,5 +1,5 @@
 // Drives the REAL built app to check the clean matrix: counts, a protected column, one undo step, the saved bytes,
-// the release screen (no dates column) and a log with counts but no values.
+// the dates column (a date readable two ways stays) and a log with counts but no values.
 // The app's own session, recent-file and recovery data are set aside and put back.
 // Usage: NODE_PATH=<playwright> node scripts/real-matrix.cjs <exe> <evidence folder>
 const { chromium } = require("playwright");
@@ -148,7 +148,7 @@ const OUT = path.join(WORK, `out-${Date.now()}`);
 fs.mkdirSync(OUT, { recursive: true });
 const FILE = path.join(OUT, "members.csv");
 // Made-up people; the words below must never reach the log.
-const LINES = ["Name,Town,Phone,Code", "  zebedee   QUILL , Yarrowby ,(555) 010-0001, k1 ", "ottilie  VANTREE,Mossford ,555.010.0002, k2 ", " perrin ashgrove, Hollin,555 010 0003,k3", ""];
+const LINES = ["Name,Town,Phone,Code,Joined", "  zebedee   QUILL , Yarrowby ,(555) 010-0001, k1 ,12/31/2025", "ottilie  VANTREE,Mossford ,555.010.0002, k2 ,03/04/2026", " perrin ashgrove, Hollin,555 010 0003,k3,Jan 5 2026", ""];
 const BODY = LINES.join("\r\n");
 fs.writeFileSync(FILE, BODY);
 const read = () => fs.readFileSync(FILE, "utf8");
@@ -171,7 +171,7 @@ const proof = async () => {
   await cmd(m, "Clean matrix");
   const dlg = m.getByRole("dialog", { name: "Clean matrix" });
   await dlg.waitFor({ timeout: 8000 });
-  ok(!/Normalize dates/.test(await body(m)), "no dates column in a release build");
+  ok(/Dates as yyyy-mm-dd/.test(await body(m)), "the dates column");
   const box = (name) => dlg.getByRole("checkbox", { name, exact: true });
   ok(await box("Code (protected)").isDisabled(), "the protected column is greyed");
   await dlg.getByRole("button", { name: "Select all", exact: true }).click();
@@ -179,25 +179,27 @@ const proof = async () => {
   await box("Collapse spaces: Name").check();
   await box("Digits only: Phone").check();
   await dlg.getByRole("combobox", { name: "Case: Name" }).selectOption("title");
+  await box("Dates as yyyy-mm-dd: Joined").check();
   await dlg.getByRole("button", { name: "Preview" }).click();
   ok(await waitFor(async () => /Before\s*After/.test(await body(m))), "the preview answers");
   const count = async (name) => ((await dlg.locator("tbody tr", { has: m.getByRole("checkbox", { name, exact: true }) }).first().locator("td.count").textContent()) || "").trim();
   const counts = [await count("Name"), await count("Town"), await count("Phone")];
   ok(counts.join() === "3,3,3", `counts per column (${counts})`);
+  ok(/^2\s*1 readable two ways, left as typed$/.test(await count("Joined")), `dates counted: ${await count("Joined")}`);
   await m.screenshot({ path: path.join(evidence, "clean-matrix.png") });
   await dlg.getByRole("button", { name: "Apply" }).click();
-  ok(await waitFor(async () => /Cleaned 9 cells in 3 columns/.test(await status(m))), `applied: ${(await status(m)).slice(0, 120)}`);
+  ok(await waitFor(async () => /Cleaned 11 cells in 4 columns/.test(await status(m))), `applied: ${(await status(m)).slice(0, 120)}`);
   // Undo before saving (a save starts a new history): the file is written as it was.
   await invoke(m, "change", { doc: 1, change: { op: "undo" } });
   await save(m);
   ok(read() === BODY, `one undo and the file is byte for byte as it was: ${JSON.stringify(read())}`);
   await invoke(m, "change", { doc: 1, change: { op: "redo" } });
   await save(m);
-  const want = ["Name,Town,Phone,Code", "Zebedee Quill,Yarrowby,5550100001, k1 ", "Ottilie Vantree,Mossford,5550100002, k2 ", "Perrin Ashgrove,Hollin,5550100003,k3", ""].join(String.fromCharCode(13, 10));
+  const want = ["Name,Town,Phone,Code,Joined", "Zebedee Quill,Yarrowby,5550100001, k1 ,2025-12-31", "Ottilie Vantree,Mossford,5550100002, k2 ,03/04/2026", "Perrin Ashgrove,Hollin,5550100003,k3,2026-01-05", ""].join(String.fromCharCode(13, 10));
   ok(read() === want, `redo and save: ${JSON.stringify(read())}`);
   await sleep(800);
   const added = fs.existsSync(LOG) ? fs.readFileSync(LOG).subarray(logStart).toString("utf8") : "";
-  ok(/Cleaned 9 cells/.test(added) && !/zebedee|quill|ottilie|vantree|ashgrove|yarrowby|010.?000/i.test(added), `the log has counts and no values (${added.length} characters added)`);
+  ok(/Cleaned 11 cells/.test(added) && !/zebedee|quill|ottilie|vantree|ashgrove|yarrowby|010.?000/i.test(added), `the log has counts and no values (${added.length} characters added)`);
 };
 
 (async () => {

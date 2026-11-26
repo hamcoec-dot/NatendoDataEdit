@@ -992,15 +992,16 @@ impl Compiled {
                 cur = Some(new);
             }
         }
-        let ambiguous_left = left
-            && cur.is_none()
-            && self.steps.iter().any(|s| {
+        // Judged on the text as it ends up: an earlier step may have trimmed
+        // the cell (or found nothing to trim) without reading its date.
+        let ambiguous_left =
+            left && self.steps.iter().any(|s| {
                 matches!(
                     s,
                     CStep::Ambiguous(_, Ambiguous::Leave) | CStep::Reviewed(_, Ambiguous::Leave, _)
                 )
-            })
-            && crate::value::classify_date(cell).kind == crate::value::DateKind::Ambiguous;
+            }) && crate::value::classify_date(cur.as_deref().unwrap_or(cell)).kind
+                == crate::value::DateKind::Ambiguous;
         Ok(Outcome {
             text: cur.filter(|t| t != cell),
             left,
@@ -3170,6 +3171,8 @@ pub struct MatrixColumn {
     pub protected: u64,
     /// Cells a step could not read.
     pub left: u64,
+    /// Of those, dates both day orders can read, left as typed.
+    pub ambiguous_left: u64,
     pub other_order: u64,
     pub homoglyph_cells: u64,
 }
@@ -3564,6 +3567,7 @@ impl Document {
                     changed: if protected { 0 } else { t.changed },
                     protected: if protected { t.changed } else { 0 },
                     left: t.left,
+                    ambiguous_left: t.ambiguous_left,
                     other_order: t.other_order,
                     homoglyph_cells: t.homoglyphs,
                 }

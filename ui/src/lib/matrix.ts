@@ -23,6 +23,8 @@ export interface MatrixColumn {
   /** Would change, but the column is protected. */
   protected: number;
   left: number;
+  /** Of those, dates readable two ways. */
+  ambiguous_left: number;
   other_order: number;
   homoglyph_cells: number;
 }
@@ -52,16 +54,22 @@ export const TICKS: { id: TickId; label: string; step: Step }[] = [
 /** A saved cleaner runs before this tick (and everything after it). */
 const AFTER_SAVED: TickId = "digits";
 
-export const ORDER_TEXT = "Steps run in this order: fix look-alikes, strip non-printing, remove line breaks, trim, collapse spaces, saved cleaner, digits only, case.";
+export const ORDER_TEXT = "Steps run in this order: fix look-alikes, strip non-printing, remove line breaks, trim, collapse spaces, saved cleaner, digits only, case, dates.";
+
+/** "Normalize dates": as the date review screen does with nothing else
+ *  ticked, so a date readable two ways, a two-digit year or eight bare digits
+ *  stays as typed. */
+export const ISO_DATES: Step = { tool: "dates", format: "yyyy-mm-dd", ambiguous: "leave", review: { compact: false, two_digit: false } };
 
 export interface ColumnPick {
   ticks: TickId[];
   case: CasePick;
   saved: NamedCleaner | null;
+  dates: boolean;
 }
 
 export function emptyPick(): ColumnPick {
-  return { ticks: [], case: "", saved: null };
+  return { ticks: [], case: "", saved: null, dates: false };
 }
 
 /** The steps one column's ticks stand for, in the fixed order. */
@@ -72,6 +80,7 @@ export function stepsFor(pick: ColumnPick): Step[] {
     if (pick.ticks.includes(t.id)) out.push(t.step);
   }
   if (pick.case) out.push({ tool: "case", to: pick.case });
+  if (pick.dates) out.push(ISO_DATES);
   return out;
 }
 

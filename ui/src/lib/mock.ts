@@ -2722,7 +2722,7 @@ export class MockBackend implements Backend {
     const preview: MatrixPreview = { revision: d.info.data_revision ?? 0, columns: [], examples: [] };
     const cells: [number, number, string][] = [];
     for (const e of [...spec.entries].sort((a, b) => a.col - b.col)) {
-      const column = { col: e.col, changed: 0, protected: 0, left: 0, other_order: 0, homoglyph_cells: 0 };
+      const column = { col: e.col, changed: 0, protected: 0, left: 0, ambiguous_left: 0, other_order: 0, homoglyph_cells: 0 };
       let shown = 0;
       for (let r = spec.skip_first ? 1 : 0; r < rows; r++) {
         const before = this.value(d, r, e.col);

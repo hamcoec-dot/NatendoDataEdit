@@ -194,6 +194,64 @@ fn a_matrix_equals_the_columns_cleaned_one_by_one() {
     }
 }
 
+/// The matrix's date tick: the review screen's careful choice, the same
+/// step Data > Clean runs.
+fn iso_dates() -> Step {
+    Step::Dates {
+        format: "yyyy-mm-dd".into(),
+        from: String::new(),
+        past: false,
+        ambiguous: Some(Ambiguous::Leave),
+        review: Some(DateReview::default()),
+    }
+}
+
+#[test]
+fn the_date_tick_leaves_what_it_cannot_be_sure_of() {
+    let cells = [
+        "12/31/2025",
+        "31.12.2025",
+        "Jan 5, 2026",
+        "03/04/2026",
+        "20260105",
+        "1/5/26",
+        "soon",
+        "2026-01-05",
+    ];
+    let mut text = String::from("d,x\r\n");
+    for c in cells {
+        text.push_str(&format!("\"{c}\",1\r\n"));
+    }
+    let mut d = doc(&text);
+    let m = matrix(vec![entry(0, vec![sp(Spaces::Trim), iso_dates()])]);
+    let preview = d
+        .preview_clean_matrix(&m, NOW, 7, &Progress::new())
+        .unwrap();
+    // Counted although Trim ran first on the same cell: 03/04/2026 and
+    // 1/5/26 can both be read two ways.
+    assert_eq!(preview.columns[0].ambiguous_left, 2);
+    let mut same = doc(&text);
+    one_by_one(&mut same, &m);
+    run(&mut d, &m);
+    assert_eq!(rows(&d), rows(&same));
+    let got: Vec<String> = rows(&d).iter().skip(1).map(|r| r[0].clone()).collect();
+    assert_eq!(
+        got,
+        [
+            "2025-12-31",
+            "2025-12-31",
+            "2026-01-05",
+            "03/04/2026",
+            "20260105",
+            "1/5/26",
+            "soon",
+            "2026-01-05",
+        ]
+    );
+    // The recorded step keeps the choice, whatever the file's day order.
+    assert_eq!(m.recorded().entries[0].steps[1], iso_dates());
+}
+
 #[test]
 fn one_undo_puts_every_column_back() {
     let text = "a,b\r\n x , y \r\n";

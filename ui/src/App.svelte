@@ -9201,6 +9201,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     picked={m.picked}
     hidden={hiddenColsOf(tab)}
     protectedCols={tab.info.protected ?? []}
+    textCols={[...textCols(tab.info.typed)]}
     header={tab.header && tab.info.rows > 0}
     revision={`${tab.info.data_revision ?? 0}:${tab.info.rows}`}
     readOnly={!!tab.info.read_only}
