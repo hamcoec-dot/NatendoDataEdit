@@ -1302,7 +1302,9 @@ fn recipe_step(op: &DataOp) -> Logged {
             count: *count,
             descending: *descending,
         },
-        DataOp::Clean { spec, .. } => RecipeOp::Clean { spec: spec.clone() },
+        DataOp::Clean { spec, .. } => RecipeOp::Clean {
+            spec: spec.recorded(),
+        },
         DataOp::SplitName { spec } => RecipeOp::SplitName { spec: spec.clone() },
         DataOp::FillExample { spec } => RecipeOp::FillExample { spec: spec.clone() },
         DataOp::Compute { spec } if spec.expr.to_ascii_uppercase().contains("LOOKUP(") => {
@@ -11295,6 +11297,37 @@ ca,California
             "{}",
             e.message
         );
+    }
+
+    /// A dates step saved by 0.6.0 says nothing about ambiguous dates: it
+    /// replays to the same bytes as it did then. The same step recorded now
+    /// writes the choice, and its recipe does the same again.
+    #[test]
+    fn an_older_dates_recipe_replays_the_same_and_a_new_one_records_the_choice() {
+        let docs = Docs::default();
+        let body: &[u8] = b"when,n\r\n03/04/2026,1\r\n25/04/2026,2\r\nsoon,3\r\n";
+        let old = br#"{"version":1,"name":"old","columns":["when","n"],"header":true,"steps":[{"op":"clean","spec":{"cleaner":{"version":1,"name":"","steps":[{"tool":"dates","format":"yyyy-mm-dd"}]},"scope":{"kind":"columns","cols":[0]},"skip_first":true,"read":{}}}]}"#;
+        let old = Recipe::from_json(old).unwrap();
+        assert!(!String::from_utf8(old.to_json().unwrap())
+            .unwrap()
+            .contains("ambiguous"));
+        // What 0.6.0 wrote: month first, and the day-first date read anyway.
+        let want: &[u8] = b"when,n\r\n2026-03-04,1\r\n2026-04-25,2\r\nsoon,3\r\n";
+        let replay = |name: &str, book: &Recipe| {
+            let p = tmp(name, body);
+            let id = docs.open_path(&p, false).unwrap().id;
+            wait(&docs, id);
+            docs.run_recipe(id, book, &[], 20_000.0, true).unwrap();
+            let new = docs.recipe_of(id, true, "r").unwrap();
+            docs.save(id, None, false, false, None).unwrap();
+            (std::fs::read(&p).unwrap(), new)
+        };
+        let (bytes, recorded) = replay("dates-old.csv", &old);
+        assert_eq!(bytes, want);
+        let json = String::from_utf8(recorded.to_json().unwrap()).unwrap();
+        assert!(json.contains("\"ambiguous\": \"mdy\""), "{json}");
+        let again = Recipe::from_json(json.as_bytes()).unwrap();
+        assert_eq!(replay("dates-new.csv", &again).0, want);
     }
 
     /// C1b b2 review: a recorded fix says that unticked rows are not in the recipe, and running it reports how many
