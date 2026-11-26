@@ -3674,6 +3674,45 @@ async fn run_checks(
     blocking(move || docs.run_checks(doc, &spec)).await
 }
 
+/// Compare 2 to 5 lists by key (a job on tab `owner`).
+#[tauri::command]
+async fn sets_run(
+    docs: DocsState<'_>,
+    owner: u32,
+    tabs: Vec<u32>,
+    spec: natendo_engine::sets::SetsSpec,
+) -> CmdResult<docs::SetsRun> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.sets_run(owner, &tabs, &spec)).await
+}
+
+/// A slice of a comparison in a new tab.
+#[tauri::command]
+async fn sets_open(
+    docs: DocsState<'_>,
+    id: u64,
+    mask: u8,
+    list: usize,
+    keys: bool,
+) -> CmdResult<docs::DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.sets_open(id, mask, list, keys)).await
+}
+
+/// A comparison's counts in a new tab.
+#[tauri::command]
+async fn sets_table(docs: DocsState<'_>, id: u64) -> CmdResult<docs::DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.sets_table(id)).await
+}
+
+/// Forget a comparison.
+#[tauri::command]
+async fn sets_close(docs: DocsState<'_>, id: u64) -> CmdResult<()> {
+    docs.sets_close(id);
+    Ok(())
+}
+
 /// What a clean matrix would change (counts and a few examples).
 #[tauri::command]
 async fn clean_matrix_preview(
@@ -4513,6 +4552,10 @@ pub fn run() {
             save_mail,
             run_checks,
             gap_audit,
+            sets_run,
+            sets_open,
+            sets_table,
+            sets_close,
             clean_matrix_preview,
             reopen_encoding,
             encoding_choices,

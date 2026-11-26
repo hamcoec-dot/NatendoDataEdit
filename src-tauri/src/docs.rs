@@ -13,6 +13,9 @@
 
 use natendo_engine::document::since::SincePlan;
 use natendo_engine::gaps::{GapReport, GapsSpec};
+use natendo_engine::sets::{
+    report_table, slice_name, SetsBuilder, SetsReport, SetsResult, SetsSpec,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -908,6 +911,32 @@ fn run_seed() -> u64 {
         .unwrap_or(1)
 }
 
+/// A kept comparison of lists.
+#[derive(Clone)]
+struct SetsCache {
+    /// Each list's tab and its revision when read.
+    tabs: Vec<(u32, u64)>,
+    spec: SetsSpec,
+    exact: Vec<bool>,
+    names: Vec<String>,
+    result: Arc<SetsResult>,
+}
+
+/// What a comparison of lists found.
+#[derive(Debug, Clone, Serialize)]
+pub struct SetsRun {
+    pub id: u64,
+    pub report: SetsReport,
+    pub names: Vec<String>,
+}
+
+fn lists_changed() -> CmdError {
+    CmdError::new(
+        "changed",
+        "a list changed since it was compared: run the comparison again",
+    )
+}
+
 /// A new table built from a document (opened in a new tab).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -1711,6 +1740,9 @@ pub struct DocInfo {
 pub struct Docs {
     next: AtomicU32,
     map: Mutex<HashMap<u32, Arc<Entry>>>,
+    /// Comparisons of lists (by number) kept while their screen is open.
+    sets: Mutex<HashMap<u64, SetsCache>>,
+    next_sets: std::sync::atomic::AtomicU64,
     /// Kept while a Join screen is open, one per tab the screen is for
     /// (so two windows never share one): the indexed other table (or
     /// list) and pasted lists, so previews do not copy them again.
@@ -1969,6 +2001,10 @@ impl Docs {
             e.cancel.store(true, Ordering::Relaxed);
             e.closed.store(true, Ordering::SeqCst);
         }
+        self.sets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|_, c| c.tabs.iter().all(|t| t.0 != id));
         // Let go of anything kept from this tab: its Join screen, indexes
         // of it kept by other tabs' Join screens, and LOOKUP tables of it.
         {
@@ -6755,6 +6791,168 @@ impl Docs {
         *entry.checks.lock().unwrap_or_else(|p| p.into_inner()) =
             Some((key, d.revision(), r.repeats.clone()));
         Ok(r)
+    }
+
+    /// Compare 2 to 5 lists (a job on tab `owner`). The result is kept, for
+    /// opening its slices, until [`Docs::sets_close`] or a tab closes.
+    pub fn sets_run(&self, owner: u32, tabs: &[u32], spec: &SetsSpec) -> CmdResult<SetsRun> {
+        spec.check()?;
+        if tabs.len() != spec.lists.len() {
+            return Err(CmdError::new("bad_request", "one tab for each list"));
+        }
+        for i in 0..tabs.len() {
+            for j in 0..i {
+                if tabs[i] == tabs[j] && spec.lists[i] == spec.lists[j] {
+                    return Err(CmdError::new(
+                        "bad_request",
+                        "the same tab is in twice: give it different key columns",
+                    ));
+                }
+            }
+        }
+        let owner = self.get(owner)?;
+        let job = owner.start("Comparing lists")?;
+        let entries = tabs
+            .iter()
+            .map(|&t| self.get(t))
+            .collect::<CmdResult<Vec<_>>>()?;
+        // Key parts a list types Id or Text are exact in every list, and
+        // each table is as it was then when it is read.
+        let mut exact = vec![false; spec.lists[0].cols.len()];
+        let mut revisions = Vec::with_capacity(tabs.len());
+        for (e, l) in entries.iter().zip(&spec.lists) {
+            let d = e.read();
+            if l.cols.iter().any(|&c| c >= d.col_count()) {
+                return Err(Error::OutOfRange.into());
+            }
+            for (a, b) in exact.iter_mut().zip(d.exact_key_parts(&l.cols)) {
+                *a |= b;
+            }
+            revisions.push(d.revision());
+        }
+        let mut builder = SetsBuilder::new(spec, exact.clone())?;
+        for (e, &rev) in entries.iter().zip(&revisions) {
+            let d = e.read();
+            if d.revision() != rev {
+                return Err(lists_changed());
+            }
+            builder.add(&d, &job.progress)?;
+        }
+        let result = builder.finish(&job.progress)?;
+        let names = self.list_names(tabs, spec)?;
+        let id = self.next_sets.fetch_add(1, Ordering::SeqCst) + 1;
+        let report = result.report.clone();
+        let mut kept = self.sets.lock().unwrap_or_else(|p| p.into_inner());
+        // A few screens (one a window) at most.
+        while kept.len() >= 4 {
+            let oldest = *kept.keys().min().expect("not empty");
+            kept.remove(&oldest);
+        }
+        kept.insert(
+            id,
+            SetsCache {
+                tabs: tabs.iter().copied().zip(revisions).collect(),
+                spec: spec.clone(),
+                exact,
+                names: names.clone(),
+                result: Arc::new(result),
+            },
+        );
+        Ok(SetsRun { id, report, names })
+    }
+
+    /// Each list's name: its tab's, with the key columns when two lists
+    /// would read the same.
+    fn list_names(&self, tabs: &[u32], spec: &SetsSpec) -> CmdResult<Vec<String>> {
+        let stems: Vec<String> = tabs.iter().map(|&t| self.stem(t)).collect();
+        let mut out = Vec::with_capacity(tabs.len());
+        for (i, (&t, l)) in tabs.iter().zip(&spec.lists).enumerate() {
+            if stems.iter().filter(|s| **s == stems[i]).count() < 2 {
+                out.push(stems[i].clone());
+                continue;
+            }
+            let titles = self.get(t)?.read().titles(&l.cols, l.header).join(" + ");
+            out.push(format!("{} ({titles})", stems[i]));
+        }
+        Ok(out)
+    }
+
+    /// The kept comparison, refused when any of its tables changed (an edit,
+    /// a sort, a filter, hidden rows).
+    fn sets_kept(&self, id: u64) -> CmdResult<SetsCache> {
+        let c = self
+            .sets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&id)
+            .cloned()
+            .ok_or_else(lists_changed)?;
+        for &(tab, rev) in &c.tabs {
+            if !self.get(tab).is_ok_and(|e| e.read().revision() == rev) {
+                return Err(lists_changed());
+            }
+        }
+        Ok(c)
+    }
+
+    /// A slice in a new tab: list `list`'s rows, or with `keys` the
+    /// different keys as that list spells them. Private when any compared
+    /// tab is: being in the slice or not comes from every list.
+    pub fn sets_open(&self, id: u64, mask: u8, list: usize, keys: bool) -> CmdResult<DocInfo> {
+        let c = self.sets_kept(id)?;
+        if list >= c.tabs.len() || mask == 0 || mask & (1 << list) == 0 {
+            return Err(CmdError::new(
+                "bad_request",
+                "that list is not in the slice",
+            ));
+        }
+        let (tab, rev) = c.tabs[list];
+        let table = {
+            let entry = self.get(tab)?;
+            let job = entry.start("Opening the slice")?;
+            let d = entry.read();
+            if d.revision() != rev {
+                return Err(lists_changed());
+            }
+            let masks = &c.result.row_masks[list];
+            if keys {
+                d.sets_keys_table(&c.spec, &c.exact, list, masks, mask, &job.progress)?
+            } else {
+                d.sets_slice_table(&c.spec.lists[list], masks, mask, &job.progress)?
+            }
+        };
+        let slice = slice_name(mask, &c.names);
+        let rules = c.spec.rules_text();
+        let title = if keys {
+            format!("Keys in {slice}, as in {} ({rules})", c.names[list])
+        } else {
+            format!("{slice}, rows of {} ({rules})", c.names[list])
+        };
+        self.sets_tab(table, &c, title)
+    }
+
+    /// The counts as a table in a new tab.
+    pub fn sets_table(&self, id: u64) -> CmdResult<DocInfo> {
+        let c = self.sets_kept(id)?;
+        let table = report_table(&c.result.report, &c.names);
+        let title = format!("Compared lists ({})", c.spec.rules_text());
+        self.sets_tab(table, &c, title)
+    }
+
+    fn sets_tab(&self, table: Table, c: &SetsCache, title: String) -> CmdResult<DocInfo> {
+        let (nid, _) = self.insert(table.into_document()?, false)?;
+        let from: Vec<u32> = c.tabs.iter().map(|t| t.0).collect();
+        self.inherit_private(nid, &from, &[]);
+        self.set_title_of(nid, title);
+        self.info(nid)
+    }
+
+    /// The comparison's screen closed.
+    pub fn sets_close(&self, id: u64) {
+        self.sets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
     }
 
     /// What a clean matrix would change, column by column (a job).
@@ -12105,6 +12303,73 @@ B,y
         assert_eq!(docs.data_op(id, op(Some(again.revision))).unwrap().cells, 1);
         let logged = docs.recipe_of(id, true, "r").unwrap().steps;
         assert_eq!(logged.last(), Some(&RecipeOp::CleanMatrix { spec }));
+    }
+
+    #[test]
+    fn compared_lists_open_slices_until_a_list_changes() {
+        use natendo_engine::sets::SetList;
+        let docs = Docs::default();
+        let open = |name: &str, body: &[u8]| {
+            let id = docs.open_path(&tmp(name, body), false).unwrap().id;
+            wait(&docs, id);
+            id
+        };
+        let a = open("sets-a.csv", b"id,n\r\n1,x\r\n2,y\r\n");
+        let b = open("sets-b.csv", b"id,n\r\n3,z\r\n2,w\r\n");
+        let list = SetList {
+            cols: vec![0],
+            header: true,
+        };
+        let spec = SetsSpec {
+            lists: vec![list.clone(), list.clone()],
+            ..Default::default()
+        };
+        assert!(
+            docs.sets_run(a, &[a, a], &spec).is_err(),
+            "the same list twice"
+        );
+        let run = docs.sets_run(a, &[a, b], &spec).unwrap();
+        assert_eq!(run.names, ["sets-a", "sets-b"]);
+        assert_eq!(run.report.slices[2].keys, 1);
+        let slice = docs.sets_open(run.id, 3, 1, false).unwrap();
+        assert_eq!(slice.rows, 2);
+        assert_eq!(
+            slice.name,
+            "sets-a and sets-b, rows of sets-b (capitals ignored, spaces trimmed)"
+        );
+        assert!(
+            docs.sets_open(run.id, 2, 0, false).is_err(),
+            "not in the slice"
+        );
+        assert!(docs.sets_table(run.id).unwrap().rows > 3);
+        // A sort of the second list alone makes the result stale.
+        let sort = SortSpec {
+            keys: vec![natendo_engine::sort::SortKey {
+                col: 0,
+                descending: false,
+                kind: Default::default(),
+                match_case: false,
+            }],
+            keep_first: true,
+            ..Default::default()
+        };
+        docs.sort(b, sort).unwrap();
+        let why = docs.sets_open(run.id, 3, 0, false).unwrap_err();
+        assert!(
+            why.message.contains("run the comparison again"),
+            "{}",
+            why.message
+        );
+        assert!(docs.sets_table(run.id).is_err());
+        let run = docs.sets_run(a, &[a, b], &spec).unwrap();
+        docs.hide_rows(a, 1, 1).unwrap();
+        assert!(docs.sets_open(run.id, 3, 0, false).is_err(), "hidden rows");
+        let run = docs.sets_run(a, &[a, b], &spec).unwrap();
+        docs.close(b);
+        assert!(
+            docs.sets_open(run.id, 1, 0, false).is_err(),
+            "a list closed"
+        );
     }
 
     #[test]

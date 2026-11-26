@@ -393,6 +393,67 @@ impl SetsBuilder {
     }
 }
 
+/// A slice in words: `A and B, not C`.
+pub fn slice_name(mask: u8, names: &[String]) -> String {
+    let pick = |held: bool| -> Vec<&str> {
+        names
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| (mask & (1 << i) != 0) == held)
+            .map(|(_, n)| n.as_str())
+            .collect()
+    };
+    let join = |v: &[&str], last: &str| match v {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [head @ .., tail] => format!("{} {last} {tail}", head.join(", ")),
+    };
+    let (with, without) = (pick(true), pick(false));
+    if without.is_empty() {
+        join(&with, "and")
+    } else if with.len() == 1 {
+        format!("{} only", with[0])
+    } else {
+        format!("{}, not {}", join(&with, "and"), join(&without, "or"))
+    }
+}
+
+/// The counts as a table: each slice that holds a key, then each list's
+/// totals.
+pub fn report_table(report: &SetsReport, names: &[String]) -> Table {
+    let mut out = Vec::new();
+    let mut head = vec!["Slice".to_string(), "Different keys".to_string()];
+    head.extend(names.iter().map(|n| format!("Rows in {n}")));
+    let cols = head.len();
+    push_line(&mut out, &head);
+    let mut rows = 1;
+    let mut line = |out: &mut Vec<u8>, mut cells: Vec<String>| {
+        cells.resize(cols, String::new());
+        push_line(out, &cells);
+        rows += 1;
+    };
+    for s in report.slices.iter().filter(|s| s.keys > 0) {
+        let mut cells = vec![slice_name(s.mask, names), s.keys.to_string()];
+        cells.extend(s.rows.iter().map(u64::to_string));
+        line(&mut out, cells);
+    }
+    for (i, (l, name)) in report.lists.iter().zip(names).enumerate() {
+        let mut cells = vec![format!("Total of {name}"), l.keys.to_string()];
+        cells.resize(2 + i, String::new());
+        cells.push((l.rows - l.blank).to_string());
+        line(&mut out, cells);
+        let mut cells = vec![format!("Blank keys in {name}"), String::new()];
+        cells.resize(2 + i, String::new());
+        cells.push(l.blank.to_string());
+        line(&mut out, cells);
+    }
+    Table {
+        bytes: out,
+        rows,
+        cols: cols as u32,
+    }
+}
+
 /// Compare tables all at hand (the command line and tests).
 pub fn compare_lists(
     docs: &[&Document],

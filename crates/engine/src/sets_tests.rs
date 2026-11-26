@@ -318,6 +318,31 @@ fn only_shown_rows_count_and_changes_are_refused() {
 }
 
 #[test]
+fn slices_have_names_and_a_table() {
+    let names: Vec<String> = ["A", "B", "C"].map(String::from).to_vec();
+    assert_eq!(slice_name(1, &names), "A only");
+    assert_eq!(slice_name(3, &names), "A and B, not C");
+    assert_eq!(slice_name(7, &names), "A, B and C");
+    assert_eq!(slice_name(3, &names[..2]), "A and B");
+    let a = doc("k\r\n1\r\n2\r\n");
+    let b = doc("k,x\r\n2,y\r\n,z\r\n");
+    let r = run(&[&a, &b], &spec(2, &[0]));
+    let t = rows(report_table(&r.report, &names[..2]));
+    assert_eq!(
+        t,
+        [
+            vec!["Slice", "Different keys", "Rows in A", "Rows in B"],
+            vec!["A only", "1", "1", "0"],
+            vec!["A and B", "1", "1", "1"],
+            vec!["Total of A", "2", "2", ""],
+            vec!["Blank keys in A", "", "0", ""],
+            vec!["Total of B", "1", "", "1"],
+            vec!["Blank keys in B", "", "", "1"],
+        ]
+    );
+}
+
+#[test]
 fn bad_specs_budget_and_cancel() {
     let a = doc("k\r\n1\r\n");
     let p = Progress::new();
