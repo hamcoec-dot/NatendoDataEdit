@@ -928,9 +928,8 @@ everything is also in command search.
   options and in the status bar says how many of each, with column names and
   counts only, never cell values. A SQLite column declared NUMERIC or DECIMAL
   holds binary numbers, so a `1.50` was already `1.5` inside the database;
-  text columns come through exactly. LibreOffice sheets keep long numbers exactly too, but a leading-zero
-  number format in an `.ods` file is not applied yet (the number comes in as
-  the number).
+  text columns come through exactly. In an `.ods` sheet a number is padded
+  only when the result is the same text the file shows for that cell.
 
   ![The import screen: long numbers kept exactly, one question about leading zeros](docs/screenshots/import-exact.png)
 - **SQLite:** open a table or view from a SQLite database (read-only), or

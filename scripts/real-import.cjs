@@ -174,6 +174,34 @@ const XLSX = mkXlsx();
 const JSONF = path.join(WORK, "rows.json");
 fs.writeFileSync(JSONF, '[{"id":12345678901234567890123,"price":1.50,"name":"Ada"},{"id":-0.10,"price":2.0,"name":"Bo"}]');
 
+// A made-up .ods, hand-written from the ODF form: a ZIP column with a column default style `00000`, a
+// social-security-shaped column `000-00-0000`, one cell whose shown text disagrees with its style.
+const mkOds = () => {
+  const p = path.join(WORK, "ids.ods");
+  const py = [
+    "import zipfile,sys",
+    "p=sys.argv[1]",
+    "z=zipfile.ZipFile(p,'w',zipfile.ZIP_DEFLATED)",
+    "z.writestr(zipfile.ZipInfo('mimetype'),'application/vnd.oasis.opendocument.spreadsheet')",
+    "def num(n,d,extra=''): return '<number:number-style style:name=\"%s\"><number:number number:decimal-places=\"0\" number:min-integer-digits=\"%d\">%s</number:number></number:number-style>'%(n,d,extra)",
+    "def cs(n,d): return '<style:style style:name=\"%s\" style:family=\"table-cell\" style:data-style-name=\"%s\"/>'%(n,d)",
+    "dash='<number:embedded-text number:position=\"6\">-</number:embedded-text><number:embedded-text number:position=\"4\">-</number:embedded-text>'",
+    "auto=num('N5',5)+num('NS',9,dash)+cs('zip','N5')+cs('ssn','NS')",
+    "def s(v): return '<table:table-cell office:value-type=\"string\"><text:p>%s</text:p></table:table-cell>'%v",
+    "def f(v,t,st=''): return '<table:table-cell%s office:value-type=\"float\" office:value=\"%s\"><text:p>%s</text:p></table:table-cell>'%((' table:style-name=\"%s\"'%st) if st else '',v,t)",
+    "rows='<table:table-row>'+s('Zip')+s('Number')+'</table:table-row>'",
+    "for a,at,b,bt in [('2134','02134','12345678','012-34-5678'),('501','00501','5','000-00-0005'),('77','77 approx','6','000-00-0006')]:",
+    "  rows+='<table:table-row>'+f(a,at)+f(b,bt,'ssn')+'</table:table-row>'",
+    "c='<office:document-content xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" xmlns:table=\"urn:oasis:names:tc:opendocument:xmlns:table:1.0\" xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\" xmlns:style=\"urn:oasis:names:tc:opendocument:xmlns:style:1.0\" xmlns:number=\"urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0\"><office:automatic-styles>'+auto+'</office:automatic-styles><office:body><office:spreadsheet><table:table table:name=\"Data\"><table:table-column table:default-cell-style-name=\"zip\"/><table:table-column/>'+rows+'</table:table></office:spreadsheet></office:body></office:document-content>'",
+    "z.writestr('content.xml',c)",
+    "z.close()",
+  ].join("\n");
+  const r = spawnSync("python", ["-c", py, p], { encoding: "utf8" });
+  if (r.status !== 0) throw new Error("python could not write the ods: " + r.stderr);
+  return p;
+};
+const ODS = mkOds();
+
 /** The text of a cell of tab `doc` (a fresh app: the first import is tab 1), through the app's own command. */
 const cellOf = async (p, doc, row, col) => (await invoke(p, "cell_text", { doc, row, col })).text;
 const importDialog = (p) => p.locator(".shell[role=dialog]");
@@ -256,6 +284,19 @@ const xlsxScreen = async (m, want) => {
     ok((await cellOf(m, 1, 1, 0)) === "12345678901234567890123", `JSON 23-digit number exact (got ${await cellOf(m, 1, 1, 0)})`);
     ok((await cellOf(m, 1, 1, 1)) === "1.50", `JSON 1.50 keeps its zero (got ${await cellOf(m, 1, 1, 1)})`);
     ok((await cellOf(m, 1, 2, 0)) === "-0.10", `JSON -0.10 exact (got ${await cellOf(m, 1, 2, 0)})`);
+
+    // 5. ods: asked once, unticked; ticked, padded as shown.
+    await killApp();
+    m = await start([ODS]);
+    r = await xlsxScreen(m, null);
+    info(`ods import screen line: ${r.note}`);
+    ok(r.shown === 1 && r.checked === false, "ods: the zero-padding question is asked, unticked");
+    ok(!/02134|012-34/.test(r.note), "ods: the line holds no cell values");
+    r = await xlsxScreen(m, true);
+    await doImport(m);
+    const got = [];
+    for (const [row, col] of [[1, 0], [2, 0], [3, 0], [1, 1], [2, 1]]) got.push(await cellOf(m, 1, row, col));
+    ok(JSON.stringify(got) === JSON.stringify(["02134", "00501", "77", "012-34-5678", "000-00-0005"]), `ods: padded as shown, a disagreeing cell left (${JSON.stringify(got)})`);
   } catch (e) {
     failed++;
     say(`FAIL unexpected: ${e && e.stack ? e.stack : e}`);

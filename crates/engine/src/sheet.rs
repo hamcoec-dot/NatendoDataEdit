@@ -96,12 +96,10 @@ impl Pad {
     /// `n` written into the pattern, or `None` when it has more digits than the pattern has places.
     fn apply(&self, n: u64) -> Option<String> {
         let d = n.to_string();
-        if d.len() > self.digits {
-            return None;
-        }
-        let digits = format!("{:0>w$}", d, w = self.digits);
-        let mut it = digits.chars();
-        let mut out = String::new();
+        let zeros = self.digits.checked_sub(d.len())?;
+        // Zeros first, then the number, with the literals between them.
+        let mut it = std::iter::repeat_n('0', zeros).chain(d.chars());
+        let mut out = String::with_capacity(self.parts.len());
         for p in &self.parts {
             match p {
                 None => out.push(it.next()?),
@@ -701,12 +699,18 @@ impl<'a> Book<'a> {
                                 }
                             }
                             "table-cell" | "covered-table-cell" => {
+                                let found = ods_cell_attrs(e);
+                                let style = found
+                                    .style
+                                    .filter(|_| !formats.styles.pads.is_empty())
+                                    .map(|s| formats.styles.pad_of(&s));
+                                let (value, float) = (found.value, found.float);
                                 cell = OdsCell {
                                     active: true,
                                     repeat: repeat(e, "number-columns-repeated"),
-                                    value: ods_value(e),
-                                    float: attr(e, "value-type").as_deref() == Some("float"),
-                                    style: attr(e, "style-name").map(|s| formats.styles.pad_of(&s)),
+                                    value,
+                                    float,
+                                    style,
                                     depth,
                                     ..Default::default()
                                 };
@@ -833,22 +837,65 @@ fn repeat(e: &quick_xml::events::BytesStart, name: &str) -> u64 {
         .max(1)
 }
 
-/// A typed ODS value from the cell's attributes (`None`: use its text).
-fn ods_value(e: &quick_xml::events::BytesStart) -> Option<String> {
-    let ty = attr(e, "value-type")?;
-    match ty.as_str() {
-        "float" | "percentage" | "currency" => attr(e, "value"),
-        "date" => attr(e, "date-value").map(|v| v.replacen('T', " ", 1)),
-        "time" => attr(e, "time-value").map(|v| ods_time(&v)),
-        "boolean" => attr(e, "boolean-value").map(|v| {
+/// What a cell's start tag says, read in one pass over its attributes.
+struct OdsAttrs {
+    /// The typed value (`None`: use the cell's text).
+    value: Option<String>,
+    /// A plain number (`office:value-type="float"`).
+    float: bool,
+    /// The cell's own style.
+    style: Option<String>,
+}
+
+fn ods_cell_attrs(e: &quick_xml::events::BytesStart) -> OdsAttrs {
+    // The first of each name, as `attr` takes it.
+    let mut kept: [Option<quick_xml::events::attributes::Attribute>; 7] = Default::default();
+    const NAMES: [&str; 7] = [
+        "value-type",
+        "value",
+        "date-value",
+        "time-value",
+        "boolean-value",
+        "string-value",
+        "style-name",
+    ];
+    let mut it = e.attributes();
+    it.with_checks(false);
+    for a in it.flatten() {
+        let name = a.key.local_name();
+        if let Some(i) = NAMES.iter().position(|n| name.as_ref() == *n) {
+            if kept[i].is_none() {
+                kept[i] = Some(a);
+            }
+        }
+    }
+    let get = |i: usize| {
+        kept[i].as_ref().map(
+            |a| match a.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
+                Ok(v) => v.into_owned(),
+                Err(_) => a.value.clone().into_owned(),
+            },
+        )
+    };
+    let ty = get(0);
+    let value = match ty.as_deref() {
+        Some("float" | "percentage" | "currency") => get(1),
+        Some("date") => get(2).map(|v| v.replacen('T', " ", 1)),
+        Some("time") => get(3).map(|v| ods_time(&v)),
+        Some("boolean") => get(4).map(|v| {
             if v == "true" {
                 "TRUE".into()
             } else {
                 "FALSE".into()
             }
         }),
-        "string" => attr(e, "string-value"),
+        Some("string") => get(5),
         _ => None,
+    };
+    OdsAttrs {
+        value,
+        float: ty.as_deref() == Some("float"),
+        style: get(6),
     }
 }
 
@@ -1170,7 +1217,14 @@ fn padding_of(t: &str, pad: Option<&Pad>, shown: Option<&str>) -> Option<String>
         .flatten();
     whole
         .and_then(|n| pad.and_then(|p| p.apply(n)))
-        .filter(|p| shown.is_none_or(|s| s.replace('\u{a0}', " ") == *p))
+        // (A space may be shown as a non-breaking one.)
+        .filter(|p| {
+            shown.is_none_or(|s| {
+                s.chars()
+                    .map(|c| if c == '\u{a0}' { ' ' } else { c })
+                    .eq(p.chars())
+            })
+        })
 }
 
 /// Count `cells` cells of a padding format in column `col`, and give the padded text when it is to be written.
