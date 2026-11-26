@@ -2975,6 +2975,19 @@ impl Docs {
         Ok(d.date_marks(col, keep_first, row, rows)?)
     }
 
+    /// The first such rows with their text.
+    pub fn date_list(
+        &self,
+        id: u32,
+        col: u32,
+        keep_first: bool,
+    ) -> CmdResult<Vec<(u64, u64, String)>> {
+        let entry = self.get(id)?;
+        let job = entry.start("Listing the ambiguous dates")?;
+        let d = entry.read();
+        Ok(d.date_list(col, keep_first, 500, &job.progress)?)
+    }
+
     /// The next or previous such row from `from`.
     pub fn date_find(
         &self,

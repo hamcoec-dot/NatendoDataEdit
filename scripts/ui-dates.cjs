@@ -77,6 +77,46 @@ const url = process.argv[3] || "http://localhost:5301";
   await p.getByRole("button", { name: "Remove the ambiguous date marks" }).click();
   await p.waitForTimeout(500);
   ok((await p.getByTestId("date-pill").count()) === 0 && (await marks()).length === 0, "the cross removes the pill and the marks");
+  // The review screen: this column gives no clue about the order, so nothing is picked and Apply waits.
+  await p.evaluate(async () => {
+    const t = window.__nde.tab;
+    t.update(await window.__nde.backend.setCells(t.id, [[6, 5, "04/07/2026"]]), true);
+    t.bump();
+  });
+  await select(1, 5);
+  await run("data.reviewDates");
+  const dialog = p.getByRole("dialog", { name: /^Review dates/ });
+  ok((await dialog.count()) === 1, "the review screen opens");
+  ok(/Nothing in this column tells the order/.test((await dialog.textContent()) || ""), "it says the column gives no clue");
+  const apply = dialog.getByRole("button", { name: "Apply" });
+  ok((await dialog.locator("input[type=radio]:checked").count()) === 0 && (await apply.isDisabled()), "nothing is pre-selected and Apply is greyed");
+  await dialog.getByRole("radio", { name: /Leave them as typed/ }).check();
+  await p.waitForTimeout(500);
+  const preview = async () => ((await p.getByTestId("date-review-preview").textContent()) || "").replace(/\s+/g, " ");
+  const leave = await preview();
+  ok(/stay as typed/.test(leave) && !/2026-04-07/.test(leave), `leaving them: the preview converts only the clear dates (${leave.slice(0, 80)})`);
+  await dialog.getByRole("radio", { name: /Day first/ }).check();
+  await p.waitForTimeout(500);
+  ok(/2026-04-03/.test(await preview()), "day first reads 03/04/2026 as 3 April");
+  if (out) await p.screenshot({ path: path.join(out, "date-review.png") });
+  await dialog.getByRole("radio", { name: /Type each one/ }).check();
+  await p.waitForTimeout(500);
+  ok((await p.getByTestId("date-each").locator("tbody tr").count()) === 2, "type each lists the two ambiguous cells");
+  await dialog.getByRole("button", { name: "2026-07-04" }).click();
+  await p.waitForTimeout(500);
+  await apply.click();
+  await p.waitForTimeout(1200);
+  const col5 = (row) =>
+    p.evaluate((row) => {
+      const m = window.__nde.backend;
+      const d = m.get(window.__nde.tab.id);
+      return m.value(d, m.rowId(d, row), 5);
+    }, row);
+  const after = [await col5(1), await col5(2), await col5(6)];
+  ok(JSON.stringify(after) === JSON.stringify(["03/04/2026", "2026-04-25", "2026-07-04"]), `apply: the untyped one stays, the clear and the typed ones change (${JSON.stringify(after)})`);
+  const said = ((await p.textContent("footer.status")) || "").replace(/\s+/g, " ");
+  ok(/converted/.test(said) && /typed cell/.test(said), `the note says what changed (${said.slice(0, 120)})`);
+  await run("data.dateMarksOff");
   // Greyed on a Text column.
   await select(1, 1);
   await run("col.typeText");

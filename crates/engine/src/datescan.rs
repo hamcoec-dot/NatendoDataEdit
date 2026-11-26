@@ -9,6 +9,8 @@ use crate::ops::{check_cols, Cols};
 use crate::value::{classify_date, DateKind, DateOrder, ReadOptions};
 use crate::{Document, Error, Progress};
 
+/// Most cells the "type each" list holds.
+const DATE_LIST_MAX: usize = 500;
 const CHUNK: usize = 1 << 14;
 
 /// Words in a title that mean eight digits are a number, not a date
@@ -192,6 +194,41 @@ impl Document {
         }
     }
 
+    /// The first `limit` shown rows whose date in `col` can be read two
+    /// ways, with the row's number and the cell's text (the review screen's
+    /// "type each" list).
+    pub fn date_list(
+        &self,
+        col: u32,
+        header: bool,
+        limit: usize,
+        progress: &Progress,
+    ) -> Result<Vec<(u64, u64, String)>, Error> {
+        self.ready_for_bulk()?;
+        self.date_column(col)?;
+        let reader = Cols::new(self, &[col]);
+        let end = self.row_count();
+        let limit = limit.min(DATE_LIST_MAX);
+        let mut out = Vec::new();
+        let mut buf = Vec::new();
+        progress.start(end.saturating_sub(u64::from(header)));
+        for r in u64::from(header)..end {
+            if out.len() >= limit {
+                break;
+            }
+            let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+            reader.read(self, id, &mut buf);
+            let v = reader.get(&buf, 0);
+            if classify_date(v).kind == DateKind::Ambiguous {
+                out.push((r, self.row_number(r).unwrap_or(r), v.to_string()));
+            }
+            if r % CHUNK as u64 == 0 {
+                progress.step(CHUNK as u64)?;
+            }
+        }
+        Ok(out)
+    }
+
     /// The shown rows among `row..row+rows` whose cell in `col` is to be lit
     /// amber (none in a column already set to an order).
     pub fn date_marks(
@@ -274,6 +311,15 @@ mod tests {
     }
 
     const BODY: &str = "born,reg_no\n25/04/2026,19750612\n03/04/2026,19800101\n04/25/2026,20010930\n05/05/2026,19991231\n,19660305\n2026-01-02,12345678\n20260425,19750101\nsoon,19750102\n07/08/2026,19750103\n";
+
+    #[test]
+    fn lists_the_ambiguous_cells_with_their_rows_up_to_the_limit() {
+        let d = doc(BODY);
+        let all = d.date_list(0, true, 500, &Progress::new()).unwrap();
+        let text: Vec<(u64, &str)> = all.iter().map(|c| (c.0, c.2.as_str())).collect();
+        assert_eq!(text, [(2, "03/04/2026"), (9, "07/08/2026")]);
+        assert_eq!(d.date_list(0, true, 1, &Progress::new()).unwrap().len(), 1);
+    }
 
     #[test]
     fn counts_each_kind_and_leaves_registration_numbers_alone() {
