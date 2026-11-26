@@ -805,7 +805,7 @@ impl Document {
             Walk {
                 keys,
                 start,
-                end,
+                end: &|_| end,
                 format: &format,
             },
             progress,
@@ -821,7 +821,7 @@ impl Document {
         w: Walk<'_>,
         progress: &Progress,
     ) -> Result<GapReport, Error> {
-        let (start, end) = (w.start, w.end);
+        let start = w.start;
         let base = u64::from(self.next_row_id());
         let file_rows = self.original_rows();
         let file_row = |id: u32| (u64::from(id) < file_rows).then_some(u64::from(id) + 1);
@@ -889,6 +889,7 @@ impl Document {
                 cancelled(progress)?;
             }
             let format = |n: u64| (w.format)(g, n);
+            let end = (w.end)(g);
             let own = &cells[a..b];
             let too_few = own.len() < 2 && start.is_none() && end.is_none();
             // The values in order, each with the rows that hold it.
@@ -1072,7 +1073,8 @@ struct Walk<'a> {
     /// Each group's series values.
     keys: Vec<Vec<String>>,
     start: Option<u64>,
-    end: Option<u64>,
+    /// A group's typed end as a number.
+    end: &'a dyn Fn(u32) -> Option<u64>,
     /// A group's number in words.
     format: &'a dyn Fn(u32, u64) -> String,
 }
