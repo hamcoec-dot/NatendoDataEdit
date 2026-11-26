@@ -197,20 +197,7 @@ pub struct SampleReport {
 
 /// The SHA-256 of a file, in hex (read in pieces; `progress` can stop it).
 pub fn file_sha256(path: &std::path::Path, progress: &Progress) -> Result<String, Error> {
-    use sha2::Digest;
-    use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
-    let mut h = sha2::Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-        progress.step(0)?;
-    }
-    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    crate::hashing::file_sha256(path, progress).map(|(hash, _)| hash)
 }
 
 /// The audit record of a sample as a table: what was drawn and how, then

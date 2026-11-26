@@ -43,6 +43,7 @@ pub mod fixed;
 pub mod folder;
 pub mod fuzzy;
 pub mod gaps;
+pub mod hashing;
 pub mod highlight;
 pub mod import;
 pub mod index;
