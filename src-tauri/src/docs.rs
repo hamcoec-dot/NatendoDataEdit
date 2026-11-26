@@ -12622,14 +12622,14 @@ ca,California
             "read_only"
         );
         docs.set_read_only(id, false).unwrap();
-        // A save that rewrites the file starts the history again: every checkpoint is gone.
+        // SPIKE: a save keeps the history, so the checkpoint before the edits is still there.
         docs.save(id, None, false, true, None).unwrap();
         assert!(docs
             .checkpoint_list(id)
             .unwrap()
             .iter()
-            .all(|c| !c.reachable));
-        assert!(docs.checkpoint_restore(id, start).is_err());
+            .any(|c| c.reachable));
+        assert!(docs.checkpoint_restore(id, start).is_ok());
         // Forgetting one leaves the table alone.
         let n = docs.checkpoint_list(id).unwrap().len();
         assert_eq!(docs.checkpoint_remove(id, start).unwrap().len(), n - 1);
