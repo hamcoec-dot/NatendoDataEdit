@@ -117,6 +117,8 @@ pub fn shapefile_table(path: &Path) -> Option<PathBuf> {
 pub struct DbfInfo {
     /// Records that can be read, deleted ones included.
     pub records: u64,
+    /// Records among them marked as deleted.
+    pub deleted: u64,
     pub fields: u32,
     /// The encoding text is read with, and which rule chose it.
     pub encoding: String,
@@ -534,8 +536,13 @@ pub fn inspect(data: &[u8], side: &Sidecars, opts: &DbfOptions) -> Result<DbfInf
     let mut warnings = h.warnings.clone();
     warnings.extend(notes);
     warnings.extend(side.problems.iter().cloned());
+    let deleted = data[h.start..h.start + h.records as usize * h.record_len]
+        .chunks_exact(h.record_len)
+        .filter(|r| r[0] == b'*')
+        .count() as u64;
     Ok(DbfInfo {
         records: h.records,
+        deleted,
         fields: h.fields.iter().filter(|f| !f.hidden).count() as u32,
         encoding: decoder.name(),
         rule,
@@ -788,10 +795,9 @@ impl Reader<'_> {
                 };
                 match number {
                     Some(0) => {}
-                    Some(_) if fox || self.h.version == 0xF5 => {
-                        t.fox_memo += 1;
-                        out.push_str("(memo not read)");
-                    }
+                    // Left blank: a placeholder would be saved, and joined
+                    // back into the GIS data, as if it were the value.
+                    Some(_) if fox || self.h.version == 0xF5 => t.fox_memo += 1,
                     Some(n) => match &self.memos {
                         Some(m) => match m.get(n)? {
                             Memo::Text(b) => {

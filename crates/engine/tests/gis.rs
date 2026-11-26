@@ -150,6 +150,8 @@ fn fid_counts_deleted_records() {
         read(&data).0,
         [vec!["FID", "A"], vec!["0", "one"], vec!["2", "six"]]
     );
+    let info = dbf::inspect(&data, &Sidecars::default(), &DbfOptions::default()).unwrap();
+    assert_eq!((info.records, info.deleted), (3, 1));
     let all = DbfOptions {
         fid: Fid::From1,
         show_deleted: true,
@@ -406,7 +408,7 @@ fn visual_foxpro_types_and_nulls() {
                 "2023-02-24 01:02:03.004",
                 "ab",
                 "42",
-                "(memo not read)"
+                ""
             ],
             vec!["0", "0", "0.0000", "", "sixsix", "", ""],
         ]

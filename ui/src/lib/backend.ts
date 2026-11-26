@@ -1388,6 +1388,8 @@ export interface ImportNotes {
   /** The file to remember the zero-padding answer for (none: the clipboard or a private file). */
   remember_path: string | null;
   summary: string;
+  /** dBase: the record count, said under the preview. */
+  records?: string;
 }
 export interface SqliteOpened {
   info: DocInfo;

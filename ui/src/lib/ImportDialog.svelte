@@ -11,7 +11,7 @@
   import { looksLikeHeader } from "./header";
   import { FORMAT_NAMES } from "./transfer";
   import { LOG_PRESETS, toggleStart } from "./m8";
-  import { DBF_ENCODINGS } from "./dbf";
+  import { DBF_ENCODINGS, headerChoice, importHeader, previewLine } from "./dbf";
 
   interface Props {
     start: ImportStart;
@@ -122,7 +122,7 @@
   function run(): void {
     if (problem || loading || rows.length === 0) return;
     if (notes?.remember_path && notes.padded.length > 0) void rememberPad(notes.remember_path, !!o.pad_zeros);
-    onImport($state.snapshot(o), header, $state.snapshot(notes));
+    onImport($state.snapshot(o), importHeader(info.format, header), $state.snapshot(notes));
   }
 </script>
 
@@ -191,7 +191,9 @@
         </select>
       </label>
     {/if}
-    <label class="row"><input type="checkbox" bind:checked={header} onchange={() => (headerTouched = true)} /> First row is header</label>
+    {#if headerChoice(info.format)}
+      <label class="row"><input type="checkbox" bind:checked={header} onchange={() => (headerTouched = true)} /> First row is header</label>
+    {/if}
   </div>
   {#if info.format === "pattern"}
     <label class="wide">Pattern for a line (a regular expression; each group in brackets is a column, <code>(?P&lt;name&gt;…)</code> names it)
@@ -227,14 +229,14 @@
     <table>
       <tbody>
         {#each rows.slice(0, 100) as r, i (i)}
-          <tr class:head={i === 0 && header}>
+          <tr class:head={i === 0 && importHeader(info.format, header)}>
             {#each Array.from({ length: width }, (_, c) => r[c] ?? "") as v, c (c)}<td>{v}</td>{/each}
           </tr>
         {/each}
       </tbody>
     </table>
   </div>
-  <p class="note">{loading ? "Reading…" : rows.length >= 100 ? "Showing the first 100 rows." : `${rows.length.toLocaleString()} rows.`} The import opens as a new tab, not saved yet.</p>
+  <p class="note">{loading ? "Reading…" : previewLine(info.format, rows.length, notes?.records)} The import opens as a new tab, not saved yet.</p>
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#snippet buttons()}
     <button type="button" class="primary" onclick={run} disabled={!!problem || loading || rows.length === 0}>Import</button>
