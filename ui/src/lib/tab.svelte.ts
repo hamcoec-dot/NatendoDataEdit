@@ -310,6 +310,10 @@ export class Tab {
   ghostSkip = new Set<string>();
   /** Key-aware diff (Tools > Compare, by key): this tab is in a diff, and the differences on screen
    *  ("row:col" or "row:*" -> 0 changed cell, 1 added row, 2 removed row), looked up by key in the engine. */
+  /** The date radar, on for one column: its counts, and the rows on screen to light amber. */
+  dateCheck = $state<{ col: number; cols: number; scan: import("./backend").DateScan } | null>(null);
+  dateMarks = new Set<number>();
+  dateVersion = $state(0);
   diffOn = $state(false);
   diffMarks = new Map<string, number>();
   diffOutOfDate = $state(false);

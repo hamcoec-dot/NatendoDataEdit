@@ -865,6 +865,13 @@ everything is also in command search.
 
 ### Checking data
 
+- **Ambiguous dates** (Data menu or the right-click menu, **Check dates in this
+  column**): the dates that could be read two ways, such as `03/04/2026`, turn
+  amber with a corner mark, a note says what the column tells about its order
+  (dates only month-first, only day-first, mixed, or nothing at all), and a pill
+  in the status bar counts them and steps through them. Eight-digit values count
+  as dates only in a column that is mostly dates and whose title does not say it
+  holds IDs or numbers. Nothing in the file changes.
 - **Shifted and ragged rows:** when a file has rows with a different number of
   fields than most (a stray comma in a name, a line broken in two), a note says
   how many and what the usual number is; **Review** shows only those rows.

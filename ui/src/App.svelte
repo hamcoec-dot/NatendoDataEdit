@@ -3,7 +3,7 @@
 import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type ColumnType } from "./lib/readers";
   import { sessionToOffer } from "./lib/sessionOffer";
   import { namesFromText } from "./lib/columnNames";
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { fade } from "svelte/transition";
   import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout, type Checkpoint, type EncodingChoice } from "./lib/backend";
   import { Tab, exportHandTab, importHandTab, type HandTab, type RowMap } from "./lib/tab.svelte";
@@ -13,6 +13,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { GUARD_LABEL, guardNote } from "./lib/csvguard";
   import { COLUMNS_CHANGED, raggedNotice, raggedResult, repairWhy, type RaggedPick } from "./lib/ragged";
   import RepairBar from "./lib/RepairBar.svelte";
+  import { DATE_SAMPLE, datePill, dateSampled, dateSummary, dateWhy } from "./lib/dates";
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu, SELECTION_FREE } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
@@ -6220,6 +6221,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "format.headerNo", label: "Title-row question: no, it's data", keys: ["Alt+Shift+N"], run: () => void answerHeader(false), enabled: headerAsking },
     { id: "format.forgetHeader", label: "Forget this file's title-row choice", run: () => void forgetHeaderOf(), enabled: () => !!tab?.info.path },
     { id: "format.forgetHeaders", label: "Forget remembered title rows…", run: () => void forgetAllHeaders() },
+    { id: "data.checkDates", label: "Check dates in this column…", run: () => void checkDates(), enabled: datesReady, why: datesWhy },
+    { id: "data.nextDate", label: "Next ambiguous date", run: () => void nextDate(true), enabled: () => !!tab?.dateCheck, why: () => (tab?.dateCheck ? "" : "use Check dates in this column first") },
+    { id: "data.prevDate", label: "Previous ambiguous date", run: () => void nextDate(false), enabled: () => !!tab?.dateCheck, why: () => (tab?.dateCheck ? "" : "use Check dates in this column first") },
+    { id: "data.dateMarksOff", label: "Remove the ambiguous date marks", run: endDateCheck, enabled: () => !!tab?.dateCheck },
     { id: "data.repairRow", label: "Repair this row…", run: () => { if (tab) repairFrom = { doc: tab.id, row: tab.cell.row }; }, enabled: () => ready() && repairWhyNow() === "", why: repairWhyNow },
     { id: "data.ragged", label: "Show only rows with the wrong number of fields", run: () => void showRagged("all"), enabled: raggedReady, why: raggedWhy },
     { id: "data.raggedShort", label: "Show only rows with too few fields", run: () => void showRagged("short"), enabled: raggedReady, why: raggedWhy },
@@ -6466,7 +6471,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "data.repairRow", "data.ragged", "data.raggedShort", "data.raggedLong", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
-        "data.counts", "data.profile", "data.compute", "data.changeFormula", "data.checks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
+        "data.counts", "data.profile", "data.checkDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.gaps", "-",
         "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",
@@ -6502,10 +6507,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   const contextItems: Record<string, string[]> = {
     tab: ["file.save", "file.saveAs", "-", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.gaps", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.gaps", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -7153,6 +7158,75 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   function raggedWhy(): string {
     return tab?.info.column_changes ? COLUMNS_CHANGED : "";
   }
+
+  /** Why the date radar cannot look at the active column ("" when it can). */
+  function datesWhy(): string {
+    const t = tab;
+    return t ? dateWhy(typeAt(t.info.typed, t.cell.col)) : "";
+  }
+  function datesReady(): boolean {
+    return ready() && datesWhy() === "";
+  }
+
+  /** Switch the radar on for the active column: count (a sample first), then light the ambiguous dates. */
+  async function checkDates(all = false): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const col = all && t.dateCheck ? t.dateCheck.col : t.cell.col;
+    try {
+      const scan = await runJob("Looking at the dates", () => backend().dateScan(t.id, col, t.header, all ? null : DATE_SAMPLE));
+      if (!scan) return;
+      t.dateCheck = { col, cols: t.info.cols, scan };
+      t.dateVersion++;
+      say(dateSummary(scan, columnTitle(t, col)));
+    } catch (e) {
+      say(errorText(e));
+    }
+    void tick().then(() => grid?.focus());
+  }
+
+  async function nextDate(forward: boolean): Promise<void> {
+    const t = tab;
+    const check = t?.dateCheck;
+    if (!t || !check) return;
+    try {
+      const row = await runJob("Looking for the next date", () => backend().dateFind(t.id, check.col, t.header, t.cell.row, forward));
+      if (row === null || row === undefined) say("No date in this column can be read two ways.");
+      else grid?.select({ row, col: check.col }, { row, col: check.col });
+    } catch (e) {
+      say(errorText(e));
+    }
+    void tick().then(() => grid?.focus());
+  }
+
+  function endDateCheck(): void {
+    if (tab) {
+      tab.dateCheck = null;
+      tab.dateVersion++;
+    }
+    void tick().then(() => grid?.focus());
+  }
+
+  // A change to the data counts again (quietly); columns added or removed end the radar.
+  const dateStale = $derived(tab?.dateCheck ? `${tab.id}|${tab.info.data_revision}|${tab.info.cols}|${tab.header}` : "");
+  $effect(() => {
+    if (!dateStale) return;
+    untrack(() => {
+      const t = tab;
+      const check = t?.dateCheck;
+      if (!t || !check) return;
+      if (check.cols !== t.info.cols) {
+        endDateCheck();
+        return;
+      }
+      void backend()
+        .dateScan(t.id, check.col, t.header, check.scan.looked < check.scan.rows ? DATE_SAMPLE : null)
+        .then((scan) => {
+          if (t.dateCheck && t.dateCheck.col === check.col) t.dateCheck = { ...t.dateCheck, scan };
+        })
+        .catch(() => {});
+    });
+  });
 
   async function showRagged(pick: RaggedPick): Promise<void> {
     const t = tab;
@@ -8153,6 +8227,17 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       {#if !tab.lastRun || tab.lastRun.revision !== tab.info.data_revision}<button type="button" class="small" title="Run the rules over the whole table" onclick={() => { const t = tab; if (t) void checkNow(t); }}>Check now</button>{/if}
     {/if}
     {#if status}
+      {#if tab?.dateCheck}
+        {@const radar = tab.dateCheck}
+        {@const radarColumn = columnTitle(tab, radar.col)}
+        <span class="date-pill" data-testid="date-pill">
+          <button type="button" class="small" title={dateSummary(radar.scan, radarColumn)} onclick={() => void nextDate(true)}>{datePill(radar.scan)}{dateSampled(radar.scan) ? " (first rows)" : ""}</button>
+          <button type="button" class="small" aria-label="Previous ambiguous date" onclick={() => void nextDate(false)}>▲</button>
+          <button type="button" class="small" aria-label="Next ambiguous date" onclick={() => void nextDate(true)}>▼</button>
+          {#if dateSampled(radar.scan)}<button type="button" class="small" onclick={() => void checkDates(true)}>Count all rows</button>{/if}
+          <button type="button" class="small" aria-label="Remove the ambiguous date marks" onclick={endDateCheck}>✕</button>
+        </span>
+      {/if}
       {#if prefs.data.xray}<button type="button" class="small" data-testid="xray-status" title="X-ray: what looks right but is not, on this screen. Click for a report of the selected columns or the whole file." onclick={() => (xrayOpen = true)}>X-ray: {xrayNow ? `${plural(xrayNow.cells, "cell")}, ${plural(xrayNow.cols, "column")}` : "nothing on this screen"}</button>{/if}
       {#if tab}<QuickTotals {tab} />{/if}
       {#if status.sel}<span>{status.sel}</span>{/if}

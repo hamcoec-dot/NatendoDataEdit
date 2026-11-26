@@ -121,6 +121,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "alternating row colours wrapped text": ["view.banded", "format.wrap", "format.rowHeight", "format.fitRows"],
   "display formats": ["format.display", "format.clearDisplay"],
   "csv export safety": ["file.csvGuard", "file.options"],
+  "ambiguous dates": ["data.checkDates", "data.nextDate", "data.prevDate", "data.dateMarksOff"],
   "repair bar": ["data.repairRow"],
   "shifted and ragged rows": ["data.repairRow", "data.ragged", "data.raggedShort", "data.raggedLong", "edit.gotoSpecial"],
   "x ray gremlins": ["view.xray", "view.xrayReport", "edit.sanitize", "clean.tool.sanitize"],

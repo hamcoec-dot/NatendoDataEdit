@@ -72,6 +72,8 @@ const ALLOWED: Record<string, number> = {
   "./ChecksDialog.svelte": 2,
   "./CleanDialog.svelte": 2,
   "./ComputeDialog.svelte": 2,
+  // dates.ts: the two parts of a date already known to be ambiguous, for its tooltip.
+  "./dates.ts": 2,
   "./ExportDialog.svelte": 1,
   "./FilterPanel.svelte": 2,
   "./HighlightDialog.svelte": 1,

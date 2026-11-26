@@ -331,6 +331,24 @@ export interface TableReport {
   /** A sample's audit record (seed, method, file fingerprint, groups). */
   record?: DocInfo | null;
 }
+/** How many dates of each kind a column holds. */
+export interface DateScan {
+  looked: number;
+  rows: number;
+  blank: number;
+  iso: number;
+  written: number;
+  month_first_only: number;
+  day_first_only: number;
+  ambiguous: number;
+  same_either: number;
+  compact: number;
+  compact_numbers: number;
+  not_date: number;
+  two_digit_year: number;
+  set_order: "mdy" | "dmy" | null;
+  other_order: number;
+}
 /** What goes between two rows joined into one (never the file's separator). */
 export type Between = "space" | "line_break" | "nothing";
 export type RowRepair =
@@ -1469,6 +1487,9 @@ export interface Backend {
   onFreshInfo(listener: (info: DocInfo) => void): void;
   viewport(doc: number, row: number, rows: number, col: number, cols: number, maxChars: number): Promise<ViewportData>;
   cellText(doc: number, row: number, col: number): Promise<{ text: string; truncated: boolean }>;
+  dateScan(doc: number, col: number, keepFirst: boolean, sample: number | null): Promise<DateScan>;
+  dateMarks(doc: number, col: number, keepFirst: boolean, row: number, rows: number): Promise<number[]>;
+  dateFind(doc: number, col: number, keepFirst: boolean, from: number, forward: boolean): Promise<number | null>;
   raggedList(doc: number, keepFirst: boolean): Promise<RaggedList>;
   rowText(doc: number, row: number | null, rowId: number | null, keepFirst: boolean): Promise<RowText>;
   sameShape(doc: number, keepFirst: boolean, fields: number, groups: number[]): Promise<SameShape>;
@@ -1970,6 +1991,15 @@ class TauriBackend implements Backend {
   }
   cellText(doc: number, row: number, col: number) {
     return call<{ text: string; truncated: boolean }>("cell_text", { doc, row, col });
+  }
+  dateScan(doc: number, col: number, keepFirst: boolean, sample: number | null) {
+    return call<DateScan>("date_scan", { doc, col, keepFirst, sample });
+  }
+  dateMarks(doc: number, col: number, keepFirst: boolean, row: number, rows: number) {
+    return call<number[]>("date_marks", { doc, col, keepFirst, row, rows });
+  }
+  dateFind(doc: number, col: number, keepFirst: boolean, from: number, forward: boolean) {
+    return call<number | null>("date_find", { doc, col, keepFirst, from, forward });
   }
   raggedList(doc: number, keepFirst: boolean) {
     return call<RaggedList>("ragged_list", { doc, keepFirst });
