@@ -680,7 +680,7 @@ impl Document {
             let cell = |r: usize, c: usize| rows[r].get(c).map_or("", String::as_str);
             let mut values = Vec::with_capacity(width as usize);
             let mut flags = Vec::new();
-            for c in 0..width as usize {
+            for (c, rule) in rules.iter().enumerate() {
                 let column: Vec<(&str, &str)> = (0..rows.len())
                     .map(|r| {
                         (
@@ -689,7 +689,7 @@ impl Document {
                         )
                     })
                     .collect();
-                let (value, flag) = choose(&rules[c], &column, hub_at, spec.read);
+                let (value, flag) = choose(rule, &column, hub_at, spec.read);
                 if let Some(f) = flag {
                     flags.push((c as u32, f));
                 }
