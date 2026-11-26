@@ -786,7 +786,7 @@ everything is also in command search.
   largest, different values, characters), with one click to copy a total.
 - Charts (line, bar, pie, counts), subtotals and groups, highlight rules.
 - **Compare two open files**, by a key column or by whole rows: what was
-  added, removed and changed.
+  added, removed and changed (a diff of the two files).
 - **Find gaps in a sequence** (Data > Find gaps in a sequence, or right-click
   a column or cell): which numbers or IDs are missing from a column, such as
   `INV-00123`. Missing numbers are listed as ranges, never one line each, with
@@ -806,9 +806,9 @@ everything is also in command search.
   with its distinct keys and its rows in each list; blank keys are counted
   apart. One set of rules for all lists: ignore capitals, trim spaces, and the
   loose keys of Join. Open any slice as a tab (all columns of the list you
-  choose, or just the keys), copy the counts, or save them as CSV. A change to
-  any list, even a sort or a filter, asks you to compare again. A slice of a
-  private tab is private.
+  pick, or just the keys), copy the counts, or save them as CSV. Once any list
+  is edited, sorted or filtered, you run it again. A slice involving a private
+  tab is private.
   ![Compare lists: three lists of made-up voters, counted slice by slice](docs/screenshots/compare-lists.png)
 - **Compare two columns** (Data > Compare two columns, or right-click a
   heading): for each row, are the two cells the same, different, or filled in

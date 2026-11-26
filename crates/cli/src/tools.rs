@@ -12,6 +12,7 @@ use natendo_engine::gaps::{GapsSpec, Pattern};
 use natendo_engine::profile::ProfileSpec;
 use natendo_engine::recipe::RecipeOp;
 use natendo_engine::reshape::Duplicates;
+use natendo_engine::sets::{compare_lists, slice_name, SetList, SetsSpec, MAX_LISTS};
 use natendo_engine::sort::{SortKey, SortSpec};
 use natendo_engine::tools::{Sample, SampleSize, TitleUnion};
 use natendo_engine::{Document, Progress};
@@ -496,6 +497,230 @@ pub fn gaps(args: &[&str], json_out: bool) -> Result<bool, String> {
         print!("{}", r.copy_text());
     }
     Ok(!(o.has("--fail-on-gap") && r.range_total > 0))
+}
+
+/// `file.csv:column` (several joined with `+`; a number as `#3`).
+fn list_arg(arg: &str) -> Result<(&str, Vec<&str>), String> {
+    let bad = || {
+        format!("give each list as file:column, like voters.csv:ID or voters.csv:#1+#4 (not {arg})")
+    };
+    // The last ":" splits, so a drive letter stays with the path.
+    let (path, cols) = arg.rsplit_once(':').ok_or_else(bad)?;
+    if path.len() < 2 || cols.is_empty() || cols.contains(['\\', '/']) {
+        return Err(bad());
+    }
+    Ok((path, cols.split('+').collect()))
+}
+
+fn list_col(d: &Document, header: bool, name: &str) -> Result<u32, String> {
+    match name.strip_prefix('#') {
+        Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => col_of(d, header, n),
+        _ => col_of(d, header, name).map_err(|e| {
+            format!("{e} (a title with \":\" or \"+\" in it can be given by number, like #3)")
+        }),
+    }
+}
+
+/// `a,b,!c`: which lists a slice is in and out of; every list is named.
+fn slice_mask(text: &str, lists: usize) -> Result<u8, String> {
+    let bad = || format!("--slice names each of the {lists} lists, in or out, like a,!b");
+    let mut named = 0u8;
+    let mut mask = 0u8;
+    for part in text.split(',') {
+        let part = part.trim();
+        let (out, letter) = match part.strip_prefix('!') {
+            Some(l) => (true, l),
+            None => (false, part),
+        };
+        let i = list_letter(letter, lists).ok_or_else(bad)?;
+        if named & (1 << i) != 0 {
+            return Err(bad());
+        }
+        named |= 1 << i;
+        if !out {
+            mask |= 1 << i;
+        }
+    }
+    if named.count_ones() as usize != lists || mask == 0 {
+        return Err(bad());
+    }
+    Ok(mask)
+}
+
+/// `a` is the first list.
+fn list_letter(text: &str, lists: usize) -> Option<usize> {
+    let [c] = text.as_bytes() else {
+        return None;
+    };
+    let i = usize::from(c.to_ascii_lowercase().checked_sub(b'a')?);
+    (i < lists).then_some(i)
+}
+
+/// `sets a.csv:ID b.csv:ID ...`: how many keys the lists share, slice by
+/// slice; `--slice` with `-o` writes one slice's rows or keys.
+pub fn sets(args: &[&str]) -> Result<(), String> {
+    let o = opts(
+        args,
+        &["--slice", "--rows-of"],
+        &["--match-case", "--no-trim", "--loose", "--keys-only"],
+    )?;
+    if !(2..=MAX_LISTS).contains(&o.plain.len()) {
+        return Err(format!("give 2 to {MAX_LISTS} lists\n{USAGE}"));
+    }
+    let header = o.header();
+    let mut docs = Vec::new();
+    let mut spec = SetsSpec {
+        lists: Vec::new(),
+        match_case: o.has("--match-case"),
+        trim: !o.has("--no-trim"),
+        loose: o.has("--loose"),
+    };
+    let mut names = Vec::new();
+    let mut paths = Vec::new();
+    for arg in &o.plain {
+        let (path, cols) = list_arg(arg)?;
+        let d = load(path, sheet(&o)?)?;
+        let cols = cols
+            .iter()
+            .map(|c| list_col(&d, header, c))
+            .collect::<Result<Vec<_>, _>>()?;
+        spec.lists.push(SetList { cols, header });
+        names.push(
+            Path::new(path)
+                .file_stem()
+                .map_or_else(|| path.to_string(), |s| s.to_string_lossy().into_owned()),
+        );
+        paths.push(path);
+        docs.push(d);
+    }
+    // Lists that would read the same are told apart by their letter.
+    let names: Vec<String> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            if names.iter().filter(|x| *x == n).count() > 1 {
+                format!("{n} ({})", char::from(b'a' + i as u8))
+            } else {
+                n.clone()
+            }
+        })
+        .collect();
+    let slice = o
+        .get("--slice")
+        .map(|s| slice_mask(s, docs.len()))
+        .transpose()?;
+    if slice.is_none() && (o.get("-o").is_some() || o.get("--rows-of").is_some()) {
+        return Err("say which slice to write with --slice, like a,!b".into());
+    }
+    let refs: Vec<&Document> = docs.iter().collect();
+    let r = compare_lists(&refs, &spec, &Progress::new()).map_err(|e| e.to_string())?;
+    if let Some(mask) = slice {
+        let list = match o.get("--rows-of") {
+            Some(l) => list_letter(l, docs.len())
+                .filter(|i| mask & (1 << i) != 0)
+                .ok_or("--rows-of takes the letter of a list in the slice")?,
+            None => mask.trailing_zeros() as usize,
+        };
+        let out = out_of(&o)?;
+        // Never over one of the lists ([`write_out`] guards the one written).
+        let target = std::fs::canonicalize(out.path).ok();
+        if target.is_some()
+            && paths
+                .iter()
+                .any(|p| std::fs::canonicalize(p).ok() == target)
+        {
+            return Err("write to a different file than the lists".into());
+        }
+        let d = &docs[list];
+        let keys_only = o.has("--keys-only");
+        let table = if keys_only {
+            let mut exact = vec![false; spec.lists[0].cols.len()];
+            for (d, l) in docs.iter().zip(&spec.lists) {
+                for (a, b) in exact.iter_mut().zip(d.exact_key_parts(&l.cols)) {
+                    *a |= b;
+                }
+            }
+            d.sets_keys_table(
+                &spec,
+                &exact,
+                list,
+                &r.row_masks[list],
+                mask,
+                &Progress::new(),
+            )
+        } else {
+            d.sets_slice_table(
+                &spec.lists[list],
+                &r.row_masks[list],
+                mask,
+                &Progress::new(),
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        let rows = table.rows.saturating_sub(u64::from(header || keys_only));
+        if table.rows == 0 {
+            return Err("that slice is empty: nothing to write".into());
+        }
+        let mut t = table.into_document().map_err(|e| e.to_string())?;
+        let msg = write_out(&mut t, paths[list], &out)?;
+        done(
+            &o,
+            msg,
+            json!({
+                "slice": slice_name(mask, &names),
+                "rows": rows,
+                "keys": r.report.slices[usize::from(mask) - 1].keys,
+            }),
+        );
+        return Ok(());
+    }
+    if o.has("--json") {
+        let mut v = serde_json::to_value(&r.report).map_err(|e| e.to_string())?;
+        v["names"] = json!(names);
+        print_json(&v);
+        return Ok(());
+    }
+    for s in r.report.slices.iter().filter(|s| s.keys > 0) {
+        let rows: Vec<String> = s.rows.iter().map(u64::to_string).collect();
+        println!(
+            "{:>10} keys  {}  (rows: {})",
+            s.keys,
+            slice_name(s.mask, &names),
+            rows.join(", ")
+        );
+    }
+    for (l, name) in r.report.lists.iter().zip(&names) {
+        println!(
+            "{name}: {} rows, {} different keys, {} blank",
+            l.rows, l.keys, l.blank
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod sets_args {
+    use super::*;
+
+    #[test]
+    fn lists_and_slices_are_read_or_refused() {
+        assert_eq!(
+            list_arg(r"C:\x\a.csv:ID").unwrap(),
+            (r"C:\x\a.csv", vec!["ID"])
+        );
+        assert_eq!(
+            list_arg("a.csv:#3+#5").unwrap(),
+            ("a.csv", vec!["#3", "#5"])
+        );
+        for bad in ["a.csv", r"C:\x\a.csv", "a.csv:", ":ID"] {
+            assert!(list_arg(bad).is_err(), "{bad}");
+        }
+        assert_eq!(slice_mask("a,b,!c", 3).unwrap(), 3);
+        assert_eq!(slice_mask("!a, B", 2).unwrap(), 2);
+        for bad in ["a", "a,a", "a,b,c,d", "!a,!b", "a,x", ""] {
+            assert!(slice_mask(bad, 2).is_err(), "{bad}");
+        }
+    }
 }
 
 /// `sample <in> -o <out> (--rows N | --percent P | --every N) [--seed S]`.

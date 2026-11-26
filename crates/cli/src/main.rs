@@ -37,6 +37,8 @@ const USAGE: &str = "usage: natendo-cli --version
        natendo-cli count <in> --columns <a[,b]> [-o <out>] [--json]
        natendo-cli gaps <in> --column <c> [--series <c> ...] [--digits N] [--shape INV-#####]
            [--each-shape] [--from X] [--to Y] [--fail-on-gap] [--no-header] [--sheet N] [--json]
+       natendo-cli sets <a.csv:ID> <b.csv:ID> [... up to 5; keys a.csv:ID+Ward or #1+#4] [--match-case]
+           [--no-trim] [--loose] [--slice a,!b [--rows-of a] [--keys-only] -o <out>] [--json]
        natendo-cli sample <in> -o <out> (--rows N | --percent P | --every N) [--seed S]
        natendo-cli slice <in> -o <out> --rows <first>-<last>
        natendo-cli split <in> -o <folder> (--rows N | --by <col>) [--to csv|tsv]
@@ -112,6 +114,7 @@ fn main() -> ExitCode {
             Ok(false) => return ExitCode::from(PROBLEMS),
             Err(e) => Err(e),
         },
+        ["sets", rest @ ..] => tools::sets(&with_json(rest, json)),
         ["sample", rest @ ..] => tools::sample(&with_json(rest, json)),
         ["slice", rest @ ..] => tools::slice(&with_json(rest, json)),
         ["split", rest @ ..] => tools::split(&with_json(rest, json)),
