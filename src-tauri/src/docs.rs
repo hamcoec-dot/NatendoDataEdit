@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuar
 use crate::recovery::Autosaved;
 use natendo_engine::cellformula::CellFormula;
 use natendo_engine::clean::{CleanMatrix, CleanPreview, CleanSpec, MatrixPreview, SplitName};
+use natendo_engine::disk::DiskMark;
 use natendo_engine::document::repair::{Repair, RowText, SameShape};
 use natendo_engine::editing::{
     Arrange, Extract, GroupCalc, MapValues, TallySpec, ValueTally, MAX_PAIRS,
@@ -1758,6 +1759,9 @@ pub struct DocInfo {
     pub error: Option<String>,
 }
 
+/// Largest file compared with its copy on disk (both are held at once).
+const MAX_DISK_COMPARE: u64 = 512 << 20;
+
 /// All open documents.
 #[derive(Default)]
 pub struct Docs {
@@ -2427,6 +2431,83 @@ impl Docs {
     }
 
     /// Open documents, in the order they were opened.
+    /// What to compare each open tab's file with (`None`: no file, or the
+    /// tab is being changed or saved just now).
+    pub fn disk_marks(&self) -> Vec<(u32, Option<DiskMark>)> {
+        let mut ids = self.ids();
+        ids.sort_unstable();
+        ids.into_iter().map(|id| (id, self.disk_mark(id))).collect()
+    }
+
+    /// One tab's mark, without waiting for a change or a save to finish.
+    pub fn disk_mark(&self, id: u32) -> Option<DiskMark> {
+        let entry = self.get(id).ok()?;
+        if entry.peeking.load(Ordering::Relaxed) || entry.change_waiting() {
+            return None;
+        }
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        d.disk_mark()
+    }
+
+    /// The disk's version of a tab's file and its differences from what the
+    /// tab last read or saved (edits not saved are not part of it).
+    pub fn disk_compare(&self, id: u32, header: bool) -> CmdResult<(DocInfo, DocInfo)> {
+        let entry = self.get(id)?;
+        let (disk, differences, path, name) = {
+            let job = entry.start("Comparing with the file on disk")?;
+            let d = entry.read();
+            if d.source_bytes() > MAX_DISK_COMPARE {
+                return Err(CmdError::new(
+                    "too_large",
+                    "this file is too large to hold twice; open the file on disk again and use Compare",
+                ));
+            }
+            let path = d
+                .path()
+                .ok_or_else(|| CmdError::new("no_path", "this table has no file"))?
+                .to_path_buf();
+            if std::fs::metadata(&path)
+                .map_err(natendo_engine::Error::from)?
+                .len()
+                > MAX_DISK_COMPARE
+            {
+                return Err(CmdError::new(
+                    "too_large",
+                    "the file on disk is too large to compare here",
+                ));
+            }
+            let base = d.as_last_read()?;
+            let disk = d.as_on_disk(&job.progress)?;
+            let spec = CompareSpec {
+                keep_first: header,
+                ..Default::default()
+            };
+            let (t, _) = base.compare(&disk, &spec, &job.progress)?;
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (disk, t.into_document()?, path, name)
+        };
+        // The disk's version has no path here: saving it can never replace
+        // the file by accident.
+        let mut copy = disk;
+        copy.forget_path();
+        let copy = self.insert_titled(copy, Some(format!("{name} (on disk)")))?;
+        let report = self.insert_titled(differences, Some(format!("Changes in {name}")))?;
+        for made in [copy.id, report.id] {
+            self.private_if_from(made, &path);
+            if entry.private.load(Ordering::SeqCst) {
+                self.set_private(made, true)?;
+            }
+        }
+        Ok((self.info(copy.id)?, self.info(report.id)?))
+    }
+
     pub fn ids(&self) -> Vec<u32> {
         let mut ids: Vec<u32> = self.map().keys().copied().collect();
         ids.sort_unstable();

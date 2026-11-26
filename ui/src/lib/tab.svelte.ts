@@ -1,6 +1,7 @@
 // One open document as the UI sees it: engine info, selection, view
 // settings (header row, frozen panes, column widths) and its cell cache.
 
+import type { DiskNote } from "./disk";
 import type { Check, FindSpec } from "./backend";
 import type { Highlight } from "./views";
 import type { ColumnScale } from "./m10";
@@ -284,6 +285,10 @@ export class Tab {
   checkVersion = 0;
   /** Alternating row colours (kept with views). */
   banded = $state(false);
+  /** What the last look at the file on disk found (see disk.ts). */
+  diskNote = $state<DiskNote | null>(null);
+  diskIgnored = $state("");
+  diskMuted = $state(false);
   /** Numbers, dates and text in different colours (View › Show value types). */
   valueTypes = $state(false);
   /** A line under each group: where this column's value changes. */
