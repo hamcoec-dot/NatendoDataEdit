@@ -8,7 +8,7 @@ use std::path::Path;
 
 use natendo_engine::counts::CountsSpec;
 use natendo_engine::expr::ComputeSpec;
-use natendo_engine::gaps::{GapsSpec, Pattern};
+use natendo_engine::gaps::{DateStep, GapsSpec, Pattern};
 use natendo_engine::profile::ProfileSpec;
 use natendo_engine::recipe::RecipeOp;
 use natendo_engine::reshape::Duplicates;
@@ -435,15 +435,29 @@ fn shape_from(label: &str) -> Result<Pattern, String> {
     })
 }
 
+/// `--step day|business|week|month|N` (days).
+fn date_step(text: &str) -> Result<DateStep, String> {
+    Ok(match text {
+        "day" => DateStep::Day,
+        "business" => DateStep::Business,
+        "week" => DateStep::Week,
+        "month" => DateStep::Month,
+        n => DateStep::Days {
+            n: n.parse()
+                .map_err(|_| "--step takes day, business, week, month or a number of days")?,
+        },
+    })
+}
+
 /// `gaps <in> --column <c>`: the numbers missing from a column. `Ok(false)`
 /// with `--fail-on-gap` and at least one gap.
 pub fn gaps(args: &[&str], json_out: bool) -> Result<bool, String> {
     let o = opts(
         args,
         &[
-            "--column", "--series", "--digits", "--shape", "--from", "--to",
+            "--column", "--series", "--digits", "--shape", "--from", "--to", "--step",
         ],
-        &["--each-shape", "--fail-on-gap"],
+        &["--each-shape", "--fail-on-gap", "--dates"],
     )?;
     let input = one_input(&o)?;
     let d = load(input, sheet(&o)?)?;
@@ -471,6 +485,11 @@ pub fn gaps(args: &[&str], json_out: bool) -> Result<bool, String> {
         run,
         pattern: o.get("--shape").map(shape_from).transpose()?,
         each_shape: o.has("--each-shape"),
+        dates: match (o.has("--dates"), o.get("--step")) {
+            (false, None) => None,
+            (false, Some(_)) => return Err("--step goes with --dates".into()),
+            (true, step) => Some(date_step(step.unwrap_or("day"))?),
+        },
         start: o.get("--from").unwrap_or_default().to_string(),
         end: o.get("--to").unwrap_or_default().to_string(),
     };
@@ -491,6 +510,21 @@ pub fn gaps(args: &[&str], json_out: bool) -> Result<bool, String> {
             "{} repeated numbers, {} drops in file order, {} of another shape, {} blank",
             r.duplicate_values, r.drops, r.other_shape, r.blank
         );
+        if let Some(d) = &r.dates {
+            for (n, what) in [
+                (
+                    d.ambiguous,
+                    "ambiguous dates not read (some gaps may be these)",
+                ),
+                (d.two_digit, "two-digit years"),
+                (d.weekend, "on a weekend"),
+                (d.off_step, "off the step"),
+            ] {
+                if n > 0 {
+                    println!("{n} {what}");
+                }
+            }
+        }
         if r.looks_like_amounts {
             println!("note: this column looks like amounts, not IDs");
         }

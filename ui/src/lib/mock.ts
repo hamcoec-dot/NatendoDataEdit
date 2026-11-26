@@ -3407,6 +3407,7 @@ export class MockBackend implements Backend {
       patterns: pattern ? [{ pattern, label, count: own.length }] : [],
       pattern_total: count.size,
       too_many_shapes: false,
+      dates: spec.dates ? { ambiguous: 0, ambiguous_rows: [], two_digit: 0, two_digit_rows: [], weekend: 0, weekend_rows: [], off_step: 0, off_step_rows: [] } : null,
       shown: this.rowCount(d) - first,
       rows: own.length,
       distinct,

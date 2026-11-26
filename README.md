@@ -793,8 +793,12 @@ everything is also in command search.
   repeated numbers, rows out of order (checked in file order), blanks and rows
   of a different shape counted. Audit each prefix on its own, split by up to
   two columns, type a start or end, then show the rows next to each gap, copy
-  the list, or open it as a tab and save it as CSV. Shown rows only. Dates are
-  not audited yet. Row numbers are places in the file, counting the title line
+  the list, or open it as a tab and save it as CSV. Shown rows only. **Dates**
+  are audited by day, business day (Monday to Friday, no holidays), week, month
+  or every so many days; a date with a time counts on its day. Dates that could
+  be read two ways are never guessed (set the column's date order to read
+  them), two-digit years are counted, and dates on a weekend or between steps
+  are listed, never rounded. Row numbers are places in the file, counting the title line
   as 1 and a record that spans several lines once; they follow the file as last
   saved, so rows you add get a file number after Save (until then they are
   "added by hand"). With more than 10,000 different shapes the rest count as a
@@ -1440,6 +1444,7 @@ natendo-cli count data.csv --columns party,precinct        # the counts, most co
 natendo-cli sets voters.csv:ID mailed.csv:ID returned.csv:ID    # keys by slice
 natendo-cli sets voters.csv:ID returned.csv:ID --slice a,!b -o not-returned.csv
 natendo-cli gaps data.csv --column Invoice --fail-on-gap     # missing numbers; exit 1 when there are any
+natendo-cli gaps data.csv --column Date --dates --step business
 natendo-cli sample data.csv -o out.csv --rows 500 --seed 7 # or --percent 5, --every 10
 natendo-cli slice data.csv -o out.csv --rows 1001-2000     # with the title row
 natendo-cli split data.csv -o parts --by county            # or --rows 50000
