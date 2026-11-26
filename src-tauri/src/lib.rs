@@ -4186,6 +4186,129 @@ async fn lookalike_groups(
     blocking(move || docs.lookalike_groups(doc, &spec)).await
 }
 
+// ---- value dictionaries (C6) ----
+
+/// The Dictionaries folder in the app's data folder (made when missing).
+fn dictionary_folder(app: &tauri::AppHandle) -> CmdResult<PathBuf> {
+    use tauri::Manager;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| docs::CmdError::new("io", "the app's data folder could not be found"))?
+        .join("Dictionaries");
+    std::fs::create_dir_all(&dir)
+        .map_err(|_| docs::CmdError::new("io", "the Dictionaries folder could not be made"))?;
+    Ok(dir)
+}
+
+/// A dictionary in the Dictionaries folder.
+#[derive(Serialize)]
+struct DictionaryItem {
+    /// The name inside the file.
+    name: String,
+    /// The file's own name (shown when two share a name).
+    file: String,
+    path: String,
+    pairs: u64,
+    /// The file could not be read: why.
+    problem: Option<String>,
+}
+
+#[tauri::command]
+async fn dictionary_list(app: tauri::AppHandle) -> CmdResult<(String, Vec<DictionaryItem>)> {
+    blocking(move || {
+        let dir = dictionary_folder(&app)?;
+        let mut out = Vec::new();
+        let read = std::fs::read_dir(&dir)
+            .map_err(|_| docs::CmdError::new("io", "the Dictionaries folder could not be read"))?;
+        for e in read.flatten().take(1_000) {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("ndmap") {
+                continue;
+            }
+            let file = p.file_name().and_then(|f| f.to_str()).unwrap_or("").to_string();
+            let read = extras::read_capped(&p, natendo_engine::dictionary::MAX_DICTIONARY_BYTES as u64, "A dictionary")
+                .and_then(|b| Ok(natendo_engine::dictionary::Dictionary::parse(&b)?));
+            out.push(match read {
+                Ok(r) => DictionaryItem {
+                    name: if r.dict.name.trim().is_empty() { file.trim_end_matches(".ndmap").to_string() } else { r.dict.name.clone() },
+                    file,
+                    path: p.to_string_lossy().into_owned(),
+                    pairs: r.dict.pairs.len() as u64,
+                    problem: None,
+                },
+                Err(err) => DictionaryItem {
+                    name: file.trim_end_matches(".ndmap").to_string(),
+                    file,
+                    path: p.to_string_lossy().into_owned(),
+                    pairs: 0,
+                    problem: Some(err.message),
+                },
+            });
+        }
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.file.cmp(&b.file)));
+        Ok((dir.to_string_lossy().into_owned(), out))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn dictionary_read(path: String) -> CmdResult<natendo_engine::dictionary::ReadDictionary> {
+    blocking(move || {
+        let bytes = extras::read_capped(
+            std::path::Path::new(&path),
+            natendo_engine::dictionary::MAX_DICTIONARY_BYTES as u64,
+            "A dictionary",
+        )?;
+        Ok(natendo_engine::dictionary::Dictionary::parse(&bytes)?)
+    })
+    .await
+}
+
+/// Save a dictionary made from tab `doc`. A private or encrypted tab's values
+/// are only written once the person said so (`confirmed`); never automatic.
+#[tauri::command]
+async fn dictionary_write(
+    docs: DocsState<'_>,
+    doc: u32,
+    path: String,
+    dict: natendo_engine::dictionary::Dictionary,
+    confirmed: bool,
+) -> CmdResult<String> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        if !confirmed && docs.dictionary_sensitive(doc)? {
+            return Err(docs::CmdError::new(
+                "private",
+                "This dictionary holds values from a private file",
+            ));
+        }
+        let mut p = PathBuf::from(&path);
+        if !p.is_absolute() {
+            return Err(docs::CmdError::new("bad_request", "choose where to save the dictionary"));
+        }
+        if p.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("ndmap") {
+            p.set_extension("ndmap");
+        }
+        let text = dict.to_json()?;
+        extras::write_atomic(&p, text.as_bytes())?;
+        Ok(p.to_string_lossy().into_owned())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn dictionary_unmatched(
+    docs: DocsState<'_>,
+    doc: u32,
+    col: u32,
+    keep_first: bool,
+    dict: natendo_engine::dictionary::Dictionary,
+) -> CmdResult<docs::UnmatchedOut> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.dictionary_unmatched(doc, col, keep_first, &dict)).await
+}
+
 /// How the first rows would look after a join, with counts.
 #[tauri::command]
 async fn join_preview(
@@ -4922,6 +5045,10 @@ pub fn run() {
             set_aside,
             report_notes,
             total_row,
+            dictionary_list,
+            dictionary_read,
+            dictionary_write,
+            dictionary_unmatched,
             fill_blanks_count,
             fill_blanks_count_stop,
             fill_marks,

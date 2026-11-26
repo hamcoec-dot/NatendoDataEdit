@@ -1693,6 +1693,18 @@ impl From<Totals> for TotalsOut {
     }
 }
 
+/// Values a dictionary does not know.
+#[derive(Debug, Serialize, Clone, PartialEq, Default)]
+pub struct UnmatchedOut {
+    /// The first 5,000, most common first.
+    pub values: Vec<natendo_engine::editing::Tally>,
+    /// How many such values, and the rows that hold them.
+    pub count: u64,
+    pub rows: u64,
+    /// False when the column has more values than were counted.
+    pub complete: bool,
+}
+
 /// What a data operation did.
 #[derive(Debug, Serialize, Clone, PartialEq, Default)]
 pub struct OpReport {
@@ -7297,6 +7309,48 @@ impl Docs {
         let job = entry.start("Looking for look-alikes")?;
         let d = entry.read();
         Ok(d.lookalike_groups(spec, &job.progress)?)
+    }
+
+    /// Whether a dictionary made from tab `id` holds values from a private
+    /// or an encrypted file (it then asks before saving).
+    pub fn dictionary_sensitive(&self, id: u32) -> CmdResult<bool> {
+        let e = self.get(id)?;
+        Ok(e.private.load(Ordering::SeqCst)
+            || e.encrypted_from
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_some())
+    }
+
+    /// The column's values (with counts) a dictionary does not know: neither
+    /// a variant nor a canonical value ("new since last time"); at most
+    /// 5,000 listed, all counted.
+    pub fn dictionary_unmatched(
+        &self,
+        id: u32,
+        col: u32,
+        keep_first: bool,
+        dict: &natendo_engine::dictionary::Dictionary,
+    ) -> CmdResult<UnmatchedOut> {
+        let dict = dict.clone().checked()?.dict;
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for values not in the dictionary")?;
+        let d = entry.read();
+        let tally = d.value_tally(
+            &TallySpec {
+                col,
+                keep_first,
+                limit: None,
+            },
+            &job.progress,
+        )?;
+        let all = dict.unmatched(&tally.values);
+        Ok(UnmatchedOut {
+            count: all.len() as u64,
+            rows: all.iter().map(|t| t.count).sum(),
+            values: all.into_iter().take(5_000).collect(),
+            complete: tally.complete,
+        })
     }
 
     pub fn value_tally(&self, id: u32, spec: &TallySpec) -> CmdResult<ValueTally> {

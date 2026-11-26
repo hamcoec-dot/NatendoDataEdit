@@ -106,7 +106,7 @@ const USAGE: &str = "usage: natendo-cli --version
            (exit 1 with --fail-on-diff when they differ; --values puts keys and values in --json)
        natendo-cli match <in> [<other>] --field <col>[=<other col>][:name|text|exact][:weight] [--field ...]
            [--min-score 80] [--other-no-header] [-o pairs.csv] [--json]
-       natendo-cli lookalikes <in> --column <c> [--method sounds|spelling|both] [-o groups.csv] [--json]
+       natendo-cli lookalikes <in> --column <c> [--method sounds|spelling|both|abbreviations] [-o groups.csv] [--json]
        natendo-cli xray <in> [--columns a,b] [--fail-on-found] [--json]
        natendo-cli xray <in> --sanitize [--zero-width] [--odd-spaces] [--smart-quotes] [--tabs-breaks] [--homoglyphs]
            [--columns a,b] -o <out> [--overwrite]

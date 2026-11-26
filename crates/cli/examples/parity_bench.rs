@@ -44,6 +44,7 @@ fn main() {
                         col: 3,
                         keep_first: true,
                         method: Default::default(),
+                        extra: Vec::new(),
                     },
                     &p,
                 )

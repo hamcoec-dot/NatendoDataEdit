@@ -363,7 +363,8 @@ pub fn lookalikes(args: &[&str]) -> Result<(), String> {
         "sounds" => Method::Sounds,
         "spelling" => Method::Spelling,
         "both" => Method::Both,
-        m => return Err(format!("unknown method {m}: use sounds, spelling or both")),
+        "abbreviations" => Method::Abbreviations,
+        m => return Err(format!("unknown method {m}: use sounds, spelling, both or abbreviations")),
     };
     let d = load(input, sheet(&o)?)?;
     let col = col_of(
@@ -377,6 +378,7 @@ pub fn lookalikes(args: &[&str]) -> Result<(), String> {
                 col,
                 keep_first: header,
                 method,
+                extra: Vec::new(),
             },
             &Progress::new(),
         )

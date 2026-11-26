@@ -91,6 +91,9 @@ pub struct LookAlikeSpec {
     pub col: u32,
     pub keep_first: bool,
     pub method: crate::lookalike::Method,
+    /// Abbreviations: dictionary pairs (variant, canonical) that also group,
+    /// at most 100,000.
+    pub extra: Vec<(String, String)>,
 }
 
 /// The groups found: each group's values with their counts, the suggested
@@ -107,6 +110,10 @@ pub struct LookAlikes {
     pub too_long: u32,
     /// Deleted forms skipped for being shared by too many values.
     pub crowded: u32,
+    /// Abbreviations: each group's "maybe" mark (state or country codes in a
+    /// column that is mostly not states or countries).
+    #[serde(default)]
+    pub maybe: Vec<bool>,
 }
 
 /// The look-alike key: lower case, accents folded, letters and digits only.
@@ -608,7 +615,17 @@ impl Document {
             },
             progress,
         )?;
-        let grouping = crate::lookalike::group_lookalikes(&tally.values, spec.method, progress)?;
+        if spec.extra.len() > crate::dictionary::MAX_DICTIONARY_PAIRS {
+            return Err(Error::Invalid(
+                "at most 100,000 dictionary pairs can be used".into(),
+            ));
+        }
+        let grouping = crate::lookalike::group_lookalikes_with(
+            &tally.values,
+            spec.method,
+            &spec.extra,
+            progress,
+        )?;
         Ok(LookAlikes {
             groups: grouping
                 .groups
@@ -623,6 +640,7 @@ impl Document {
             complete: tally.complete,
             too_long: grouping.too_long,
             crowded: grouping.crowded,
+            maybe: grouping.maybe,
         })
     }
 

@@ -15,6 +15,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod abbrev;
 pub mod areas;
 pub mod cellformula;
 pub mod changes;
@@ -30,6 +31,7 @@ pub mod datescan;
 pub mod dbf;
 pub mod detect;
 pub mod dialect;
+pub mod dictionary;
 pub mod diff;
 pub mod disk;
 pub mod document;

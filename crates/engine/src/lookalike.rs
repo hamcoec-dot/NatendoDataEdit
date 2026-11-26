@@ -62,6 +62,9 @@ pub enum Method {
     Spelling,
     /// Either of the two.
     Both,
+    /// Abbreviations and full names (St = Street, NY = New York, USA =
+    /// United States) and the person's dictionary pairs: see [`crate::abbrev`].
+    Abbreviations,
 }
 
 /// The groups found.
@@ -75,6 +78,11 @@ pub struct Grouping {
     pub too_long: u32,
     /// Deleted forms shared by too many values to use.
     pub crowded: u32,
+    /// Abbreviations: for each group, whether it is only a "maybe" (state or
+    /// country codes in a column that is mostly not states or countries),
+    /// listed apart and never put in the list all at once.
+    #[serde(default)]
+    pub maybe: Vec<bool>,
 }
 
 // ---- sound ----
@@ -492,10 +500,29 @@ pub fn group_lookalikes(
     method: Method,
     progress: &Progress,
 ) -> Result<Grouping, Error> {
+    group_lookalikes_with(values, method, &[], progress)
+}
+
+/// [`group_lookalikes`], with dictionary pairs (variant, canonical) that the
+/// Abbreviations method also groups by.
+pub fn group_lookalikes_with(
+    values: &[Tally],
+    method: Method,
+    extra: &[(String, String)],
+    progress: &Progress,
+) -> Result<Grouping, Error> {
     if values.len() > MAX_GROUPED {
         return Err(Error::OutOfMemory(
             "Too many different values; filter first",
         ));
+    }
+    if method == Method::Abbreviations {
+        let (groups, maybe) = crate::abbrev::group(values, extra, progress)?;
+        return Ok(Grouping {
+            groups,
+            maybe,
+            ..Default::default()
+        });
     }
     let n = values.len();
     let keys: Vec<Vec<char>> = values
