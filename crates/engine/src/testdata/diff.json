@@ -20,8 +20,8 @@
   "lines": [
     "Change,Row (first),Row (second),id,name,city,zip,What changed",
     "removed,5,,4,Di,Quito,,",
-    "changed,3,,2,Bo,Osaka,100,city: Lisbon → Osaka",
-    "changed,4,,3,Cyd,Perth,6000,name: Cy → Cyd",
-    "added,,,5,Eve,New,1,"
+    "changed,3,3,2,Bo,Osaka,100,city: Lisbon → Osaka",
+    "changed,4,4,3,Cyd,Perth,6000,name: Cy → Cyd",
+    "added,,5,5,Eve,New,1,"
   ]
 }
