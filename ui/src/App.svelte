@@ -100,6 +100,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { describeCheck, jumpText, shapeRegex } from "./lib/lint";
   import FieldCheckDialog from "./lib/FieldCheckDialog.svelte";
   import MatchDialog from "./lib/MatchDialog.svelte";
+  import { madeText } from "./lib/golden";
   import StreetDialog from "./lib/StreetDialog.svelte";
   import UpdatesDialog from "./lib/UpdatesDialog.svelte";
   import EncryptDialog from "./lib/EncryptDialog.svelte";
@@ -3637,6 +3638,29 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     patchAsk = null;
     if (doc !== undefined) void backend().patchClose(doc).catch(() => {});
     grid?.focus();
+  }
+
+  // ---- golden records ----
+  /** Open the new tables (the result in front) and close the match. */
+  function goldenMade(made: import("./lib/golden").GoldenMade, summary: import("./lib/golden").GoldenSummary, away: boolean): void {
+    const from = tab;
+    matchOpen = false;
+    if (from) {
+      void backend().goldenClose(from.id).catch(() => {});
+      void backend().matchClose(from.id);
+    }
+    for (const d of [made.away, made.info]) {
+      if (!d) continue;
+      addTab(d, false);
+      const nt = tabs[tabs.length - 1];
+      if (nt && from) {
+        nt.header = from.header;
+        nt.headerTouched = true;
+        if (from.private.file || from.private.folder) nt.private = from.private;
+        nt.bump();
+      }
+    }
+    say(madeText(summary.counts, away));
   }
 
   // ---- relationships between columns ----
@@ -9245,6 +9269,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     others={otherTables()}
     {titlesOf}
     onOpen={openOther}
+    onGolden={goldenMade}
     onDone={(info, n) => {
       const t = tab;
       matchOpen = false;

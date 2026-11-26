@@ -1161,6 +1161,25 @@ preview:
   (with day and month swapped counting partly); ZIPs, phones and IDs by their
   digits. Jr, Sr, II and III are kept apart. Each pair gets a score; review
   them best first and accept each one, or every pair above a score.
+- **Golden records** (Match people with the table itself, accept pairs, then
+  **Merge accepted into golden records**): a new table with one row for each
+  person, and your table unchanged. Choose per column how the value is picked:
+  the main row's, first or last non-blank, longest, most common, from the
+  newest or oldest date, all different values joined (exact text, so `Tag` and
+  `tag` are both kept), or an exact sum, smallest or largest. A blank never
+  replaces a value unless you tick that a newer blank does. A date readable two
+  ways or a value that is not an exact number (money signs and exponents
+  included) keeps the first value, **highlighted in the preview**. The main row
+  of a cluster is the one with the most accepted pairs; the others were each
+  accepted with it, so a chain of look-alikes never pulls in a stranger. A row
+  paired into two clusters, or a cluster over the size limit, is **left for you
+  to review**. Clusters joined through the main row only are marked, and
+  **Only merge clusters where every pair was accepted** (off to start) leaves
+  them for review too. `Merged_IDs` (the main row first, then file order) and
+  `Merged_Count` say what became what; the names come from your ID column, else
+  the row number in the file. Hidden rows are not matched and are kept as they
+  are. The folded rows can open in a second tab. Refused if the table changed
+  since the match.
 - **Street range lookup:** find the precinct, district or ward for each
   address from a street index of house number ranges, with odd and even sides
   and ZIP or city to tell same-named streets apart. `North Main Street`,

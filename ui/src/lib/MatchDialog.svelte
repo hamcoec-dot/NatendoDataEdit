@@ -10,6 +10,8 @@
   import { backend, errorText } from "./backend";
   import FormShell from "./FormShell.svelte";
   import type { OtherTable } from "./transfer";
+  import GoldenDialog from "./GoldenDialog.svelte";
+  import type { GoldenMade, GoldenSummary } from "./golden";
   import { KIND_LABELS, acceptedPairs, guessFields, type MatchField, type MatchReport, type MatchSpec } from "./match";
 
   interface Props {
@@ -21,9 +23,11 @@
     onOpen: () => Promise<OtherTable | null>;
     /** Accepted pairs were added: the app's new table info. */
     onDone: (info: import("./backend").DocInfo, pairs: number) => void;
+    /** Golden records were made from the accepted pairs. */
+    onGolden: (made: GoldenMade, summary: GoldenSummary, away: boolean) => void;
     onClose: () => void;
   }
-  let { doc, titles, header, others, titlesOf, onOpen, onDone, onClose }: Props = $props();
+  let { doc, titles, header, others, titlesOf, onOpen, onDone, onGolden, onClose }: Props = $props();
 
   const SAME = -1;
   let list = $state<OtherTable[]>(untrack(() => others.filter((o) => o.id !== doc)));
@@ -41,6 +45,8 @@
   let problem = $state("");
   let page = $state(0);
   const PAGE = 200;
+  /** The golden records screen is open over the pairs. */
+  let golden = $state(false);
 
   const theirs = $derived(other === SAME ? titles : otherTitles);
 
@@ -129,6 +135,9 @@
   const pct = (x: number) => (x < 0 ? "blank" : `${Math.round(x * 100)}%`);
 </script>
 
+{#if golden && report}
+<GoldenDialog {doc} {titles} header={myHeader} {dayFirst} pairs={acceptedPairs(report.listed, accepted)} onCreated={onGolden} onBack={() => (golden = false)} />
+{:else}
 <FormShell title="Match people" wide {onClose}>
   {#if !report}
     <p class="note">Finds rows that look like the same person even when spelled differently (Bill and William, Smith and Smyth, a swapped day and month). Each pair gets a score out of 100; you accept or reject them before anything changes.</p>
@@ -211,11 +220,13 @@
       <button type="button" class="primary" data-enter disabled={!fields.length || running} onclick={() => void find()}>{running ? "Matching…" : "Find matches"}</button>
     {:else}
       <button type="button" class="primary" data-enter disabled={!accepted.size || running} onclick={() => void apply()}>Add columns for {plural(accepted.size, "accepted pair")}</button>
+      {#if other === SAME}<button type="button" disabled={!accepted.size || running} onclick={() => (golden = true)}>Merge accepted into golden records…</button>{/if}
       <button type="button" onclick={() => (report = null)}>Change the setup</button>
     {/if}
     <button type="button" onclick={onClose}>Close</button>
   {/snippet}
 </FormShell>
+{/if}
 
 <style>
   .fields .head,
