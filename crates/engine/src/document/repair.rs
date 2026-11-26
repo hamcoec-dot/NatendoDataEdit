@@ -59,6 +59,10 @@ pub struct NextRow {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RowText {
     pub id: u32,
+    /// Where the row is on screen (`None`: hidden or filtered out).
+    pub row: Option<u64>,
+    /// Its number in the file, counted from 1 (0: added by hand).
+    pub file_row: u64,
     pub revision: u64,
     /// Changed or added since the file was read: there is no file text, only
     /// the cells.
@@ -128,9 +132,24 @@ impl Document {
         }
     }
 
-    fn shown_row(&self, id: u32) -> bool {
-        self.row_count() == self.total_rows()
-            || (0..self.row_count()).any(|r| self.id_at(r) == Some(id))
+    /// Where row `id` is on screen, looked for outward from `near` (a row
+    /// is never below its place in the whole table).
+    fn shown_at(&self, id: u32, near: u64) -> Option<u64> {
+        let total = self.row_count();
+        if total == self.total_rows() {
+            return Some(near);
+        }
+        let from = near.min(total.saturating_sub(1));
+        (0..=from)
+            .rev()
+            .chain(from + 1..total)
+            .find(|&r| self.id_at(r) == Some(id))
+    }
+
+    /// The id of shown row `row` (kept by the row through sorts and
+    /// deletes).
+    pub fn row_id(&self, row: u64) -> Option<u32> {
+        self.id_at(row)
     }
 
     /// The raw bytes of a file row that no edit has touched, without its line
@@ -161,9 +180,9 @@ impl Document {
         if self.col_map().is_some() {
             return Err(Error::Invalid(COLUMNS_CHANGED.into()));
         }
-        if self.position_of(id).is_none() {
+        let Some(at) = self.position_of(id) else {
             return Err(Error::Invalid(CHANGED.into()));
-        }
+        };
         let mut values = self.logical_values(id)?;
         let width = values.len() as u64;
         let mut raw = String::new();
@@ -196,7 +215,7 @@ impl Document {
         }
         values.truncate(shown);
         let (next, no_next) = match self.next_of(id) {
-            Ok((n, _)) => {
+            Ok((n, next_at)) => {
                 let mut fields = self.logical_values(n)?;
                 let mut used = 0usize;
                 fields.retain(|v| {
@@ -208,7 +227,7 @@ impl Document {
                         id: n,
                         file_row: u64::from(n) + 1,
                         edited: self.overlay.get(n).is_some(),
-                        hidden: !self.shown_row(n),
+                        hidden: self.shown_at(n, next_at).is_none(),
                         fields,
                     }),
                     String::new(),
@@ -218,6 +237,12 @@ impl Document {
         };
         Ok(RowText {
             id,
+            row: self.shown_at(id, at),
+            file_row: if self.file_row(id) {
+                u64::from(id) + 1
+            } else {
+                0
+            },
             revision: self.revision(),
             edited: untouched.is_none(),
             raw,

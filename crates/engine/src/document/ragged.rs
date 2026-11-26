@@ -131,6 +131,17 @@ impl Document {
         Ok(r)
     }
 
+    /// The ids of the ragged rows in table order, at most `most`, and how
+    /// many there are.
+    pub fn ragged_ids(&self, found: &Ragged, most: usize) -> (Vec<u32>, u64) {
+        let ids = (0..self.total_rows())
+            .filter_map(|p| self.doc_id_at(p))
+            .filter(|&id| found.is_short(id) || found.is_long(id))
+            .take(most)
+            .collect();
+        (ids, found.short + found.long)
+    }
+
     /// Show only the ragged rows (and the title row with `header`). Refused
     /// when the table changed since they were found.
     pub fn plan_show_ragged(

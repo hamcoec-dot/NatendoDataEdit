@@ -2686,6 +2686,39 @@ async fn cell_text(docs: DocsState<'_>, doc: u32, row: u64, col: u32) -> CmdResu
 }
 
 #[tauri::command]
+async fn ragged_list(
+    docs: DocsState<'_>,
+    doc: u32,
+    keep_first: bool,
+) -> CmdResult<docs::RaggedList> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.ragged_list(doc, keep_first)).await
+}
+
+#[tauri::command]
+async fn row_text(
+    docs: DocsState<'_>,
+    doc: u32,
+    row: Option<u64>,
+    row_id: Option<u32>,
+) -> CmdResult<natendo_engine::document::repair::RowText> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.row_text(doc, row, row_id)).await
+}
+
+#[tauri::command]
+async fn repair_row(
+    docs: DocsState<'_>,
+    doc: u32,
+    row_id: u32,
+    revision: u64,
+    repair: natendo_engine::document::repair::Repair,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.repair_row(doc, row_id, revision, &repair)).await
+}
+
+#[tauri::command]
 async fn set_cells(
     docs: DocsState<'_>,
     doc: u32,
@@ -4131,6 +4164,9 @@ pub fn run() {
             doc_info,
             viewport,
             cell_text,
+            ragged_list,
+            row_text,
+            repair_row,
             set_cells,
             set_column_type,
             set_column_types,

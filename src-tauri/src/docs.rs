@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuar
 use crate::recovery::Autosaved;
 use natendo_engine::cellformula::CellFormula;
 use natendo_engine::clean::{CleanPreview, CleanSpec, SplitName};
+use natendo_engine::document::repair::{Repair, RowText};
 use natendo_engine::editing::{
     Arrange, Extract, GroupCalc, MapValues, TallySpec, ValueTally, MAX_PAIRS,
 };
@@ -1422,6 +1423,16 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
     }
 }
 
+/// Most ragged rows the repair bar steps through.
+pub const MAX_RAGGED_LISTED: usize = 100_000;
+
+/// The ragged rows for the repair bar.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct RaggedList {
+    pub ids: Vec<u32>,
+    pub total: u64,
+}
+
 /// What a CSV report wrote.
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
 pub struct Written {
@@ -2663,6 +2674,42 @@ impl Docs {
             }
         }
         Ok(out)
+    }
+
+    /// The ids of the ragged rows in table order (hidden ones too), at most
+    /// [`MAX_RAGGED_LISTED`], and how many there are.
+    pub fn ragged_list(&self, id: u32, keep_first: bool) -> CmdResult<RaggedList> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for ragged rows")?;
+        let d = entry.read();
+        let found = d.ragged_rows(keep_first, &job.progress)?;
+        let (ids, total) = d.ragged_ids(&found, MAX_RAGGED_LISTED);
+        Ok(RaggedList { ids, total })
+    }
+
+    /// What the repair bar shows for a row, asked by its id or (to open the
+    /// bar from the grid) by the shown row. Nothing is stored or logged.
+    pub fn row_text(&self, id: u32, row: Option<u64>, row_id: Option<u32>) -> CmdResult<RowText> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        let wanted = row_id
+            .or_else(|| row.and_then(|r| d.row_id(r)))
+            .ok_or_else(|| CmdError::new("bad_request", "choose a row"))?;
+        Ok(d.row_text(wanted)?)
+    }
+
+    /// One repair of one row, one undo step. Left out of recipes: it is about
+    /// this file's row.
+    pub fn repair_row(
+        &self,
+        id: u32,
+        row_id: u32,
+        revision: u64,
+        repair: &Repair,
+    ) -> CmdResult<DocInfo> {
+        self.recorded(id, Logged::LeftOut("repairing one row".into()), || {
+            self.edit(id, |d| d.repair_row(row_id, revision, repair))
+        })
     }
 
     /// Paste as column names: set cells of the table's first row (column,
@@ -10868,6 +10915,39 @@ ca,California
             "{}",
             e.message
         );
+    }
+
+    /// C1b: the repair bar's calls: the ragged rows by id, one row's text, and a repair that is one undo step, left
+    /// out of recipes, refused when stale and on a locked file.
+    #[test]
+    fn the_repair_bar_lists_reads_and_repairs_a_row() {
+        let docs = Docs::default();
+        let p = tmp(
+            "repair.csv",
+            b"id,name,city\n1,Smith, John,Rome\n2,ann,Oslo\n3\n",
+        );
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let list = docs.ragged_list(id, true).unwrap();
+        assert_eq!((list.ids.as_slice(), list.total), (&[1u32, 3][..], 2));
+        let t = docs.row_text(id, None, Some(1)).unwrap();
+        assert_eq!(
+            (t.row, t.file_row, t.raw.as_str()),
+            (Some(1), 2, "1,Smith, John,Rome")
+        );
+        assert_eq!(docs.row_text(id, Some(3), None).unwrap().id, 3);
+        let join = Repair::Join { groups: vec![1, 2] };
+        let info = docs.repair_row(id, 1, t.revision, &join).unwrap();
+        assert!(info.modified && info.can_undo);
+        assert!(docs.repair_row(id, 1, t.revision, &join).is_err());
+        assert_eq!(docs.ragged_list(id, true).unwrap().ids, [3]);
+        let book = docs.recipe_of(id, true, "r").unwrap();
+        assert!(
+            format!("{book:?}").contains("repairing one row"),
+            "{book:?}"
+        );
+        docs.undo(id).unwrap();
+        assert_eq!(docs.ragged_list(id, true).unwrap().ids, [1, 3]);
     }
 
     /// B4: risky bulk changes name a moment first; cheap ones do not; the automatic ones are capped at 20 and
