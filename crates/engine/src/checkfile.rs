@@ -13,7 +13,10 @@ use crate::document::Document;
 use crate::validate::{check_spec, Check, CheckKind, CheckSpec};
 use crate::Error;
 
-pub const VERSION: u32 = 1;
+/// The newest file version this release reads. Files are written as version 1 unless they
+/// use something version 1 does not have (a unique rule over several columns), so files
+/// without it stay byte-identical and readable by older releases.
+pub const VERSION: u32 = 2;
 /// Largest rules file read, in bytes.
 pub const MAX_FILE_BYTES: u64 = 4 << 20;
 
@@ -28,6 +31,10 @@ pub struct StoredRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub kind: CheckKind,
+    /// A unique rule's `also` columns by title, in the same order as their numbers in
+    /// `kind` (found the way `title` is; a key column that is gone skips the rule).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_titles: Vec<String>,
 }
 
 /// The file.
@@ -81,6 +88,17 @@ impl ChecksFile {
             ..Default::default()
         };
         check_spec(&spec)?;
+        for r in &f.rules {
+            let also = match &r.kind {
+                CheckKind::Unique { also, .. } => also.len(),
+                _ => 0,
+            };
+            if !r.also_titles.is_empty() && r.also_titles.len() != also {
+                return Err(Error::Invalid(
+                    "the rules file names other key columns that do not match their numbers".into(),
+                ));
+            }
+        }
         Ok(f)
     }
 
@@ -99,18 +117,36 @@ impl ChecksFile {
     /// or newer copy of the file finds its columns again).
     pub fn for_rules(doc: &Document, checks: &[Check], keep_first: bool) -> ChecksFile {
         let titles = doc.rule_titles(keep_first);
+        let rules: Vec<StoredRule> = checks
+            .iter()
+            .map(|c| StoredRule {
+                col: c.col,
+                title: c.col.and_then(|k| titles.get(k as usize).cloned()),
+                name: c.name.clone(),
+                kind: c.kind.clone(),
+                also_titles: match &c.kind {
+                    CheckKind::Unique { also, .. } => also
+                        .iter()
+                        .map(|&k| {
+                            titles
+                                .get(k as usize)
+                                .cloned()
+                                .unwrap_or_else(|| format!("Column {}", k + 1))
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                },
+            })
+            .collect();
+        let version = if rules.iter().any(|r| !r.also_titles.is_empty()) {
+            2
+        } else {
+            1
+        };
         ChecksFile {
-            version: VERSION,
+            version,
             keep_first,
-            rules: checks
-                .iter()
-                .map(|c| StoredRule {
-                    col: c.col,
-                    title: c.col.and_then(|k| titles.get(k as usize).cloned()),
-                    name: c.name.clone(),
-                    kind: c.kind.clone(),
-                })
-                .collect(),
+            rules,
         }
     }
 
@@ -122,15 +158,24 @@ impl ChecksFile {
         let mut checks = Vec::new();
         let mut skipped = 0;
         for r in &self.rules {
-            let col = match (&r.title, r.col) {
-                // Same place when the title still sits there, else the first column with that title.
-                (Some(t), c) => match c.filter(|&k| titles.get(k as usize) == Some(t)) {
-                    Some(k) => Some(k),
-                    None => titles.iter().position(|x| x == t).map(|k| k as u32),
-                },
-                (None, c) => c,
-            };
+            let col = find(&titles, r.title.as_ref(), r.col);
             let mut c = r.check();
+            if let CheckKind::Unique { also, .. } = &mut c.kind {
+                if !r.also_titles.is_empty() {
+                    let found: Option<Vec<u32>> = also
+                        .iter()
+                        .zip(&r.also_titles)
+                        .map(|(&k, t)| find(&titles, Some(t), Some(k)))
+                        .collect();
+                    match found {
+                        Some(v) => *also = v,
+                        None => {
+                            skipped += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
             if !matches!(c.kind, CheckKind::Expression { .. }) {
                 if col.is_none() {
                     skipped += 1;
@@ -179,6 +224,18 @@ impl ChecksFile {
             return Err(e.into());
         }
         Ok(())
+    }
+}
+
+/// A stored column: same place when its title still sits there, else the first column
+/// with that title; by number when it has no title.
+fn find(titles: &[String], title: Option<&String>, col: Option<u32>) -> Option<u32> {
+    match (title, col) {
+        (Some(t), c) => match c.filter(|&k| titles.get(k as usize) == Some(t)) {
+            Some(k) => Some(k),
+            None => titles.iter().position(|x| x == t).map(|k| k as u32),
+        },
+        (None, c) => c,
     }
 }
 
@@ -341,5 +398,61 @@ mod tests {
         let got = f.resolve(&d);
         assert_eq!(got.checks.len(), 1);
         assert_eq!(got.skipped, 3);
+    }
+
+    #[test]
+    fn a_unique_rule_over_several_columns_follows_every_key_column_by_title() {
+        let d = doc("first,last,city\r\nAnn,Lee,Rome\r\n");
+        let rules = vec![Check::new(
+            Some(0),
+            CheckKind::Unique {
+                match_case: false,
+                also: vec![2],
+            },
+        )];
+        let f = ChecksFile::for_rules(&d, &rules, true);
+        assert_eq!(f.version, 2, "a key over several columns needs version 2");
+        assert_eq!(f.rules[0].also_titles, vec!["city".to_string()]);
+        let bytes = serde_json::to_vec(&f).unwrap();
+        let back = ChecksFile::from_bytes(&bytes).unwrap();
+        // Columns turned round: both key columns are found by title.
+        let moved = doc("city,first,last\r\nRome,Ann,Lee\r\n");
+        let got = back.resolve(&moved);
+        assert_eq!(got.skipped, 0);
+        assert_eq!(got.checks[0].col, Some(1));
+        assert_eq!(
+            got.checks[0].kind,
+            CheckKind::Unique {
+                match_case: false,
+                also: vec![0]
+            }
+        );
+        // A key column that is gone skips the whole rule.
+        let lost = doc("first,last\r\nAnn,Lee\r\n");
+        let got = back.resolve(&lost);
+        assert_eq!((got.checks.len(), got.skipped), (0, 1));
+        // Titles that do not match the numbers are refused.
+        assert!(ChecksFile::from_bytes(&file_with(
+            r#"[{"col":0,"kind":{"type":"unique","also":[1]},"also_titles":["a","b"]}]"#
+        ))
+        .is_err());
+        // Without a key over several columns the file is still version 1, byte for byte.
+        let one = ChecksFile::for_rules(&d, &rules_one(), true);
+        assert_eq!(one.version, 1);
+        let text = String::from_utf8(serde_json::to_vec_pretty(&one).unwrap()).unwrap();
+        assert!(!text.contains("also"), "{text}");
+        let old = br#"{"version":1,"keep_first":true,"rules":[{"col":0,"title":"first","kind":{"type":"unique","match_case":false}}]}"#;
+        let f = ChecksFile::from_bytes(old).unwrap();
+        assert_eq!(serde_json::to_vec(&f).unwrap(), old.to_vec());
+    }
+
+    fn rules_one() -> Vec<Check> {
+        vec![Check::new(
+            Some(0),
+            CheckKind::Unique {
+                match_case: false,
+                also: vec![],
+            },
+        )]
     }
 }

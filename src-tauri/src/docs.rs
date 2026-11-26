@@ -9707,7 +9707,10 @@ mod tests {
             checks: vec![Check {
                 name: None,
                 col: Some(0),
-                kind: CheckKind::Unique { match_case: false },
+                kind: CheckKind::Unique {
+                    match_case: false,
+                    also: vec![],
+                },
             }],
             keep_first: true,
             ..Default::default()

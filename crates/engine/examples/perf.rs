@@ -1796,7 +1796,13 @@ fn main() {
     let t = Instant::now();
     let r = big
         .run_checks(
-            &checks(vec![(4, CheckKind::Unique { match_case: false })]),
+            &checks(vec![(
+                4,
+                CheckKind::Unique {
+                    match_case: false,
+                    also: vec![],
+                },
+            )]),
             &p,
         )
         .unwrap();

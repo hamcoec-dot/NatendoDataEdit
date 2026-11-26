@@ -25,6 +25,8 @@ pub const MAX_CHECKS: usize = 200;
 pub const MAX_LISTED: usize = 1_000;
 /// Most values in an allowed-values list.
 pub const MAX_LIST: usize = 100_000;
+/// Most columns in one unique rule's key (its column and the `also` columns).
+pub const MAX_KEY_COLS: usize = 8;
 /// Longest value shown in the problem list, in characters.
 const SHOWN_CHARS: usize = 200;
 /// Rows per parallel task.
@@ -66,9 +68,14 @@ pub enum CheckKind {
     Pattern {
         pattern: Pattern,
     },
+    /// No two rows share a value; with `also`, no two rows share the values of the
+    /// rule's column and every `also` column together (a row whose key parts are all
+    /// blank passes). At most `MAX_KEY_COLS` columns in all, none twice.
     Unique {
         #[serde(default)]
         match_case: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        also: Vec<u32>,
     },
     /// The row passes when the expression is TRUE.
     Expression {
@@ -189,8 +196,27 @@ enum Test {
         match_case: bool,
     },
     Pattern(Matcher),
-    Unique,
+    /// The other key columns (`also`), marked with the rule's column when a row repeats.
+    Unique(Vec<u32>),
     Expr(Expr),
+}
+
+/// A unique rule's `also` columns, checked: at most `MAX_KEY_COLS` in the key, none twice,
+/// not the rule's own column.
+fn key_also(col: u32, also: &[u32]) -> Result<(), Error> {
+    if also.len() + 1 > MAX_KEY_COLS {
+        return Err(Error::Invalid(format!(
+            "a unique rule can use at most {MAX_KEY_COLS} columns together"
+        )));
+    }
+    for (i, &k) in also.iter().enumerate() {
+        if k == col || also[..i].contains(&k) {
+            return Err(Error::Invalid(
+                "a unique rule names the same column twice".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 struct Compiled {
@@ -295,7 +321,14 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
                 p.whole_cell = true;
                 Test::Pattern(Matcher::new(&p)?)
             }
-            CheckKind::Unique { .. } => Test::Unique,
+            CheckKind::Unique { also, .. } => {
+                let col = c.col.expect("checked above");
+                key_also(col, also)?;
+                check_cols(d, also)?;
+                // Read right after the rule's column (`at + 1 ..`), for the problem list.
+                reader_cols.extend_from_slice(also);
+                Test::Unique(also.clone())
+            }
             CheckKind::Expression { expr } => {
                 let e = Expr::parse(expr, &names)?;
                 check_cols(d, e.columns())?;
@@ -353,7 +386,7 @@ impl Compiled {
             return !matches!(t, Test::Required);
         }
         match t {
-            Test::Required | Test::Unique | Test::Expr(_) => true,
+            Test::Required | Test::Unique(_) | Test::Expr(_) => true,
             Test::DateIso => is_iso_date(v),
             // A check the person wrote reads cells by its own rule (not by the column's type).
             Test::Number { min, max, whole } => match plain.number(v) {
@@ -450,6 +483,11 @@ impl Check {
             CheckKind::Length { min, max } => range("Length", min, max),
             CheckKind::List { values, .. } => format!("One of {} values", values.len()),
             CheckKind::Pattern { pattern } => format!("Matches {}", pattern.text),
+            CheckKind::Unique { also, .. } if !also.is_empty() => format!(
+                "Unique together with {} other column{} (no repeats)",
+                also.len(),
+                if also.len() == 1 { "" } else { "s" }
+            ),
             CheckKind::Unique { .. } => "Unique (no repeats)".into(),
             CheckKind::Expression { expr } => format!("Row rule: {expr}"),
         }
@@ -490,9 +528,11 @@ impl Document {
         let mut repeats: Vec<(u32, Vec<u64>)> = Vec::new();
         let base = self.next_row_id();
         for (i, ch) in spec.checks.iter().enumerate() {
-            if let CheckKind::Unique { match_case } = ch.kind {
-                let col = ch.col.expect("checked");
-                let leader = self.group_rows(rows.clone(), &[col], match_case, true, progress)?;
+            if let CheckKind::Unique { match_case, also } = &ch.kind {
+                let match_case = *match_case;
+                let mut key = vec![ch.col.expect("checked")];
+                key.extend_from_slice(also);
+                let leader = self.group_rows(rows.clone(), &key, match_case, true, progress)?;
                 let mut in_group = vec![false; leader.len()];
                 for (k, &l) in leader.iter().enumerate() {
                     if l as usize != k {
@@ -501,8 +541,8 @@ impl Document {
                     }
                 }
                 let mut bits = vec![0u64; (base as usize).div_ceil(64)];
-                let reader = Cols::new(self, &[col]);
-                // Repeated rows with a value, found in parallel chunks.
+                let reader = Cols::new(self, &key);
+                // Repeated rows with a value (some key part not blank), found in parallel chunks.
                 let ids: Vec<Vec<u32>> = in_group
                     .par_chunks(1 << 16)
                     .enumerate()
@@ -514,7 +554,7 @@ impl Document {
                                 let at = rows.start + (c * (1 << 16) + k) as u64;
                                 let id = self.id_at(at).ok_or(Error::OutOfRange)?;
                                 reader.read(self, id, &mut buf);
-                                if !reader.get(&buf, 0).trim().is_empty() {
+                                if (0..key.len()).any(|k| !reader.get(&buf, k).trim().is_empty()) {
                                     out.push(id);
                                 }
                             }
@@ -548,7 +588,7 @@ impl Document {
                     let mut bad = false;
                     for i in 0..n {
                         let ok = match &c.tests[i] {
-                            Test::Unique => !repeats
+                            Test::Unique(_) => !repeats
                                 .iter()
                                 .find(|x| x.0 == i as u32)
                                 .is_some_and(|x| bit(&x.1, id)),
@@ -563,9 +603,16 @@ impl Document {
                                     Test::Expr(_) => None,
                                     _ => Some(c.reader_cols[c.at[i]]),
                                 };
-                                let value = match col {
-                                    Some(_) => cut(reader.get(&buf, c.at[i])),
-                                    None => String::new(),
+                                let value = match (col, &c.tests[i]) {
+                                    (None, _) => String::new(),
+                                    (Some(_), Test::Unique(also)) if !also.is_empty() => {
+                                        let a = c.at[i];
+                                        cut(&(a..=a + also.len())
+                                            .map(|k| reader.get(&buf, k))
+                                            .collect::<Vec<_>>()
+                                            .join(" | "))
+                                    }
+                                    (Some(_), _) => cut(reader.get(&buf, c.at[i])),
                                 };
                                 p.listed.push(Problem {
                                     row: r,
@@ -769,7 +816,7 @@ impl Document {
                     let mut text = String::new();
                     for (i, name) in names.iter().enumerate().take(n) {
                         let ok = match &c.tests[i] {
-                            Test::Unique => !report
+                            Test::Unique(_) => !report
                                 .repeats
                                 .iter()
                                 .find(|x| x.0 == i as u32)
@@ -1084,11 +1131,37 @@ impl Document {
                     Test::Expr(_) => None,
                     _ => Some(c.reader_cols[c.at[i]]),
                 };
+                // A repeated key marks every key cell in the area (the rule's column and `also`).
+                if let Test::Unique(also) = &c.tests[i] {
+                    if !also.is_empty() {
+                        let key =
+                            std::iter::once(mc.expect("a column")).chain(also.iter().copied());
+                        let todo: Vec<u32> = key
+                            .filter(|k| cols.contains(k) && !done.contains(&Some(*k)))
+                            .collect();
+                        if !todo.is_empty()
+                            && repeats
+                                .iter()
+                                .find(|x| x.0 == i as u32)
+                                .is_some_and(|x| bit(&x.1, id))
+                        {
+                            for k in todo {
+                                out.push(CheckMark {
+                                    row: r,
+                                    col: Some(k),
+                                    check: i as u32,
+                                });
+                                done.push(Some(k));
+                            }
+                        }
+                        continue;
+                    }
+                }
                 if mc.is_some_and(|m| !cols.contains(&m)) || done.contains(&mc) {
                     continue;
                 }
                 let ok = match &c.tests[i] {
-                    Test::Unique => !repeats
+                    Test::Unique(_) => !repeats
                         .iter()
                         .find(|x| x.0 == i as u32)
                         .is_some_and(|x| bit(&x.1, id)),
@@ -1126,6 +1199,11 @@ pub fn check_spec(spec: &CheckSpec) -> Result<(), Error> {
             CheckKind::List { values, .. } if values.len() > MAX_LIST => {
                 return Err(Error::Invalid(format!(
                     "a list can hold at most {MAX_LIST} values"
+                )))
+            }
+            CheckKind::Unique { also, .. } if also.len() + 1 > MAX_KEY_COLS => {
+                return Err(Error::Invalid(format!(
+                    "a unique rule can use at most {MAX_KEY_COLS} columns together"
                 )))
             }
             CheckKind::Expression { expr }
@@ -1302,7 +1380,13 @@ mod tests {
                     },
                 },
             ),
-            Check::new(Some(3), CheckKind::Unique { match_case: false }),
+            Check::new(
+                Some(3),
+                CheckKind::Unique {
+                    match_case: false,
+                    also: vec![],
+                },
+            ),
             // A row rule: the row's b and c must differ in length.
             Check::new(
                 None,
@@ -1441,7 +1525,10 @@ mod tests {
             Check {
                 name: None,
                 col: Some(0),
-                kind: CheckKind::Unique { match_case: false },
+                kind: CheckKind::Unique {
+                    match_case: false,
+                    also: vec![],
+                },
             },
             Check {
                 name: None,
@@ -1666,5 +1753,115 @@ mod field_tests {
         assert_eq!(d.cell(0, 2).unwrap(), "Check result");
         assert_eq!(d.cell(1, 2).unwrap(), "Fails: zip: pattern");
         assert_eq!(d.cell(3, 2).unwrap(), "OK");
+    }
+
+    fn spec(checks: Vec<Check>) -> CheckSpec {
+        CheckSpec {
+            checks,
+            keep_first: true,
+            ..Default::default()
+        }
+    }
+
+    fn uniq(col: u32, also: Vec<u32>, match_case: bool) -> Check {
+        Check::new(Some(col), CheckKind::Unique { match_case, also })
+    }
+
+    fn key_doc() -> Document {
+        Document::from_bytes(
+            b"first,last,city,n\r\nAnn,Lee,Rome,1\r\nann,Lee,Rome,2\r\nAnn,Lee,Oslo,3\r\nAnn,Lee,Rome,4\r\n,,,5\r\n,,,6\r\nBo,,,7\r\nBo,,,8\r\n"
+                .to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_unique_rule_over_several_columns_finds_rows_that_repeat_them_together() {
+        let d = key_doc();
+        let p = Progress::new();
+        // first + last alone: Ann/ann Lee x4 (no case) and Bo x2 repeat; the all-blank rows pass.
+        let r = d
+            .run_checks(&spec(vec![uniq(0, vec![1], false)]), &p)
+            .unwrap();
+        assert_eq!(r.per_check, vec![6]);
+        // With the city as well: Ann/ann Lee Rome x3 and Bo x2 (blank parts compare equal).
+        let r = d
+            .run_checks(&spec(vec![uniq(0, vec![1, 2], false)]), &p)
+            .unwrap();
+        assert_eq!(r.per_check, vec![5]);
+        let rows: Vec<u64> = r.listed.iter().map(|x| x.row).collect();
+        assert_eq!(rows, vec![1, 2, 4, 7, 8]);
+        assert_eq!(r.listed[0].value, "Ann | Lee | Rome");
+        assert_eq!(r.listed[0].col, Some(0));
+        // Matching case: ann is not Ann.
+        let r = d
+            .run_checks(&spec(vec![uniq(0, vec![1, 2], true)]), &p)
+            .unwrap();
+        assert_eq!(r.per_check, vec![4]);
+        // A one-column rule is unchanged: first only, no case.
+        let r = d
+            .run_checks(&spec(vec![uniq(0, vec![], false)]), &p)
+            .unwrap();
+        assert_eq!(r.per_check, vec![6]);
+        assert_eq!(r.listed[0].value, "Ann");
+    }
+
+    #[test]
+    fn a_repeated_key_marks_every_key_cell_and_nothing_else() {
+        let d = key_doc();
+        let s = spec(vec![uniq(0, vec![2], false)]);
+        let r = d.run_checks(&s, &Progress::new()).unwrap();
+        let marks = d.check_marks(0, 20, 0, 4, &s, &r.repeats).unwrap();
+        for col in [0, 2] {
+            assert!(marks.contains(&CheckMark {
+                row: 1,
+                col: Some(col),
+                check: 0
+            }));
+        }
+        assert!(!marks.iter().any(|m| m.col == Some(1) || m.col == Some(3)));
+        assert!(!marks.iter().any(|m| m.row == 3), "Oslo is not repeated");
+        // An area that holds only the other key column still marks it.
+        let marks = d.check_marks(0, 20, 2, 1, &s, &r.repeats).unwrap();
+        assert!(marks.iter().all(|m| m.col == Some(2)) && !marks.is_empty());
+        // Go To Special sees the same cells.
+        let all = d
+            .problem_marks(0..d.row_count(), &s, &r.repeats, &Progress::new())
+            .unwrap();
+        assert_eq!(all.len(), marks.len() * 2);
+    }
+
+    #[test]
+    fn a_unique_key_with_too_many_or_repeated_columns_is_refused() {
+        let d = key_doc();
+        let p = Progress::new();
+        for also in [vec![0], vec![1, 1], vec![9]] {
+            assert!(
+                d.run_checks(&spec(vec![uniq(0, also.clone(), false)]), &p)
+                    .is_err(),
+                "{also:?}"
+            );
+        }
+        let wide = Document::from_bytes(
+            b"a,b,c,d,e,f,g,h,i\r\n1,2,3,4,5,6,7,8,9\r\n".to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        assert!(wide
+            .run_checks(&spec(vec![uniq(0, (1..8).collect(), false)]), &p)
+            .is_ok());
+        let nine = spec(vec![uniq(0, (1..9).collect(), false)]);
+        assert!(wide.run_checks(&nine, &p).is_err());
+        assert!(check_spec(&nine).is_err());
+        assert_eq!(
+            uniq(0, vec![1, 2], false).describe(),
+            "Unique together with 2 other columns (no repeats)"
+        );
+        // Stored without `also` when there is none (older files and views read the same).
+        let json = serde_json::to_string(&uniq(0, vec![], false)).unwrap();
+        assert!(!json.contains("also"), "{json}");
     }
 }
