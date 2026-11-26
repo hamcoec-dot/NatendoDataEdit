@@ -23,8 +23,8 @@ use crate::source::Source;
 use crate::Error;
 
 pub mod ragged;
-pub mod report;
 pub mod repair;
+pub mod report;
 pub mod since;
 
 /// Highest column index an edit may write (keeps a typo from allocating

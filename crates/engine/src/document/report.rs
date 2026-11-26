@@ -583,7 +583,11 @@ impl Document {
             return Err(Error::TooManyRows);
         }
         // New ids for rows read from text.
-        let fresh = head.iter().chain(&foot).filter(|(id, _)| *id == u32::MAX).count() as u32;
+        let fresh = head
+            .iter()
+            .chain(&foot)
+            .filter(|(id, _)| *id == u32::MAX)
+            .count() as u32;
         let mut next = self.new_row_ids(fresh)?;
         for (id, _) in head.iter_mut().chain(foot.iter_mut()) {
             if *id == u32::MAX {
@@ -602,7 +606,10 @@ impl Document {
             ops.push(Op::Insert { at: 0, rows: head });
         }
         if !foot.is_empty() {
-            ops.push(Op::Insert { at: end, rows: foot });
+            ops.push(Op::Insert {
+                at: end,
+                rows: foot,
+            });
         }
         ops.push(Op::SetNotes(Box::new(notes)));
         self.push(Op::Batch(ops));
@@ -735,7 +742,9 @@ mod tests {
     }
 
     fn rows(d: &Document) -> Vec<Vec<String>> {
-        (0..d.row_count()).map(|r| d.row_values(r).unwrap()).collect()
+        (0..d.row_count())
+            .map(|r| d.row_values(r).unwrap())
+            .collect()
     }
 
     fn saved(d: &Document) -> Vec<u8> {
@@ -818,12 +827,21 @@ mod tests {
     #[test]
     fn refused_while_hidden_and_away_from_the_ends() {
         let mut d = doc(REPORT);
-        let e = d.set_aside_check(1, 2, Place::Head).unwrap_err().to_string();
+        let e = d
+            .set_aside_check(1, 2, Place::Head)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("select rows 1-2"), "{e}");
-        let e = d.set_aside_check(1, 2, Place::Foot).unwrap_err().to_string();
+        let e = d
+            .set_aside_check(1, 2, Place::Foot)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("select rows 4-5"), "{e}");
         d.hide_rows(2, 1).unwrap();
-        let e = d.set_aside_check(0, 1, Place::Head).unwrap_err().to_string();
+        let e = d
+            .set_aside_check(0, 1, Place::Head)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("show all rows first"), "{e}");
     }
 
@@ -844,8 +862,14 @@ mod tests {
         d.apply_sort(p).unwrap();
         // amount sorted high to low as text: Total,6 first, ann,1 last.
         let last = d.total_rows() - 1;
-        let e = d.set_aside_check(last, 1, Place::Foot).unwrap_err().to_string();
-        assert!(e.contains("rows 5 of the file") || e.contains("row 5"), "{e}");
+        let e = d
+            .set_aside_check(last, 1, Place::Foot)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("rows 5 of the file") || e.contains("row 5"),
+            "{e}"
+        );
         assert!(e.contains("your selection (rows 5 on screen)"), "{e}");
     }
 
@@ -1069,7 +1093,9 @@ mod tests {
             let mut src = String::new();
             for _ in 0..rows_n {
                 let w = 1 + next(3) as usize;
-                let row: Vec<&str> = (0..w).map(|_| cells[next(cells.len() as u64) as usize]).collect();
+                let row: Vec<&str> = (0..w)
+                    .map(|_| cells[next(cells.len() as u64) as usize])
+                    .collect();
                 src.push_str(&row.join(","));
                 src.push_str(lb);
             }
@@ -1082,14 +1108,18 @@ mod tests {
             let total = d.total_rows();
             let h = next(2).min(total - 2);
             let f = 1 + next(1);
-            let head: Vec<u8> = (0..h).flat_map(|i| {
-                let (a, b) = d.index.row_range(i).unwrap();
-                d.source.bytes()[a..b].to_vec()
-            }).collect();
-            let foot: Vec<u8> = (total - f..total).flat_map(|i| {
-                let (a, b) = d.index.row_range(i).unwrap();
-                d.source.bytes()[a..b].to_vec()
-            }).collect();
+            let head: Vec<u8> = (0..h)
+                .flat_map(|i| {
+                    let (a, b) = d.index.row_range(i).unwrap();
+                    d.source.bytes()[a..b].to_vec()
+                })
+                .collect();
+            let foot: Vec<u8> = (total - f..total)
+                .flat_map(|i| {
+                    let (a, b) = d.index.row_range(i).unwrap();
+                    d.source.bytes()[a..b].to_vec()
+                })
+                .collect();
             d.set_aside_rows(total - f, f, Place::Foot).unwrap();
             if h > 0 {
                 d.set_aside_rows(0, h, Place::Head).unwrap();
@@ -1149,12 +1179,19 @@ mod tests {
         assert!(!d.undo());
         // Too few rows.
         let mut small = Document::from_bytes(b"a,b\n1,2\n".to_vec(), opts, None).unwrap();
-        let e = small.run_recipe(&r, 0.0, 1, &Progress::new()).unwrap_err().to_string();
+        let e = small
+            .run_recipe(&r, 0.0, 1, &Progress::new())
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("too few"), "{e}");
         // A row to set aside wider than the title row: data, not a note.
         let mut wide =
-            Document::from_bytes(b"x,y,z\nq\nname,n\nann,1\nTotal,1\n".to_vec(), opts, None).unwrap();
-        let e = wide.run_recipe(&r, 0.0, 1, &Progress::new()).unwrap_err().to_string();
+            Document::from_bytes(b"x,y,z\nq\nname,n\nann,1\nTotal,1\n".to_vec(), opts, None)
+                .unwrap();
+        let e = wide
+            .run_recipe(&r, 0.0, 1, &Progress::new())
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("looks like data"), "{e}");
         assert_eq!(wide.total_rows(), 5);
     }

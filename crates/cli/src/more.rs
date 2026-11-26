@@ -403,10 +403,17 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
     if a.dry_run {
         // A "set aside" step shows the lines it would take out of the table
         // (worked out in memory: the steps run, nothing is written).
-        if recipe.steps.iter().any(|s| {
-            matches!(s, natendo_engine::recipe::RecipeOp::SetAside { .. })
-        }) {
-            match d.run_recipe(&recipe, natendo_engine::clean::now_utc(), 1, &Progress::new()) {
+        if recipe
+            .steps
+            .iter()
+            .any(|s| matches!(s, natendo_engine::recipe::RecipeOp::SetAside { .. }))
+        {
+            match d.run_recipe(
+                &recipe,
+                natendo_engine::clean::now_utc(),
+                1,
+                &Progress::new(),
+            ) {
                 Ok(_) => {
                     let n = d.report_notes();
                     let lines = |t: &str| t.lines().map(str::to_string).collect::<Vec<_>>();

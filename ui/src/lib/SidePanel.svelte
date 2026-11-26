@@ -344,6 +344,7 @@
   }
   .tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: 2px;
     padding: 4px;
     border-bottom: 1px solid var(--line);

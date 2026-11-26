@@ -504,12 +504,14 @@ impl Document {
     ) -> Result<(Vec<u8>, usize, String), Error> {
         let target = plan.target;
         let (text, bad) = encoding::decode_direct_checked(b, self.working_encoding());
-        if bad && !plan.allow_lossy {
-            return Err(Error::Lossy { row: None });
-        }
         let mut text = text.into_owned();
+        // The same bytes in the same encoding: written as they are (bytes
+        // that do not decode included, as for the table's own rows).
         if plan.raw_ok || (src.encoding.is_direct() && target.encoding == src.encoding) {
             return Ok((b.to_vec(), b.len(), text));
+        }
+        if bad && !plan.allow_lossy {
+            return Err(Error::Lossy { row: None });
         }
         if plan.fffd_as_question && text.contains('\u{FFFD}') {
             text = text.replace('\u{FFFD}', "?");
