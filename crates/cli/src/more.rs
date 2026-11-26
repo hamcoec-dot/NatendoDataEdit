@@ -650,18 +650,178 @@ fn read_checks(path: &str, d: &Document, header: bool) -> Result<CheckSpec, Stri
     })
 }
 
+/// Most `--table` files for one run.
+const MAX_TABLES: usize = 8;
+
+/// `--table` names and their files.
+type NamedFiles<'a> = Vec<(String, &'a str)>;
+
+/// `--table name=file` pairs (split at the first `=`, so a path may hold `=`), taken out of
+/// `args`. Refused: no `=`, an empty name or file, a name given twice, more than 8.
+fn take_tables<'a>(args: &[&'a str]) -> Result<(NamedFiles<'a>, Vec<&'a str>), String> {
+    let mut tables: Vec<(String, &str)> = Vec::new();
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(&x) = it.next() {
+        if x != "--table" {
+            rest.push(x);
+            continue;
+        }
+        let v = it.next().ok_or("--table needs name=file")?;
+        let (name, file) = v
+            .split_once('=')
+            .ok_or("--table takes name=file, like --table precincts=C:\\data\\precincts.csv")?;
+        let name = name.trim();
+        if name.is_empty() || file.is_empty() {
+            return Err("--table takes name=file: the name and the file may not be empty".into());
+        }
+        if tables.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
+            return Err(format!("--table {name} is given twice"));
+        }
+        tables.push((name.to_string(), file));
+        if tables.len() > MAX_TABLES {
+            return Err(format!("at most {MAX_TABLES} --table files"));
+        }
+    }
+    Ok((tables, rest))
+}
+
+/// Read the tables the "value must exist in" rules name: from `--table` files, or the input
+/// file itself when a rule names it (by file name, or file name without its extension).
+/// A rule whose table is not given, or a `--table` no rule uses, is an error (exit 2), so a
+/// script never passes because a rule did not run.
+fn bind_tables(
+    spec: &mut CheckSpec,
+    d: &Document,
+    input: &str,
+    tables: &[(String, &str)],
+) -> Result<(), String> {
+    use natendo_engine::keyset::{KeyBinding, KeySet};
+    use natendo_engine::validate::CheckKind;
+    use std::sync::Arc;
+    let file_name = std::path::Path::new(input)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let is_input = |name: &str| {
+        let n = name.trim().to_lowercase();
+        n == file_name
+            || file_name
+                .rsplit_once('.')
+                .is_some_and(|(stem, _)| stem == n)
+    };
+    let mut loaded: Vec<(String, Document)> = Vec::new();
+    let mut used = vec![false; tables.len()];
+    let mut keys = Vec::with_capacity(spec.checks.len());
+    let budget = natendo_engine::sysmem::installed_bytes()
+        .map_or(1 << 30, |b| b / 4)
+        .min(2 << 30);
+    for (i, c) in spec.checks.iter().enumerate() {
+        let CheckKind::ForeignKey {
+            table,
+            column,
+            match_case,
+            trim,
+            ..
+        } = &c.kind
+        else {
+            keys.push(KeyBinding::None);
+            continue;
+        };
+        let given = tables
+            .iter()
+            .position(|(n, _)| n.eq_ignore_ascii_case(table.trim()));
+        let other: &Document = match given {
+            Some(k) => {
+                used[k] = true;
+                if !loaded.iter().any(|(n, _)| n == &tables[k].0) {
+                    let o = load(tables[k].1, 0)?;
+                    loaded.push((tables[k].0.clone(), o));
+                }
+                &loaded
+                    .iter()
+                    .find(|(n, _)| n == &tables[k].0)
+                    .expect("loaded")
+                    .1
+            }
+            None if is_input(table) => d,
+            None => {
+                return Err(format!(
+                    "rule {} reads the table {}: give it with --table {}=<file>",
+                    i + 1,
+                    table.trim(),
+                    table.trim()
+                ))
+            }
+        };
+        let keep_first = if std::ptr::eq(other, d) {
+            spec.keep_first
+        } else {
+            true
+        };
+        let titles = other.expr_names(keep_first);
+        let want = column.trim().to_lowercase();
+        let col = titles
+            .iter()
+            .position(|t| t.trim().to_lowercase() == want)
+            .ok_or_else(|| {
+                format!(
+                    "rule {}: {} has no column {}",
+                    i + 1,
+                    table.trim(),
+                    column.trim()
+                )
+            })?;
+        let mut set = KeySet::build(
+            other,
+            col as u32,
+            keep_first,
+            *match_case,
+            *trim,
+            budget,
+            &Progress::new(),
+        )
+        .map_err(|e| format!("rule {}: {e}", i + 1))?;
+        set.source.table = table.trim().to_string();
+        set.source.column = titles[col].clone();
+        keys.push(KeyBinding::Ready(Arc::new(set)));
+    }
+    if let Some(k) = used.iter().position(|u| !u) {
+        return Err(format!("--table {} is not read by any rule", tables[k].0));
+    }
+    spec.keys = keys;
+    Ok(())
+}
+
 /// Run checks; `Ok(true)` when there are no problems.
 pub fn validate(args: &[&str], json_out: bool) -> Result<bool, String> {
-    let a = parse(args, &["--checks", "--no-header", "--sheet"])?;
+    let (tables, args) = take_tables(args)?;
+    let a = parse(&args, &["--checks", "--no-header", "--sheet"])?;
     let ([input], Some(checks)) = (a.plain.as_slice(), a.checks) else {
         return Err(USAGE.to_string());
     };
     let d = load(input, a.sheet)?;
-    let spec = read_checks(checks, &d, a.header)?;
+    let mut spec = read_checks(checks, &d, a.header)?;
+    bind_tables(&mut spec, &d, input, &tables)?;
     let r = d
         .run_checks(&spec, &Progress::new())
         .map_err(|e| e.to_string())?;
+    if let Some(n) = r.not_run.first() {
+        return Err(format!("rule {} did not run: {}", n.check + 1, n.why));
+    }
     let names = d.expr_names(a.header);
+    let foreign: Vec<Value> = r
+        .tables
+        .iter()
+        .map(|t| {
+            json!({
+                "check": t.check + 1,
+                "table": t.source.table,
+                "column": t.source.column,
+                "missing": r.per_check.get(t.check as usize).copied().unwrap_or(0),
+            })
+        })
+        .collect();
     if json_out {
         let problems: Vec<Value> = r
             .listed
@@ -681,6 +841,7 @@ pub fn validate(args: &[&str], json_out: bool) -> Result<bool, String> {
             "problems": r.problems,
             "per_check": r.per_check,
             "listed": problems,
+            "foreign_keys": foreign,
         }));
     } else {
         println!(
