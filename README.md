@@ -815,6 +815,17 @@ everything is also in command search.
   is edited, sorted or filtered, you run it again. A slice involving a private
   tab is private.
   ![Compare lists: three lists of made-up voters, counted slice by slice](docs/screenshots/compare-lists.png)
+- **Find relationships** (Data > Find relationships, or right-click a column
+  heading): pick up to 40 columns and see which settle which (ZIP -> State
+  holds in 99.7% of rows), which pairs are one to one, and which are blank
+  together. Only rows whose first value appears twice or more count, and each
+  line says how many that is; a pair that holds only because a column is mostly
+  one value is set aside. Big tables are scanned from a sample and the best 25
+  lines counted again over every row. Show the exceptions filters to the rows
+  that break a line. Values are compared exactly, so TN and tn differ: clean
+  first if capitals should not count. Turning a line into a data check is not
+  available yet.
+  ![Find relationships: ZIP settles State, with its exceptions](docs/screenshots/relations.png)
 - **Compare two columns** (Data > Compare two columns, or right-click a
   heading): for each row, are the two cells the same, different, or filled in
   only one? Light up the rows that differ, show only them, or add a column

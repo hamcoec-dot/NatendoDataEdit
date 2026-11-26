@@ -13,6 +13,7 @@
 
 use natendo_engine::document::since::SincePlan;
 use natendo_engine::gaps::{GapReport, GapsSpec};
+use natendo_engine::relations::{RelationKind, RelationsReport, RelationsSpec};
 use natendo_engine::sets::{
     report_table, slice_name, SetsBuilder, SetsReport, SetsResult, SetsSpec,
 };
@@ -423,6 +424,9 @@ pub struct Entry {
     /// The last gap audit, with the revision it read (for "show the rows
     /// next to each gap").
     gaps: Mutex<Option<(u64, Arc<GapReport>)>>,
+    /// The last relationship scan, with the revision it read (for "show the
+    /// exceptions").
+    relations: Mutex<Option<(u64, Arc<RelationsReport>)>>,
     /// The quick totals being worked out for the selection, if any: a newer
     /// selection or any change cancels them.
     totals: Mutex<Option<Arc<Progress>>>,
@@ -802,6 +806,12 @@ pub enum DataOp {
     /// Show only the rows next to the gaps the last audit of `spec` found.
     ShowGapRows {
         spec: GapsSpec,
+    },
+    /// Show only the rows that break one line of the last relationship scan.
+    ShowRelationExceptions {
+        kind: RelationKind,
+        a: u32,
+        b: u32,
     },
     /// Put the rows that fail the checks first.
     SortProblems {
@@ -1410,6 +1420,11 @@ fn recipe_step(op: &DataOp) -> Logged {
         DataOp::ShowRagged { .. } => {
             return Logged::LeftOut("showing ragged rows (a view, not a change)".into())
         }
+        DataOp::ShowRelationExceptions { .. } => {
+            return Logged::LeftOut(
+                "showing the exceptions to a relationship (a view, not a change)".into(),
+            )
+        }
         DataOp::ShowGapRows { .. } => {
             return Logged::LeftOut("showing the rows next to gaps (a view, not a change)".into())
         }
@@ -1930,6 +1945,7 @@ impl Docs {
             peeking: AtomicBool::new(false),
             checks: Mutex::new(None),
             gaps: Mutex::new(None),
+            relations: Mutex::new(None),
             totals: Mutex::new(None),
             find_count: Mutex::new(None),
             ghost_count: Mutex::new(None),
@@ -6111,7 +6127,8 @@ impl Docs {
             DataOp::ShowProblems { .. }
             | DataOp::ShowRagged { .. }
             | DataOp::ShowShape { .. }
-            | DataOp::ShowGapRows { .. } => "Filtering",
+            | DataOp::ShowGapRows { .. }
+            | DataOp::ShowRelationExceptions { .. } => "Filtering",
             DataOp::CompareShow { .. } | DataOp::CompareColumn { .. } => "Comparing",
             DataOp::FormulaFilter { .. } => "Filtering",
             DataOp::SortProblems { .. } | DataOp::CheckColumn { .. } => "Checking",
@@ -6206,6 +6223,15 @@ impl Docs {
             DataOp::ShowGapRows { .. } => self
                 .get(id)?
                 .gaps
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
+            _ => None,
+        };
+        let last_relations = match &op {
+            DataOp::ShowRelationExceptions { .. } => self
+                .get(id)?
+                .relations
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone(),
@@ -6308,6 +6334,21 @@ impl Docs {
                     Planned::Rows(d.plan_show_problems(&rep, spec.keep_first, *passing)?)
                 }
                 DataOp::ShowShape { spec } => Planned::Rows(d.plan_shape_filter(spec, p)?),
+                DataOp::ShowRelationExceptions { kind, a, b } => {
+                    let report = last_relations
+                        .as_ref()
+                        .filter(|(rev, _)| *rev == d.revision())
+                        .map(|(_, r)| r)
+                        .filter(|r| {
+                            r.findings
+                                .iter()
+                                .any(|f| (f.kind, f.a, f.b) == (*kind, *a, *b))
+                        })
+                        .ok_or_else(|| {
+                            Error::Invalid("the table changed since the scan: scan again".into())
+                        })?;
+                    Planned::Rows(d.plan_relation_exceptions(report, *kind, *a, *b, p)?)
+                }
                 DataOp::ShowGapRows { spec } => {
                     let report = last_gaps
                         .as_ref()
@@ -7062,6 +7103,17 @@ impl Docs {
         let job = entry.start("Cleaning preview")?;
         let d = entry.read();
         Ok(d.preview_clean_matrix(spec, now, 1, &job.progress)?)
+    }
+
+    /// Look for relationships among columns (a job: progress and Cancel).
+    pub fn find_relations(&self, id: u32, spec: &RelationsSpec) -> CmdResult<RelationsReport> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for relationships")?;
+        let d = entry.read();
+        let r = d.find_relations(spec, &job.progress)?;
+        *entry.relations.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((d.revision(), Arc::new(r.clone())));
+        Ok(r)
     }
 
     /// Find the numbers missing from a column (a job: progress and Cancel).
@@ -12568,6 +12620,38 @@ B,y
         docs.sets_close(runs[4]);
         let why = docs.sets_table(runs[4]).unwrap_err();
         assert!(why.message.contains("run the comparison again"));
+    }
+
+    #[test]
+    fn relationship_exceptions_follow_the_last_scan() {
+        let docs = Docs::default();
+        let mut body = String::from("zip,state\r\n");
+        for i in 0..200 {
+            let state = if i == 7 { 9 } else { i % 10 % 3 };
+            body.push_str(&format!("z{},s{state}\r\n", i % 10));
+        }
+        let id = docs
+            .open_path(&tmp("relations.csv", body.as_bytes()), false)
+            .unwrap()
+            .id;
+        wait(&docs, id);
+        let show = |a, b| DataOp::ShowRelationExceptions {
+            kind: RelationKind::Depends,
+            a,
+            b,
+        };
+        assert!(docs.data_op(id, show(0, 1)).is_err(), "no scan yet");
+        let spec = RelationsSpec {
+            cols: vec![0, 1],
+            ..Default::default()
+        };
+        let r = docs.find_relations(id, &spec).unwrap();
+        assert_eq!(r.findings.len(), 1, "{:?}", r.findings);
+        assert!(docs.data_op(id, show(1, 0)).is_err(), "not a line found");
+        assert_eq!(docs.data_op(id, show(0, 1)).unwrap().rows, 1);
+        // The view changed the table: the old scan is not used.
+        assert!(docs.data_op(id, show(0, 1)).is_err());
+        assert!(docs.recipe_of(id, true, "r").unwrap().steps.is_empty());
     }
 
     #[test]

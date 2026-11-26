@@ -4,6 +4,7 @@
 // behave the same at the command level.
 
 import type { GapReport, GapsSpec } from "./gaps";
+import type { RelationsReport, RelationsSpec } from "./relations";
 import { countsText, sliceName, type SetsRun, type SetsSpec } from "./sets";
 import type { CleanMatrix, MatrixPreview, NamedCleaner } from "./matrix";
 import { dateReadings } from "./dates";
@@ -2656,6 +2657,55 @@ export class MockBackend implements Backend {
     this.compared.delete(id);
   }
 
+  /** The browser preview's relationship scan: dependencies only, over every
+   *  row (the desktop app does one to one, blanks and sampling). */
+  private relations(d: ReturnType<MockBackend["get"]>, spec: RelationsSpec): { report: RelationsReport; odd: Map<string, number[]> } {
+    const first = spec.header ? 1 : 0;
+    const rows = this.rowCount(d) - first;
+    if (rows > 100_000) throw err("too_large", "the browser preview scans at most 100,000 rows");
+    const data = spec.cols.map((c) => Array.from({ length: rows }, (_, r) => this.value(d, r + first, c).trim()));
+    const report: RelationsReport = { findings: [], left_out: [], mostly_one: [], rows, sampled: rows, unchecked: 0 };
+    const odd = new Map<string, number[]>();
+    spec.cols.forEach((a, i) => {
+      spec.cols.forEach((b, j) => {
+        if (i === j) return;
+        const groups = new Map<string, number[]>();
+        data[i]!.forEach((v, r) => v && data[j]![r] && (groups.get(v) ?? groups.set(v, []).get(v)!).push(r));
+        if (groups.size < 2) return;
+        let coverage = 0;
+        let agreeing = 0;
+        let values = 0;
+        let broken = 0;
+        const out: number[] = [];
+        for (const g of groups.values()) {
+          if (g.length < 2) continue;
+          const n = new Map<string, number>();
+          for (const r of g) n.set(data[j]![r]!, (n.get(data[j]![r]!) ?? 0) + 1);
+          const [best, most] = [...n].sort((x, y) => y[1] - x[1])[0]!;
+          coverage += g.length;
+          agreeing += most;
+          values++;
+          if (most < g.length) broken++;
+          out.push(...g.filter((r) => data[j]![r] !== best).map((r) => r + first));
+        }
+        const percent = coverage ? (agreeing * 100) / coverage : 0;
+        if (percent < spec.min_percent || new Set(data[j]!).size < 2 || new Set(data[j]!).size > groups.size) return;
+        report.findings.push({ kind: "depends", a, b, there: { coverage, agreeing, values, broken_values: broken, percent }, back: null, exact: true, few_rows: false, few_per_value: false });
+        odd.set(`${a}:${b}`, out);
+      });
+    });
+    return { report, odd };
+  }
+
+  private lastRelations = new Map<number, ReturnType<MockBackend["relations"]> & { at: number }>();
+
+  async findRelations(doc: number, spec: RelationsSpec): Promise<RelationsReport> {
+    const d = this.get(doc);
+    const found = this.relations(d, spec);
+    this.lastRelations.set(doc, { ...found, at: d.info.data_revision ?? 0 });
+    return found.report;
+  }
+
   async cleanerOpenNamed(): Promise<NamedCleaner | null> {
     const cleaner = await this.cleanerOpen();
     return cleaner && { cleaner, file: "tidy-names.ndclean" };
@@ -2754,6 +2804,14 @@ export class MockBackend implements Backend {
         const found = this.matrixRun(d, op.spec);
         const info = found.cells.length ? await this.setCells(doc, found.cells) : this.refresh(d);
         return this.report(info, { cells: found.cells.length, left: 0 });
+      }
+      case "show_relation_exceptions": {
+        const last = this.lastRelations.get(doc);
+        const found = last?.at === (d.info.data_revision ?? 0) ? last.odd.get(`${op.a}:${op.b}`) : undefined;
+        if (!found) throw err("invalid", "the table changed since the scan: scan again");
+        const keep = new Set<number>(found.map((r) => this.rowId(d, r)));
+        if (rows > 0) keep.add(this.rowId(d, 0));
+        return this.report(this.setView(d, keep, { columns: [], keep_first: true }), { rows: found.length });
       }
       case "show_gap_rows": {
         const found = this.gaps(doc, op.spec).beside;

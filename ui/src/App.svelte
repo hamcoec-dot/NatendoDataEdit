@@ -63,6 +63,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import TidyTitlesDialog from "./lib/TidyTitlesDialog.svelte";
   import CompareColsDialog, { type CompareAction } from "./lib/CompareColsDialog.svelte";
   import GapsDialog from "./lib/GapsDialog.svelte";
+  import RelationsDialog from "./lib/RelationsDialog.svelte";
+  import type { Finding, RelationsReport, RelationsSpec } from "./lib/relations";
   import SetsDialog, { type SetsTab } from "./lib/SetsDialog.svelte";
   import type { SetsRun, SetsSpec } from "./lib/sets";
   import CleanMatrixDialog from "./lib/CleanMatrixDialog.svelte";
@@ -3460,6 +3462,48 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
 
+  // ---- relationships between columns ----
+  let relationsAsk = $state<{ titles: string[] } | null>(null);
+
+  function openRelations(): void {
+    const t = tab;
+    if (!t) return;
+    if (t.info.cols < 2) {
+      say("Finding relationships needs two columns.");
+      return;
+    }
+    relationsAsk = { titles: Array.from({ length: Math.min(t.info.cols, 5_000) }, (_, c) => columnTitle(t, c)) };
+  }
+
+  async function runRelations(spec: RelationsSpec): Promise<RelationsReport | null> {
+    const t = tab;
+    if (!t) return null;
+    try {
+      return await runJob("Looking for relationships", () => backend().findRelations(t.id, spec));
+    } catch (e) {
+      say(errorText(e));
+      return null;
+    }
+  }
+
+  async function showExceptions(f: Finding): Promise<boolean> {
+    const rep = await runOp({ op: "show_relation_exceptions", kind: f.kind, a: f.a, b: f.b }, "Filtering");
+    if (!rep) return false;
+    relationsAsk = null;
+    say(`Showing the ${plural(rep.rows, "row")} that break it. Data › Clear filter shows every row.`);
+    void tick().then(() => grid?.focus());
+    return true;
+  }
+
+  async function copyRelations(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      say("Copied the relationships.");
+    } catch {
+      say("Could not reach the clipboard.");
+    }
+  }
+
   // ---- clean matrix ----
   let matrixAsk = $state<{ titles: string[]; picked: number[] } | null>(null);
 
@@ -6307,6 +6351,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "format.tidyTitles", label: "&Tidy column titles…", run: openTidyTitles, enabled: ready },
     { id: "data.compareCols", label: "Compare t&wo columns…", run: openCompareCols, enabled: ready },
     { id: "data.gaps", label: "Find gaps in a sequence…", run: openGaps, enabled: ready },
+    { id: "data.relations", label: "Find relationships…", run: openRelations, enabled: ready },
     { id: "data.compareLists", label: "Compare lists…", run: openSets, enabled: ready },
     {
       id: "format.protectCols",
@@ -6593,7 +6638,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
         "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
-        "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.compareLists", "data.gaps", "-",
+        "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.compareLists", "data.gaps", "data.relations", "-",
         "data.values", "data.valuesLookalikes", "data.group", "data.arrange", "data.extract", "data.build", "-",
         "find.find", "find.replace", "find.batch", "find.next", "find.prev", "find.ghosts",
       ],
@@ -6630,7 +6675,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -9134,6 +9179,19 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     onTable={(id, saveIt) => openSetsTab(() => backend().setsTable(id), true, id, saveIt)}
     onCopy={(t) => void copySets(t)}
     onClose={(id) => { setsAsk = null; if (id !== null) void backend().setsClose(id).catch(() => {}); grid?.focus(); }}
+  />
+{/if}
+{#if relationsAsk && tab}
+  {@const r = relationsAsk}
+  <RelationsDialog
+    titles={r.titles}
+    hidden={hiddenColsOf(tab)}
+    header={tab.header && tab.info.rows > 0}
+    onRun={runRelations}
+    onCancelRun={() => { if (tab) void backend().cancelJob(tab.id); }}
+    onExceptions={showExceptions}
+    onCopy={(t) => void copyRelations(t)}
+    onClose={() => { relationsAsk = null; grid?.focus(); }}
   />
 {/if}
 {#if matrixAsk && tab}
