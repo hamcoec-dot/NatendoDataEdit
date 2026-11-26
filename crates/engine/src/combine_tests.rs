@@ -193,15 +193,30 @@ fn jw_check(a: &str, b: &str) -> f32 {
 }
 
 #[test]
-fn titles_that_differ_only_in_numbers_are_never_suggested() {
+fn titles_whose_numbers_differ_are_never_suggested() {
     for (a, b) in [
         ("Address Line 1", "Address Line 2"),
         ("Precinct 1", "Precinct 2"),
         ("Phone 2", "Phone 3"),
         ("2023 Votes", "2024 Votes"),
+        // F1: other words as well as other numbers.
+        ("Votes 2023", "Vote 2024"),
+        ("Precinct 1", "Precincts 2"),
+        ("Phone 2", "Phones 3"),
+        ("Ward 01", "Wards 02"),
     ] {
         let (plan, heads) = plan_of(&[&[a, "x"], &[b, "x"]]);
         assert!(suggest(&plan, &heads).is_empty(), "{a} / {b}");
+    }
+    // The same numbers, or numbers on one side only, are still suggested when the words are alike.
+    for (a, b) in [("CustomerID", "Cust_ID"), ("Address 1", "Addr 1")] {
+        let (plan, heads) = plan_of(&[&[a, "x"], &[b, "x"]]);
+        let s = suggest(&plan, &heads);
+        assert_eq!(
+            names(&plan, &s),
+            [(a.to_string(), b.to_string())],
+            "{a} / {b}: {s:?}"
+        );
     }
 }
 

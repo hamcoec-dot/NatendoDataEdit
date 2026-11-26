@@ -1167,8 +1167,8 @@ everything is also in command search.
   as they will land, and the columns that go nowhere. Titles that are probably
   one column (`Cust_ID`, `cust id`, `CustID`, or `CustomerID` in about the same
   place) are suggested with a few values from each side, and merged only when
-  you choose (`Address Line 1` and `Address Line 2`, which differ only in a
-  number, never are). **Reset to automatic** goes back to plain Combine by
+  you choose (titles whose numbers differ never are: `Address Line 1` and
+  `Address Line 2`, `Votes 2023` and `Vote 2024`). **Reset to automatic** goes back to plain Combine by
   title. **Save map** writes a `.ndcombine` file of column titles only (no
   folder, file name or value) for next month's files, and **Use a saved map**
   fits it to new files, asking where it cannot decide. Before combining, each

@@ -244,23 +244,18 @@ pub fn tidy(t: &str) -> String {
         .collect()
 }
 
-/// A tidied title with every run of digits as one `#`: titles equal this way
-/// differ only in their numbers (`Address Line 1` / `Address Line 2`).
-fn numbers_out(t: &str) -> String {
-    let mut s = String::new();
-    let mut digit = false;
-    for c in t.chars() {
-        if c.is_ascii_digit() {
-            if !digit {
-                s.push('#');
-            }
-            digit = true;
-        } else {
-            s.push(c);
-            digit = false;
-        }
-    }
-    s
+/// The runs of digits in a title, in order (`Votes 2023` -> `["2023"]`).
+fn digit_runs(t: &str) -> Vec<&str> {
+    t.split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Two titles that both hold numbers, and not the same numbers, are kept apart: `Address Line 1` / `Address Line 2`,
+/// `Votes 2023` / `Vote 2024`, `Ward 01` / `Wards 02` are different columns however alike the words are.
+fn numbers_differ(a: &str, b: &str) -> bool {
+    let (x, y) = (digit_runs(a), digit_runs(b));
+    !x.is_empty() && !y.is_empty() && x != y
 }
 
 /// Why two output columns may be one column under two titles.
@@ -347,8 +342,7 @@ pub fn suggest(plan: &CombinePlan, heads: &[FileHead]) -> Vec<Suggestion> {
             }
         }
     }
-    // A similar title in about the same place, never one that differs only in
-    // its numbers.
+    // A similar title in about the same place, never one whose numbers differ.
     if n <= MAX_SIMILAR_COLS {
         for a in 0..n {
             for b in a + 1..n {
@@ -356,7 +350,7 @@ pub fn suggest(plan: &CombinePlan, heads: &[FileHead]) -> Vec<Suggestion> {
                 if ta.is_empty() || tb.is_empty() || ta == tb || seen.contains(&(a, b)) {
                     continue;
                 }
-                if numbers_out(ta) == numbers_out(tb) {
+                if numbers_differ(ta, tb) {
                     continue;
                 }
                 let near = feeds[a]
