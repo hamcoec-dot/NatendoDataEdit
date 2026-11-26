@@ -7049,7 +7049,17 @@ impl Docs {
                 None => format!("Sample ({stem})"),
             },
             TableOp::Counts { .. } => format!("Counts ({stem})"),
-            TableOp::Gaps { .. } => format!("Gaps ({stem})"),
+            TableOp::Gaps { spec } => {
+                // The column's title, never a value.
+                let column = self
+                    .get(id)?
+                    .read()
+                    .expr_names(spec.keep_first)
+                    .get(spec.col as usize)
+                    .map(|t| t.chars().take(60).collect::<String>())
+                    .unwrap_or_default();
+                format!("Gaps in {column} ({stem})")
+            }
             TableOp::Compare { other, .. } => format!("Compare {stem} with {}", self.stem(*other)),
         };
         self.set_title_of(nid, title);
@@ -11921,7 +11931,7 @@ B,y
         let table = docs
             .new_table(id, TableOp::Gaps { spec: spec.clone() })
             .unwrap();
-        assert!(table.name.starts_with("Gaps ("), "{}", table.name);
+        assert!(table.name.starts_with("Gaps in N ("), "{}", table.name);
         let other = GapsSpec {
             start: "0".into(),
             ..spec.clone()

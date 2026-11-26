@@ -21,6 +21,9 @@ use crate::Error;
 
 /// "Series by" columns at most.
 pub const MAX_SERIES_COLS: usize = 2;
+/// Different shapes (prefix and suffix) told apart in one audit; rows of
+/// any further shape count as a different shape.
+pub const MAX_SHAPES: usize = 10_000;
 /// Series audited at most.
 pub const MAX_SERIES: usize = 100_000;
 /// Text held for series keys and shapes at most.
@@ -163,6 +166,8 @@ pub struct GapReport {
     pub patterns: Vec<PatternCount>,
     /// Shapes found in all.
     pub pattern_total: u64,
+    /// More than [`MAX_SHAPES`] shapes: another digit run may suit.
+    pub too_many_shapes: bool,
     /// Shown data rows read.
     pub shown: u64,
     /// Rows whose number was audited.
@@ -318,6 +323,18 @@ struct Part {
     /// Rows with no number (the first few, in order).
     other_rows: Vec<u32>,
     amounts: u64,
+    /// A shape was passed over for lack of room.
+    crowded: bool,
+}
+
+impl Part {
+    /// A row left out as a different shape.
+    fn miss(&mut self, id: u32) {
+        self.other += 1;
+        if self.other_rows.len() < EXAMPLE_ROWS {
+            self.other_rows.push(id);
+        }
+    }
 }
 
 /// Which digit run holds the sequence: the one whose values differ most in a
@@ -435,78 +452,119 @@ impl Document {
         // Collect: one pass, each chunk with its own names.
         progress.start(r1 - r0);
         let chunks = ((r1 - r0) as usize).div_ceil(CHUNK);
-        let parts: Vec<Part> = (0..chunks)
-            .into_par_iter()
-            .map(|c| -> Result<Part, Error> {
-                let s = r0 + (c * CHUNK) as u64;
-                let e = (s + CHUNK as u64).min(r1);
-                let mut p = Part::default();
-                p.cells.reserve((e - s) as usize);
-                let mut buf: Vec<Cow<'_, str>> = Vec::new();
-                let mut key = String::new();
-                // The names of the row before: shapes repeat row after row.
-                let mut last_around: Option<(String, u32)> = None;
-                for r in s..e {
-                    let id = self.id_at(r).ok_or(Error::OutOfRange)?;
-                    reader.read(self, id, &mut buf);
-                    let t = reader.get(&buf, 0).trim();
-                    if t.is_empty() {
-                        p.blank += 1;
-                        continue;
-                    }
-                    p.amounts += u64::from((r - r0) < SAMPLE_ROWS && amount_like(t));
-                    let Some(x) = split(t, run) else {
-                        p.other += 1;
-                        if p.other_rows.len() < EXAMPLE_ROWS {
-                            p.other_rows.push(id);
-                        }
-                        continue;
-                    };
-                    // The separator cannot be told apart inside a shape.
-                    if x.prefix.contains(SEP) || x.suffix.contains(SEP) {
-                        p.other += 1;
-                        continue;
-                    }
-                    key.clear();
-                    key.push_str(x.prefix);
-                    key.push(SEP);
-                    key.push_str(x.suffix);
-                    let around = match &last_around {
-                        Some((k, i)) if *k == key => *i,
-                        _ => {
-                            let i = p.around.id(&key)?;
-                            last_around = Some((key.clone(), i));
-                            i
-                        }
-                    };
-                    let series = if spec.series.is_empty() {
-                        0
-                    } else {
-                        key.clear();
-                        for k in 0..spec.series.len() {
-                            let v = reader.get(&buf, k + 1);
-                            key.push_str(&v.len().to_string());
-                            key.push(':');
-                            key.push_str(v);
-                        }
-                        p.series.id(&key)?
-                    };
-                    p.cells.push(Cell {
-                        number: x.number,
-                        row: id,
-                        around,
-                        series,
-                        len: x.len,
-                        zero_led: x.zero_led,
-                    });
+        let read = |c: usize, kept: Option<&Names>| -> Result<Part, Error> {
+            let s = r0 + (c * CHUNK) as u64;
+            let e = (s + CHUNK as u64).min(r1);
+            let mut p = Part::default();
+            p.cells.reserve((e - s) as usize);
+            let mut buf: Vec<Cow<'_, str>> = Vec::new();
+            let mut key = String::new();
+            // The names of the row before: shapes repeat row after row.
+            let mut last_around: Option<(String, u32)> = None;
+            for r in s..e {
+                let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                reader.read(self, id, &mut buf);
+                let t = reader.get(&buf, 0).trim();
+                if t.is_empty() {
+                    p.blank += 1;
+                    continue;
                 }
-                progress.step(e - s)?;
-                Ok(p)
-            })
+                p.amounts += u64::from((r - r0) < SAMPLE_ROWS && amount_like(t));
+                // The separator cannot be told apart inside a shape.
+                let x =
+                    split(t, run).filter(|x| !x.prefix.contains(SEP) && !x.suffix.contains(SEP));
+                let Some(x) = x else {
+                    p.miss(id);
+                    continue;
+                };
+                key.clear();
+                key.push_str(x.prefix);
+                key.push(SEP);
+                key.push_str(x.suffix);
+                let around = match &last_around {
+                    Some((k, i)) if *k == key => Some(*i),
+                    _ => {
+                        let i = match kept {
+                            Some(kept) => kept.ids.get(&key).copied(),
+                            None if p.around.names.len() < MAX_SHAPES
+                                || p.around.ids.contains_key(&key) =>
+                            {
+                                Some(p.around.id(&key)?)
+                            }
+                            None => {
+                                p.crowded = true;
+                                None
+                            }
+                        };
+                        if let Some(i) = i {
+                            last_around = Some((key.clone(), i));
+                        }
+                        i
+                    }
+                };
+                let Some(around) = around else {
+                    p.miss(id);
+                    continue;
+                };
+                let series = if spec.series.is_empty() {
+                    0
+                } else {
+                    key.clear();
+                    for k in 0..spec.series.len() {
+                        let v = reader.get(&buf, k + 1);
+                        key.push_str(&v.len().to_string());
+                        key.push(':');
+                        key.push_str(v);
+                    }
+                    p.series.id(&key)?
+                };
+                p.cells.push(Cell {
+                    number: x.number,
+                    row: id,
+                    around,
+                    series,
+                    len: x.len,
+                    zero_led: x.zero_led,
+                });
+            }
+            // A second reading of a chunk counts nothing twice.
+            progress.step(if kept.is_none() { e - s } else { 0 })?;
+            Ok(p)
+        };
+        let mut parts: Vec<Part> = (0..chunks)
+            .into_par_iter()
+            .map(|c| read(c, None))
             .collect::<Result<_, _>>()?;
 
-        // One set of names, in the order first met.
+        // The shapes kept: the first [`MAX_SHAPES`] met in row order.
         let mut around = Names::default();
+        let mut crowded = false;
+        for p in &parts {
+            cancelled(progress)?;
+            for n in &p.around.names {
+                if around.names.len() < MAX_SHAPES {
+                    around.id(n)?;
+                } else if !around.ids.contains_key(n) {
+                    crowded = true;
+                }
+            }
+        }
+        // A chunk that ran out of room may have passed over a kept shape: it
+        // is read again knowing which are kept.
+        let again: Vec<(usize, Part)> = parts
+            .par_iter()
+            .enumerate()
+            .filter(|(_, p)| p.crowded)
+            .map(|(c, _)| read(c, Some(&around)).map(|p| (c, p)))
+            .collect::<Result<_, _>>()?;
+        for (c, mut p) in again {
+            crowded = true;
+            // Its cells already carry the kept shapes' numbers.
+            p.crowded = true;
+            parts[c] = p;
+        }
+
+        // One set of names, in the order first met.
         let mut series = Names::default();
         if spec.series.is_empty() {
             series.id("")?;
@@ -524,21 +582,39 @@ impl Document {
         let mut other_ids: Vec<u32> = Vec::new();
         for mut p in parts {
             cancelled(progress)?;
-            let a: Vec<u32> = p
-                .around
-                .names
-                .iter()
-                .map(|n| around.id(n))
-                .collect::<Result<_, _>>()?;
+            // Each shape's number in the whole table (`None`: not kept). A
+            // chunk read again already has them.
+            let a: Option<Vec<Option<u32>>> = (!p.crowded).then(|| {
+                p.around
+                    .names
+                    .iter()
+                    .map(|n| around.ids.get(n).copied())
+                    .collect()
+            });
             let s: Vec<u32> = p
                 .series
                 .names
                 .iter()
                 .map(|n| series.id(n))
                 .collect::<Result<_, _>>()?;
-            for c in &mut p.cells {
-                c.around = a[c.around as usize];
-                if !spec.series.is_empty() {
+            if let Some(a) = a {
+                let mut lost = Vec::new();
+                p.cells.retain_mut(|c| match a[c.around as usize] {
+                    Some(i) => {
+                        c.around = i;
+                        true
+                    }
+                    None => {
+                        lost.push(c.row);
+                        false
+                    }
+                });
+                crowded |= !lost.is_empty();
+                out.other_shape += lost.len() as u64;
+                other_ids.extend(lost.into_iter().take(EXAMPLE_ROWS));
+            }
+            if !spec.series.is_empty() {
+                for c in &mut p.cells {
                     c.series = s[c.series as usize];
                 }
             }
@@ -548,7 +624,11 @@ impl Document {
             other_ids.extend(p.other_rows);
             amounts += p.amounts;
         }
+        out.too_many_shapes = crowded;
         out.looks_like_amounts = amounts * 2 > out.shown.min(SAMPLE_ROWS);
+        if crowded && spec.each_shape {
+            return Err(too_many_shapes());
+        }
         if series.names.len() > MAX_SERIES {
             return Err(too_many_series());
         }
@@ -636,6 +716,11 @@ impl Document {
             Some(i) => vec![&shapes[i].0],
             None => shapes.iter().map(|(p, _)| p).collect(),
         };
+        if audited.is_empty() && !(spec.start.trim().is_empty() && spec.end.trim().is_empty()) {
+            return Err(Error::Invalid(
+                "no cell holds a number to read the shape from".into(),
+            ));
+        }
         let start = typed(&spec.start, &audited, "start")?;
         let end = typed(&spec.end, &audited, "end")?;
         if let (Some(a), Some(b)) = (start, end) {
@@ -666,7 +751,11 @@ impl Document {
                 Some(&g) => g,
                 None => {
                     if group_of.len() >= MAX_SERIES {
-                        return Err(too_many_series());
+                        return Err(if spec.series.is_empty() {
+                            too_many_shapes()
+                        } else {
+                            too_many_series()
+                        });
                     }
                     let g = group_of.len() as u32;
                     groups.insert(key, g);
@@ -919,6 +1008,12 @@ impl Document {
     }
 }
 
+fn too_many_shapes() -> Error {
+    Error::Invalid(
+        "too many shapes to audit each on its own; pick one shape or another digit run".into(),
+    )
+}
+
 fn too_many_series() -> Error {
     Error::Invalid(format!(
         "there are more than {MAX_SERIES} series: pick fewer columns to split by"
@@ -975,6 +1070,13 @@ impl GapReport {
         total(&mut out, "Drops in file order", self.drops.to_string());
         total(&mut out, "Different shape", self.other_shape.to_string());
         total(&mut out, "Blank", self.blank.to_string());
+        if self.too_many_shapes {
+            total(
+                &mut out,
+                "Too many shapes",
+                "pick the digit run".to_string(),
+            );
+        }
         if !self.spec.start.trim().is_empty() || !self.spec.end.trim().is_empty() {
             total(&mut out, "Outside the range", self.outside.to_string());
         }

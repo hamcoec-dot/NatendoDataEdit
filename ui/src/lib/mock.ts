@@ -3181,15 +3181,19 @@ export class MockBackend implements Backend {
     return best ? best[1] : null;
   }
 
+  /** The last audit asked for (the browser tests look at it). */
+  lastGapSpec: GapsSpec | null = null;
+
   async gapAudit(doc: number, spec: GapsSpec): Promise<GapReport> {
+    this.lastGapSpec = JSON.parse(JSON.stringify(spec)) as GapsSpec;
     return this.gaps(doc, spec).report;
   }
 
   /** The browser preview's audit: one column, the last run of digits, the
-   *  most common text around it; no series (the desktop app does the rest). */
+   *  most common text around it. Series, shapes and a typed range are ignored
+   *  here (the desktop app does them). */
   private gaps(doc: number, spec: GapsSpec): { report: GapReport; beside: number[] } {
     const d = this.get(doc);
-    if (spec.series.length || spec.each_shape || spec.start || spec.end) throw err("invalid", "the browser preview does not do this; the desktop app does");
     const cells: { around: string; digits: string; row: number }[] = [];
     let blank = 0;
     let other = 0;
@@ -3228,6 +3232,7 @@ export class MockBackend implements Backend {
       pattern,
       patterns: pattern ? [{ pattern, label, count: own.length }] : [],
       pattern_total: count.size,
+      too_many_shapes: false,
       shown: this.rowCount(d) - first,
       rows: own.length,
       distinct,

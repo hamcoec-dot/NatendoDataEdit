@@ -402,8 +402,7 @@ impl Document {
                     continue;
                 };
                 if !count.is_finite()
-                    || count < 0.0
-                    || count > MAX_TOP
+                    || !(0.0..=MAX_TOP).contains(&count)
                     || (percent && count > 100.0)
                 {
                     return Err(Error::BadPattern(

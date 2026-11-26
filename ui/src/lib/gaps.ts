@@ -31,6 +31,7 @@ export interface GapReport {
   pattern: GapPattern | null;
   patterns: { pattern: GapPattern; label: string; count: number }[];
   pattern_total: number;
+  too_many_shapes: boolean;
   shown: number;
   rows: number;
   distinct: number;
