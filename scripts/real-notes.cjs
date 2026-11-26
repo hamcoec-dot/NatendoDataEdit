@@ -146,7 +146,11 @@ const fresh = () => fs.writeFileSync(FILE, BODY);
 const read = () => fs.readFileSync(FILE, "utf8");
 const status = async (m) => ((await m.textContent("footer.status")) || "").replace(/\s+/g, " ");
 const body = async (m) => ((await m.textContent("body")) || "").replace(/\s+/g, " ");
-const save = (m) => invoke(m, "save", { doc: 1, saveAs: false, overwriteChanged: true, allowLossy: false });
+// Saved the way a person does (Ctrl+S), so the screen takes in what the save did.
+const save = async (m) => {
+  await m.keyboard.press("Control+s");
+  await sleep(1500);
+};
 const facts = (m, doc = 1) => invoke(m, "doc_info", { doc });
 
 /** Open the file and set its title lines aside above the table and the total line below (not saved). */
@@ -211,6 +215,9 @@ const proof = async () => {
   const b = await body(m);
   ok(/Set aside above the table \(4 lines\)/.test(b) && /Set aside below the table \(1 line\)/.test(b), "the panel shows both parts");
   ok(/Region\s*North/.test(b), "report info lists the label line");
+  // A window wide enough for the README picture.
+  await m.setViewportSize({ width: 1180, height: 640 }).catch(() => {});
+  await sleep(600);
   await m.screenshot({ path: path.join(evidence, "report-notes.png") });
   await save(m);
   ok(read() === BODY, `saved byte for byte with the notes where they were: ${JSON.stringify(read().slice(0, 60))}`);
@@ -223,7 +230,7 @@ const proof = async () => {
   // The keep switch asks first, with the real counts; off and on again loses nothing.
   await m.getByLabel("Save report notes with the file").click();
   await sleep(500);
-  ok(/Leave out the report notes when saving: the 4 lines above the table when the file was opened and the 1 line below the table in the file/.test(await body(m)), "the question names what goes, with the counts");
+  ok(/Leave out the report notes when saving: the 4 lines above the table when the file was opened and the 1 line below the table in the file/.test(await body(m)), `the question names what goes, with the counts: ${((await body(m)).match(/Leave out the report notes when saving[^.]*\./) || ["(none)"])[0]}`);
   await m.getByRole("button", { name: "Leave them out" }).click();
   await sleep(500);
   ok((await facts(m)).notes.keep === false, "switched off");

@@ -8471,9 +8471,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const out: Notice[] = [];
     if (d.layout_confidence !== null && d.layout_confidence < 0.6 && d.path)
       out.push({ text: "Not sure how this file's columns are separated. Please check the layout.", action: "Choose layout…", run: chooseLayout });
-    if (d.preamble_lines > 0)
+    // The lines above the table the file had (put back into the table, they are rows: no note).
+    const above = d.notes ? d.notes.above_file : d.preamble_lines;
+    if (above > 0)
       out.push({
-        text: `${d.preamble_lines} line${d.preamble_lines === 1 ? "" : "s"} above the table (a title or notes) ${d.preamble_lines === 1 ? "is" : "are"} set aside and kept as ${d.preamble_lines === 1 ? "it is" : "they are"} when saving.`,
+        text: `${above} line${above === 1 ? "" : "s"} above the table (a title or notes) ${above === 1 ? "is" : "are"} set aside and kept as ${above === 1 ? "it is" : "they are"} when saving (View › Report notes shows them).`,
         action: d.path ? "Change…" : undefined,
         run: chooseLayout,
       });
