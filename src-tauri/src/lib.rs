@@ -3311,6 +3311,51 @@ async fn fix_all(
 }
 
 #[tauri::command]
+async fn example_learn(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::example::ExampleSpec,
+) -> CmdResult<natendo_engine::rulecard::LearnReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.example_learn(doc, &spec)).await
+}
+
+#[tauri::command]
+async fn example_preview(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::example::ExampleSpec,
+    program: natendo_engine::example::Program,
+) -> CmdResult<natendo_engine::rulecard::Preview> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.example_preview(doc, &spec, &program)).await
+}
+
+#[tauri::command]
+async fn example_outliers(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::example::ExampleSpec,
+    program: natendo_engine::example::Program,
+    after: Option<Vec<u32>>,
+) -> CmdResult<natendo_engine::rulecard::Outliers> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.example_outliers(doc, &spec, &program, after)).await
+}
+
+#[tauri::command]
+async fn example_formula(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::example::ExampleSpec,
+    program: natendo_engine::example::Program,
+    read: natendo_engine::value::ReadOptions,
+) -> CmdResult<String> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.example_formula(doc, &spec, &program, read)).await
+}
+
+#[tauri::command]
 async fn empty_extra_columns(
     docs: DocsState<'_>,
     doc: u32,
@@ -5569,6 +5614,10 @@ pub fn run() {
             repair_row,
             same_shape,
             fix_all,
+            example_learn,
+            example_preview,
+            example_outliers,
+            example_formula,
             empty_extra_columns,
             remove_empty_extra_columns,
             row_width,

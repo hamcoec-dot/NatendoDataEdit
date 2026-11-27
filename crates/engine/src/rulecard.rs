@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use crate::coltype::ColumnType;
 use crate::document::{Document, Progress};
 use crate::example::{
     learn_until, Case, Cut, Example, ExampleSpec, Piece, Program, MAX_EXAMPLES, MAX_SOURCES,
@@ -433,6 +434,44 @@ impl Document {
             out.rows.push(r);
         }
         Ok(out)
+    }
+
+    /// The rule as a formula for a computed column of this table (Save as formula). `Err`: why
+    /// it has none (a column read as numbers or dates, a piece too far along, two columns with
+    /// the same title).
+    pub fn example_formula(
+        &self,
+        spec: &ExampleSpec,
+        program: &Program,
+        read: crate::value::ReadOptions,
+    ) -> Result<String, Error> {
+        program.validate(self.col_count(), spec.col)?;
+        let names = self.expr_names(spec.skip_first);
+        let ctx = self.read_ctx(read);
+        let f = program
+            .to_expression(
+                &|c| names.get(c as usize).cloned().unwrap_or_default(),
+                &|c| {
+                    !matches!(
+                        ctx.type_of(c),
+                        ColumnType::Auto | ColumnType::Text | ColumnType::Id
+                    )
+                },
+            )
+            .map_err(Error::Invalid)?;
+        let e = self.parse_expr(&f, spec.skip_first)?;
+        let mut got = e.columns().to_vec();
+        let mut want = program.cols();
+        got.sort_unstable();
+        got.dedup();
+        want.sort_unstable();
+        want.dedup();
+        if got != want {
+            return Err(Error::Invalid(
+                "two columns have the same title, so a formula cannot tell them apart".into(),
+            ));
+        }
+        Ok(f)
     }
 
     /// A column's titles for a rule's words ("column 3" with no title).
