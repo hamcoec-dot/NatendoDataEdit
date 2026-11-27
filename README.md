@@ -1537,7 +1537,9 @@ selection, a column or the whole table:
   history's memory budget (512 MB), the oldest steps are let go first. The status
   line says so once, at that save. The save itself stays about as fast: the
   history is moved onto the saved rows while the file is written, and each step
-  keeps only the cells it changed. Row notes follow their rows by key and the
+  keeps only the cells it changed. A save holds a little extra memory while it carries the undo
+  history over (the cells the kept steps changed, and a number per row), freed
+  when the save is done. Row notes follow their rows by key and the
   differences of a comparison go out of date after a save, as before. **What changed since this checkpoint** (Edit > What changed
   since a checkpoint, command search, the tab and cell right-click menus, which
   compare with the newest checkpoint they can; or the Δ button on any
