@@ -541,6 +541,17 @@ pub fn pair(contract: &Contract, titles: &[String]) -> Pairing {
     }
 }
 
+/// Pair a table without a title row: the contract's columns in order with the first `n` columns.
+pub fn pair_in_order(contract: &Contract, n: u32) -> Pairing {
+    let k = contract.columns.len() as u32;
+    Pairing {
+        map: (0..k).map(|c| (c < n).then_some(c)).collect(),
+        missing: (n.min(k)..k).collect(),
+        added: (k.min(n)..n).collect(),
+        ..Default::default()
+    }
+}
+
 /// Which items of `v` form its longest strictly rising run (the earliest one when several tie).
 fn longest_rising(v: &[u32]) -> Vec<bool> {
     // tails[l]: index of the smallest last item of a rising run of length l + 1.

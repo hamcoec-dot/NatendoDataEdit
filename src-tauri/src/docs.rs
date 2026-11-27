@@ -414,6 +414,9 @@ pub struct Entry {
     /// The chip bar's counts being worked out, if any: a newer ask or any change (an edit, a filter
     /// change) stops it (C8 review R1).
     chip_count: Mutex<Option<Arc<Progress>>>,
+    /// A check against a file contract being worked out, if any: a newer one, Cancel or any change
+    /// stops it (C9).
+    contract_count: Mutex<Option<Arc<Progress>>>,
     cancel: AtomicBool,
     /// Opened with quoted cells never spanning lines (cleared once a save
     /// has reloaded the file normally).
@@ -633,6 +636,14 @@ impl Entry {
             p.cancel.store(true, Ordering::Relaxed);
         }
         if let Some(p) = self
+            .contract_count
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            p.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(p) = self
             .fill_count
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -844,6 +855,12 @@ pub enum DataOp {
         /// Show the rows that pass instead.
         #[serde(default)]
         passing: bool,
+    },
+    /// Show the rows behind one count of a file contract's drift report (C9).
+    ShowContractRows {
+        contract: Box<natendo_engine::contract::Contract>,
+        what: natendo_engine::contract::DriftRows,
+        opts: natendo_engine::contract::DriftOptions,
     },
     /// Show only the rows with a different number of fields than most.
     ShowRagged {
@@ -1494,6 +1511,11 @@ fn recipe_step(op: &DataOp) -> Logged {
         DataOp::ShowRagged { .. } => {
             return Logged::LeftOut("showing ragged rows (a view, not a change)".into())
         }
+        DataOp::ShowContractRows { .. } => {
+            return Logged::LeftOut(
+                "showing rows a file contract found (a view, not a change)".into(),
+            )
+        }
         DataOp::ShowRelationExceptions { .. } => {
             return Logged::LeftOut(
                 "showing the exceptions to a relationship (a view, not a change)".into(),
@@ -1972,6 +1994,9 @@ pub struct Docs {
     /// Whether a path is in private file mode (set when the app starts;
     /// the recent list keeps the private files and folders).
     private_check: Mutex<Option<PrivateCheck>>,
+    /// The file contracts read from the contracts folder (C9), read once when first needed and
+    /// again after a change.
+    contracts: Mutex<Option<contracts::Store>>,
 }
 
 /// See [`Docs::set_private_check`].
@@ -2146,6 +2171,7 @@ impl Docs {
             json_target: Mutex::new(None),
             fill_count: Mutex::new(None),
             chip_count: Mutex::new(None),
+            contract_count: Mutex::new(None),
             cancel: AtomicBool::new(false),
             line_by_line: AtomicBool::new(line_by_line),
             error: Mutex::new(None),
@@ -7017,6 +7043,9 @@ impl Docs {
         {
             natendo_engine::validate::check_spec(spec)?;
         }
+        if let DataOp::ShowContractRows { contract, .. } = &op {
+            contract.validate()?;
+        }
         let grid = match &op {
             DataOp::Paste { text, .. } => {
                 if text.len() > MAX_WRITE_CHARS * 4 {
@@ -7056,6 +7085,7 @@ impl Docs {
             DataOp::Compute { .. } => "Computing",
             // Showing rows changes no data, so a locked file allows it.
             DataOp::ShowProblems { .. }
+            | DataOp::ShowContractRows { .. }
             | DataOp::ShowRagged { .. }
             | DataOp::ShowShape { .. }
             | DataOp::ShowGapRows { .. }
@@ -7290,6 +7320,18 @@ impl Docs {
                     Planned::Rows(d.plan_show_problems(&rep, spec.keep_first, *passing)?)
                 }
                 DataOp::ShowShape { spec } => Planned::Rows(d.plan_shape_filter(spec, p)?),
+                DataOp::ShowContractRows {
+                    contract,
+                    what,
+                    opts,
+                } => {
+                    let pairing = if opts.keep_first {
+                        natendo_engine::contract::pair(contract, &d.rule_titles(true))
+                    } else {
+                        natendo_engine::contract::pair_in_order(contract, d.col_count())
+                    };
+                    Planned::Rows(d.plan_drift_rows(contract, &pairing, *what, opts, p)?)
+                }
                 DataOp::ShowRelationExceptions { kind, a, b } => {
                     let report = last_relations
                         .as_ref()
@@ -10087,6 +10129,7 @@ fn chip_words(op: &DataOp) -> (&'static str, &'static str) {
         DataOp::ShowRelationExceptions { .. } => ("relations", "Relation exceptions"),
         DataOp::ShowGapRows { .. } => ("gaps", "Gaps"),
         DataOp::ShowRagged { .. } => ("ragged", "Ragged rows"),
+        DataOp::ShowContractRows { .. } => ("contract", "Rows a contract found"),
         DataOp::CompareShow { .. } => ("compare", "Compared rows"),
         _ => ("rows", "Rows a tool picked"),
     }
@@ -10430,6 +10473,9 @@ pub mod golden;
 
 #[path = "docs_patch.rs"]
 pub mod patching;
+
+#[path = "docs_contracts.rs"]
+pub mod contracts;
 
 use natendo_engine::combine::{CombinePlan, FileHead, Suggestion};
 

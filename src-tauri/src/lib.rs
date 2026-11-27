@@ -4449,6 +4449,198 @@ fn dictionary_path_ok(app: &tauri::AppHandle, path: &std::path::Path) -> CmdResu
     }
 }
 
+// ---- file contracts (C9) ----
+
+/// The contracts folder in the app's data folder (made when first needed).
+fn contracts_folder(app: &tauri::AppHandle) -> CmdResult<PathBuf> {
+    use tauri::Manager;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| docs::CmdError::new("io", "the app's data folder could not be found"))?
+        .join("Contracts");
+    std::fs::create_dir_all(&dir)
+        .map_err(|_| docs::CmdError::new("io", "the Contracts folder could not be made"))?;
+    Ok(dir)
+}
+
+#[tauri::command]
+async fn contracts_list(
+    app: tauri::AppHandle,
+    docs: DocsState<'_>,
+) -> CmdResult<Vec<docs::contracts::ContractItem>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.contracts_list(&contracts_folder(&app)?)).await
+}
+
+#[tauri::command]
+async fn contract_get(
+    app: tauri::AppHandle,
+    docs: DocsState<'_>,
+    name: String,
+) -> CmdResult<natendo_engine::contract::Contract> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.contract_get(&contracts_folder(&app)?, &name)).await
+}
+
+/// The contract a tab looks like (file name and titles only).
+#[tauri::command]
+async fn contract_match(
+    app: tauri::AppHandle,
+    docs: DocsState<'_>,
+    doc: u32,
+    keep_first: bool,
+) -> CmdResult<Option<docs::contracts::ContractMatch>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.contract_match(&contracts_folder(&app)?, doc, keep_first)).await
+}
+
+/// Check a tab against a contract (a count any change stops).
+#[tauri::command]
+async fn contract_drift(
+    app: tauri::AppHandle,
+    docs: DocsState<'_>,
+    doc: u32,
+    name: String,
+    opts: natendo_engine::contract::DriftOptions,
+) -> CmdResult<natendo_engine::contract::DriftReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.contract_drift(&contracts_folder(&app)?, doc, &name, &opts)).await
+}
+
+#[tauri::command]
+fn contract_drift_stop(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
+    docs.contract_drift_stop(doc)
+}
+
+/// Show the rows behind one count of a drift report.
+#[tauri::command]
+async fn contract_show_rows(
+    app: tauri::AppHandle,
+    docs: DocsState<'_>,
+    doc: u32,
+    name: String,
+    what: natendo_engine::contract::DriftRows,
+    opts: natendo_engine::contract::DriftOptions,
+) -> CmdResult<docs::OpReport> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.contract_show_rows(&contracts_folder(&app)?, doc, &name, what, opts))
+        .await
+}
+
+/// Fix what I can: titles and column order as one undo step.
+#[tauri::command]
+async fn contract_fix(
+    app: tauri::AppHandle,
+    docs: DocsState<'_>,
+    doc: u32,
+    name: String,
+    keep_first: bool,
+) -> CmdResult<docs::contracts::ContractFixed> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.contract_fix(&contracts_folder(&app)?, doc, &name, keep_first)).await
+}
+
+/// A contract's draft from a tab (refused for a private tab).
+#[tauri::command]
+async fn contract_draft(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::contract::DraftSpec,
+) -> CmdResult<natendo_engine::contract::Draft> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.contract_draft(doc, &spec)).await
+}
+
+/// Save a contract into the Contracts folder.
+#[tauri::command]
+async fn contract_save(
+    app: tauri::AppHandle,
+    docs: DocsState<'_>,
+    contract: natendo_engine::contract::Contract,
+    was: Option<String>,
+    from_tab: Option<u32>,
+) -> CmdResult<Vec<docs::contracts::ContractItem>> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        docs.contract_save(
+            &contracts_folder(&app)?,
+            &contract,
+            was.as_deref(),
+            from_tab,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn contract_delete(
+    app: tauri::AppHandle,
+    docs: DocsState<'_>,
+    name: String,
+) -> CmdResult<Vec<docs::contracts::ContractItem>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.contract_delete(&contracts_folder(&app)?, &name)).await
+}
+
+/// Export a contract to a file the person picks. `false` when the dialog was closed.
+#[tauri::command]
+async fn contract_export(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    name: String,
+) -> CmdResult<bool> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        let folder = contracts_folder(&app)?;
+        let Some(mut path) = rfd::FileDialog::new()
+            .set_title("Export a contract")
+            .set_file_name(natendo_engine::contract::file_name(&safe_file_name(&name)))
+            .add_filter("Natendo contract", &[natendo_engine::contract::EXTENSION])
+            .set_parent(&window)
+            .save_file()
+        else {
+            return Ok(false);
+        };
+        if path
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+            != Some(natendo_engine::contract::EXTENSION)
+        {
+            path.set_extension(natendo_engine::contract::EXTENSION);
+        }
+        docs.contract_export(&folder, &name, &path)?;
+        Ok(true)
+    })
+    .await
+}
+
+/// Import a contract from a file the person picks. `None` when the dialog was closed.
+#[tauri::command]
+async fn contract_import(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+) -> CmdResult<Option<Vec<docs::contracts::ContractItem>>> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        let folder = contracts_folder(&app)?;
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Import a contract")
+            .add_filter("Natendo contract", &[natendo_engine::contract::EXTENSION])
+            .set_parent(&window)
+            .pick_file()
+        else {
+            return Ok(None);
+        };
+        docs.contract_import(&folder, &path).map(Some)
+    })
+    .await
+}
+
 /// Pick a dictionary file to load.
 #[tauri::command]
 async fn dictionary_pick(
@@ -5324,6 +5516,18 @@ pub fn run() {
             report_notes,
             total_row,
             dictionary_list,
+            contracts_list,
+            contract_get,
+            contract_match,
+            contract_drift,
+            contract_drift_stop,
+            contract_show_rows,
+            contract_fix,
+            contract_draft,
+            contract_save,
+            contract_delete,
+            contract_export,
+            contract_import,
             dictionary_pick,
             dictionary_pick_save,
             dictionary_read,

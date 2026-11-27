@@ -46,6 +46,7 @@ fn name_of(op: &DataOp) -> &'static str {
         DataOp::ShowRelationExceptions { .. } => "show_relation_exceptions",
         DataOp::ShowShape { .. } => "show_shape",
         DataOp::ShowGapRows { .. } => "show_gap_rows",
+        DataOp::ShowContractRows { .. } => "show_contract_rows",
         DataOp::SortProblems { .. } => "sort_problems",
         DataOp::CheckColumn { .. } => "check_column",
         DataOp::FillBlanks { .. } => "fill_blanks",
