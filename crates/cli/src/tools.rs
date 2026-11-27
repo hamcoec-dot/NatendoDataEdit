@@ -13,7 +13,10 @@ use natendo_engine::profile::ProfileSpec;
 use natendo_engine::recipe::RecipeOp;
 use natendo_engine::reshape::Duplicates;
 use natendo_engine::sets::{compare_lists, slice_name, SetList, SetsSpec, MAX_LISTS};
-use natendo_engine::sort::{SortKey, SortSpec};
+use natendo_engine::sort::{
+    SortKey, SortKind, SortSpec, BUILTIN_LISTS, MAX_ITEM_CHARS, MAX_LISTS as MAX_SORT_LISTS,
+    MAX_LIST_ITEMS,
+};
 use natendo_engine::tools::{Sample, SampleSize, TitleUnion};
 use natendo_engine::{Document, Progress};
 use serde_json::{json, Value};
@@ -246,24 +249,144 @@ pub fn filter(args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-/// `sort <in> -o <out> --by a[:desc],b`.
+/// Split at `sep` where it is not escaped with a backslash: `\<sep>` is the
+/// separator itself and, with `last` (the innermost split), `\\` one
+/// backslash. Other escapes are kept for the next split.
+fn split_escaped(s: &str, sep: char, last: bool) -> Vec<String> {
+    let mut out = vec![String::new()];
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some(n) if n == sep || (last && n == '\\') => out.last_mut().unwrap().push(n),
+                Some(n) => {
+                    let last = out.last_mut().unwrap();
+                    last.push('\\');
+                    last.push(n);
+                }
+                None => out.last_mut().unwrap().push('\\'),
+            },
+            c if c == sep => out.push(String::new()),
+            c => out.last_mut().unwrap().push(c),
+        }
+    }
+    out
+}
+
+/// A custom order's values as typed: blanks and repeats (case and spaces
+/// aside) dropped, within the engine's limits.
+fn order_items(items: impl IntoIterator<Item = String>) -> Result<Vec<String>, String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for i in items {
+        let t = i.trim().to_string();
+        if t.is_empty() || !seen.insert(t.to_lowercase()) {
+            continue;
+        }
+        if t.chars().count() > MAX_ITEM_CHARS {
+            return Err(format!(
+                "a value of a custom order is longer than {MAX_ITEM_CHARS} characters"
+            ));
+        }
+        out.push(t);
+        if out.len() > MAX_LIST_ITEMS {
+            return Err(format!(
+                "a custom order holds at most {MAX_LIST_ITEMS} values"
+            ));
+        }
+    }
+    if out.is_empty() {
+        return Err("the custom order is empty: give its values as order=A|B|C".into());
+    }
+    Ok(out)
+}
+
+/// One `--by` key: `col[:asc|:desc][:<ready-made order>][:order=A|B|C]`.
+/// `order=` takes the rest of the key (so values may hold `:`), or
+/// `order=@file` reads one value per line.
+fn sort_key(
+    d: &Document,
+    header: bool,
+    k: &str,
+    lists: &mut Vec<Vec<String>>,
+) -> Result<SortKey, String> {
+    let (head, order) = match k.find(":order=") {
+        Some(i) => (&k[..i], Some(&k[i + ":order=".len()..])),
+        None => (k, None),
+    };
+    let mut name = head;
+    let mut descending = false;
+    let mut builtin: Option<&[&str]> = None;
+    while let Some((rest, last)) = name.rsplit_once(':') {
+        match last {
+            "desc" => descending = true,
+            "asc" => descending = false,
+            _ => match BUILTIN_LISTS.iter().find(|b| b.0 == last) {
+                Some(b) if builtin.is_none() => builtin = Some(b.2),
+                _ => break,
+            },
+        }
+        name = rest;
+    }
+    let col =
+        col_of(d, header, name).map_err(|e| match name.rsplit_once(':') {
+            Some((_, w)) if !w.is_empty() => {
+                format!(
+            "{e} (or \"{w}\" is not an order: the ready-made ones are {}; or give order=A|B|C)",
+            BUILTIN_LISTS.iter().map(|b| b.0).collect::<Vec<_>>().join(", ")
+        )
+            }
+            _ => e,
+        })?;
+    let items = match (order, builtin) {
+        (Some(_), Some(_)) => {
+            return Err(format!("{k}: give a ready-made order or order=, not both"))
+        }
+        (Some(o), None) => Some(match o.strip_prefix('@') {
+            Some(path) => {
+                let meta =
+                    std::fs::metadata(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+                if meta.len() > (MAX_LIST_ITEMS * (MAX_ITEM_CHARS + 2)) as u64 {
+                    return Err(format!("{path} is too big for a custom order"));
+                }
+                let text = std::fs::read_to_string(path)
+                    .map_err(|e| format!("cannot read {path}: {e}"))?;
+                order_items(text.lines().map(str::to_string))?
+            }
+            None => order_items(split_escaped(o, '|', true))?,
+        }),
+        (None, Some(b)) => Some(b.iter().map(|s| s.to_string()).collect()),
+        (None, None) => None,
+    };
+    let kind = match items {
+        Some(items) => {
+            if lists.len() >= MAX_SORT_LISTS {
+                return Err(format!(
+                    "at most {MAX_SORT_LISTS} custom orders in one sort"
+                ));
+            }
+            lists.push(items);
+            SortKind::List((lists.len() - 1) as u16)
+        }
+        None => SortKind::Auto,
+    };
+    Ok(SortKey {
+        col,
+        descending,
+        kind,
+        match_case: false,
+    })
+}
+
+/// `sort <in> -o <out> --by a[:desc],b[:desc][:order=X|Y|Z]`.
 pub fn sort(args: &[&str]) -> Result<(), String> {
     let o = opts(args, &["--by"], &[])?;
     let input = one_input(&o)?;
     let mut d = load(input, sheet(&o)?)?;
     let mut keys = Vec::new();
-    for k in o.get("--by").ok_or("give --by")?.split(',') {
-        let (name, desc) = match k.rsplit_once(':') {
-            Some((n, "desc")) => (n, true),
-            Some((n, "asc")) => (n, false),
-            _ => (k, false),
-        };
-        keys.push(SortKey {
-            col: col_of(&d, o.header(), name)?,
-            descending: desc,
-            kind: Default::default(),
-            match_case: false,
-        });
+    let mut lists = Vec::new();
+    for k in split_escaped(o.get("--by").ok_or("give --by")?, ',', false) {
+        keys.push(sort_key(&d, o.header(), &k, &mut lists)?);
     }
     step(
         &mut d,
@@ -271,6 +394,7 @@ pub fn sort(args: &[&str]) -> Result<(), String> {
             spec: SortSpec {
                 keys,
                 keep_first: o.header(),
+                lists,
                 ..Default::default()
             },
         },
