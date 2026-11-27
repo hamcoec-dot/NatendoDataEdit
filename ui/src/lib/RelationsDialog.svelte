@@ -4,7 +4,7 @@
   import { tick as drawn, untrack } from "svelte";
   import AllNone from "./AllNone.svelte";
   import FormShell from "./FormShell.svelte";
-  import { breaks, cautions, copyText, findingText, MAX_RELATION_COLS, NO_TABLE_CHECKS, type Finding, type RelationsReport, type RelationsSpec } from "./relations";
+  import { breaks, cautions, copyText, findingText, MAX_RELATION_COLS, type Finding, type RelationsReport, type RelationsSpec } from "./relations";
 
   interface Props {
     titles: string[];
@@ -14,10 +14,12 @@
     onCancelRun: () => void;
     /** False when it was refused (the screen stays). */
     onExceptions: (f: Finding) => Promise<boolean>;
+    /** Adds the finding's data checks; false when nothing was added. */
+    onMakeCheck: (f: Finding) => Promise<boolean>;
     onCopy: (text: string) => void;
     onClose: () => void;
   }
-  let { titles, hidden, header, onRun, onCancelRun, onExceptions, onCopy, onClose }: Props = $props();
+  let { titles, hidden, header, onRun, onCancelRun, onExceptions, onMakeCheck, onCopy, onClose }: Props = $props();
   const init = untrack(() => ({ header }));
   let cols = $state<number[]>([]);
   let percent = $state(95);
@@ -25,6 +27,8 @@
   let report = $state<RelationsReport | null>(null);
   let ran = $state("");
   let findButton = $state<HTMLButtonElement>();
+  /** Findings (by line) made into checks since the last Find. */
+  let made = $state<number[]>([]);
 
   const title = (c: number) => titles[c] ?? `Column ${c + 1}`;
   const shown = $derived(titles.map((t, i) => [i, t] as const).filter(([i]) => !hidden.includes(i)));
@@ -43,6 +47,7 @@
       const r = await onRun(s);
       if (!r) return;
       report = r;
+      made = [];
       ran = JSON.stringify(s);
     } finally {
       busy = false;
@@ -53,6 +58,10 @@
       report = null;
       void drawn().then(() => findButton?.focus());
     }
+  }
+  async function makeCheck(f: Finding, i: number): Promise<void> {
+    if (made.includes(i)) return;
+    if (await onMakeCheck($state.snapshot(f) as Finding)) made = [...made, i];
   }
   function close(): void {
     if (busy) onCancelRun();
@@ -85,11 +94,12 @@
           <li>
             <span>{findingText(f, title)}{#each cautions(f) as c (c)} <em>{c}</em>{/each}</span>
             <button type="button" disabled={!breaks(f)} aria-label={`Show the exceptions to line ${i + 1}`} onclick={() => void exceptions(f)}>Show the exceptions</button>
-            <button type="button" disabled title={NO_TABLE_CHECKS} aria-label={`Make line ${i + 1} a check`}>Make this a check</button>
+            <button type="button" disabled={busy || made.includes(i)} aria-label={`Make line ${i + 1} a check`}
+              title={f.kind === "one_to_one" ? "Adds two data checks, one each way" : f.kind === "co_blank" ? "Adds a row rule: blank in both or in neither" : "Adds a data check that marks the rows that break it"}
+              onclick={() => void makeCheck(f, i)}>{made.includes(i) ? "Added ✓" : "Make this a check"}</button>
           </li>
         {/each}
       </ol>
-      {#if r.findings.length}<p class="muted">Make this a check: {NO_TABLE_CHECKS}</p>{/if}
       {#if r.left_out.length}<p class="muted">Left out: {r.left_out.map(([c, why]) => `${title(c)} (${why === "unique" ? "nearly every row its own value, so it settles everything" : "one value only"})`).join(", ")}.</p>{/if}
       {#if r.mostly_one.length}
         <details>

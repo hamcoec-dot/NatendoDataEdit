@@ -865,8 +865,10 @@ everything is also in command search.
   lines counted again over every row. The time limit covers
   the search for pairs, not that final exact count. Show the exceptions filters to the rows
   that break a line. Values are compared exactly, so TN and tn differ: clean
-  first if capitals should not count. Turning a line into a data check is not
-  available yet.
+  first if capitals should not count. Make this a check turns a line into a
+  data check that marks the rows breaking it (a "Same for each value of
+  another column" rule; both ways for one to one; a row rule for blank
+  together), runs it and says how many rows break it.
   ![Find relationships: ZIP settles State, with its exceptions](docs/screenshots/relations.png)
 - **Compare two columns** (Data > Compare two columns, or right-click a
   heading): for each row, are the two cells the same, different, or filled in
@@ -1080,6 +1082,16 @@ everything is also in command search.
   and Show only rows with problems, Sort, the check column, Go To Special and
   F7 wait until it can run instead of looking clean. Data > Check that values
   exist in another file (also on the column right-click menu) starts one.
+- **Same for each value of another column:** a data check that rows with the
+  same value in one column (Precinct) have the same value in this one (Ward).
+  It is counted as Find relationships counts a line: values compared with the
+  spaces at the ends left out, blank cells pass, and among the rows shown (in
+  the order shown) with one Precinct, the commonest Ward is right (a tie goes
+  to the one met first) and every other Ward is a problem. The problem list
+  says what it was compared with ("W3; most rows with 12 have W2"). A table
+  with more than 4,000,000 different pairs of the two values does not run the
+  rule and says so. Rules files holding it are saved as version 3, which older
+  releases turn away; other rules files are written as before.
 - **Table checks:** rules about the table as a whole, run with the other rules
   by Run checks and Check now, over the rows shown: how many rows there are
   (exactly, at least, at most), as many rows as another open file, no blank
@@ -1801,10 +1813,13 @@ file pairs in order (`Note`, `Note (2)`), and blank titles match by position.
 A checks file is what Data > Data checks > Save writes, for example
 `{"checks": [{"column": "Email", "kind": {"type": "pattern", "pattern": {"text": "[^@]+@[^@]+", "kind": "regex"}}}]}`.
 Kinds: `required`, `number`, `date`, `date_iso`, `length`, `list`, `pattern`,
-`unique`, `expression`. A `unique` check can name the other columns of its key
-with `"also_columns": ["Last", "Born"]` (titles, or numbers from 1), for
+`unique`, `expression`, `foreign_key`, `settled_by`. A `unique` check can name
+the other columns of its key with `"also_columns": ["Last", "Born"]` (titles, or numbers from 1), for
 example `{"column": "First", "also_columns": ["Last"], "kind": {"type": "unique"}}`;
-at most 8 columns in all. A `foreign_key` check names the other file and its
+at most 8 columns in all. A `settled_by` check names the column that settles
+it, for example
+`{"column": "Ward", "by_column": "Precinct", "kind": {"type": "settled_by"}}`
+(also `match_case`, on unless set to false). A `foreign_key` check names the other file and its
 column, for example
 `{"column": "Precinct", "kind": {"type": "foreign_key", "table": "precincts", "column": "Code"}}`
 (also `match_case`, `trim`, `allow_blank`), and the file is given with

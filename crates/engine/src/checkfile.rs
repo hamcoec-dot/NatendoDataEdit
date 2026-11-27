@@ -15,9 +15,10 @@ use crate::validate::{check_spec, Check, CheckKind, CheckSpec};
 use crate::Error;
 
 /// The newest file version this release reads. Files are written as version 1 unless they
-/// use something version 1 does not have (a unique rule over several columns, table
-/// checks), so files without it stay byte-identical and readable by older releases.
-pub const VERSION: u32 = 2;
+/// use something version 1 does not have (version 2: a unique rule over several columns, table
+/// checks; version 3: a "settled by" rule), so files without it stay byte-identical and
+/// readable by older releases.
+pub const VERSION: u32 = 3;
 /// Largest rules file read, in bytes.
 pub const MAX_FILE_BYTES: u64 = 4 << 20;
 
@@ -36,6 +37,10 @@ pub struct StoredRule {
     /// `kind` (found the way `title` is; a key column that is gone skips the rule).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub also_titles: Vec<String>,
+    /// A "settled by" rule's `by` column by title (found the way `title` is; when it is
+    /// gone the rule is skipped). Written in version 3 files only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_title: Option<String>,
 }
 
 /// One table check as stored: a column it names by title too (a formula names its
@@ -95,16 +100,29 @@ pub fn checks_path(table: &Path) -> PathBuf {
 impl ChecksFile {
     /// Read and validate a rules file's bytes (before anything is used).
     pub fn from_bytes(bytes: &[u8]) -> Result<ChecksFile, Error> {
+        Self::read(bytes, VERSION)
+    }
+
+    /// [`ChecksFile::from_bytes`] as a release that reads up to version `newest` would.
+    fn read(bytes: &[u8], newest: u32) -> Result<ChecksFile, Error> {
         if bytes.len() as u64 > MAX_FILE_BYTES {
             return Err(Error::Invalid("the rules file is too large".into()));
         }
-        let f: ChecksFile = serde_json::from_slice(bytes)
+        // The version first, so a newer file is turned away by its version, not by a
+        // rule kind or field this build does not know.
+        #[derive(Deserialize)]
+        struct Version {
+            version: u32,
+        }
+        let v: Version = serde_json::from_slice(bytes)
             .map_err(|e| Error::Invalid(format!("the rules file cannot be read: {e}")))?;
-        if f.version > VERSION {
+        if v.version > newest {
             return Err(Error::Invalid(
                 "the rules file was saved by a newer version of the app".into(),
             ));
         }
+        let f: ChecksFile = serde_json::from_slice(bytes)
+            .map_err(|e| Error::Invalid(format!("the rules file cannot be read: {e}")))?;
         let spec = CheckSpec {
             checks: f.rules.iter().map(|r| r.check()).collect(),
             keep_first: f.keep_first,
@@ -127,6 +145,11 @@ impl ChecksFile {
             if !r.also_titles.is_empty() && r.also_titles.len() != also {
                 return Err(Error::Invalid(
                     "the rules file names other key columns that do not match their numbers".into(),
+                ));
+            }
+            if r.by_title.is_some() && !matches!(r.kind, CheckKind::SettledBy { .. }) {
+                return Err(Error::Invalid(
+                    "the rules file names a settling column for a rule that has none".into(),
                 ));
             }
         }
@@ -177,6 +200,15 @@ impl ChecksFile {
                         .collect(),
                     _ => Vec::new(),
                 },
+                by_title: match &c.kind {
+                    CheckKind::SettledBy { by, .. } => Some(
+                        titles
+                            .get(*by as usize)
+                            .cloned()
+                            .unwrap_or_else(|| format!("Column {}", by + 1)),
+                    ),
+                    _ => None,
+                },
             })
             .collect();
         let table_checks: Vec<StoredTableCheck> = table_checks
@@ -190,8 +222,14 @@ impl ChecksFile {
                 }
             })
             .collect();
-        let version = if !table_checks.is_empty() || rules.iter().any(|r| !r.also_titles.is_empty())
+        // The lowest version that holds what is written, so older builds keep reading
+        // the files they can.
+        let version = if rules
+            .iter()
+            .any(|r| matches!(r.kind, CheckKind::SettledBy { .. }))
         {
+            3
+        } else if !table_checks.is_empty() || rules.iter().any(|r| !r.also_titles.is_empty()) {
             2
         } else {
             1
@@ -227,6 +265,15 @@ impl ChecksFile {
                             skipped += 1;
                             continue;
                         }
+                    }
+                }
+            }
+            if let CheckKind::SettledBy { by, .. } = &mut c.kind {
+                match find(&titles, r.by_title.as_ref(), Some(*by)) {
+                    Some(k) => *by = k,
+                    None => {
+                        skipped += 1;
+                        continue;
                     }
                 }
             }
@@ -366,6 +413,88 @@ mod tests {
                 },
             ),
         ]
+    }
+
+    fn settled() -> Check {
+        Check::new(
+            Some(1),
+            CheckKind::SettledBy {
+                by: 0,
+                match_case: true,
+            },
+        )
+    }
+
+    #[test]
+    fn a_settled_by_rule_is_written_as_version_3_and_only_then() {
+        let d = doc("precinct,ward\r\nP1,W1\r\n");
+        // Without it: the same bytes as before (version 1, no new field).
+        let plain = ChecksFile::for_rules(&d, &rules(), true);
+        assert_eq!(plain.version, 1);
+        let text = String::from_utf8(serde_json::to_vec_pretty(&plain).unwrap()).unwrap();
+        assert!(
+            !text.contains("by_title") && !text.contains("settled_by"),
+            "{text}"
+        );
+        let unique2 = vec![Check::new(
+            Some(0),
+            CheckKind::Unique {
+                match_case: false,
+                also: vec![1],
+            },
+        )];
+        assert_eq!(ChecksFile::for_rules(&d, &unique2, true).version, 2);
+        // With it: version 3, and the settling column by title.
+        let f = ChecksFile::for_rules(&d, &[settled()], true);
+        assert_eq!(f.version, 3);
+        assert_eq!(f.rules[0].by_title.as_deref(), Some("precinct"));
+        let bytes = serde_json::to_vec_pretty(&f).unwrap();
+        assert_eq!(ChecksFile::from_bytes(&bytes).unwrap(), f);
+        // A release that reads up to version 2 turns it away by its version.
+        let e = ChecksFile::read(&bytes, 2).unwrap_err().to_string();
+        assert!(e.contains("saved by a newer version"), "{e}");
+        // And this one turns away a version 4 file the same way, whatever it holds.
+        let newer = br#"{"version":4,"rules":[{"col":0,"kind":{"type":"some_new_kind"}}]}"#;
+        let e = ChecksFile::from_bytes(newer).unwrap_err().to_string();
+        assert!(e.contains("saved by a newer version"), "{e}");
+    }
+
+    #[test]
+    fn old_files_read_as_before() {
+        let v1 = br#"{"version":1,"keep_first":true,"rules":[{"col":0,"title":"precinct","kind":{"type":"required"}}]}"#;
+        let v2 = br#"{"version":2,"keep_first":true,"rules":[{"col":0,"title":"precinct","kind":{"type":"unique","match_case":false,"also":[1]},"also_titles":["ward"]}]}"#;
+        let d = doc("precinct,ward\r\nP1,W1\r\n");
+        for b in [&v1[..], &v2[..]] {
+            let f = ChecksFile::from_bytes(b).unwrap();
+            assert_eq!(f.resolve(&d).checks.len(), 1);
+            assert!(f.rules[0].by_title.is_none());
+        }
+        // A settling column named on a rule without one is refused.
+        let odd =
+            br#"{"version":3,"rules":[{"col":0,"kind":{"type":"required"},"by_title":"ward"}]}"#;
+        assert!(ChecksFile::from_bytes(odd).is_err());
+    }
+
+    #[test]
+    fn a_settled_by_rule_follows_its_columns_by_title() {
+        let d = doc("precinct,ward\r\nP1,W1\r\n");
+        let f = ChecksFile::for_rules(&d, &[settled()], true);
+        // The columns swapped, and a new one in front.
+        let moved = doc("note,ward,precinct\r\nx,W1,P1\r\n");
+        let got = f.resolve(&moved);
+        assert_eq!(got.skipped, 0);
+        assert_eq!(got.checks[0].col, Some(1));
+        assert_eq!(
+            got.checks[0].kind,
+            CheckKind::SettledBy {
+                by: 2,
+                match_case: true
+            }
+        );
+        // The settling column gone: skipped.
+        let gone = doc("ward,note\r\nW1,x\r\n");
+        let got = f.resolve(&gone);
+        assert_eq!((got.checks.len(), got.skipped), (0, 1));
     }
 
     #[test]

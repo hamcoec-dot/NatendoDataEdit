@@ -68,7 +68,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import CompareColsDialog, { type CompareAction } from "./lib/CompareColsDialog.svelte";
   import GapsDialog from "./lib/GapsDialog.svelte";
   import RelationsDialog from "./lib/RelationsDialog.svelte";
-  import type { Finding, RelationsReport, RelationsSpec } from "./lib/relations";
+  import { addChecks, addedText, checksFor, type Finding, type RelationsReport, type RelationsSpec } from "./lib/relations";
   import SetsDialog, { type SetsTab } from "./lib/SetsDialog.svelte";
   import PatchDialog from "./lib/PatchDialog.svelte";
   import { appliedText } from "./lib/patch";
@@ -130,7 +130,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { autosaveDue, type RecoveryItem, type Suggestion, type Suggestions, type VersionItem } from "./lib/m9";
   import { BASIC_KEYS, cleanFormat, defaultFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat } from "./lib/m9";
   import { defaultPage, newCheck, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS } from "./lib/m8";
-  import type { Check, CheckSpec, ComputeSpec, PageSetup, TableCheck } from "./lib/backend";
+  import type { Check, CheckReport, CheckSpec, ComputeSpec, PageSetup, TableCheck } from "./lib/backend";
   import { exportDefaults } from "./lib/transfer";
   import { cleanShortcuts, matchColumns, safeFont, MAX_VIEWS, sessionView, type RecentItem, type Shortcuts, type View } from "./lib/views";
 
@@ -3776,6 +3776,31 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     relationsAsk = null;
     say(`Showing the ${plural(rep.rows, "row")} that break it. Data › Clear filter shows every row.`);
     void tick().then(() => grid?.focus());
+    return true;
+  }
+
+  /** Find relationships > Make this a check: the finding's rules join the tab's data checks and run. */
+  async function makeRelationCheck(f: Finding): Promise<boolean> {
+    const t = tab;
+    if (!t) return false;
+    const header = t.header && t.info.rows > 0;
+    const titles = Array.from({ length: t.info.cols }, (_, c) => columnTitle(t, c));
+    const { checks, added, already } = addChecks($state.snapshot(t.checks) as Check[], checksFor(f, titles, header));
+    if (!added.length) {
+      say(addedText(f, [], already, null));
+      return false;
+    }
+    if (checks.length > 200) {
+      say("Data checks hold at most 200 rules: remove some first.");
+      return false;
+    }
+    keepChecks(checks, true);
+    const rep = await checkNow(t);
+    if (!rep) return true;
+    const first = checks.length - added.length;
+    const skipped = (rep.not_run ?? []).filter((x) => x.check >= first);
+    if (skipped.length) say(`Added the check, but it did not run: ${skipped[0]!.why}.`);
+    else say(addedText(f, added.map((c) => c.name ?? ""), already, added.reduce((s, _, k) => s + (rep.per_check[first + k] ?? 0), 0)));
     return true;
   }
 
@@ -7773,11 +7798,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   }
 
   /** Run the rules over the whole table once (a job with progress and Cancel) and keep the figures. */
-  async function checkNow(t: Tab): Promise<boolean> {
-    if (!t.checks.length && !t.tableChecks.length) return false;
+  async function checkNow(t: Tab): Promise<CheckReport | null> {
+    if (!t.checks.length && !t.tableChecks.length) return null;
     try {
       const rep = await runJob("Checking", () => backend().runChecks(t.id, ruleSpec(t)));
-      if (!rep) return false;
+      if (!rep) return null;
       const table = rep.table ?? [];
       const failed = table.filter((r) => r.ok !== true);
       t.lastRun = { rules: t.checks.length, problems: rep.problems, revision: t.info.data_revision, tableFailed: failed.length };
@@ -7790,10 +7815,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         const f = failed[0]!;
         say(`${plural(failed.length, "table check")} did not pass: ${f.name}: ${f.ok === null ? `did not run (${f.why ?? ""})` : `${f.actual}, wanted ${f.expected}`}.`);
       } else if (table.length) say(`${plural(table.length, "table check")} passed; ${plural(rep.problems, "problem")} in the rows.`);
-      return true;
+      return rep;
     } catch (e) {
       say(errorText(e));
-      return false;
+      return null;
     }
   }
 
@@ -7818,7 +7843,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       t.checkVersion++;
     }
     const stale = !t.lastRun || t.lastRun.revision !== t.info.data_revision;
-    if (stale && t.checks.some((c) => c.kind.type === "unique")) await checkNow(t);
+    if (stale && t.checks.some((c) => c.kind.type === "unique" || c.kind.type === "settled_by")) await checkNow(t);
     try {
       const r = await runJob("Looking for the next problem", () => backend().nextProblem(t.id, t.cell.row, t.cell.col, backward, hiddenColsOf(t), ruleSpec(t)));
       if (!r) return;
@@ -10051,6 +10076,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     onRun={runRelations}
     onCancelRun={() => { if (tab) void backend().cancelJob(tab.id); }}
     onExceptions={showExceptions}
+    onMakeCheck={makeRelationCheck}
     onCopy={(t) => void copyRelations(t)}
     onClose={() => { relationsAsk = null; grid?.focus(); }}
   />

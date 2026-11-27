@@ -1,9 +1,9 @@
 // Data › Find relationships: the shapes of the engine's `relations` module
 // and the words made from them.
 
+import type { Check } from "./backend";
+
 export const MAX_RELATION_COLS = 40;
-/** Why "Make this a check" is greyed. */
-export const NO_TABLE_CHECKS = "Waits for table checks (a check across two columns), which this version does not have yet.";
 
 export interface RelationsSpec {
   cols: number[];
@@ -67,6 +67,55 @@ export function cautions(f: Finding): string[] {
 
 export function breaks(f: Finding): boolean {
   return f.there.agreeing < f.there.coverage || (!!f.back && f.back.agreeing < f.back.coverage);
+}
+
+/** A column in an expression: its title when no other column has it, else its number. */
+function ref(c: number, titles: string[], header: boolean): string {
+  const t = titles[c] ?? "";
+  const once = header && t !== "" && titles.filter((x) => x === t).length === 1;
+  return `[${once ? t.replace(/]/g, "]]") : `#${c + 1}`}]`;
+}
+
+/** The data checks a finding becomes: "B settled by A" (both ways for one to one), or for
+ *  blank together a row rule that counts blank the way the scan does (spaces only is blank). */
+export function checksFor(f: Finding, titles: string[], header: boolean): Check[] {
+  const title = (c: number) => titles[c] || `Column ${c + 1}`;
+  const settled = (col: number, by: number): Check => ({ col, name: `${title(col)} settled by ${title(by)}`, kind: { type: "settled_by", by, match_case: true } });
+  if (f.kind === "co_blank") {
+    const e = `ISBLANK(TRIM(${ref(f.a, titles, header)})) = ISBLANK(TRIM(${ref(f.b, titles, header)}))`;
+    return [{ col: null, name: `${title(f.a)} and ${title(f.b)} blank together`, kind: { type: "expression", expr: e } }];
+  }
+  if (f.kind === "one_to_one") return [settled(f.b, f.a), settled(f.a, f.b)];
+  return [settled(f.b, f.a)];
+}
+
+/** The same rule (kind, columns and settings; the name aside). */
+function same(a: Check, b: Check): boolean {
+  return a.col === b.col && JSON.stringify(a.kind) === JSON.stringify(b.kind);
+}
+
+/** `existing` with `made` added, leaving out those already there. */
+export function addChecks(existing: Check[], made: Check[]): { checks: Check[]; added: Check[]; already: number } {
+  const added = made.filter((m) => !existing.some((e) => same(e, m)));
+  return { checks: [...existing, ...added], added, already: made.length - added.length };
+}
+
+/** The rows a finding says break it (both directions for one to one; for blank together, blank in one only). */
+export function brokenRows(f: Finding): number {
+  if (f.kind === "co_blank") return f.there.coverage - f.there.agreeing;
+  return f.there.coverage - f.there.agreeing + (f.back ? f.back.coverage - f.back.agreeing : 0);
+}
+
+/** What the status line says once the new rules ran: `found` rows break them. The scan's
+ *  figure is only matched when it counted every row; otherwise both are said. */
+export function addedText(f: Finding, names: string[], already: number, found: number | null): string {
+  const what = names.length === 1 ? `the check "${names[0]}"` : `the checks ${names.map((n) => `"${n}"`).join(" and ")}`;
+  if (!names.length) return already === 1 ? "That check is already in Data checks." : "Those checks are already in Data checks.";
+  const n = (x: number) => x.toLocaleString();
+  const rows = (x: number) => `${n(x)} ${x === 1 ? "row breaks" : "rows break"}`;
+  const count = found === null ? "" : f.exact ? `: ${rows(found)} ${names.length === 1 ? "it" : "them"}` : `: ${rows(found)} ${names.length === 1 ? "it" : "them"} (the scan estimated ${n(brokenRows(f))})`;
+  const was = already ? ` (${already === 1 ? "1 was" : `${already} were`} already there)` : "";
+  return `Added ${what}${count}${was}. Data › Data checks lists them; F7 goes to the next problem.`;
 }
 
 /** The findings as lines to copy. */

@@ -753,7 +753,8 @@ pub fn compute(args: &[&str], json_out: bool) -> Result<(), String> {
 /// Read a checks file: `{"checks": [...]}` or a bare list. A check may name
 /// its column with `"column": "Title"` (or a number from 1) instead of
 /// `"col"` (from 0), and a unique check the other columns of its key with
-/// `"also_columns": ["Title", ...]` instead of `"also"` (from 0) in its kind.
+/// `"also_columns": ["Title", ...]` instead of `"also"` (from 0) in its kind, and a
+/// settled-by check its settling column with `"by_column": "Title"` instead of `"by"`.
 fn read_checks(path: &str, d: &Document, header: bool) -> Result<CheckSpec, String> {
     let size = std::fs::metadata(path)
         .map_err(|e| format!("{path}: {e}"))?
@@ -810,6 +811,19 @@ fn read_checks(path: &str, d: &Document, header: bool) -> Result<CheckSpec, Stri
                 _ => {
                     return Err(format!(
                         "{path}: \"also_columns\" goes with a unique check only"
+                    ))
+                }
+            }
+        }
+        if let Some(by) = o.remove("by_column") {
+            let n = find(&by)?;
+            match o.get_mut("kind") {
+                Some(Value::Object(k)) if k.get("type") == Some(&json!("settled_by")) => {
+                    k.insert("by".into(), json!(n));
+                }
+                _ => {
+                    return Err(format!(
+                        "{path}: \"by_column\" goes with a settled_by check only"
                     ))
                 }
             }

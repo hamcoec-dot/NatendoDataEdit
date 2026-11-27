@@ -1277,7 +1277,9 @@ export type CheckKind =
   | { type: "unique"; match_case: boolean; also?: number[] }
   | { type: "expression"; expr: string }
   /** The value must be one of `column`'s values in the open file called `table` (a foreign key). */
-  | { type: "foreign_key"; table: string; column: string; match_case: boolean; trim: boolean; allow_blank: boolean };
+  | { type: "foreign_key"; table: string; column: string; match_case: boolean; trim: boolean; allow_blank: boolean }
+  /** Rows with the same value in column `by` have the same value in this column (as Data › Find relationships counts it). */
+  | { type: "settled_by"; by: number; match_case: boolean };
 /** A pivot layout column found by place, not title. */
 export interface PlaceSwap {
   was: string;

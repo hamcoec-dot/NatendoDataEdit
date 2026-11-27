@@ -179,6 +179,28 @@ fn every_command_answers_in_json() {
 }
 
 #[test]
+fn validate_reads_a_settled_by_rule() {
+    let d = Folder::new("settled");
+    let a = d.write(
+        "w.csv",
+        "precinct,ward\r\nP1,W1\r\nP1,W1\r\nP1,W2\r\nP2,W3\r\nP2,W3\r\n",
+    );
+    let checks = d.write(
+        "c.json",
+        r#"{"checks": [{"column": "ward", "by_column": "precinct", "kind": {"type": "settled_by"}}]}"#,
+    );
+    let (code, v) = json(&["validate", &a, "--checks", &checks]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["problems"], 1, "{v}");
+    let wrong = d.write(
+        "x.json",
+        r#"{"checks": [{"column": "ward", "by_column": "precinct", "kind": {"type": "required"}}]}"#,
+    );
+    let (code, v) = json(&["validate", &a, "--checks", &wrong]);
+    assert_eq!(code, 2, "{v}");
+}
+
+#[test]
 fn cat_by_name_gives_what_combine_gives() {
     let d = Folder::new("cat");
     let texts = [

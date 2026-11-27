@@ -199,8 +199,14 @@ struct Room {
 }
 
 /// How far `a` settles `b`, and the share (percent) of the counted rows that
-/// hold `b`'s commonest value. With `odd`, the rows that break it are marked.
-fn holds(a: &Groups, b: &Ids, room: &mut Room, mut odd: Option<&mut Vec<u32>>) -> (Holds, f64) {
+/// hold `b`'s commonest value. With `odd`, the rows that break it are marked,
+/// each with the first row of its group that holds the commonest value.
+fn holds(
+    a: &Groups,
+    b: &Ids,
+    room: &mut Room,
+    mut odd: Option<&mut Vec<(u32, u32)>>,
+) -> (Holds, f64) {
     let size = b.distinct as usize + 1;
     room.n.clear();
     room.n.resize(size, 0);
@@ -248,10 +254,16 @@ fn holds(a: &Groups, b: &Ids, room: &mut Room, mut odd: Option<&mut Vec<u32>>) -
             room.n[v as usize] = 0;
         }
         if let Some(odd) = odd.as_deref_mut() {
+            let won = rows
+                .iter()
+                .copied()
+                .find(|&r| b.ids[r as usize] == best)
+                .unwrap_or(0);
             odd.extend(
                 rows.iter()
                     .copied()
-                    .filter(|&r| !matches!(b.ids[r as usize], 0) && b.ids[r as usize] != best),
+                    .filter(|&r| !matches!(b.ids[r as usize], 0) && b.ids[r as usize] != best)
+                    .map(|r| (r, won)),
             );
         }
     }
@@ -331,6 +343,18 @@ impl Document {
         at: &[u64],
         progress: &Progress,
     ) -> Result<Vec<Ids>, Error> {
+        self.relation_ids_as(cols, at, false, progress)
+    }
+
+    /// [`Document::relation_ids`], with case folded when `fold` (a "settled by" rule
+    /// that ignores case; the scan always compares case).
+    fn relation_ids_as(
+        &self,
+        cols: &[u32],
+        at: &[u64],
+        fold: bool,
+        progress: &Progress,
+    ) -> Result<Vec<Ids>, Error> {
         let reader = Cols::new(self, cols);
         let k = cols.len();
         // Each part numbers its own values; the parts are then joined, one
@@ -349,6 +373,13 @@ impl Document {
                     reader.read(self, id, &mut buf);
                     for i in 0..k {
                         let v = reader.get(&buf, i).trim();
+                        let lower;
+                        let v = if fold {
+                            lower = v.to_lowercase();
+                            lower.as_str()
+                        } else {
+                            v
+                        };
                         let n = if v.is_empty() {
                             0
                         } else if let Some(&n) = seen[i].get(v) {
@@ -372,7 +403,7 @@ impl Document {
             .flat_map(|c| c.1.iter())
             .map(|s| s.len() + 48)
             .sum();
-        if bytes > MAX_VALUE_BYTES {
+        if bytes > value_bytes_limit() {
             return Err(Error::OutOfMemory(
                 "these columns hold too many different values to scan at once; pick fewer",
             ));
@@ -652,12 +683,13 @@ impl Document {
         let every: Vec<u64> = rows.collect();
         progress.start(every.len() as u64);
         let ids = self.relation_ids(&[a, b], &every, progress)?;
-        let mut odd: Vec<u32> = Vec::new();
+        let mut odd: Vec<(u32, u32)> = Vec::new();
         let mut room = Room::default();
         match kind {
             RelationKind::CoBlank => odd.extend(
                 (0..every.len() as u32)
-                    .filter(|&r| (ids[0].ids[r as usize] == 0) != (ids[1].ids[r as usize] == 0)),
+                    .filter(|&r| (ids[0].ids[r as usize] == 0) != (ids[1].ids[r as usize] == 0))
+                    .map(|r| (r, r)),
             ),
             RelationKind::Depends => {
                 holds(&groups(&ids[0]), &ids[1], &mut room, Some(&mut odd));
@@ -677,7 +709,7 @@ impl Document {
             *w |= m;
             new
         };
-        for r in odd {
+        for (r, _) in odd {
             let id = self.id_at(every[r as usize]).ok_or(Error::OutOfRange)?;
             shown += u64::from(set(id));
         }
@@ -698,6 +730,53 @@ impl Document {
             base,
         ));
         Ok(plan)
+    }
+}
+
+impl Document {
+    /// A "settled by" rule (`col` settled by `by`) over the shown rows `at`, in that
+    /// order, counted exactly as [`Document::plan_relation_exceptions`] counts a finding:
+    /// for each row that breaks it, its offset in `at` and the offset of the first row of
+    /// its group holding the commonest value. `None` when the two columns hold more text
+    /// of different values than a scan holds.
+    pub(crate) fn settled_odd(
+        &self,
+        col: u32,
+        by: u32,
+        match_case: bool,
+        at: &[u64],
+        progress: &Progress,
+    ) -> Result<Option<Vec<(u32, u32)>>, Error> {
+        let ids = match self.relation_ids_as(&[by, col], at, !match_case, progress) {
+            Ok(ids) => ids,
+            Err(Error::OutOfMemory(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let mut odd = Vec::new();
+        holds(
+            &groups(&ids[0]),
+            &ids[1],
+            &mut Room::default(),
+            Some(&mut odd),
+        );
+        Ok(Some(odd))
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A lower limit on the different values' text, for tests.
+    pub(crate) static VALUE_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(MAX_VALUE_BYTES) };
+}
+
+fn value_bytes_limit() -> usize {
+    #[cfg(test)]
+    {
+        VALUE_BYTES.with(|c| c.get())
+    }
+    #[cfg(not(test))]
+    {
+        MAX_VALUE_BYTES
     }
 }
 

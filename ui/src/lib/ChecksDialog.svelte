@@ -279,6 +279,13 @@
           <label class="row"><input type="checkbox" bind:checked={k.match_case} /> case</label>
           <label class="row"><input type="checkbox" bind:checked={k.trim} /> ignore spaces at the ends</label>
           <label class="row"><input type="checkbox" bind:checked={k.allow_blank} /> blank is fine</label>
+        {:else if c.kind.type === "settled_by"}
+          {@const k = c.kind}
+          <span class="sub">for each value of</span>
+          <select aria-label="Column whose value settles it" bind:value={k.by} onchange={() => (report = null)}>
+            {#each titles as t, x (x)}{#if x !== c.col}<option value={x}>{t || `Column ${x + 1}`}</option>{/if}{/each}
+          </select>
+          <label class="row"><input type="checkbox" bind:checked={k.match_case} /> case matters</label>
         {:else if c.kind.type === "expression"}
           {@const k = c.kind}
           <input class="grow mono" type="text" aria-label="Rule" placeholder="true when the row is right, like [Start] <= [End]" bind:value={k.expr} spellcheck="false" />

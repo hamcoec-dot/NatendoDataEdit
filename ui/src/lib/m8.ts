@@ -93,6 +93,7 @@ export const CHECK_KINDS: { type: CheckKind["type"]; label: string }[] = [
   { type: "unique", label: "No repeats" },
   { type: "expression", label: "Row rule (expression)" },
   { type: "foreign_key", label: "Value must exist in another file" },
+  { type: "settled_by", label: "Same for each value of another column" },
 ];
 
 /** A new check of a kind, with empty settings. */
@@ -107,6 +108,7 @@ export function newCheck(type: CheckKind["type"], col: number): Check {
     : type === "pattern" ? { type, pattern: { text: "", kind: "regex", match_case: false, whole_cell: true } }
     : type === "unique" ? { type, match_case: false }
     : type === "foreign_key" ? { type, table: "", column: "", match_case: false, trim: true, allow_blank: true }
+    : type === "settled_by" ? { type, by: col === 0 ? 1 : 0, match_case: true }
     : { type: "expression", expr: "" };
   return { col: type === "expression" ? null : col, kind };
 }
@@ -117,6 +119,11 @@ export function placeCheck(c: Check, place: (k: number) => number | null | undef
   if (c.col === null) return c;
   const col = place(c.col);
   if (col === null || col === undefined || col < 0) return null;
+  if (c.kind.type === "settled_by") {
+    const by = place(c.kind.by);
+    if (by === null || by === undefined || by < 0) return null;
+    return { ...c, col, kind: { ...c.kind, by } };
+  }
   if (c.kind.type !== "unique" || !c.kind.also?.length) return { ...c, col };
   const also: number[] = [];
   for (const a of c.kind.also) {
@@ -175,6 +182,8 @@ export function describeCheck(c: Check, titles: string[]): string {
       return `row rule: ${k.expr}`;
     case "foreign_key":
       return `${col}must exist in ${k.table || "another file"} > ${k.column || "a column"}`;
+    case "settled_by":
+      return `${col}the same for each ${titles[k.by] ?? `Column ${k.by + 1}`}`;
   }
 }
 

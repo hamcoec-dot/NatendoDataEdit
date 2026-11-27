@@ -43,6 +43,8 @@ export function describeCheck(c: Check): string {
       return `Row rule: ${k.expr}`;
     case "foreign_key":
       return `Value must exist in ${k.table} > ${k.column}`;
+    case "settled_by":
+      return `Settled by column ${k.by + 1}`;
   }
 }
 

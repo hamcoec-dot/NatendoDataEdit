@@ -5600,6 +5600,7 @@ export class MockBackend implements Backend {
       const key = this.uniqueKey(d, r, c);
       return key !== null && (seen.get(key) ?? 0) > 1;
     }
+    if (k.type === "settled_by") return seen.has(`r${r}`);
     if (k.type === "foreign_key") {
       // `seen` holds the other file's values (empty and marked not run when it is not open).
       if (!seen.has(FK_READ)) return false;
@@ -5672,6 +5673,34 @@ export class MockBackend implements Backend {
         }
         return m;
       }
+      if (c.kind.type === "settled_by") {
+        // As the engine counts it: trimmed values, blanks pass, the commonest value per group wins
+        // (a tie to the one met first); `r<row>` -> the winning row.
+        const k = c.kind;
+        const norm = (v: string) => (k.match_case ? v.trim() : v.trim().toLowerCase());
+        const groups = new Map<string, Map<string, { n: number; first: number }>>();
+        const first = spec.keep_first ? 1 : 0;
+        for (let r = first; r < this.rowCount(d); r++) {
+          const a = norm(this.value(d, r, k.by));
+          const b = norm(this.value(d, r, c.col ?? 0));
+          if (!a || !b) continue;
+          const g = groups.get(a) ?? new Map();
+          groups.set(a, g);
+          const e = g.get(b);
+          if (e) e.n++;
+          else g.set(b, { n: 1, first: r });
+        }
+        const best = new Map<string, { b: string; n: number; first: number }>();
+        for (const [a, g] of groups) for (const [b, e] of g) { const w = best.get(a); if (!w || e.n > w.n || (e.n === w.n && e.first < w.first)) best.set(a, { b, ...e }); }
+        for (let r = first; r < this.rowCount(d); r++) {
+          const a = norm(this.value(d, r, k.by));
+          const b = norm(this.value(d, r, c.col ?? 0));
+          if (!a || !b) continue;
+          const w = best.get(a)!;
+          if (w.b !== b) m.set(`r${r}`, w.first);
+        }
+        return m;
+      }
       if (c.kind.type !== "unique") return m;
       for (let r = spec.keep_first ? 1 : 0; r < this.rowCount(d); r++) {
         const key = this.uniqueKey(d, r, c);
@@ -5696,7 +5725,11 @@ export class MockBackend implements Backend {
         rep.problems++;
         rep.per_check[i]!++;
         const also = c.kind.type === "unique" ? (c.kind.also ?? []) : [];
-        const value = c.kind.type === "expression" ? "" : [c.col ?? 0, ...also].map((k) => this.value(d, r, k)).join(" | ");
+        const k = c.kind;
+        const value =
+          k.type === "expression" ? ""
+          : k.type === "settled_by" ? `${this.value(d, r, c.col ?? 0).trim()}; most rows with ${this.value(d, r, k.by).trim()} have ${this.value(d, counts[i]!.get(`r${r}`) ?? r, c.col ?? 0).trim()}`
+          : [c.col ?? 0, ...also].map((x) => this.value(d, r, x)).join(" | ");
         if (rep.listed.length < 1000) rep.listed.push({ row: r, col: c.kind.type === "expression" ? null : c.col, check: i, value });
       });
       if (bad) rep.rows++;

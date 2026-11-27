@@ -204,6 +204,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "compare two columns": ["data.compareCols"],
   "compare lists": ["data.compareLists"],
   "find relationships": ["data.relations"],
+  "same for each value of another column": ["data.relations", "data.checks"],
   "random and audit samples": ["tools.sample"],
   "value editor": ["data.values"],
   "merge values by dragging": ["data.values", "data.valuesLookalikes"],

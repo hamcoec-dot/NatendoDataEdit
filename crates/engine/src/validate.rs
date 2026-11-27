@@ -4,7 +4,7 @@
 //! check except "required". Checks never change data.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -95,6 +95,16 @@ pub enum CheckKind {
         trim: bool,
         #[serde(default = "yes")]
         allow_blank: bool,
+    },
+    /// Rows with the same value in column `by` have the same value in the rule's column
+    /// ("Precinct settles Ward"). Counted the way Data > Find relationships counts a finding:
+    /// values trimmed; a row with either cell blank passes; among the shown rows (in the
+    /// order shown) with one `by` value and the rule's column filled, the commonest value
+    /// wins (a tie goes to the one met first) and every other row is a problem.
+    SettledBy {
+        by: u32,
+        #[serde(default = "yes")]
+        match_case: bool,
     },
 }
 
@@ -270,6 +280,8 @@ enum Test {
     Pattern(Matcher),
     /// The other key columns (`also`), marked with the rule's column when a row repeats.
     Unique(Vec<u32>),
+    /// The column that settles the rule's column (read right after it).
+    Settled,
     Expr(Expr),
     /// A value of another table's column (blank passes with the flag).
     Exists(Arc<KeySet>, bool),
@@ -405,6 +417,18 @@ fn compile(d: &Document, spec: &CheckSpec) -> Result<Compiled, Error> {
                 reader_cols.extend_from_slice(also);
                 Test::Unique(also.clone())
             }
+            CheckKind::SettledBy { by, .. } => {
+                let col = c.col.expect("checked above");
+                if *by == col {
+                    return Err(Error::Invalid(
+                        "a \"settled by\" rule needs another column".into(),
+                    ));
+                }
+                check_cols(d, &[*by])?;
+                // Read right after the rule's column, for the problem list.
+                reader_cols.push(*by);
+                Test::Settled
+            }
             CheckKind::ForeignKey {
                 table,
                 column,
@@ -497,7 +521,9 @@ impl Compiled {
             };
         }
         match t {
-            Test::Required | Test::Unique(_) | Test::Expr(_) | Test::NotRun(_) => true,
+            Test::Required | Test::Unique(_) | Test::Settled | Test::Expr(_) | Test::NotRun(_) => {
+                true
+            }
             Test::Exists(set, _) => set.has(v),
             Test::DateIso => is_iso_date(v),
             // A check the person wrote reads cells by its own rule (not by the column's type).
@@ -601,6 +627,7 @@ impl Check {
                 if also.len() == 1 { "" } else { "s" }
             ),
             CheckKind::Unique { .. } => "Unique (no repeats)".into(),
+            CheckKind::SettledBy { by, .. } => format!("Settled by column {}", by + 1),
             CheckKind::Expression { expr } => format!("Row rule: {expr}"),
             CheckKind::ForeignKey { table, column, .. } => {
                 format!("Value must exist in {table} > {column}")
@@ -676,6 +703,25 @@ impl Document {
                 repeats.push((i as u32, bits));
             }
         }
+        // "Settled by" rules: the rows that break them, and each one's winning row.
+        let mut winners: Vec<(u32, HashMap<u32, u32>)> = Vec::new();
+        let mut late_not_run: Vec<NotRun> = Vec::new();
+        for (i, ch) in spec.checks.iter().enumerate() {
+            if let CheckKind::SettledBy { by, match_case } = ch.kind {
+                let col = ch.col.expect("checked");
+                match self.settled_rows(rows.clone(), col, by, match_case, progress)? {
+                    Some((bits, win)) => {
+                        repeats.push((i as u32, bits));
+                        winners.push((i as u32, win));
+                    }
+                    None => late_not_run.push(NotRun {
+                        check: i as u32,
+                        why: "the two columns hold too many different values to count at once (over 512 MB of text)".into(),
+                    }),
+                }
+            }
+        }
+        let settled_reader = |col: u32| Cols::new(self, &[col]);
         let reader = Cols::new(self, &c.reader_cols);
         let (r0, r1) = (rows.start, rows.end);
         progress.start(r1 - r0);
@@ -696,7 +742,8 @@ impl Document {
                     let mut bad = false;
                     for i in 0..n {
                         let ok = match &c.tests[i] {
-                            Test::Unique(_) => !repeats
+                            _ if late_not_run.iter().any(|x| x.check == i as u32) => true,
+                            Test::Unique(_) | Test::Settled => !repeats
                                 .iter()
                                 .find(|x| x.0 == i as u32)
                                 .is_some_and(|x| bit(&x.1, id)),
@@ -719,6 +766,26 @@ impl Document {
                                             .map(|k| reader.get(&buf, k))
                                             .collect::<Vec<_>>()
                                             .join(" | "))
+                                    }
+                                    (Some(col), Test::Settled) => {
+                                        // What the value was compared with.
+                                        let a = c.at[i];
+                                        let won = winners
+                                            .iter()
+                                            .find(|w| w.0 == i as u32)
+                                            .and_then(|w| w.1.get(&id).copied());
+                                        let usual = won.map_or(String::new(), |w| {
+                                            let rd = settled_reader(col);
+                                            let mut b = Vec::new();
+                                            rd.read(self, w, &mut b);
+                                            rd.get(&b, 0).trim().to_string()
+                                        });
+                                        cut(&format!(
+                                            "{}; most rows with {} have {}",
+                                            reader.get(&buf, a).trim(),
+                                            reader.get(&buf, a + 1).trim(),
+                                            usual
+                                        ))
                                     }
                                     (Some(_), _) => cut(reader.get(&buf, c.at[i])),
                                 };
@@ -747,6 +814,7 @@ impl Document {
             repeats,
             ..Default::default()
         };
+        rep.not_run.extend(late_not_run);
         for (i, t) in c.tests.iter().enumerate() {
             match t {
                 Test::NotRun(why) => rep.not_run.push(NotRun {
@@ -774,6 +842,36 @@ impl Document {
         }
         rep.table = self.run_table_checks(spec, progress)?;
         Ok(rep)
+    }
+
+    /// A "settled by" rule over the shown rows `rows`, in the order shown, counted by the
+    /// same code as Find relationships: the ids of the rows that break it (one bit each)
+    /// and, for each, the row whose value won its group. `None` when the two columns hold
+    /// more text of different values than a scan holds (512 MB).
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn settled_rows(
+        &self,
+        rows: std::ops::Range<u64>,
+        col: u32,
+        by: u32,
+        match_case: bool,
+        progress: &Progress,
+    ) -> Result<Option<(Vec<u64>, HashMap<u32, u32>)>, Error> {
+        let at: Vec<u64> = rows.collect();
+        progress.start(at.len() as u64);
+        let Some(odd) = self.settled_odd(col, by, match_case, &at, progress)? else {
+            return Ok(None);
+        };
+        let base = self.next_row_id();
+        let mut bits = vec![0u64; (base as usize).div_ceil(64)];
+        let mut win = HashMap::with_capacity(odd.len());
+        for (r, w) in odd {
+            let id = self.id_at(at[r as usize]).ok_or(Error::OutOfRange)?;
+            let w = self.id_at(at[w as usize]).ok_or(Error::OutOfRange)?;
+            bits[(id >> 6) as usize] |= 1 << (id & 63);
+            win.insert(id, w);
+        }
+        Ok(Some((bits, win)))
     }
 
     /// For each shown row in `rows` (by offset), whether its key (the values of `key`
@@ -966,6 +1064,7 @@ impl Document {
                     CheckKind::List { .. } => "list",
                     CheckKind::Pattern { .. } => "pattern",
                     CheckKind::Unique { .. } => "repeated",
+                    CheckKind::SettledBy { .. } => "not the usual value",
                     CheckKind::Expression { .. } => "rule",
                     CheckKind::ForeignKey { .. } => "not in the other table",
                 };
@@ -996,7 +1095,7 @@ impl Document {
                     let mut text = String::new();
                     for (i, name) in names.iter().enumerate().take(n) {
                         let ok = match &c.tests[i] {
-                            Test::Unique(_) => !report
+                            Test::Unique(_) | Test::Settled => !report
                                 .repeats
                                 .iter()
                                 .find(|x| x.0 == i as u32)
@@ -1343,7 +1442,7 @@ impl Document {
                     continue;
                 }
                 let ok = match &c.tests[i] {
-                    Test::Unique(_) => !repeats
+                    Test::Unique(_) | Test::Settled => !repeats
                         .iter()
                         .find(|x| x.0 == i as u32)
                         .is_some_and(|x| bit(&x.1, id)),
@@ -1400,6 +1499,11 @@ pub fn check_spec(spec: &CheckSpec) -> Result<(), Error> {
                     "a unique rule can use at most {MAX_KEY_COLS} columns together"
                 )))
             }
+            CheckKind::SettledBy { by, .. } if c.col == Some(*by) => {
+                return Err(Error::Invalid(
+                    "a \"settled by\" rule needs another column".into(),
+                ))
+            }
             CheckKind::Expression { expr }
                 if expr.chars().count() > crate::expr::MAX_EXPR_CHARS =>
             {
@@ -1410,6 +1514,10 @@ pub fn check_spec(spec: &CheckSpec) -> Result<(), Error> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "settled_tests.rs"]
+mod settled_tests;
 
 #[cfg(test)]
 mod tests {
