@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { savedHistoryNote } from "./lib/savedHistory";
   import { actingWords, hiddenRows, hiddenWords, kindOfOp } from "./lib/shown.svelte";
   import { forgetHeaders, recallColumnTypes, recallHeader, rememberColumnTypes, rememberedHeaders, rememberHeader, type TypeMemory } from "./lib/headerMemory";
 import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type ColumnType } from "./lib/readers";
@@ -943,7 +944,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       title: "Name this moment",
       label: "Name",
       value: "",
-      note: "A checkpoint remembers exactly how the table looks now, so you can come back to it from the Steps panel. It costs almost nothing. It is lost when the undo history is trimmed past it, when a new change replaces what you undid, when you save the file, and when the tab closes.",
+      note: "A checkpoint remembers exactly how the table looks now, so you can come back to it from the Steps panel. It costs almost nothing. It is lost when the undo history is trimmed past it, when a new change replaces what you undid, when a save cannot keep it (a column change before it, or not enough memory for the undo history), and when the tab closes.",
       check: (v) => (!v.trim() ? "Give the checkpoint a name." : v.trim().length > 100 ? "Use 100 characters or fewer." : ""),
       done: (name) => {
         t.recordView();
@@ -1545,11 +1546,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           const d = await backend().save(t.id, { saveAs, overwriteChanged, allowLossy, options, receipt });
           if (!d) return false; // dialog cancelled
           t.update(d, true);
-          if (!d.can_undo) t.afterSave();
+          t.afterSave(d.saved_history ?? null);
           void rememberTab(t, true);
           const note = receipt ? await backend().receiptNote(t.id).catch(() => null) : null;
           const sepNote = notesSaved && d.delimiter !== sepBefore ? ` The report notes are written as they were, with ${separatorWords(sepBefore)}.` : "";
-          say(`Saved ${d.name}.${note ? ` ${note}.` : ""}${sepNote}`);
+          const kept = savedHistoryNote(d.saved_history);
+          say(`Saved ${d.name}.${note ? ` ${note}.` : ""}${sepNote}${kept ? ` ${kept}` : ""}`);
           return true;
         } catch (e) {
           if (!isCmdError(e)) throw e;
@@ -6082,7 +6084,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     // The steps away are asked again now: the list on screen may be older than the last change.
     const fresh = (await backend().checkpointList(t.id).catch(() => [])).find((x) => x.id === c.id);
     if (!fresh || !fresh.reachable) {
-      say("That checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or the file was saved.");
+      say("That checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or a save let it go.");
       return;
     }
     if (fresh.current || fresh.steps === 0) return;

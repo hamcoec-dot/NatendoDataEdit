@@ -3,7 +3,7 @@
 
 import { placeCheck, placeTableCheck, shiftChecks, shiftTableChecks } from "./m8";
 import type { DiskNote } from "./disk";
-import type { Check, FindSpec, TableCheck } from "./backend";
+import type { Check, FindSpec, HistoryKept, TableCheck } from "./backend";
 import type { Highlight } from "./views";
 import type { ColumnScale } from "./m10";
 import type { SortSpec } from "./backend";
@@ -694,15 +694,27 @@ export class Tab {
     }
   }
 
-  /** After a save rewrote the file the engine's undo history is gone:
-   *  drop the looks kept for its steps. */
-  afterSave(): void {
+  /** After a save rewrote the file: the engine kept `kept.undo` steps back and `kept.redo` forward (none when
+   *  `kept` is null or says it cleared the history). The looks kept for steps it let go are dropped, the others
+   *  stay with their steps (undo positions do not change across a save). */
+  afterSave(kept: HistoryKept | null): void {
     const pos = this.info.history_pos;
-    this.stepViews.clear();
-    this.groups = [];
-    this.lookSteps = this.lookSteps.filter((s) => s.pos >= pos);
-    this.lookBytes = 0;
-    this.lookSize = new WeakMap();
+    const lo = kept && !kept.cleared ? pos - kept.undo : pos;
+    const hi = kept && !kept.cleared ? pos + kept.redo : pos;
+    // An engine step is kept by the position it made: lo < k <= hi.
+    for (const k of [...this.stepViews.keys()]) if (k <= lo || k > hi) this.dropStepView(k);
+    for (const k of [...this.stepWhat.keys()]) if (k <= lo || k > hi) this.stepWhat.delete(k);
+    this.groups = this.groups.filter((g) => g.start >= lo && g.end <= hi);
+    this.colMoves = this.colMoves.filter((x) => x.pos > lo && x.pos <= hi);
+    this.ruleShifts = this.ruleShifts.filter((x) => x.pos > lo && x.pos <= hi);
+    // (A sort whose step was let go on the undo side stays on, as before; one waiting to be redone is gone.)
+    if (this.sortAt !== null && this.sortAt > hi) this.sortAt = null;
+    // A look change made at position p is undone there: kept while the engine still reaches p.
+    for (const s of this.lookSteps.filter((s) => s.pos < lo)) this.releaseStep(s.before, s.after);
+    this.lookSteps = this.lookSteps.filter((s) => s.pos >= lo);
+    for (const s of this.lookRedo.filter((s) => s.pos > hi)) this.releaseStep(s.before, s.after);
+    this.lookRedo = this.lookRedo.filter((s) => s.pos <= hi);
+    if (this.redoCut !== null && this.redoCut > hi) this.redoCut = null;
     this.undoVersion++;
   }
 

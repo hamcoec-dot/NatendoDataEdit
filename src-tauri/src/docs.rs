@@ -1172,6 +1172,8 @@ struct Checkpoint {
     mark: u64,
     /// Made by the app before a risky change, not by the person.
     auto: bool,
+    /// A save let it go: when (milliseconds since 1970) and why.
+    gone: Option<(u64, &'static str)>,
 }
 
 /// A tab's checkpoints, in the order they were made. They are not saved to disk and go with the tab.
@@ -1190,6 +1192,7 @@ impl Checkpoints {
             name,
             mark,
             auto,
+            gone: None,
         });
         let cap = if auto {
             MAX_AUTO_CHECKPOINTS
@@ -1234,6 +1237,9 @@ pub struct CheckpointInfo {
     pub current: bool,
     /// Why "What changed since this?" cannot be answered ("" when it can).
     pub since_note: String,
+    /// When a save let it go (milliseconds since 1970), and why ("a column change", ...).
+    pub gone_at: Option<u64>,
+    pub gone_why: Option<&'static str>,
 }
 
 /// What a bulk change is called in "Before ..." and whether it gets an automatic checkpoint. No wildcard: a new
@@ -1864,6 +1870,9 @@ pub struct DocInfo {
     /// to running one).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub run_notes: Vec<String>,
+    /// Only in a save's answer: what the save did with the undo history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_history: Option<natendo_engine::document::HistoryKept>,
     pub usual_fields: u32,
     pub ragged_rows: u64,
     pub first_row_ragged: bool,
@@ -4104,6 +4113,7 @@ impl Docs {
             Some(p) => self.check_writable(p)?,
             None => {}
         }
+        let saved;
         {
             let mut d = entry.write();
             if entry.locked.load(Ordering::Relaxed)
@@ -4143,6 +4153,14 @@ impl Docs {
             // "Show changed rows" keeps working across the save while it still describes the table (B4): its rows
             // get their ids in the saved file. One made before a later change stays stale, as before.
             let before = d.revision();
+            let reachable: Vec<u32> = {
+                let book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
+                book.list
+                    .iter()
+                    .filter(|c| d.step_reach(c.mark).is_some())
+                    .map(|c| c.id)
+                    .collect()
+            };
             let changed = {
                 let c = entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner());
                 (c.0 == before && !c.1.is_empty()).then(|| d.saved_ids_of(&c.1))
@@ -4159,6 +4177,24 @@ impl Docs {
             if let Some(rows) = changed.filter(|_| d.revision() != before) {
                 *entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner()) = (d.revision(), rows);
             }
+            // Checkpoints the save let go say when and why (U4).
+            if let Some(k) = d.last_history().filter(|_| d.revision() != before) {
+                let why = if k.undo_cut_columns + k.redo_cut_columns > 0 {
+                    "a column, encoding or width change"
+                } else if k.undo_cut_memory + k.redo_cut_memory > 0 {
+                    "not enough memory to keep the undo history"
+                } else {
+                    "the undo history could not be kept"
+                };
+                let at = now_millis();
+                let mut book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
+                for c in book.list.iter_mut() {
+                    if c.gone.is_none() && reachable.contains(&c.id) && d.step_reach(c.mark).is_none() {
+                        c.gone = Some((at, why));
+                    }
+                }
+            }
+            saved = d.last_history().filter(|_| d.revision() != before);
         }
         // The saved copy was reopened normally (quotes may span lines).
         entry.line_by_line.store(false, Ordering::Relaxed);
@@ -4166,7 +4202,9 @@ impl Docs {
         crate::recovery::forget(id);
         entry.autosaved.store(u64::MAX, Ordering::Relaxed);
         entry.too_large.store(0, Ordering::Relaxed);
-        self.info(id)
+        let mut info = self.info(id)?;
+        info.saved_history = saved;
+        Ok(info)
     }
 
     /// [`Docs::save`] with a processing receipt written beside the saved file: the file the tab
@@ -6011,8 +6049,14 @@ impl Docs {
                 reachable: d.step_reach(c.mark).is_some(),
                 steps: d.step_reach(c.mark).unwrap_or(0),
                 current: c.mark == now,
+                gone_at: c.gone.map(|g| g.0),
+                gone_why: c.gone.map(|g| g.1),
                 since_note: match d.step_reach(c.mark) {
-                    None => "No longer reachable: the undo history was trimmed past it, a newer change replaced it, or the file was saved.".to_string(),
+                    None if c.gone.is_some() => format!(
+                        "No longer reachable: a save let it go ({}).",
+                        c.gone.map_or("", |g| g.1)
+                    ),
+                    None => "No longer reachable: the undo history was trimmed past it, or a newer change replaced it.".to_string(),
                     Some(0) => "The table is in this state now: nothing has changed since.".to_string(),
                     Some(s) if s > 0 => "This checkpoint is ahead of the table (you went back past it): go to it first, then compare.".to_string(),
                     Some(_) => String::new(),
@@ -9982,6 +10026,7 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         lossy: d.is_lossy(),
         invalid_bytes: d.has_invalid_bytes(),
         run_notes: Vec::new(),
+        saved_history: None,
         usual_fields: d.ragged_at_open(false).map_or(0, |r| r.0),
         ragged_rows: d.ragged_at_open(false).map_or(0, |r| r.1),
         first_row_ragged: d.first_row_ragged(),
