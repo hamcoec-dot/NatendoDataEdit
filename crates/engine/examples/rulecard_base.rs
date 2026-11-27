@@ -40,7 +40,10 @@ fn main() {
     let path = &args[1];
     let what = args.get(2).map(String::as_str).unwrap_or("fill");
     if what == "gen" {
-        let rows = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1_000_000);
+        let rows = args
+            .get(3)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1_000_000);
         gen(path, rows);
         return;
     }
@@ -53,5 +56,8 @@ fn main() {
         assert!(rep.filled > 0);
         drop(plan);
     }
-    println!("fill {:.1} ms (median of 5; {times:.1?})", median(times.clone()));
+    println!(
+        "fill {:.1} ms (median of 5; {times:.1?})",
+        median(times.clone())
+    );
 }
