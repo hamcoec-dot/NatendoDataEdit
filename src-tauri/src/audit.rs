@@ -134,7 +134,12 @@ fn stage(name: &str) -> Stage {
     docs.filter(
         id,
         FilterSpec {
+            combine: Default::default(),
+            invert: false,
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 2,
                 rule: Rule::Values {
                     values: vec!["A".into(), "B".into()],
@@ -863,7 +868,12 @@ fn a_row_hidden_between_find_and_accept_is_not_written_silently() {
                 .filter(
                     s.id,
                     FilterSpec {
+                        combine: Default::default(),
+                        invert: false,
                         columns: vec![ColumnFilter {
+                            enabled: true,
+                            negate: false,
+                            name: None,
                             col: 2,
                             rule: Rule::Values {
                                 values: vec!["A".into()],

@@ -845,15 +845,14 @@ impl Document {
         bits.resize((base as usize).div_ceil(64), 0);
         let mut shown = report.rows;
         if passing {
-            let mut ok = vec![0u64; bits.len()];
+            // The rows that passed: the problems chip, inverted (C8), so
+            // rows the checks never looked at do not count as passing.
             shown = 0;
             for id in self.ids().skip(usize::from(keep_first)) {
-                if !bit(&bits, id) {
-                    ok[(id >> 6) as usize] |= 1 << (id & 63);
+                if !bit(&bits, id) && self.view().is_none_or(|v| v.shows(id)) {
                     shown += 1;
                 }
             }
-            bits = ok;
         }
         if keep_first && self.row_count() > 0 {
             let id = self.id_at(0).expect("a first row");
@@ -861,6 +860,8 @@ impl Document {
         }
         let mut plan = RowPlan::new(self);
         plan.rows = shown;
+        plan.chip.kind = "problems".into();
+        plan.chip.negate = passing;
         plan.view = Some(View::new(
             FilterSpec {
                 keep_first,
@@ -2282,6 +2283,9 @@ mod key_tests {
         let spec = crate::filter::FilterSpec {
             keep_first: true,
             columns: vec![crate::filter::ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 1,
                 rule: crate::filter::Rule::Values {
                     values: vec!["North".into()],

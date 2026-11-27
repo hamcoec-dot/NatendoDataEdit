@@ -3012,6 +3012,9 @@ x,q
         use crate::filter::{ColumnFilter, FilterSpec, Rule};
         d.set_filter(&FilterSpec {
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: Rule::Values {
                     values: vec!["a".into()],

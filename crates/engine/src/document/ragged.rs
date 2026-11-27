@@ -177,6 +177,7 @@ impl Document {
         }
         let mut plan = crate::reshape::RowPlan::new(self);
         plan.rows = shown;
+        plan.chip.looked = crate::chips::Looked::All;
         plan.view = Some(View::new(
             FilterSpec {
                 keep_first: header,

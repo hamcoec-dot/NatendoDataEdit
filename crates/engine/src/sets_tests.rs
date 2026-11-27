@@ -295,6 +295,9 @@ fn only_shown_rows_count_and_changes_are_refused() {
     let filter = FilterSpec {
         keep_first: true,
         columns: vec![ColumnFilter {
+            enabled: true,
+            negate: false,
+            name: None,
             col: 1,
             rule: Rule::Values {
                 values: vec!["y".into()],

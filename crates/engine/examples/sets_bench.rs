@@ -116,6 +116,9 @@ fn main() {
             let filter = FilterSpec {
                 keep_first: true,
                 columns: vec![ColumnFilter {
+                    enabled: true,
+                    negate: false,
+                    name: None,
                     col: 1,
                     rule: Rule::Values {
                         values: (0..wards).map(|w| w.to_string()).collect(),

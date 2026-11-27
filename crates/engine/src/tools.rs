@@ -2519,9 +2519,7 @@ mod tests {
         let plan = d.plan_fill_blanks(spec, &Progress::new()).unwrap();
         let skipped = plan.skipped;
         d.apply_rows(plan).unwrap();
-        let out = (0..d.row_count())
-            .map(|r| d.row_values(r).unwrap())
-            .collect();
+        let out = rows_of(d);
         d.undo();
         (out, skipped)
     }
@@ -2587,9 +2585,16 @@ mod tests {
         (out, skipped)
     }
 
+    /// Every row's values, a short row (",," reads as one blank cell)
+    /// filled out with blanks to the column count.
     fn rows_of(d: &Document) -> Vec<Vec<String>> {
+        let w = d.col_count() as usize;
         (0..d.row_count())
-            .map(|r| d.row_values(r).unwrap())
+            .map(|r| {
+                let mut v = d.row_values(r).unwrap();
+                v.resize(w.max(v.len()), String::new());
+                v
+            })
             .collect()
     }
 

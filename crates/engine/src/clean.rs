@@ -4630,6 +4630,9 @@ mod tests {
     fn hide_c3(d: &mut Document) {
         d.set_filter(&FilterSpec {
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 1,
                 rule: Rule::Values {
                     values: vec!["a1".into(), "b22".into()],

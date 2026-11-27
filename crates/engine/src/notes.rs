@@ -306,6 +306,8 @@ impl Document {
         }
         let mut plan = RowPlan::new(self);
         plan.rows = all.len() as u64;
+        // Notes and flags are looked up for every row.
+        plan.chip.looked = crate::chips::Looked::All;
         plan.view = Some(View::new(
             FilterSpec {
                 keep_first: book.header,

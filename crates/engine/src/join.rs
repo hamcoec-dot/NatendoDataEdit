@@ -1996,6 +1996,9 @@ mod tests {
         // Hide the row "b ,2".
         a.set_filter(&FilterSpec {
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 1,
                 rule: Rule::Values {
                     values: vec!["1".into(), "3".into()],
@@ -2035,6 +2038,9 @@ mod tests {
         // Hide row "b,2".
         a.set_filter(&FilterSpec {
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 1,
                 rule: Rule::Values {
                     values: vec!["1".into(), "3".into()],

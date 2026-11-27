@@ -530,7 +530,12 @@ mod tests {
         .unwrap();
         d.hide_rows(4, 1).unwrap(); // c
         d.set_filter(&crate::filter::FilterSpec {
+            combine: Default::default(),
+            invert: false,
             columns: vec![crate::filter::ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: crate::filter::Rule::Values {
                     values: ["a", "b", "c", "d"].map(String::from).to_vec(),
@@ -711,6 +716,9 @@ mod tests {
         d.hide_rows(1, 1).unwrap(); // hides "1"
         let spec = FilterSpec {
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: Rule::Conditions {
                     first: Condition::Text {

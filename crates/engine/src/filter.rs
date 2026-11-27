@@ -21,7 +21,31 @@ pub const MAX_LIST_VALUE_BYTES: usize = 1024;
 /// Most columns with rules at once.
 pub const MAX_RULES: usize = 1024;
 /// Rows per parallel task.
-const CHUNK: usize = 1 << 15;
+pub(crate) const CHUNK: usize = 1 << 15;
+
+/// How chips (rules) are joined: every one must pass, or any one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Combine {
+    /// Match all.
+    #[default]
+    And,
+    /// Match any.
+    Or,
+}
+
+fn yes() -> bool {
+    true
+}
+fn is_true(b: &bool) -> bool {
+    *b
+}
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+fn is_and(c: &Combine) -> bool {
+    *c == Combine::And
+}
 
 /// Comparison for numbers and dates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,14 +152,35 @@ pub enum Rule {
     },
 }
 
-/// A rule on one column.
+/// A rule on one column: a filter chip (C8) that can be switched off,
+/// inverted and named. The defaults are today's rule.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ColumnFilter {
     pub col: u32,
     pub rule: Rule,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub negate: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
-/// A whole filter: every column's rule must pass (AND).
+impl ColumnFilter {
+    /// A rule that is on, not inverted, not named.
+    pub fn new(col: u32, rule: Rule) -> ColumnFilter {
+        ColumnFilter {
+            col,
+            rule,
+            enabled: true,
+            negate: false,
+            name: None,
+        }
+    }
+}
+
+/// A whole filter: every column's rule must pass (AND), or any one with
+/// `combine` Or; `invert` shows the rows that fail instead.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FilterSpec {
@@ -143,6 +188,20 @@ pub struct FilterSpec {
     /// The first row (column titles) always shows.
     pub keep_first: bool,
     pub read: ReadOptions,
+    #[serde(skip_serializing_if = "is_and")]
+    pub combine: Combine,
+    #[serde(skip_serializing_if = "is_false")]
+    pub invert: bool,
+}
+
+impl FilterSpec {
+    /// Only the rule chips that are on, none inverted, Match all, not
+    /// inverted: what a filter was before chips.
+    pub fn is_plain(&self) -> bool {
+        self.combine == Combine::And
+            && !self.invert
+            && self.columns.iter().all(|c| c.enabled && !c.negate)
+    }
 }
 
 impl FilterSpec {
@@ -153,15 +212,12 @@ impl FilterSpec {
             columns: self
                 .columns
                 .iter()
-                .filter_map(|c| {
-                    f(c.col).map(|col| ColumnFilter {
-                        col,
-                        rule: c.rule.clone(),
-                    })
-                })
+                .filter_map(|c| f(c.col).map(|col| ColumnFilter { col, ..c.clone() }))
                 .collect(),
             keep_first: self.keep_first,
             read: self.read,
+            combine: self.combine,
+            invert: self.invert,
         }
     }
 }
@@ -191,6 +247,16 @@ pub struct FilterPlan {
     pub shown: u64,
 }
 
+impl FilterPlan {
+    pub(crate) fn of(revision: u64, view: Option<View>, shown: u64) -> FilterPlan {
+        FilterPlan {
+            revision,
+            view,
+            shown,
+        }
+    }
+}
+
 enum Cond {
     Match(Matcher, bool),
     Num(CmpOp, f64),
@@ -205,9 +271,11 @@ enum Test {
     Conds(Cond, Option<Cond>, bool),
 }
 
-struct Compiled {
+pub(crate) struct Compiled {
     /// Physical columns read, sorted; tests refer to slots in it.
     wanted: Vec<u32>,
+    /// Each test inverted (an inverted chip).
+    negate: Vec<bool>,
     tests: Vec<(usize, Test)>,
     /// How each wanted column is read (by slot).
     readers: Vec<Reader>,
@@ -328,7 +396,7 @@ impl RuleMatcher {
 
 impl Compiled {
     /// Rules by physical column.
-    fn new(rules: &[ColumnFilter], ctx: &ReadCtx) -> Result<Compiled, Error> {
+    pub(crate) fn new(rules: &[ColumnFilter], ctx: &ReadCtx) -> Result<Compiled, Error> {
         let mut wanted: Vec<u32> = rules.iter().map(|c| c.col).collect();
         wanted.sort_unstable();
         wanted.dedup();
@@ -352,16 +420,28 @@ impl Compiled {
             tests.push((slot, t));
         }
         Ok(Compiled {
+            negate: rules.iter().map(|c| c.negate).collect(),
             wanted,
             tests,
             readers,
         })
     }
 
+    /// Every rule passes, none inverted (today's filter).
     fn passes(&self, cells: &[Cow<'_, str>]) -> bool {
         self.tests
             .iter()
             .all(|(slot, t)| t.test(&cells[*slot], self.readers[*slot]))
+    }
+
+    /// Rule `i` alone.
+    pub(crate) fn passes_one(&self, i: usize, cells: &[Cow<'_, str>]) -> bool {
+        let (slot, t) = &self.tests[i];
+        t.test(&cells[*slot], self.readers[*slot]) != self.negate[i]
+    }
+
+    pub(crate) fn wanted(&self) -> &[u32] {
+        &self.wanted
     }
 }
 
@@ -379,7 +459,11 @@ impl Document {
     /// The spec (physical columns) with every "largest / smallest" condition
     /// turned into a number comparison with the cut-off value, found over
     /// the column's rows (every row but a kept title row).
-    fn resolve_top(&self, spec: &FilterSpec, progress: &Progress) -> Result<FilterSpec, Error> {
+    pub(crate) fn resolve_top(
+        &self,
+        spec: &FilterSpec,
+        progress: &Progress,
+    ) -> Result<FilterSpec, Error> {
         let mut out = spec.clone();
         let total = self.total_rows();
         let first = u64::from(spec.keep_first && total > 0);
@@ -466,14 +550,54 @@ impl Document {
         self.ready_for_bulk()?;
         let spec = self.to_physical_spec(spec)?;
         let total = self.total_rows();
-        if spec.columns.is_empty() {
+        // Chips made by tools stay beside the new rules.
+        let sets = self
+            .view()
+            .filter(|v| v.filters())
+            .map(|v| v.sets.clone())
+            .unwrap_or_default();
+        if spec.columns.is_empty() && sets.is_empty() {
             return Ok(FilterPlan {
                 revision: self.revision(),
                 view: None,
                 shown: total,
             });
         }
-        let resolved = self.resolve_top(&spec, progress)?;
+        if sets.is_empty() && spec.is_plain() {
+            // Today's filter: one pass, every rule at once, the first that
+            // fails stopping the row. (Chips switched later read each rule
+            // once then and keep it.)
+            let resolved = self.resolve_top(&spec, progress)?;
+            let (bits, passed) = self.all_rules_pass(&resolved, progress)?;
+            let base = self.next_row_id();
+            let title = usize::from(spec.keep_first && total > 0) as u64;
+            let view = self.chip_view(spec, sets, Some(std::sync::Arc::new(bits)), base);
+            return Ok(FilterPlan {
+                revision: self.revision(),
+                view: Some(view),
+                shown: passed + title,
+            });
+        }
+        let cols = self.cols_fold(&spec, progress)?;
+        let view = self.chip_view(spec, sets, cols, self.next_row_id());
+        let shown = self.passing(&view);
+        Ok(FilterPlan {
+            revision: self.revision(),
+            view: Some(view),
+            shown,
+        })
+    }
+
+    /// Every rule of `resolved` at once, none inverted (the first that fails stops the
+    /// row), over every row: the rows that pass, as bits by row id, and
+    /// how many.
+    pub(crate) fn all_rules_pass(
+        &self,
+        resolved: &FilterSpec,
+        progress: &Progress,
+    ) -> Result<(Vec<u64>, u64), Error> {
+        let spec = resolved;
+        let total = self.total_rows();
         let compiled = Compiled::new(&resolved.columns, &self.read_ctx(spec.read))?;
         progress.start(total);
         let first = usize::from(spec.keep_first && total > 0);
@@ -498,23 +622,14 @@ impl Document {
             .collect::<Result<_, _>>()?;
         let base = self.next_row_id();
         let mut bits = vec![0u64; (base as usize).div_ceil(64)];
-        let mut shown = 0u64;
-        let mut set = |id: u32| {
-            bits[(id >> 6) as usize] |= 1 << (id & 63);
-        };
-        if first == 1 {
-            set(self.doc_id_at(0).expect("a first row"));
-            shown += 1;
-        }
+        let mut passed = 0u64;
         for ids in parts {
-            shown += ids.len() as u64;
-            ids.into_iter().for_each(&mut set);
+            passed += ids.len() as u64;
+            for id in ids {
+                bits[(id >> 6) as usize] |= 1 << (id & 63);
+            }
         }
-        Ok(FilterPlan {
-            revision: self.revision(),
-            view: Some(View::new(spec, bits, base)),
-            shown,
-        })
+        Ok((bits, passed))
     }
 
     /// Turn a computed filter on. Fails with [`Error::Changed`] if the
@@ -582,8 +697,14 @@ impl Document {
     ) -> Result<ValueList, Error> {
         self.ready_for_bulk()?;
         let mut others = spec.clone();
-        others.columns.retain(|c| c.col != col);
+        others.columns.retain(|c| c.col != col && c.enabled);
+        // Match any and Invert all: every row's values (C8).
+        let any = spec.combine == Combine::Or || spec.invert;
+        if any {
+            others.columns.clear();
+        }
         let others = self.to_physical_spec(&others)?;
+        let mask = if any { None } else { self.chip_set_mask() };
         let Some(target) = (col < self.col_count()).then(|| self.phys(col)).flatten() else {
             return Ok(ValueList {
                 values: Vec::new(),
@@ -626,8 +747,11 @@ impl Document {
                     let pass = compiled
                         .tests
                         .iter()
-                        .all(|(slot, t)| t.test(&buf[remap[*slot]], compiled.readers[*slot]));
-                    if !pass {
+                        .zip(&compiled.negate)
+                        .all(|((slot, t), n)| {
+                            t.test(&buf[remap[*slot]], compiled.readers[*slot]) != *n
+                        });
+                    if !pass || mask.as_ref().is_some_and(|m| !m.passes(id)) {
                         continue;
                     }
                     let v = &buf[tslot];
@@ -1216,7 +1340,13 @@ impl Document {
         let keep_first = spec.keep_first;
         let read = spec.read;
         let ctx = self.read_ctx(read);
-        let pspec = self.to_physical_spec(spec)?;
+        // Chips (C8): rules that are off do not count; under Match any or
+        // Invert all a count is every row with that value (what a pick
+        // there adds); tool chips count under Match all.
+        let any = spec.combine == Combine::Or || spec.invert;
+        let mut pspec = self.to_physical_spec(spec)?;
+        pspec.columns.retain(|c| c.enabled && !any);
+        let mask = if any { None } else { self.chip_set_mask() };
         let compiled = Compiled::new(&pspec.columns, &self.read_ctx(read))?;
         let card_phys: Vec<Option<u32>> = cards
             .iter()
@@ -1440,12 +1570,13 @@ impl Document {
             let Some(cc) = codes_for(key) else {
                 return Err(Error::Invalid("the filter panel lost a column".into()));
             };
+            let neg = compiled.negate[k];
             let pass = match key {
                 Key::Col(_) => {
                     let rd = compiled.readers[*slot];
-                    cc.values.iter().map(|v| t.test(v, rd)).collect()
+                    cc.values.iter().map(|v| t.test(v, rd) != neg).collect()
                 }
-                _ => vec![false, true],
+                _ => vec![neg, !neg],
             };
             rules.push(RuleAt {
                 phys: compiled.wanted[*slot],
@@ -1495,6 +1626,12 @@ impl Document {
                     let s = c * CHUNK;
                     let e = (s + CHUNK).min(total as usize);
                     for pos in s.max(first)..e {
+                        if let Some(m) = &mask {
+                            match self.doc_id_at(pos as u64) {
+                                Some(id) if m.passes(id) => {}
+                                _ => continue,
+                            }
+                        }
                         let mut fails = 0u32;
                         let mut failed_col = u32::MAX;
                         for r in &rules {
@@ -1647,7 +1784,15 @@ mod tests {
 
     fn rule(col: u32, rule: Rule) -> FilterSpec {
         FilterSpec {
-            columns: vec![ColumnFilter { col, rule }],
+            combine: Default::default(),
+            invert: false,
+            columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
+                col,
+                rule,
+            }],
             keep_first: true,
             read: ReadOptions::default(),
         }
@@ -1925,6 +2070,9 @@ mod tests {
             }),
         );
         spec.columns.push(ColumnFilter {
+            enabled: true,
+            negate: false,
+            name: None,
             col: 1,
             rule: cond(Condition::Number {
                 op: CmpOp::Lt,
@@ -2304,6 +2452,9 @@ mod tests {
             }),
         );
         spec.columns.push(ColumnFilter {
+            enabled: true,
+            negate: false,
+            name: None,
             col: 0,
             rule: Rule::Values {
                 values: vec!["a".into()],

@@ -511,7 +511,12 @@ fn main() {
     doc.clear_filter();
     let t = Instant::now();
     let spec = FilterSpec {
+        combine: Default::default(),
+        invert: false,
         columns: vec![ColumnFilter {
+            enabled: true,
+            negate: false,
+            name: None,
             col: 4,
             rule: Rule::Conditions {
                 first: Condition::Text {
@@ -1645,6 +1650,9 @@ fn main() {
         let click = FilterSpec {
             keep_first: true,
             columns: vec![natendo_engine::filter::ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 4,
                 rule: Rule::Values {
                     values: vec!["City 7".into(), "City 8".into()],
@@ -1677,6 +1685,9 @@ fn main() {
                 // column is worked out once; later clicks stay quick.
                 let mut bar = click.clone();
                 bar.columns.push(natendo_engine::filter::ColumnFilter {
+                    enabled: true,
+                    negate: false,
+                    name: None,
                     col: 2,
                     rule: Rule::Conditions {
                         first: natendo_engine::filter::Condition::Number {
@@ -2015,7 +2026,12 @@ fn main() {
     drop(plan);
     let t = Instant::now();
     let top = FilterSpec {
+        combine: Default::default(),
+        invert: false,
         columns: vec![ColumnFilter {
+            enabled: true,
+            negate: false,
+            name: None,
             col: 2,
             rule: Rule::Conditions {
                 first: Condition::Top {

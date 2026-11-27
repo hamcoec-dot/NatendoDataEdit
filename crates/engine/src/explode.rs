@@ -946,7 +946,12 @@ impl Document {
         if ids.is_empty() {
             return Err(Error::Invalid("every filled cell could be read".into()));
         }
-        Ok(self.plan_show_ids(&ids, spec.keep_first))
+        let mut plan = self.plan_show_ids(&ids, spec.keep_first);
+        if spec.how != ExplodeHow::Rows {
+            // Columns read every row, hidden ones too.
+            plan.chip.looked = crate::chips::Looked::All;
+        }
+        Ok(plan)
     }
 
     /// Before and after for the first [`PREVIEW_ROWS`] shown rows only.

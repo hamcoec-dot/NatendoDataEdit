@@ -10680,7 +10680,12 @@ mod tests {
         docs.set_first_row_cell(id, 1, "years".into()).unwrap();
         docs.undo(id).unwrap();
         let spec = FilterSpec {
+            combine: Default::default(),
+            invert: false,
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: Rule::Conditions {
                     first: Condition::Text {
@@ -14372,7 +14377,12 @@ B,y
         };
         assert_eq!(col0(&docs), ["name", "c", "b", "a"]);
         let filter = FilterSpec {
+            combine: Default::default(),
+            invert: false,
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: Rule::Conditions {
                     first: Condition::Text {
@@ -14491,6 +14501,9 @@ B,y
         assert!(docs.sort(id, spec).is_ok());
         let huge = FilterSpec {
             columns: vec![natendo_engine::filter::ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: Rule::Values {
                     values: vec!["x".into(); MAX_FILTER_VALUES + 1],
