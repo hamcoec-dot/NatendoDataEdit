@@ -39,7 +39,7 @@ fn apply(d: &mut Document, a: &Act) {
     let n = d.row_count();
     let at = |r: u64| if n <= 1 { 1 } else { 1 + r % (n - 1) };
     let _ = match a {
-        Act::Edit(r, c, v) if n > 1 => d.set_cell(at(*r), *c, format!("v{v}")),
+        Act::Edit(r, c, v) if n > 1 => d.set_cell(at(*r), *c, value(*v)),
         Act::Insert(r, k) => {
             let rows = (0..*k)
                 .map(|i| vec![format!("new{i}"), "b".into(), "c".into()])
@@ -148,6 +148,54 @@ fn dir(tag: &str) -> std::path::PathBuf {
     p
 }
 
+/// A typed value: plain, or one that needs quoting or decoding when written (C2).
+fn value(v: u8) -> String {
+    match v % 7 {
+        0 => "a,b".into(),
+        1 => "say \"hi\"".into(),
+        2 => "two\r\nlines".into(),
+        3 => "  edge  ".into(),
+        4 => String::new(),
+        5 => "Zoë Ñandú".into(),
+        _ => format!("v{v}"),
+    }
+}
+
+/// The file a run starts from (C2): 0 plain UTF-8; 1 UTF-8 with a BOM and cells with quotes, separators, line
+/// breaks, edge spaces, empty and non-ASCII values; 2 the same cells in Windows-1252.
+fn start_file(kind: u8, rows: usize) -> (Vec<u8>, OpenOptions) {
+    if kind == 0 {
+        return (table(rows), OpenOptions::default());
+    }
+    let mut s = String::from("a,b,c\r\n");
+    for i in 0..rows {
+        let b = match i % 5 {
+            0 => "\"x, y\"".to_string(),
+            1 => "\"he said \"\"no\"\"\"".to_string(),
+            2 => "\"line\r\nbreak\"".to_string(),
+            3 => " spaced ".to_string(),
+            _ => String::new(),
+        };
+        s += &format!("Zoë{},{b},z{i}\r\n", (i * 7) % 13);
+    }
+    if kind == 1 {
+        let mut b = vec![0xEF, 0xBB, 0xBF];
+        b.extend_from_slice(s.as_bytes());
+        (b, OpenOptions::default())
+    } else {
+        let enc = crate::encoding::Encoding::Legacy(encoding_rs::WINDOWS_1252);
+        let mut out = Vec::new();
+        crate::encoding::encode(&s, enc, &mut out).unwrap();
+        (
+            out,
+            OpenOptions {
+                encoding: Some(enc),
+                ..Default::default()
+            },
+        )
+    }
+}
+
 fn table(rows: usize) -> Vec<u8> {
     let mut s = String::from("a,b,c\r\n");
     for i in 0..rows {
@@ -180,14 +228,14 @@ fn cut_like(y: &mut Document, k: HistoryKept) {
 }
 
 /// One run: the same steps with and without a save in the middle.
-fn check(acts: &[Act], save_at: usize, mark_at: usize) -> Result<(), TestCaseError> {
+fn check(acts: &[Act], save_at: usize, mark_at: usize, kind: u8) -> Result<(), TestCaseError> {
     let d0 = dir("p");
     let (fx, fy) = (d0.join("x.csv"), d0.join("y.csv"));
-    let bytes = table(25);
+    let (bytes, opts) = start_file(kind, 25);
     std::fs::write(&fx, &bytes).unwrap();
     std::fs::write(&fy, &bytes).unwrap();
-    let mut x = Document::open_indexed(&fx, OpenOptions::default(), None).unwrap();
-    let mut y = Document::open_indexed(&fy, OpenOptions::default(), None).unwrap();
+    let mut x = Document::open_indexed(&fx, opts.clone(), None).unwrap();
+    let mut y = Document::open_indexed(&fy, opts, None).unwrap();
     let mut marks = (x.step_mark(), y.step_mark());
     for (i, a) in acts.iter().enumerate() {
         if i == mark_at {
@@ -259,9 +307,10 @@ proptest! {
         acts in prop::collection::vec(act(), 1..30),
         save in 0..30usize,
         mark in 0..30usize,
+        kind in 0..3u8,
     ) {
         let save = save % acts.len();
-        check(&acts, save, mark % acts.len())?;
+        check(&acts, save, mark % acts.len(), kind)?;
     }
 }
 
@@ -425,7 +474,7 @@ fn a_save_keeps_the_newest_steps_that_fit() {
             d.set_cell(1 + i, 1, format!("edit{i}")).unwrap();
         }
     }
-    let one = x.rebased_cost(x.undo.last().unwrap(), 3, 1);
+    let one = x.rebased_cost(x.undo.last().unwrap(), 3, 1, &|_| true);
     x.undo_budget = one * 10 + one / 2;
     x.save(SaveOptions::default()).unwrap();
     let k = x.last_history().unwrap();
@@ -533,6 +582,31 @@ fn a_kept_updates_plan_is_refused_after_a_save() {
     d.save(SaveOptions::default()).unwrap();
     assert!(d.has_history(), "the edit is still undoable");
     assert!(matches!(d.plan_updates(&ups, &UpdateChoice::default()), Err(Error::Changed)));
+    drop(d);
+    let _ = std::fs::remove_dir_all(d0);
+}
+
+/// C3: a clean, a save, edits to the same rows, then two undos: the values from before the clean come back.
+#[test]
+fn a_clean_saved_then_edited_undoes_to_the_values_before_it() {
+    let (bytes, opts) = start_file(1, 40);
+    let d0 = dir("c3");
+    let f = d0.join("t.csv");
+    std::fs::write(&f, &bytes).unwrap();
+    let mut d = Document::open_indexed(&f, opts, None).unwrap();
+    let before: Vec<Vec<String>> = shown(&d);
+    upper(&mut d, 0);
+    let cleaned = shown(&d);
+    assert_ne!(before, cleaned);
+    d.save(SaveOptions::default()).unwrap();
+    d.set_cells((1..20u64).map(|r| (r, 0, format!("edited {r}"))).collect())
+        .unwrap();
+    assert!(d.undo(), "the edits");
+    assert_eq!(shown(&d), cleaned);
+    assert!(d.undo(), "the clean, across the save");
+    assert_eq!(shown(&d), before, "the values from before the clean");
+    assert!(d.redo() && d.redo());
+    assert_eq!(d.cell(1, 0).unwrap(), "edited 1");
     drop(d);
     let _ = std::fs::remove_dir_all(d0);
 }
