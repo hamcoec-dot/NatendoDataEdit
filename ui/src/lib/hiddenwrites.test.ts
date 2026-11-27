@@ -37,6 +37,8 @@ const INCLUDES_HIDDEN: Record<string, string> = {
   contractShowRows: "chooses which rows are hidden (a filter chip; the drift counts every row, hidden ones too)",
   repairRow: "repairs the one row named",
   fixAll: "every row of the same shape, counted, hidden ones too",
+  xferCols: "whole columns carry every row, hidden ones too, and say how many; refused into a tab with rows hidden (docs_xfer tests)",
+  xferRows: "the shown rows picked; a move deletes those same rows (docs_xfer tests)",
   removeEmptyExtraColumns: "a column operation",
   encodingApply: "reads the whole file again in another encoding",
   updatesAccept: "compares and changes every row; hidden ones are marked, a hidden delete needs its own tick",

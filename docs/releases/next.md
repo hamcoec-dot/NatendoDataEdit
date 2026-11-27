@@ -1,5 +1,6 @@
 ## Not yet released
 
+- **Drag whole columns or rows onto another file's tab:** columns go in to the right of its selected column (every row, hidden ones too, lined up by position; refused while a filter is on there), rows below its selected row (under matching titles when both files have the same titles). Copy by default, Shift moves; the status bar says what will happen as you drag. Edit › Copy/Move selection to another file does the same from the keyboard.
 - **Row heights while filtered:** with a filter on or rows hidden, each shown row now keeps its own height, and you can drag, set, fit and reset the heights of the rows you see. Inserting and deleting rows while filtered keeps the heights on their rows instead of clearing them, and Excel export of a filtered table writes the shown rows' heights.
 - **Print the selection:** right-click a cell (or File > Print the selection) to print just the selected block, its rows and its columns. Save as PDF does the same. With several blocks selected the choice is off and says why.
 - **Print fits for real:** "All columns to the page width" now shrinks the text in Print the way Save as PDF does, instead of squeezing the columns. The new **Everything on one page** fit shrinks it so all rows fit one page too. Neither goes below 4 pt, and the dialog says the size it will print at, or how many pages it still needs.

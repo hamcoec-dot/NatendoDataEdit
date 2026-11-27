@@ -1742,6 +1742,27 @@ export interface CountsSpec {
   cols: number[];
   keep_first: boolean;
 }
+/** Cross-tab moves: rows wider than the other file add columns there, or are cut. */
+export type Wider = "add_columns" | "cut";
+export interface XferReport {
+  cols: number;
+  rows: number;
+  added_rows: number;
+  added_cols: number;
+  hidden_carried: number;
+  title_left_out: boolean;
+  by_title: boolean;
+  lengths_differ: boolean;
+}
+export interface XferDone {
+  report: XferReport;
+  dst: DocInfo;
+  /** The source after a move (null: nothing was taken out). */
+  src: DocInfo | null;
+  /** A move that copied but did not take out, and why. */
+  kept: string | null;
+}
+
 export interface OpReport {
   /** Paste, fill, clear: hidden rows between the rows written, left alone. */
   hidden_rows?: number;
@@ -2057,6 +2078,10 @@ export interface Backend {
   sameShape(doc: number, keepFirst: boolean, fields: number, groups: number[]): Promise<SameShape>;
   /** "Fix all like this": the rows changed and the document's facts. */
   fixAll(doc: number, keepFirst: boolean, revision: number, fields: number, groups: number[], skip: number[]): Promise<[number, DocInfo]>;
+  /** Whole columns (logical at..at+count) into another open file, inserted at its column `to`; `mv`: then taken out here. */
+  xferCols(src: number, at: number, count: number, srcKeepFirst: boolean, dst: number, to: number, dstKeepFirst: boolean, mv: boolean): Promise<XferDone>;
+  /** Shown rows at..at+count into another open file, after its shown row `after` (null: at the end). */
+  xferRows(src: number, at: number, count: number, srcKeepFirst: boolean, dst: number, after: number | null, dstKeepFirst: boolean, wider: Wider, mv: boolean): Promise<XferDone>;
   /** C10 rule card: the rule fill by example would use (spec.program when given), or the example that breaks it. */
   exampleLearn(doc: number, spec: ExampleSpec): Promise<LearnReport>;
   /** C10: the first empty cells a rule fills (the first 1,000 rows looked at). */
@@ -2724,6 +2749,12 @@ class TauriBackend implements Backend {
   }
   fixAll(doc: number, keepFirst: boolean, revision: number, fields: number, groups: number[], skip: number[]) {
     return call<[number, DocInfo]>("fix_all", { doc, keepFirst, revision, fields, groups, skip });
+  }
+  xferCols(src: number, at: number, count: number, srcKeepFirst: boolean, dst: number, to: number, dstKeepFirst: boolean, mv: boolean) {
+    return call<XferDone>("xfer_cols", { src, at, count, srcKeepFirst, dst, to, dstKeepFirst, mv });
+  }
+  xferRows(src: number, at: number, count: number, srcKeepFirst: boolean, dst: number, after: number | null, dstKeepFirst: boolean, wider: Wider, mv: boolean) {
+    return call<XferDone>("xfer_rows", { src, at, count, srcKeepFirst, dst, after, dstKeepFirst, wider, mv });
   }
   exampleLearn(doc: number, spec: ExampleSpec) {
     return call<LearnReport>("example_learn", { doc, spec });
@@ -3607,6 +3638,8 @@ export const WRITE_METHODS: readonly string[] = [
   "setCells",
   "repairRow",
   "fixAll",
+  "xferCols",
+  "xferRows",
   "removeEmptyExtraColumns",
   "encodingApply",
   "fillCells",
