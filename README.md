@@ -308,7 +308,10 @@ everything is also in command search.
   the second press (Ctrl+Shift+* selects the block); Ctrl+Backspace scrolls
   back to the active cell, Shift+Backspace selects just it, and Ctrl+. moves it
   round the corners of the selection; F8 turns on extend mode (arrows grow the
-  selection); Alt+PageDown and Alt+PageUp move a screen sideways; Space ticks
+  selection); Alt+PageDown and Alt+PageUp move a screen sideways (when the
+  grid follows the cursor it scrolls by whole columns and rows, so the first
+  column and row on screen are never cut in half; the mouse wheel and the
+  scrollbars still scroll smoothly); Space ticks
   or unticks a tick box; Esc keeps the selection; Alt+/ opens command search
   as well as Alt+Q. Home, End and Ctrl+arrows skip hidden columns, and
   double-clicking the edge of the selection jumps that way like Ctrl+arrow.

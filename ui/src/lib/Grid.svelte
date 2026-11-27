@@ -6,6 +6,7 @@
   import { TotalsCache, totalParts } from "./totalsRow";
   import { dateTip } from "./dates";
   import { gapBetween, seamWords } from "./shown.svelte";
+  import { snapForward, snapMax, type Axis } from "./scrollsnap";
   import { onMount, tick, untrack } from "svelte";
   import type { Tab } from "./tab.svelte";
   import { enterStep, prefs } from "./prefs.svelte";
@@ -324,14 +325,21 @@
     ctx.restore();
   }
 
+  // The two axes for snapping a reveal to whole rows and columns (scrollsnap.ts).
+  const rowAxis: Axis = { start: (r) => geom.top(r), at: (y) => geom.rowAt(y) };
+  const colAxis: Axis = { start: (c) => tab.columns.x(c), at: (x) => tab.columns.at(x) };
+  /** Rows shown below the frozen rows, clear of anything floating at the bottom. */
+  function rowsVis(): number {
+    return viewH() - bodyTop() - bottomInset - totalsHeight();
+  }
   function maxScrollY(): number {
-    const content = geom.between(tab.firstRow + frozenRows(), tab.firstRow + dataRows());
-    // Room to scroll the last rows clear of anything floating at the bottom.
-    return Math.max(0, content - (viewH() - bodyTop()) + geom.step + bottomInset + totalsHeight());
+    // Room to scroll the last rows clear of anything floating at the bottom, and
+    // to the row boundary a snapped reveal of the last row lands on.
+    const end = tab.firstRow + dataRows();
+    return snapMax(rowAxis, Math.min(tab.firstRow + frozenRows(), end), end, rowsVis(), geom.step);
   }
   function maxScrollX(): number {
-    const content = tab.columns.total() - tab.columns.x(frozenCols());
-    return Math.max(0, content - (viewW() - bodyLeft()) + 40);
+    return snapMax(colAxis, frozenCols(), tab.info.cols, viewW() - bodyLeft(), 40);
   }
   function clampScroll(): void {
     view.scrollY = Math.min(Math.max(0, view.scrollY), maxScrollY());
@@ -2179,22 +2187,28 @@
     return true;
   }
 
-  export function scrollIntoView(c: Cell): void {
+  /** Set while a mouse press, drag or release in the grid runs: a reveal then
+   *  moves the view only by the hidden part, so the cell stays under the pointer. */
+  let pointerReveal = false;
+
+  /** Bring a cell into view. Scrolling forward stops on a whole row and column
+   *  (`snap`, as spreadsheets do), except for a reveal from the mouse. */
+  export function scrollIntoView(c: Cell, snap = !pointerReveal): void {
     const fr = frozenRows();
     const off = tab.firstRow;
     if (c.row >= off + fr) {
       const y = geom.top(c.row) - geom.top(off + fr);
       const rh = geom.h(c.row);
-      const vis = Math.max(rh, viewH() - bodyTop() - bottomInset - totalsHeight());
+      const vis = Math.max(rh, rowsVis());
       if (y < view.scrollY) view.scrollY = y;
-      else if (y + rh > view.scrollY + vis) view.scrollY = y + rh - vis;
+      else if (y + rh > view.scrollY + vis) view.scrollY = snap ? snapForward(rowAxis, off + fr, c.row, rh, vis) : y + rh - vis;
     }
     if (c.col >= frozenCols()) {
       const x = tab.columns.x(c.col) - tab.columns.x(frozenCols());
       const vis = viewW() - bodyLeft();
       const cw = tab.columns.width(c.col);
       if (x < view.scrollX) view.scrollX = x;
-      else if (x + cw > view.scrollX + vis) view.scrollX = Math.min(x, x + cw - vis);
+      else if (x + cw > view.scrollX + vis) view.scrollX = snap ? snapForward(colAxis, frozenCols(), c.col, cw, vis) : Math.min(x, x + cw - vis);
     }
     clampScroll();
     redraw();
@@ -2358,6 +2372,16 @@
       return;
     }
     if (editing && !(await commitEdit())) return;
+    pointerReveal = true;
+    try {
+      pressAt(e);
+    } finally {
+      pointerReveal = false;
+    }
+  }
+
+  /** The rest of a press, all synchronous (a reveal here does not snap). */
+  function pressAt(e: MouseEvent): void {
     sink.focus({ preventScroll: true });
     const [x, y] = local(e);
     const h = hit(x, y);
@@ -2553,7 +2577,20 @@
   }
 
   let cursor = $state("default");
-  function onMouseMove(e: MouseEvent): void {
+  /** Run a mouse handler with reveals that do not snap. */
+  function byPointer(e: MouseEvent, run: (e: MouseEvent) => void): void {
+    pointerReveal = true;
+    try {
+      run(e);
+    } finally {
+      pointerReveal = false;
+    }
+  }
+  const onMouseMove = (e: MouseEvent): void => byPointer(e, mouseMove);
+  const onMouseUp = (e: MouseEvent): void => byPointer(e, mouseUp);
+  const onContextMenu = (e: MouseEvent): void => byPointer(e, contextMenu);
+
+  function mouseMove(e: MouseEvent): void {
     const [x, y] = local(e);
     if (inTotals(y) && !freezing && !moving && !drag) {
       cursor = "pointer";
@@ -2785,7 +2822,7 @@
   /** Cells the engine reads at once for the grid (MAX_VIEWPORT_CELLS). */
   const VIEWPORT_CELLS = 20_000;
 
-  function onMouseUp(e: MouseEvent): void {
+  function mouseUp(e: MouseEvent): void {
     if (freezing) {
       const f = freezing;
       freezing = null;
@@ -2867,7 +2904,7 @@
     drag = null;
   }
 
-  function onContextMenu(e: MouseEvent): void {
+  function contextMenu(e: MouseEvent): void {
     e.preventDefault();
     const [x, y] = local(e);
     if (inTotals(y)) {
