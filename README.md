@@ -580,6 +580,12 @@ everything is also in command search.
 - Fill handle, fill series, Ctrl+Enter to fill a whole selection, Paste
   Special (values only, swap rows and columns), special characters. Dragging
   the fill handle back inside the selection clears the cells it passes over.
+  The fill handle follows your custom orders too (Data > Custom sort >
+  Manage custom orders): from one cell only an order ticked "Fill handle
+  follows this order from one cell" (typed orders of up to 100 values are
+  ticked to start with; orders made from cells are not, so dragging one name
+  copies it); two or more cells that step evenly along any order follow it.
+  The status line names the order used; Ctrl while dragging copies instead.
 - **Type-ahead suggestions** from the column's own values, **pick lists**
   (Alt+Down) of the values already in a column, as Excel's "Pick from
   drop-down list" (columns with a list check offer their list instead; View >

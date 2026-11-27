@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_ORDERS, newOrderId, orderFromCells, parseList, readOrders } from "./m10";
+import { fillOrders, MAX_ORDERS, newOrderId, orderFromCells, parseList, readOrders } from "./m10";
 
 describe("saved custom orders", () => {
   it("gives orders saved before ids an id each, in their order, and keeps ids that are there", () => {
@@ -56,5 +56,33 @@ describe("an order from the selected cells", () => {
   it("is edited one value per line, so a value may hold a comma", () => {
     expect(parseList("Green, light\nBlue", false)).toEqual(["Green, light", "Blue"]);
     expect(parseList("Green, light\nBlue")).toEqual(["Green", "light", "Blue"]);
+  });
+});
+
+describe("the fill handle and custom orders", () => {
+  it("is on to start with for typed orders of up to 100 values, off for orders from cells and longer ones", () => {
+    const hundred = Array.from({ length: 100 }, (_, i) => `v${i}`);
+    const got = readOrders([
+      { name: "Typed", items: ["Urgent", "Normal"] },
+      { name: "Names", items: ["Ada Quill", "Bo Frost"], fromCells: true },
+      { name: "Hundred", items: hundred },
+      { name: "Long", items: [...hundred, "one more"] },
+      { name: "Unticked", items: ["a", "b"], fill: false },
+    ]);
+    expect(got.map((o) => o.fill)).toEqual([true, false, true, false, false]);
+    // One cell follows only ticked orders of up to 100 values, even when a long one is ticked.
+    const long = { ...got[3]!, fill: true };
+    expect(fillOrders([...got.slice(0, 3), long]).map((o) => [o.name, o.one_cell])).toEqual([
+      ["Typed", true],
+      ["Names", false],
+      ["Hundred", true],
+      ["Long", false],
+      ["Low, Medium, High", false],
+    ]);
+  });
+
+  it("keeps the Manage panel's order, the built-in Low, Medium, High last", () => {
+    const got = fillOrders(readOrders([{ name: "B", items: ["x"] }, { name: "A", items: ["y"] }]));
+    expect(got.map((o) => o.name)).toEqual(["B", "A", "Low, Medium, High"]);
   });
 });

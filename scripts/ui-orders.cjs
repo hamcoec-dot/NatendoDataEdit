@@ -159,6 +159,93 @@ const KEY = "natendo.prefs.v1";
   ok(s.length === 60 && s[0].name === "Order 0", "...and the oldest order is kept");
   await dialog().getByRole("button", { name: "Cancel", exact: true }).last().click();
 
+  // ---- 5. The fill handle follows an order only when it should (O1) ----
+  await p.evaluate((k) => {
+    const prefs = JSON.parse(localStorage.getItem(k) || "{}");
+    prefs.sortLists = [
+      // Made from a column of names: never followed from one cell.
+      { id: "names", name: "Names", items: ["Ada Quill", "Bo Frost", "Cy Marsh"], fromCells: true },
+      // Typed, no tick saved yet: on to start with (up to 100 values).
+      { id: "prio", name: "Priority", items: ["Urgent", "Normal", "Later"] },
+      // Ticked, but over 100 values: not followed from one cell either.
+      { id: "big", name: "Big", items: ["Alpha", ...Array.from({ length: 100 }, (_, i) => `word ${String.fromCharCode(97 + (i % 26))}${i}`.replace(/\d/g, "x"))], fill: true },
+    ];
+    localStorage.setItem(k, JSON.stringify(prefs));
+  }, KEY);
+  await p.reload();
+  await p.waitForFunction(() => window.__nde, null, { timeout: 10000 });
+  await settle(500);
+  const sent = await p.evaluate(() => window.__nde.backend.calls.filter((c) => c.startsWith("setFillOrders")).pop());
+  ok(sent === "setFillOrders:4", `the app sends the orders (and the built-in Low, Medium, High) to the fill (${sent})`);
+  await table("pri\tname\tbig\r\nUrgent\tAda Quill\tAlpha\r\nx\tx\tx\r\nx\tx\tx\r\nx\tx\tx\r\n");
+  const cellBox = (row, c) =>
+    p.evaluate(([r, c]) => {
+      const g = window.__nde.grid;
+      const t = window.__nde.tab;
+      const a = g.cellPoint({ row: r, col: c });
+      const below = g.cellPoint({ row: r + 1, col: c });
+      const h = below.y - a.y || 25;
+      return { x: a.x - 4, y: a.y - h, w: t.columns.width(c), h };
+    }, [row, c]);
+  const status = () => p.locator("footer.status .msg").textContent().catch(() => "");
+  /** Drag the fill handle of the selection ending at (row, c) down `n` rows. */
+  const dragDown = async (row, c, n, ctrl = false) => {
+    const bx = await cellBox(row, c);
+    await p.mouse.move(bx.x + bx.w - 3, bx.y + bx.h - 3);
+    if (ctrl) await p.keyboard.down("Control");
+    await p.mouse.down();
+    await p.mouse.move(bx.x + bx.w - 10, bx.y + bx.h * (n + 0.5), { steps: 8 });
+    await p.mouse.up();
+    if (ctrl) await p.keyboard.up("Control");
+    await settle(700);
+  };
+  await sel(1, 0);
+  await dragDown(1, 0, 3);
+  ok(JSON.stringify(await col(0, 5)) === JSON.stringify(["pri", "Urgent", "Normal", "Later", "Urgent"]), `one cell on a typed order follows it (${await col(0, 5)})`);
+  ok(/following the custom order Priority/.test(await status()), `...and the status line names the order (${(await status()).trim()})`);
+  await shot("orders-fill-follows.png");
+  // Ctrl while dragging copies (it is put back after).
+  await sel(1, 0);
+  await dragDown(1, 0, 1, true);
+  ok((await col(0, 3))[2] === "Urgent", `Ctrl while dragging copies (${await col(0, 3)})`);
+
+  await sel(1, 1);
+  await dragDown(1, 1, 3);
+  ok(JSON.stringify(await col(1, 5)) === JSON.stringify(["name", "Ada Quill", "Ada Quill", "Ada Quill", "Ada Quill"]), `one name on an order made from cells copies, never other people's names (${await col(1, 5)})`);
+  await sel(1, 2);
+  await dragDown(1, 2, 2);
+  ok(JSON.stringify(await col(2, 4)) === JSON.stringify(["big", "Alpha", "Alpha", "Alpha"]), `one cell on a ticked order of over 100 values copies (${await col(2, 4)})`);
+  // Two names stepping evenly follow the order, ticked or not.
+  await p.evaluate(() => window.__nde.reg.run("edit.undo"));
+  await settle(500);
+  await sel(2, 1);
+  await clip("Cy Marsh");
+  await p.keyboard.press("Control+v");
+  await settle(500);
+  await sel(1, 1, 2, 1);
+  await dragDown(2, 1, 2);
+  ok(JSON.stringify(await col(1, 5)) === JSON.stringify(["name", "Ada Quill", "Cy Marsh", "Bo Frost", "Ada Quill"]), `two names stepping evenly follow the order (${await col(1, 5)})`);
+  // The tick off: one cell copies.
+  await run("data.sort");
+  await dialog().getByRole("button", { name: "Manage custom orders…" }).click();
+  await settle();
+  const tick = dialog().locator(".manage label.fill input").nth(1);
+  ok(await tick.isChecked(), "a typed order's tick is on to start with");
+  ok(!(await dialog().locator(".manage label.fill input").nth(0).isChecked()), "an order made from cells is not ticked");
+  ok(await dialog().locator(".manage label.fill input").nth(2).isDisabled(), "an order of over 100 values cannot be ticked");
+  ok(/uses the higher one/.test(await dialog().textContent()), "the panel says the higher order wins");
+  await shot("orders-fill-tick.png");
+  await tick.uncheck();
+  await settle(300);
+  await dialog().getByRole("button", { name: "Cancel", exact: true }).last().click();
+  await settle(300);
+  await sel(3, 0);
+  await clip("Urgent");
+  await p.keyboard.press("Control+v");
+  await settle(400);
+  await sel(3, 0);
+  await dragDown(3, 0, 1);
+  ok((await col(0, 5))[4] === "Urgent", `with the tick off, one cell copies (${await col(0, 5)})`);
   ok(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   await b.close();
   console.log(failed ? `${failed} FAILED` : "ALL PASSED");

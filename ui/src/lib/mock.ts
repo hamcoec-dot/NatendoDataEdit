@@ -13,7 +13,7 @@ import { joinPreview } from "./repair";
 import { mockDrill, mockItems, mockPivot, type ItemList, type PivotField, type PivotGrid, type PivotSpec } from "./pivot";
 import { isIsoDate, shapeRegex } from "./lint";
 import { shapeOf } from "./insights";
-import type { ChipChange, ChipInfo, Explode, ExplodeDetect, ExplodePreview, ExplodeReport, ExplodeScan, FilterChips } from "./backend";
+import type { ChipChange, ChipInfo, Explode, ExplodeDetect, ExplodePreview, ExplodeReport, ExplodeScan, FillOrder, FilterChips } from "./backend";
 import { EXPLODE_BASE } from "./explode";
 import type {
   JumpResult,
@@ -2940,6 +2940,31 @@ export class MockBackend implements Backend {
     if (!plan.length) return { ...this.get(doc).info };
     return this.writeCells(doc, plan.map(([c, , v]) => [0, c, v]), false);
   }
+  /** The user's custom orders the fill handle may follow. */
+  private fillOrderList: FillOrder[] = [];
+  async setFillOrders(orders: FillOrder[]): Promise<void> {
+    this.calls.push(`setFillOrders:${orders.length}`);
+    this.fillOrderList = orders;
+  }
+  /** A fill along a custom order (a simple stand-in for the engine's rule):
+   *  plain words only; one cell on an order marked one_cell, two or more
+   *  stepping evenly on any; the first order holding the value wins. */
+  private orderSeries(start: string[]): { items: string[]; p0: number; step: number; name: string } | null {
+    const key = (v: string) => v.trim().toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");
+    if (!start.length || start.some((v) => /\d/.test(v) || !v.trim())) return null;
+    const names = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+    if (start.every((v) => names.some((n) => n === key(v) || n.slice(0, 3) === key(v)))) return null;
+    for (const o of this.fillOrderList) {
+      if (start.length === 1 && !o.one_cell) continue;
+      const pos = start.map((v) => o.items.findIndex((i) => key(i) === key(v)));
+      if (pos.some((x) => x < 0)) continue;
+      const len = o.items.length;
+      const step = start.length > 1 ? (((pos[1]! - pos[0]!) % len) + len) % len : 1;
+      if (step === 0 || !pos.every((x, k) => k === 0 || (((x - pos[k - 1]!) % len) + len) % len === step)) continue;
+      return { items: o.items, p0: pos[0]!, step, name: o.name };
+    }
+    return null;
+  }
   async setProtected(doc: number, cols: number[]): Promise<DocInfo> {
     const d = this.get(doc);
     d.protectedPhys = new Set(cols.filter((c) => c < this.colCount(d)).map((c) => this.physCol(d, c)));
@@ -3895,11 +3920,14 @@ export class MockBackend implements Backend {
         const len = vertical ? f.rows : f.cols;
         const max = f.dir === "down" ? rows - (f.row + f.rows) : f.dir === "up" ? f.row : f.dir === "left" ? f.col : f.count;
         const count = Math.min(f.count, max);
+        let followed: string | null = null;
         for (let l = 0; l < lines; l++) {
           const start = Array.from({ length: len }, (_, k) => (vertical ? this.value(d, f.row + k, f.col + l) : this.value(d, f.row + l, f.col + k)));
+          const along = f.saved_orders && f.mode.kind === "auto" ? this.orderSeries(start) : null;
+          if (along) followed ??= along.name;
           for (let k = 0; k < count; k++) {
             const i = f.dir === "down" || f.dir === "right" ? len + k : -1 - k;
-            const v = this.seriesValue(start, f.mode, i);
+            const v = along ? along.items[(((along.p0 + along.step * i) % along.items.length) + along.items.length) % along.items.length]! : this.seriesValue(start, f.mode, i);
             if (v === null) break;
             if (f.dir === "down") cells.push([f.row + f.rows + k, f.col + l, v]);
             else if (f.dir === "up") cells.push([f.row - 1 - k, f.col + l, v]);
@@ -3908,7 +3936,7 @@ export class MockBackend implements Backend {
           }
         }
         const info = cells.length ? await this.setCells(doc, cells) : this.refresh(d);
-        return this.report(info, { cells: cells.length });
+        return this.report(info, { cells: cells.length, order: followed });
       }
       case "show_duplicates":
       case "remove_duplicates": {
