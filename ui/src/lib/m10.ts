@@ -3,7 +3,7 @@
 // data bars, group dividers, type-ahead and custom sort orders. Pure
 // functions, so they are tested without a grid.
 
-import type { Combine, DataOp, SplitParts, TableOp } from "./backend";
+import type { Combine, DataOp, FillOrder, SplitParts, TableOp } from "./backend";
 import { readDate, readNumber } from "./m9";
 import type { ColumnType } from "./readers";
 
@@ -260,6 +260,28 @@ export interface SavedOrder extends SortList {
   id: string;
   /** Made from selected cells (not typed). */
   fromCells?: boolean;
+  /** The fill handle follows this order from one starting cell. On to
+   *  start with for typed orders of up to 100 values; off for orders made
+   *  from cells (a column of names must never fill other people's names). */
+  fill?: boolean;
+}
+
+/** Longest order the fill handle follows from one cell. */
+export const FILL_ONE_CELL_MAX = 100;
+
+/** Whether a new order follows the fill handle from one cell to start with. */
+export function fillByDefault(items: readonly string[], fromCells: boolean): boolean {
+  return !fromCells && items.length <= FILL_ONE_CELL_MAX;
+}
+
+/** The orders the fill handle may follow, in the Manage panel's order (the
+ *  first holding a value wins), then the built-in Low, Medium, High. One
+ *  starting cell follows only the ticked orders of up to 100 values; two or
+ *  more stepping evenly along an order follow any of them. Months and
+ *  weekdays are the fill's own. */
+export function fillOrders(saved: readonly SavedOrder[]): FillOrder[] {
+  const own = saved.map((o) => ({ name: o.name, items: o.items, one_cell: o.fill === true && o.items.length <= FILL_ONE_CELL_MAX }));
+  return [...own, { name: BUILTIN_LISTS[0]!.name, items: BUILTIN_LISTS[0]!.items, one_cell: false }];
 }
 
 /** Values from selected cells for a new order (Data > New custom order from
@@ -291,7 +313,8 @@ export function readOrders(raw: unknown): SavedOrder[] {
     if (!l || typeof l !== "object" || typeof l.name !== "string" || !Array.isArray(l.items)) continue;
     const items = (l.items as unknown[]).filter((i): i is string => typeof i === "string").slice(0, MAX_ORDER_ITEMS).map((i) => i.slice(0, 1000));
     const id = typeof l.id === "string" && l.id && !out.some((o) => o.id === l.id) ? l.id.slice(0, 40) : "";
-    out.push({ id, name: l.name.slice(0, 200), items, ...(l.fromCells === true ? { fromCells: true } : {}) });
+    const fromCells = l.fromCells === true;
+    out.push({ id, name: l.name.slice(0, 200), items, ...(fromCells ? { fromCells: true } : {}), fill: typeof l.fill === "boolean" ? l.fill : fillByDefault(items, fromCells) });
   }
   for (const o of out) if (!o.id) o.id = newOrderId(out.filter((x) => x.id));
   return out;

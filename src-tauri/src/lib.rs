@@ -488,6 +488,12 @@ async fn tidy_titles(
     blocking(move || docs.tidy_titles(doc, spec)).await
 }
 
+/// The user's saved custom orders, for the fill handle.
+#[tauri::command]
+fn set_fill_orders(docs: DocsState<'_>, orders: Vec<natendo_engine::fill::FillOrder>) {
+    docs.set_fill_orders(orders);
+}
+
 /// Protect columns from changes (and no others).
 #[tauri::command]
 async fn set_protected(docs: DocsState<'_>, doc: u32, cols: Vec<u32>) -> CmdResult<DocInfo> {
@@ -5496,6 +5502,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            set_fill_orders,
             open_file,
             reopen,
             layout_choices,

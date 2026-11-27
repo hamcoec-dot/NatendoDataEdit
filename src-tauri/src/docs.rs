@@ -1783,6 +1783,8 @@ pub struct OpReport {
     /// Paste, fill, clear: hidden rows between the rows written, left as
     /// they were.
     pub hidden_rows: u64,
+    /// Fill: the custom order it followed, by name.
+    pub order: Option<String>,
     /// Join and append: what matched.
     pub join: Option<JoinReport>,
     /// Cleaners: cells a step could not read (not a date or number);
@@ -1997,6 +1999,9 @@ pub struct Docs {
     /// The file contracts read from the contracts folder (C9), read once when first needed and
     /// again after a change.
     contracts: Mutex<Option<contracts::Store>>,
+    /// The user's saved custom orders the fill handle may follow (set by
+    /// the window when they change; never logged).
+    fill_orders: Mutex<Arc<Vec<natendo_engine::fill::FillOrder>>>,
 }
 
 /// See [`Docs::set_private_check`].
@@ -5594,9 +5599,36 @@ impl Docs {
         attempt(plan)
     }
 
+    /// The user's saved custom orders, for fills (the window sends them when
+    /// they change).
+    pub fn set_fill_orders(&self, orders: Vec<natendo_engine::fill::FillOrder>) {
+        *self.fill_orders.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(orders);
+    }
+
     /// Run a data operation as one undo step (or, for "show duplicates", a
     /// filter), computed under the read lock with progress and cancel.
     pub fn data_op(&self, id: u32, op: DataOp) -> CmdResult<OpReport> {
+        // A fill that may follow the user's saved orders takes only the ones
+        // it uses, so the step (and a recipe recorded from it) holds those.
+        let op = match op {
+            DataOp::Fill { mut spec } if spec.saved_orders => {
+                spec.saved_orders = false;
+                let saved = self
+                    .fill_orders
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                if !saved.is_empty() {
+                    let used =
+                        self.get(id)?
+                            .read()
+                            .fill_orders_used(&spec, &saved, &Progress::new())?;
+                    spec.orders = used.into_iter().map(|j| saved[j].clone()).collect();
+                }
+                DataOp::Fill { spec }
+            }
+            op => op,
+        };
         // A fill's guard column is recorded with its title, so a recipe finds it by title.
         let op = match op {
             DataOp::FillBlanks { mut spec } if spec.guard.is_some() && spec.keep_first => {
@@ -7427,6 +7459,7 @@ impl Docs {
                     r.cells = c.cells;
                     r.skipped = c.skipped;
                     r.hidden_rows = c.hidden_rows;
+                    r.order = c.order.clone();
                 }
                 Planned::Cols(c) => {
                     r.cells = c.cells;
@@ -10822,6 +10855,48 @@ mod tests {
         docs.undo(id).unwrap();
         docs.undo(id).unwrap();
         assert_eq!(docs.first_row_cell(id, 0).unwrap(), "name");
+    }
+
+    /// A fill follows a saved custom order only when it should, and says which.
+    #[test]
+    fn a_fill_takes_only_the_saved_orders_it_uses() {
+        use natendo_engine::fill::{FillMode, FillOrder};
+        let p = tmp(
+            "fill-orders.csv",
+            b"level,who\r\nLow,Smith\r\nx,y\r\nx,y\r\n",
+        );
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let o = |name: &str, items: &[&str], one_cell: bool| FillOrder {
+            name: name.into(),
+            items: items.iter().map(|s| s.to_string()).collect(),
+            one_cell,
+        };
+        docs.set_fill_orders(vec![
+            o("Names", &["Smith", "Jones", "Brown"], false),
+            o("Priority", &["Low", "Medium", "High"], true),
+        ]);
+        let fill = |col: u32| DataOp::Fill {
+            spec: FillSpec {
+                row: 1,
+                col,
+                rows: 1,
+                cols: 1,
+                dir: natendo_engine::ops::Dir::Down,
+                count: 2,
+                mode: FillMode::Auto,
+                saved_orders: true,
+                ..Default::default()
+            },
+        };
+        let r = docs.data_op(id, fill(0)).unwrap();
+        assert_eq!(r.order.as_deref(), Some("Priority"));
+        assert_eq!(docs.cell_text(id, 3, 0).unwrap().0, "High");
+        // One name on an order not ticked for one cell: copied.
+        let r = docs.data_op(id, fill(1)).unwrap();
+        assert_eq!(r.order, None);
+        assert_eq!(docs.cell_text(id, 3, 1).unwrap().0, "Smith");
     }
 
     /// A rename is a recipe step: a recipe recorded across it replays the

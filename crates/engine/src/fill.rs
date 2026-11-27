@@ -10,7 +10,11 @@
 //! - month and weekday names (`Jan`, `Monday`, any case);
 //! - text with a number (`Item 1`, `Q07`): the number counts up, keeping
 //!   zero padding;
+//! - the user's custom orders (`Low, Medium, High`), see [`FillOrder`];
 //! - anything else repeats the starting cells.
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -93,6 +97,14 @@ pub enum Series {
         step: i64,
         seconds: bool,
         pad: bool,
+    },
+    /// Along a custom order (`FillSpec::orders[order]`), in its spelling;
+    /// wraps around.
+    Order {
+        items: Arc<[String]>,
+        start: i64,
+        step: i64,
+        order: usize,
     },
 }
 
@@ -479,9 +491,194 @@ fn counted(s: &str) -> Option<(&str, &str, &str)> {
     Some((&s[..start], &s[start..end], &s[end..]))
 }
 
+// ---- custom orders ----
+
+/// A custom order the fill handle can follow: the user's saved sort orders.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FillOrder {
+    pub name: String,
+    pub items: Vec<String>,
+    /// One starting cell follows this order. Otherwise only two or more
+    /// starting cells stepping evenly along it do (a one-cell drag of a
+    /// name on an order made from a column of names copies it).
+    pub one_cell: bool,
+}
+
+/// Distinct values looked up by scanning before every order is indexed.
+const SCANS_BEFORE_INDEX: usize = 32;
+
+/// A value as orders match it: trimmed, case and accents folded (as sort
+/// matches a custom order).
+fn order_key(s: &str) -> String {
+    let mut out = String::new();
+    crate::value::text_key(s.trim(), false, &mut out);
+    if let Some(i) = out.find('\0') {
+        out.truncate(i);
+    }
+    out
+}
+
+/// `item` matches `key` (an [`order_key`]): plain ASCII compares in place.
+fn same_key(item: &str, key: &str) -> bool {
+    let t = item.trim();
+    if t.is_ascii() {
+        t.len() == key.len() && t.eq_ignore_ascii_case(key)
+    } else {
+        order_key(t) == key
+    }
+}
+
+/// Finds starting cells on the custom orders of one fill. Lookups scan the
+/// orders (no map is built for a fill that matches nothing); a fill with
+/// many different starting values indexes them once.
+pub struct OrderMatch<'a> {
+    orders: &'a [FillOrder],
+    shared: Vec<Option<Arc<[String]>>>,
+    /// Key to (order, first position), per order once looked at.
+    maps: HashMap<usize, HashMap<String, u32>>,
+    /// Key to the orders holding it (order, first position), in order.
+    found: HashMap<String, Vec<(usize, u32)>>,
+    index: Option<HashMap<String, Vec<(usize, u32)>>>,
+}
+
+impl<'a> OrderMatch<'a> {
+    pub fn new(orders: &'a [FillOrder]) -> OrderMatch<'a> {
+        OrderMatch {
+            orders,
+            shared: vec![None; orders.len()],
+            maps: HashMap::new(),
+            found: HashMap::new(),
+            index: None,
+        }
+    }
+
+    /// The orders holding `key`, first ones first, with the first position.
+    fn holding(&mut self, key: &str) -> Vec<(usize, u32)> {
+        if let Some(ix) = &self.index {
+            return ix.get(key).cloned().unwrap_or_default();
+        }
+        if let Some(v) = self.found.get(key) {
+            return v.clone();
+        }
+        if self.found.len() >= SCANS_BEFORE_INDEX {
+            let mut ix: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
+            for (j, o) in self.orders.iter().enumerate() {
+                for (p, item) in o.items.iter().enumerate() {
+                    let v = ix.entry(order_key(item)).or_default();
+                    if v.last().is_none_or(|x| x.0 != j) {
+                        v.push((j, p as u32));
+                    }
+                }
+            }
+            let out = ix.get(key).cloned().unwrap_or_default();
+            self.index = Some(ix);
+            return out;
+        }
+        let out: Vec<(usize, u32)> = self
+            .orders
+            .iter()
+            .enumerate()
+            .filter_map(|(j, o)| {
+                o.items
+                    .iter()
+                    .position(|i| same_key(i, key))
+                    .map(|p| (j, p as u32))
+            })
+            .collect();
+        self.found.insert(key.to_string(), out.clone());
+        out
+    }
+
+    /// Where `key` first is on order `j`.
+    fn pos_in(&mut self, j: usize, key: &str) -> Option<u32> {
+        let items = &self.orders[j].items;
+        let map = self.maps.entry(j).or_insert_with(|| {
+            let mut m = HashMap::with_capacity(items.len());
+            for (p, item) in items.iter().enumerate() {
+                m.entry(order_key(item)).or_insert(p as u32);
+            }
+            m
+        });
+        map.get(key).copied()
+    }
+
+    /// The series along the first order the starting cells are on: one cell
+    /// only on an order marked `one_cell`; two or more stepping evenly.
+    fn series(&mut self, start: &[String]) -> Option<Series> {
+        if self.orders.is_empty() || start.is_empty() {
+            return None;
+        }
+        let n = start.len();
+        let k0 = order_key(&start[0]);
+        if k0.is_empty() {
+            return None;
+        }
+        let keys: Vec<String> = start[1..].iter().map(|s| order_key(s)).collect();
+        for (j, p0) in self.holding(&k0) {
+            if n == 1 && !self.orders[j].one_cell {
+                continue;
+            }
+            let len = self.orders[j].items.len() as i64;
+            let mut pos = vec![p0 as i64];
+            for k in &keys {
+                match self.pos_in(j, k) {
+                    Some(p) => pos.push(p as i64),
+                    None => break,
+                }
+            }
+            if pos.len() < n {
+                continue;
+            }
+            let step = if n >= 2 {
+                (pos[1] - pos[0]).rem_euclid(len)
+            } else {
+                1
+            };
+            if step == 0
+                || !pos
+                    .windows(2)
+                    .all(|w| (w[1] - w[0]).rem_euclid(len) == step)
+            {
+                continue;
+            }
+            let items = self.shared[j]
+                .get_or_insert_with(|| self.orders[j].items.clone().into())
+                .clone();
+            return Some(Series::Order {
+                items,
+                start: pos[0],
+                step,
+                order: j,
+            });
+        }
+        None
+    }
+}
+
 impl Series {
     /// The series for a line of starting cells (at least one).
     pub fn new(start: &[String], mode: FillMode, read: ReadOptions) -> Result<Series, Error> {
+        Series::new_with(start, mode, read, &mut OrderMatch::new(&[]))
+    }
+
+    /// The custom order this series follows (an index into the fill's
+    /// orders).
+    pub fn order(&self) -> Option<usize> {
+        match self {
+            Series::Order { order, .. } => Some(*order),
+            _ => None,
+        }
+    }
+
+    /// As [`Series::new`], also following the custom orders of `orders`
+    /// (automatic fills only).
+    pub fn new_with(
+        start: &[String],
+        mode: FillMode,
+        read: ReadOptions,
+        orders: &mut OrderMatch,
+    ) -> Result<Series, Error> {
         let comma = read.decimal_comma;
         let need_number = |what: &str| -> Result<f64, Error> {
             start
@@ -528,8 +725,9 @@ impl Series {
                     step,
                 })
             }
-            FillMode::Auto => Ok(Series::auto(start, read)),
-            FillMode::AutoSwap => Ok(match Series::auto(start, read) {
+            FillMode::Auto => Ok(Series::auto(start, read, orders)),
+            // Ctrl copies where the plain drag follows an order (as in Excel).
+            FillMode::AutoSwap => Ok(match Series::auto(start, read, orders) {
                 Series::Copy(v) => match v.as_slice() {
                     [one] if plain_number(one, comma).is_some() => Series::Number {
                         a: plain_number(one, comma).map_or(0.0, |x| x.0),
@@ -543,13 +741,14 @@ impl Series {
                 Series::Number { .. }
                 | Series::Counted { .. }
                 | Series::Grouped(_)
-                | Series::Time { .. } => Series::Copy(start.to_vec()),
+                | Series::Time { .. }
+                | Series::Order { .. } => Series::Copy(start.to_vec()),
                 other => other,
             }),
         }
     }
 
-    fn auto(start: &[String], read: ReadOptions) -> Series {
+    fn auto(start: &[String], read: ReadOptions, orders: &mut OrderMatch) -> Series {
         let comma = read.decimal_comma;
         let n = start.len();
         // Numbers.
@@ -586,7 +785,7 @@ impl Series {
                 })
                 .collect::<Option<Vec<_>>>()
             {
-                if let s @ Series::Number { .. } = Series::auto(&plain, read) {
+                if let s @ Series::Number { .. } = Series::auto(&plain, read, orders) {
                     return Series::Grouped(Box::new(s));
                 }
             }
@@ -711,6 +910,13 @@ impl Series {
                     width,
                 };
             }
+            // Numbered text that does not make a series is copied, never
+            // looked up on the custom orders.
+            return Series::Copy(start.to_vec());
+        }
+        // The user's custom orders: only for text none of the above reads.
+        if let Some(s) = orders.series(start) {
+            return s;
         }
         Series::Copy(start.to_vec())
     }
@@ -783,6 +989,12 @@ impl Series {
                     return None;
                 }
                 write_date(d, shape)
+            }
+            Series::Order {
+                items, start, step, ..
+            } => {
+                let len = items.len() as i64;
+                items[(start + step * i.rem_euclid(len)).rem_euclid(len) as usize].clone()
             }
             Series::Names {
                 list,
@@ -1057,3 +1269,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "fill_order_tests.rs"]
+mod order_tests;

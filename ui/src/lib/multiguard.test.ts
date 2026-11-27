@@ -148,6 +148,7 @@ const NOT_WRITES = [
   "sessionClear",
   "zipOpen",
   "setProtected",
+  "setFillOrders",
   "tidyTitlesPreview",
   "openRecent",
   "tabFolders",

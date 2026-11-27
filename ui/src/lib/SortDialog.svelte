@@ -6,7 +6,7 @@
   import { untrack } from "svelte";
   import type { SortKey, SortKind, SortSpec } from "./backend";
   import { prefs } from "./prefs.svelte";
-  import { BUILTIN_LISTS, MAX_ORDERS, newOrderId, parseList, type FromCells, type SavedOrder } from "./m10";
+  import { BUILTIN_LISTS, FILL_ONE_CELL_MAX, fillByDefault, MAX_ORDERS, newOrderId, parseList, type FromCells, type SavedOrder } from "./m10";
 
   interface Props {
     /** Column titles (or numbers), one per column. */
@@ -88,7 +88,7 @@
     }
     const name = newName.trim().slice(0, 200) || items.slice(0, 3).join(", ");
     const id = newOrderId([...builtins, ...prefs.data.sortLists]);
-    prefs.data.sortLists = [...prefs.data.sortLists, { id, name, items, ...(newFromCells ? { fromCells: true } : {}) }];
+    prefs.data.sortLists = [...prefs.data.sortLists, { id, name, items, ...(newFromCells ? { fromCells: true } : {}), fill: fillByDefault(items, newFromCells) }];
     prefs.save();
     if (addingFor) {
       addingFor.order = id;
@@ -124,6 +124,9 @@
     const n = name.trim().slice(0, 200);
     if (!n) return;
     saveOrders(prefs.data.sortLists.map((o) => (o.id === id ? { ...o, name: n } : o)));
+  }
+  function setFill(id: string, on: boolean): void {
+    saveOrders(prefs.data.sortLists.map((o) => (o.id === id ? { ...o, fill: on } : o)));
   }
   function moveOrder(i: number, d: number): void {
     const j = i + d;
@@ -279,6 +282,10 @@
               <button type="button" onclick={() => (deleting = o.id)}>Delete…</button>
             {/if}
           </div>
+          <label class="fill" title={o.items.length > FILL_ONE_CELL_MAX ? `Only orders of up to ${FILL_ONE_CELL_MAX} values are followed from one cell` : "Dragging the fill handle from one cell holding a value on this order fills the next values"}>
+            <input type="checkbox" checked={o.fill === true && o.items.length <= FILL_ONE_CELL_MAX} disabled={o.items.length > FILL_ONE_CELL_MAX} onchange={(e) => setFill(o.id, (e.currentTarget as HTMLInputElement).checked)} />
+            Fill handle follows this order from one cell{o.items.length > FILL_ONE_CELL_MAX ? ` (not for more than ${FILL_ONE_CELL_MAX} values)` : ""}
+          </label>
           {#if editing === o.id}
             <div class="edit">
               <textarea rows="4" aria-label="Values in order" bind:value={editText}></textarea>
@@ -286,6 +293,7 @@
             </div>
           {/if}
         {/each}
+        <p class="note">When a value is on more than one order, the fill handle uses the higher one. Two or more starting cells that step evenly along an order follow it whether ticked or not; Ctrl while dragging copies instead.</p>
         <p class="note">The built-in orders (Low, Medium, High; weekdays; months) cannot be changed. A recipe or saved view that sorts by a custom order keeps its values, so they go wherever you send it.</p>
       </fieldset>
     {/if}
@@ -424,6 +432,11 @@
   }
   .manage .count,
   .manage .ask {
+    color: var(--muted);
+  }
+  .manage .fill {
+    display: block;
+    margin: 0 0 8px;
     color: var(--muted);
   }
   .manage .edit {
