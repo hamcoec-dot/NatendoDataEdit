@@ -1699,7 +1699,11 @@ selection, a column or the whole table:
 ### Printing, PDF and labels
 
 - Print with page setup and print preview (Ctrl+P); landscape, margins,
-  repeating title row.
+  repeating title row. **Print the selection** prints just the selected
+  block, its rows and its columns (right-click a cell, or the File menu).
+  Fit **all columns to the page width** or **fit everything on one page**:
+  Print and Save as PDF shrink the text by the same rule, never below 4 pt,
+  and the dialog says the size it will print at.
 - **Save as PDF** at any size, written by the app itself.
 - **Mailing labels** on six common sheet sizes, starting part-way through the
   first sheet, and **one letter per row**, from a template with

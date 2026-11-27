@@ -305,7 +305,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "processing receipts": ["tools.verifyReceipt", "file.saveAs", "tools.recipeFiles", "tools.watch"],
   "combine with a column map": ["tools.combine"],
   // Printing, PDF and labels
-  "print with page setup and": ["file.print"],
+  "print with page setup and": ["file.print", "file.printSel"],
   "save as pdf": ["file.pdf"],
   "mailing labels": ["file.mail"],
   // Working with files and folders
