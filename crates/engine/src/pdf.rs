@@ -63,6 +63,9 @@ pub struct PageSetup {
     pub font_size: f64,
     /// Shrink the text so all columns fit the page width.
     pub fit_width: bool,
+    /// Shrink the text so everything fits one page (width and height),
+    /// not below [`MIN_FONT`].
+    pub fit_page: bool,
     pub grid: bool,
     /// Column titles on every page (else on the first only).
     pub repeat_header: bool,
@@ -83,6 +86,7 @@ impl Default for PageSetup {
             margin_mm: 12.7,
             font_size: 9.0,
             fit_width: true,
+            fit_page: false,
             grid: true,
             repeat_header: true,
             title: String::new(),
@@ -264,7 +268,9 @@ pub(crate) fn fit<'a>(face: &Face, s: &'a str, room: f64, size: f64) -> Cow<'a, 
     if t.contains(['\n', '\r', '\t']) {
         t = Cow::Owned(t.replace(['\n', '\r', '\t'], " "));
     }
-    if face.width(&t, size) <= room {
+    // A hair of slack: a column sized to its widest value, then shrunk,
+    // must not cut that value over a rounding error.
+    if face.width(&t, size) <= room + 0.01 {
         return t;
     }
     let ell = face.ellipsis();
@@ -747,8 +753,22 @@ impl Document {
             .map(|w| (w + 2.0 * pad).clamp(min_w, max_w))
             .collect();
         let total: f64 = nat.iter().sum();
-        let (size, widths) = if page.fit_width && total > width {
-            let size = (fs * width / total).max(MIN_FONT);
+        let n = rows.end - rows.start;
+        let fit_w = page.fit_width || page.fit_page;
+        let mut want = if fit_w && total > width {
+            fs * width / total
+        } else {
+            fs
+        };
+        if page.fit_page {
+            want = want.min(one_page_size(
+                page,
+                ph - 2.0 * margin,
+                n + u64::from(header),
+            ));
+        }
+        let (size, widths) = if want < fs {
+            let size = want.max(MIN_FONT);
             let k = size / fs;
             (
                 size,
@@ -782,7 +802,6 @@ impl Document {
         let fits = |h: f64| ((h / row_h).floor() as u64).max(1);
         let with = fits(avail - if header { row_h } else { 0.0 });
         let without = fits(avail);
-        let n = rows.end - rows.start;
         let mut row_pages = Vec::new();
         let mut at = 0u64;
         loop {
@@ -818,6 +837,25 @@ impl Document {
             footer_h,
         })
     }
+}
+
+/// The largest text size at which `lines` table rows (the titles row
+/// included), the title and the page numbers fit `height` points, by the
+/// same row, title and footer heights the layout uses.
+fn one_page_size(page: &PageSetup, height: f64, lines: u64) -> f64 {
+    let lines = lines.max(1) as f64;
+    let foot = if page.page_numbers { 2.4 } else { 0.0 };
+    let size = if page.title.trim().is_empty() {
+        height / (lines * 1.4 + foot)
+    } else {
+        // The title is (size + 3) * 1.8 high, at most 16 * 1.8; each
+        // formula overstates it outside its own range, so the smaller is safe.
+        let small = (height - 5.4) / (lines * 1.4 + 1.8 + foot);
+        let large = (height - 28.8) / (lines * 1.4 + foot);
+        small.min(large)
+    };
+    // A hair under, so rounding never pushes the last row to a second page.
+    size * 0.9999
 }
 
 #[cfg(test)]
@@ -964,6 +1002,163 @@ mod tests {
         );
         check_structure(&b);
         assert_eq!(r.sheets, 1);
+    }
+
+    /// The layout of all of `d`'s columns and its first `rows` rows, titled.
+    fn layout(d: &Document, page: &PageSetup, rows: u64) -> Layout {
+        let cols: Vec<u32> = (0..d.col_count()).collect();
+        let titles: Vec<String> = cols.iter().map(|c| format!("Title {c}")).collect();
+        let titles: Vec<&str> = titles.iter().map(String::as_str).collect();
+        d.pdf_layout(
+            page,
+            &load_face(),
+            true,
+            &titles,
+            &Cols::new(d, &cols),
+            0..rows,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fit_on_one_page_shrinks_to_one_sheet() {
+        // 40 rows at 24 pt need several pages; on one page they take one.
+        let d = table(40, 6);
+        let big = PageSetup {
+            font_size: 24.0,
+            ..Default::default()
+        };
+        let (_, plain) = pdf(&d, big.clone());
+        assert!(plain.sheets > 1, "{}", plain.sheets);
+        let one = PageSetup {
+            fit_page: true,
+            ..big
+        };
+        let (b, r) = pdf(&d, one.clone());
+        check_structure(&b);
+        assert_eq!((r.sheets, r.rows), (1, 40));
+        let l = layout(&d, &one, 40);
+        assert!(l.size < 24.0 && l.size > MIN_FONT, "{}", l.size);
+        // Not shrunk when it already fits.
+        let small = PageSetup {
+            fit_page: true,
+            ..Default::default()
+        };
+        assert_eq!(layout(&d, &small, 40).size, 9.0);
+    }
+
+    #[test]
+    fn fit_on_one_page_holds_with_titles_and_page_numbers() {
+        for n in [1u64, 5, 20, 60, 120, 140] {
+            for (title, numbers) in [
+                ("", false),
+                ("", true),
+                ("Quarterly list", true),
+                ("T", false),
+            ] {
+                let d = table(n as usize, 3);
+                let page = PageSetup {
+                    font_size: 40.0,
+                    fit_page: true,
+                    title: title.into(),
+                    page_numbers: numbers,
+                    ..Default::default()
+                };
+                let l = layout(&d, &page, n);
+                // 140 rows need more than a page even at the smallest size.
+                if n < 140 {
+                    assert!(l.size > MIN_FONT, "{n} rows: {}", l.size);
+                    assert_eq!(
+                        l.row_pages.len(),
+                        1,
+                        "{n} rows, {title:?}, {numbers}: {}",
+                        l.size
+                    );
+                } else {
+                    assert_eq!(l.size, MIN_FONT);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fit_on_one_page_stops_at_the_smallest_size() {
+        let d = table(2_000, 4);
+        let page = PageSetup {
+            fit_page: true,
+            ..Default::default()
+        };
+        let l = layout(&d, &page, 2_000);
+        assert_eq!(l.size, MIN_FONT);
+        let (_, r) = pdf(&d, page);
+        assert!(r.sheets > 1);
+        assert_eq!(r.sheets as usize, l.row_pages.len() * l.groups.len());
+    }
+
+    #[test]
+    fn printing_a_block_prints_only_its_columns() {
+        let d = table(5, 6);
+        let page = PageSetup {
+            cols: Some(vec![2, 3, 4]),
+            rows: Some((1, 3)),
+            ..Default::default()
+        };
+        let (b, r) = pdf(&d, page);
+        check_structure(&b);
+        assert_eq!((r.rows, r.sheets), (3, 1));
+    }
+
+    /// The text size the PDF fits the 30-column sample to on Letter
+    /// portrait; the app's Print fit (m8.ts `printFit`) must come within
+    /// 0.5 pt of the same figure, kept in `thirty.json` for both.
+    #[test]
+    fn thirty_column_fit_matches_the_recorded_size() {
+        let d = Document::from_bytes(
+            include_bytes!("../tests/print-fit/thirty.csv").to_vec(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        let rec: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/print-fit/thirty.json")).unwrap();
+        let page = PageSetup {
+            landscape: true,
+            ..Default::default()
+        };
+        let cols: Vec<u32> = (0..d.col_count()).collect();
+        let names = d.export_names(true);
+        let titles: Vec<&str> = names.iter().map(String::as_str).collect();
+        let face = load_face();
+        let l = d
+            .pdf_layout(
+                &page,
+                &face,
+                true,
+                &titles,
+                &Cols::new(&d, &cols),
+                1..d.row_count(),
+            )
+            .unwrap();
+        println!("thirty-column PDF size: {:.3}", l.size);
+        // The widest value of each column is not cut once shrunk (it was,
+        // by a rounding error, before the fit allowed a hair of slack).
+        let pad = l.pad;
+        for (k, title) in titles.iter().enumerate() {
+            let mut widest = title.to_string();
+            for r in 1..d.row_count() {
+                let v = d.row_values(r).unwrap()[k].clone();
+                if face.width(&v, l.size) > face.width(&widest, l.size) {
+                    widest = v;
+                }
+            }
+            let shown = fit(&face, &widest, l.widths[k] - 2.0 * pad, l.size);
+            assert_eq!(shown, widest.as_str(), "column {k} cut");
+        }
+        // Only with the font the record was made with (Segoe UI, Windows).
+        if matches!(&face, Face::Embedded { name, .. } if name.to_lowercase().contains("segoe")) {
+            let want = rec["pdf_size"].as_f64().unwrap();
+            assert!((l.size - want).abs() < 0.05, "{} against {want}", l.size);
+        }
     }
 
     #[test]

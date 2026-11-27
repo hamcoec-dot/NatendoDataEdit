@@ -1,0 +1,8 @@
+{
+  "note": "Made-up 30-column sample (thirty.csv) on Letter landscape, 12.7 mm margins, 9 pt, fit to width, with column titles. pdf_size is the PDF text size in points (Segoe UI). pdf.rs checks it, and the app Print fit must come within 0.5 pt of it (scripts/ui-print.cjs).",
+  "paper": "letter",
+  "landscape": true,
+  "margin_mm": 12.7,
+  "font_size": 9,
+  "pdf_size": 5.095
+}

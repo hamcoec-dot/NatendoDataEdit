@@ -792,8 +792,16 @@ export class MockBackend implements Backend {
     const parts = Math.max(1, Math.ceil(rows / per));
     const stem = d.info.name.replace(/\.[^.]*$/, "");
     if (o.format === "xlsx" && o.split_files && parts > 1) return { rows, sheets: parts, bytes: rows * 40, files: Array.from({ length: parts }, (_, i) => `${stem} (${i + 1} of ${parts}).xlsx`) };
+    if (o.format === "pdf") {
+      // The rows and columns asked for, about 50 rows a page.
+      const n = o.page?.rows ? Math.max(0, Math.min(o.page.rows[1], rows - o.page.rows[0] + 1)) : rows;
+      this.lastPdf = { rows: n, cols: o.page?.cols ?? null, fit_page: !!o.page?.fit_page };
+      return { rows: n, sheets: o.page?.fit_page ? 1 : Math.max(1, Math.ceil(n / 50)), bytes: n * 40 };
+    }
     return { rows, sheets: o.format === "xlsx" ? parts : 0, bytes: rows * 40 };
   }
+  /** The last PDF asked for (for the screen tests). */
+  lastPdf: { rows: number; cols: number[] | null; fit_page: boolean } | null = null;
   async exportBook(docs: number[], o: ExportOptions, _widths: number[][] = []): Promise<ExportReport | null> {
     let rows = 0;
     for (const id of docs) rows += Math.max(0, this.rowCount(this.get(id)) - (o.header ? 1 : 0));
