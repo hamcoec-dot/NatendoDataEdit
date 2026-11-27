@@ -1257,7 +1257,9 @@ everything is also in command search.
   tab every value is written as text. A save stops if another program changed
   the file, and goes through a temporary file like every save. Limits: keys
   are written in column order, blank lines between records and escapes such
-  as `é` are not kept, and a file whose record has the same key twice,
+  as `\u00e9` are not kept (a line or paragraph separator, U+2028 or U+2029,
+  inside a string is written as it is: valid JSON, though some JavaScript
+  readers stumble on it), and a file whose record has the same key twice,
   or whose records sit inside an object, can only be saved as another file
   (Save says why).
 - **Export:** Excel, JSON, JSON Lines, XML, HTML, Markdown, fixed width, PDF, SQL
