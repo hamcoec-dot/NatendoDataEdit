@@ -61,6 +61,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import XrayDialog from "./lib/XrayDialog.svelte";
   import EncodingPicker from "./lib/EncodingPicker.svelte";
   import SplitNameDialog from "./lib/SplitNameDialog.svelte";
+  import RuleCard from "./lib/RuleCard.svelte";
+  import { oddWords, type Outliers } from "./lib/rule";
   import InsertDialog from "./lib/InsertDialog.svelte";
   import RenameColumn from "./lib/RenameColumn.svelte";
   import ShiftCellsDialog, { type ShiftChoice } from "./lib/ShiftCellsDialog.svelte";
@@ -85,7 +87,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import type { SpecialKind, SpecialSpec } from "./lib/backend";
   import { columnRef, localDays, placeCheck } from "./lib/m8";
   import { remapChecks, renameInChecks } from "./lib/rename";
-  import { TOOLS, localNow, type Cleaner, type CleanSpec, type ToolId } from "./lib/clean";
+  import { TOOLS, localNow, type Cleaner, type CleanSpec, type ExampleSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
   import type { ExportOptions, ImportNotes, ImportOptions, ImportStart, JsonBlanks, JsonChoice, Opened, ReceiptAsk, SaveAsOptions } from "./lib/backend";
   import SidePanel, { type PanelTab } from "./lib/SidePanel.svelte";
@@ -212,6 +214,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** The cleaner being built (kept while the app runs). */
   let cleaner = $state<Cleaner>({ version: 1, name: "", steps: [] });
   let splitNameOpen = $state(false);
+  /** C10: the rule card is open on this column (a new number each time it opens). */
+  let ruleCard = $state<{ col: number; n: number } | null>(null);
   /** "Insert rows…" / "Insert columns…" asking how many. */
   let insertAsk = $state<"rows" | "cols" | null>(null);
   /** Set while a command picked from a heading's menu runs. */
@@ -3090,16 +3094,71 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (rep) say(`Split the names into ${plural(rep.cols, "new column")}.`);
   }
 
-  /** Fill the column's empty cells from the results typed in it (Ctrl+E). */
+  /** Fill the column's empty cells from the results typed in it (Ctrl+E). When the examples
+   *  disagree, the rule card opens on the one that breaks the rule. */
   async function fillByExample(): Promise<void> {
     const t = tab;
     if (!t) return;
     const col = t.cell.col;
-    const rep = await runOp({ op: "fill_example", spec: { col, skip_first: t.header } }, "Filling by example");
-    if (!rep) return;
+    const spec = { col, skip_first: t.header };
+    const rep = await runOp({ op: "fill_example", spec }, "Filling by example");
+    if (!rep) {
+      if (message.includes("no single pattern fits")) openRuleCard(col);
+      return;
+    }
+    await saidFill(t, spec, rep, "");
+  }
+
+  /** What a fill by example did, then the odd results among what it filled (a job after the
+   *  fill, so the fill itself is as quick as before), with a way to the rule card. */
+  async function saidFill(t: Tab, spec: ExampleSpec, rep: OpReport, left: string): Promise<void> {
     const from = `from ${plural(rep.examples ?? 0, "example")}`;
     const missed = rep.left ? ` ${plural(rep.left, "row")} left empty (a piece the pattern needs is missing).` : "";
-    say(rep.cells ? `Filled ${plural(rep.cells, "cell")} ${from}: ${rep.pattern ?? ""}.${missed}` : `Nothing to fill ${from}.${missed}`);
+    const done = rep.cells ? `Filled ${plural(rep.cells, "cell")} ${from}: ${rep.pattern ?? ""}.${missed}${left}` : `Nothing to fill ${from}.${missed}${left}`;
+    say(done);
+    const rule = rep.fill_rule;
+    if (!rep.cells || !rule) return;
+    const col = spec.col;
+    const show = { label: "Show the rule", run: () => openRuleCard(col) };
+    messageAction = show;
+    let odd: Outliers | null = null;
+    try {
+      odd = await runJob("Looking for odd results", () => backend().exampleOutliers(t.id, spec, rule.program, rule.example_ids));
+    } catch {
+      odd = null;
+    }
+    if (!odd || tab !== t) return;
+    say(`${done} ${oddWords(odd)}`);
+    messageAction = show;
+  }
+
+  /** Data › Show me the rule (Ctrl+Shift+E). */
+  function openRuleCard(col?: number): void {
+    const t = tab;
+    if (!t) return;
+    ruleCard = { col: col ?? t.cell.col, n: (ruleCard?.n ?? 0) + 1 };
+  }
+
+  /** The rule card's Apply: fill with its rule. */
+  async function applyRule(spec: ExampleSpec, leftRows: number[]): Promise<boolean> {
+    const t = tab;
+    if (!t) return false;
+    const rep = await runOp({ op: "fill_example", spec }, "Filling by example");
+    if (!rep) return false;
+    ruleCard = null;
+    void tick().then(() => grid?.focus());
+    const left = leftRows.length === 1 ? ` Row ${(leftRows[0]! + 1).toLocaleString()} was left as you typed it.` : leftRows.length ? ` ${plural(leftRows.length, "row")} left out ${leftRows.length === 1 ? "was" : "were"} left as you typed them.` : "";
+    await saidFill(t, spec, rep, left);
+    return true;
+  }
+
+  /** The rule card's Save as formula: a computed column to the right of the column. */
+  async function saveRuleFormula(col: number, formula: string): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    ruleCard = null;
+    computeMode = "compute";
+    await runCompute({ expr: formula, title: `${columnTitle(t, col)} (formula)`, target: null, at: col + 1, keep_first: t.header, read: READ, now: localDays() });
   }
 
   /** Run what a data dialog asked for and say what happened. */
@@ -7701,6 +7760,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.append", label: "Appen&d another table…", run: () => { joinKind = "append"; }, enabled: ready },
     { id: "data.form", label: "Form v&iew (one row per page)…", run: () => { if (tab) formRow = tab.cell.row; }, enabled: ready },
     { id: "data.fillExample", label: "Fill by e&xample", keys: ["Ctrl+E"], run: () => void fillByExample(), enabled: ready, repeatable: true },
+    { id: "data.showRule", label: "Show me the r&ule…", keys: ["Ctrl+Shift+E"], run: () => openRuleCard(), enabled: ready },
     { id: "data.splitName", label: "Split names into columns…", run: () => { splitNameOpen = true; }, enabled: ready },
     { id: "clean.tools", label: "&Cleaning tools…", keys: ["Ctrl+Shift+K"], run: () => { cleanTool = "spaces"; }, enabled: ready },
     { id: "clean.matrix", label: "Clean matrix…", run: openMatrix, enabled: ready },
@@ -7779,7 +7839,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "data.explode", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
         "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "data.typeRule", "data.contractMake", "data.contracts", "data.contractCheck", "data.contractReview", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
-        "data.fillExample", "data.splitName", "-",
+        "data.fillExample", "data.showRule", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.compareLists", "data.gaps", "data.relations", "data.patchSave", "data.patchApply", "-",
         "data.values", "data.valuesLookalikes", "data.loadDictionary", "data.saveDictionary", "data.group", "data.arrange", "data.extract", "data.build", "-",
         "find.find", "find.replace", "find.batch", "find.next", "find.prev", "find.ghosts",
@@ -7790,7 +7850,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       items: [
         "clean.suggest", "clean.tools", "-",
         ...TOOLS.flatMap((tl, i) => (i > 0 && TOOLS[i - 1]!.group !== tl.group ? ["-", `clean.tool.${tl.id}`] : [`clean.tool.${tl.id}`])), "-",
-        "data.fillExample", "data.splitName",
+        "data.fillExample", "data.showRule", "data.splitName",
       ],
     },
     {
@@ -10514,6 +10574,23 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     onDone={(v) => { const done = p.done; prompt = null; done(v); void tick().then(() => grid?.focus()); }}
     onClose={() => { prompt = null; grid?.focus(); }}
   />
+{/if}
+
+{#if ruleCard && tab}
+  {@const rc = ruleCard}
+  {#key rc.n}
+    <RuleCard
+      doc={tab.id}
+      col={rc.col}
+      header={tab.header}
+      titles={Array.from({ length: Math.min(tab.info.cols, 2000) }, (_, c) => columnTitle(tab!, c))}
+      read={READ}
+      onApply={(spec, left) => applyRule(spec, left)}
+      onFormula={(f) => void saveRuleFormula(rc.col, f)}
+      onGoTo={(row) => { const c = rc.col; ruleCard = null; goToChange(row, c); }}
+      onClose={() => { ruleCard = null; grid?.focus(); }}
+    />
+  {/key}
 {/if}
 
 {#if splitNameOpen && tab}

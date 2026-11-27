@@ -2,6 +2,7 @@
 // engine's `clean` module), the tool list the screen shows, and helpers.
 
 import type { Pattern, ReadOptions, Scope } from "./backend";
+import type { Program } from "./rule";
 import { sanitizeText, USUAL_SANITIZE, type SanitizeOptions } from "./invisible";
 import { fixMojibake } from "./mojibake";
 
@@ -133,6 +134,12 @@ export interface SplitName {
 export interface ExampleSpec {
   col: number;
   skip_first: boolean;
+  /** C10: the rule as the rule card left it (none: learn it from the column). */
+  program?: Program | null;
+  /** C10: examples left out (row ids); their cells stay as typed. */
+  leave_out?: number[];
+  /** C10: the data revision the card was worked out at (a change since refuses the fill). */
+  revision?: number | null;
 }
 
 /** Same limits as the engine (it checks again). */

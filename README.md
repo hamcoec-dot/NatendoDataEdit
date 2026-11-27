@@ -1533,7 +1533,20 @@ selection, a column or the whole table:
   written out), ZIP+4 and lost leading zeros, phones in the style you choose
   with extensions kept, and e-mails lower case with stray brackets removed.
 - **Fill by example** (Ctrl+E): type a few results and the app fills the rest
-  of the column in the same pattern.
+  of the column in the same pattern. Afterwards the status line gives the rule
+  in words and how many results look odd (a piece that came out empty, a shape
+  or length unlike the examples), with **Show the rule**.
+- **Show me the rule** (Data menu, Ctrl+Shift+E): the rule fill by example
+  learned, as a form you can change piece by piece (which column, which part,
+  first letter, capitals), with the first cells it would fill (from the first
+  1,000 rows), how many it fills and the odd results, each with a link to its
+  row. When one example disagrees with the rest, the card names it: **Leave it
+  out** (that cell stays as you typed it) or **Go to row**. **Apply** (Enter
+  away from the boxes, or Ctrl+Enter) fills with exactly this rule as one undo
+  step, and a recipe keeps the rule. **Save as formula** adds a computed column
+  instead, to the right; it is greyed with the reason when the rule has no
+  formula form (a column read as numbers or dates, two columns with the same
+  title). Learning stops after 2 seconds; a rule has at most 32 pieces.
 - **Masking:** mask all but the last few characters, turn dates into a year or
   an age band, or scramble with a secret phrase (the same value always gives
   the same scramble, so joins and counts still work).

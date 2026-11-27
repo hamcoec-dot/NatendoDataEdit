@@ -14,7 +14,6 @@ use crate::example::{
     learn_until, Case, Cut, Example, ExampleSpec, Piece, Program, MAX_EXAMPLES, MAX_SOURCES,
     MAX_TIME,
 };
-use crate::profile::shape_hash;
 use crate::Error;
 
 /// Most pieces a rule may have.
@@ -313,6 +312,30 @@ pub(crate) fn learn_or_conflict(
     Ok(none)
 }
 
+/// A result's shape for the odd-results count: each run of letters one `A`, each run of digits
+/// one `9`, every other character itself ("A.Lee" and "C.Hart" have one shape; lengths are
+/// counted apart). The first 1,000 characters.
+fn result_shape(v: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut last = '\0';
+    for c in v.chars().take(MAX_TEXT_CHARS) {
+        let k = if c.is_numeric() {
+            '9'
+        } else if c.is_alphabetic() {
+            'A'
+        } else {
+            c
+        };
+        if (k == 'A' || k == '9') && k == last {
+            continue;
+        }
+        last = k;
+        h ^= u64::from(k as u32);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
 /// The example a card names when the examples disagree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Conflict {
@@ -587,7 +610,7 @@ impl Document {
                 (ex.ids, ex.owned.into_iter().map(|(_, v)| v).collect())
             }
         };
-        let shapes: HashSet<u64> = values.iter().map(|v| shape_hash(v)).collect();
+        let shapes: HashSet<u64> = values.iter().map(|v| result_shape(v)).collect();
         let lens: Vec<usize> = values.iter().map(|v| v.chars().count()).collect();
         let (short, long) = match (lens.iter().min(), lens.iter().max()) {
             (Some(&a), Some(&b)) => (a, b),
@@ -622,7 +645,7 @@ impl Document {
             if empty {
                 kinds.push(OddKind::EmptyPiece);
             }
-            if !shapes.is_empty() && !shapes.contains(&shape_hash(&v)) {
+            if !shapes.is_empty() && !shapes.contains(&result_shape(&v)) {
                 kinds.push(OddKind::Shape);
             }
             let n = v.chars().count();
