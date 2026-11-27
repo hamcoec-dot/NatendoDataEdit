@@ -1420,6 +1420,101 @@ export interface CheckReport {
   /** What each table check found. */
   table?: TableResult[];
 }
+// ---- file contracts (C9) ----
+export interface ContractColumn {
+  title: string;
+  aliases?: string[];
+  ty?: ColumnType | null;
+  allowed?: { values: string[]; match_case: boolean } | null;
+  /** Share of blank cells (0 to 1) when the contract was made. */
+  blank_rate?: number | null;
+}
+export interface Contract {
+  contract: number;
+  name: string;
+  columns: ContractColumn[];
+  /** Rules and table checks, their columns by the contract's titles (a rules file). */
+  checks?: unknown;
+  rows?: { min: number; max: number } | null;
+  recognise: { pattern?: string | null; titles: boolean };
+  blank_points: number;
+}
+export interface ContractItem {
+  name: string;
+  file: string;
+  columns: number;
+  pattern: string | null;
+  problem: string | null;
+}
+export interface ContractMatch {
+  name: string;
+  by_pattern: boolean;
+  title_share: number;
+  others: string[];
+  ties: string[];
+}
+export interface DriftOptions {
+  keep_first: boolean;
+  read: ReadOptions;
+  now: number;
+}
+export interface ColumnDrift {
+  col: number;
+  file_col: number;
+  title: string;
+  blanks: number;
+  blank_rate: number;
+  baseline: number | null;
+  blank_jump: boolean;
+  type_misses: number;
+  new_values: number;
+  first_new: string[];
+}
+export interface DriftReport {
+  contract: string;
+  rows: number;
+  row_range: { min: number; max: number } | null;
+  rows_out: boolean;
+  renamed: { col: number; file_col: number; from: string; to: string; by_alias: boolean }[];
+  missing: string[];
+  added: string[];
+  moved: string[];
+  columns: ColumnDrift[];
+  rules: { check: number; name: string; failing: number }[];
+  not_run: { check: number; why: string }[];
+  table: TableResult[];
+  drifted: boolean;
+}
+export type DriftRows =
+  | { kind: "blanks"; col: number }
+  | { kind: "type_misses"; col: number }
+  | { kind: "new_values"; col: number }
+  | { kind: "rule"; check: number };
+export interface ContractFixed {
+  info: DocInfo;
+  fix: { renamed: [string, string][]; moved: boolean; order: number[]; types: [number, ColumnType][] };
+  checks: { checks: Check[]; skipped: number; keep_first: boolean; table_checks: TableCheck[] } | null;
+}
+export interface DraftSpec {
+  name: string;
+  keep_first: boolean;
+  allowed_cols: number[];
+  checks: Check[];
+  table_checks: TableCheck[];
+  read: ReadOptions;
+}
+export interface DraftValues {
+  col: number;
+  distinct: number;
+  filled: number;
+  looks_personal: boolean;
+  refused: string | null;
+}
+export interface ContractDraft {
+  contract: Contract;
+  rows: number;
+  values: DraftValues[];
+}
 /** A cell Replace all would change, as the grid shows it before the change. */
 export interface Ghost {
   row: number;
@@ -1973,6 +2068,26 @@ export interface Backend {
   filterChipCounts(doc: number): Promise<FilterChips>;
   /** Stop the counts being worked out (the pointer left the bar). */
   filterChipCountsStop(doc: number): Promise<void>;
+  /** File contracts (C9): the list in the Contracts folder (read again). */
+  contractsList(): Promise<ContractItem[]>;
+  contractGet(name: string): Promise<Contract>;
+  /** The contract a tab looks like (its file name and titles only). */
+  contractMatch(doc: number, keepFirst: boolean): Promise<ContractMatch | null>;
+  /** Check a tab against a contract (a count any change stops). */
+  contractDrift(doc: number, name: string, opts: DriftOptions): Promise<DriftReport>;
+  contractDriftStop(doc: number): Promise<void>;
+  /** Show the rows behind one count of a drift report (a filter chip). */
+  contractShowRows(doc: number, name: string, what: DriftRows, opts: DriftOptions): Promise<OpReport>;
+  /** Fix what I can: titles and column order (one undo step). */
+  contractFix(doc: number, name: string, keepFirst: boolean): Promise<ContractFixed>;
+  contractDraft(doc: number, spec: DraftSpec): Promise<ContractDraft>;
+  /** Save into the Contracts folder (`was`: its old name when changed; `fromTab`: refused when private). */
+  contractSave(contract: Contract, was: string | null, fromTab: number | null): Promise<ContractItem[]>;
+  contractDelete(name: string): Promise<ContractItem[]>;
+  /** `false` when the dialog was closed. */
+  contractExport(name: string): Promise<boolean>;
+  /** `null` when the dialog was closed. */
+  contractImport(): Promise<ContractItem[] | null>;
   /** Switch, invert, rename or remove a chip, Match all/any, Invert all (one undo step). */
   filterChange(doc: number, change: ChipChange): Promise<DocInfo>;
   filterValues(doc: number, col: number, spec: FilterSpec, search: string | null): Promise<ValueList>;
@@ -2661,6 +2776,42 @@ class TauriBackend implements Backend {
   }
   filterChipCountsStop(doc: number) {
     return call<void>("filter_chip_counts_stop", { doc });
+  }
+  contractsList() {
+    return call<ContractItem[]>("contracts_list", {});
+  }
+  contractGet(name: string) {
+    return call<Contract>("contract_get", { name });
+  }
+  contractMatch(doc: number, keepFirst: boolean) {
+    return call<ContractMatch | null>("contract_match", { doc, keepFirst });
+  }
+  contractDrift(doc: number, name: string, opts: DriftOptions) {
+    return call<DriftReport>("contract_drift", { doc, name, opts });
+  }
+  contractDriftStop(doc: number) {
+    return call<void>("contract_drift_stop", { doc });
+  }
+  contractShowRows(doc: number, name: string, what: DriftRows, opts: DriftOptions) {
+    return call<OpReport>("contract_show_rows", { doc, name, what, opts });
+  }
+  contractFix(doc: number, name: string, keepFirst: boolean) {
+    return call<ContractFixed>("contract_fix", { doc, name, keepFirst });
+  }
+  contractDraft(doc: number, spec: DraftSpec) {
+    return call<ContractDraft>("contract_draft", { doc, spec });
+  }
+  contractSave(contract: Contract, was: string | null, fromTab: number | null) {
+    return call<ContractItem[]>("contract_save", { contract, was, fromTab });
+  }
+  contractDelete(name: string) {
+    return call<ContractItem[]>("contract_delete", { name });
+  }
+  contractExport(name: string) {
+    return call<boolean>("contract_export", { name });
+  }
+  contractImport() {
+    return call<ContractItem[] | null>("contract_import", {});
   }
   filterChange(doc: number, change: ChipChange) {
     return call<DocInfo>("filter_change", { doc, change });

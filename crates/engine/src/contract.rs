@@ -1229,6 +1229,9 @@ impl Document {
             ));
         }
         fix.moved = order.iter().enumerate().any(|(i, &j)| i as u32 != j);
+        if fix.moved {
+            fix.order = order.clone();
+        }
         for (place, (k, _)) in pairing
             .map
             .iter()
@@ -1405,6 +1408,8 @@ pub struct ContractFix {
     pub renamed: Vec<(String, String)>,
     /// The columns were put in the contract's order.
     pub moved: bool,
+    /// For each column after the fix, the column it was before (empty when nothing moved).
+    pub order: Vec<u32>,
     /// The contract's types, by the column's place after the fix.
     pub types: Vec<(u32, ColumnType)>,
 }

@@ -393,6 +393,7 @@ fn fix_what_i_can_is_one_undo_step_of_titles_and_order() {
     assert!(fix.moved);
     assert_eq!(fix.renamed, [("full_name".to_string(), "name".to_string())]);
     assert_eq!(fix.types, [(0, ColumnType::Id)]);
+    assert_eq!(fix.order, [0, 1, 3, 2, 4]);
     let row = |d: &Document, r: u64| -> Vec<String> {
         (0..d.col_count()).map(|k| d.cell(r, k).unwrap()).collect()
     };
