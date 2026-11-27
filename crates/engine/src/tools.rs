@@ -2422,6 +2422,18 @@ mod tests {
         d
     }
 
+    /// `doc`, read with a comma whatever the file looks like (a made-up
+    /// file of mostly ",," rows is otherwise read with ",," between fields).
+    fn comma_doc(text: &str) -> Document {
+        let opts = OpenOptions {
+            delimiter: Some(b','),
+            ..OpenOptions::default()
+        };
+        let mut d = Document::from_bytes(text.as_bytes().to_vec(), opts, Some("csv")).unwrap();
+        while !d.index_step(1 << 20).unwrap() {}
+        d
+    }
+
     fn col(d: &Document, c: u32) -> Vec<String> {
         (0..d.row_count()).map(|r| d.cell(r, c).unwrap()).collect()
     }
@@ -2582,6 +2594,29 @@ mod tests {
     }
 
     const GROUPED: &str = "region,id,amount\r\nNorth,101,5\r\n,102,7\r\nSubtotal,,12\r\n,,\r\n,103,2\r\nSouth,104,9\r\n,105,1\r\n,,10\r\n";
+
+    /// The proptest's found case (seven rows of only commas, then ",a,"):
+    /// read with a comma, Fill blank cells gives what the plain fill gives.
+    /// (Read without one, the file is taken to have ",," between fields and
+    /// its last row is shorter than the others.)
+    #[test]
+    fn fill_found_case_with_a_comma() {
+        let text = format!("x,y,z\r\n{},a,\r\n", ",,\r\n".repeat(7));
+        let plain = doc(&text);
+        let last = plain.row_count() - 1;
+        assert!(plain.row_values(last).unwrap().len() < 3, "read as before");
+        let mut d = comma_doc(&text);
+        let spec = FillBlanks {
+            cols: vec![0, 1],
+            from: FillFrom::Above,
+            spaces: true,
+            keep_first: true,
+            ..Default::default()
+        };
+        let rows = rows_of(&d);
+        assert!(rows.iter().all(|r| r.len() == 3));
+        assert_eq!(filled(&mut d, &spec), reference(&rows, &spec));
+    }
 
     /// C5: the example of the plan, Above, each rule alone and all three.
     #[test]
@@ -2911,7 +2946,7 @@ mod tests {
                 text.push_str(&r.iter().map(|&x| word(x)).collect::<Vec<_>>().join(","));
                 text.push_str("\r\n");
             }
-            let mut d = doc(&text);
+            let mut d = comma_doc(&text);
             let spec = FillBlanks {
                 cols: vec![0, 1],
                 from: if below { FillFrom::Below } else { FillFrom::Above },
