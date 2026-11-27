@@ -67,11 +67,11 @@ describe("disjoint", () => {
     }
   });
 
-  /** Best of three after a warm-up (a loaded test machine must not make a timing test flaky; perf.rs keeps the strict gate). */
+  /** Best of seven after a warm-up. */
   function best(f: () => unknown): number {
     f();
     let ms = Infinity;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 7; i++) {
       const t0 = performance.now();
       f();
       ms = Math.min(ms, performance.now() - t0);
@@ -79,11 +79,27 @@ describe("disjoint", () => {
     return ms;
   }
 
-  it("splits the cap's worth of single cells in well under 50 ms", () => {
+  /** The cap's worth of areas must not cost much more than ten times a
+   *  tenth of them (linear-ish, not quadratic: that would be a hundred
+   *  times). A ratio, both measured together, so a loaded machine slows
+   *  both alike; the absolute ceiling is only a backstop, and perf.rs keeps
+   *  the strict gate. */
+  function scalesWell(make: (n: number) => Rect[]): void {
+    const small = make(MAX_AREAS / 10);
+    const full = make(MAX_AREAS);
+    // The small run is timed on a tenth of the work: floor it so timer
+    // granularity cannot inflate the ratio.
+    const a = Math.max(best(() => disjoint(small)), 1);
+    const b = best(() => disjoint(full));
+    expect(b / a, `${b.toFixed(2)} ms for ${MAX_AREAS}, ${a.toFixed(2)} ms for a tenth`).toBeLessThan(40);
+    expect(b).toBeLessThan(500);
+  }
+
+  it("splits the cap's worth of single cells quickly (it scales, not squares)", () => {
     const r = rnd(11);
     const areas: Rect[] = Array.from({ length: MAX_AREAS }, () => ({ row: Math.floor(r() * 1_000_000), rows: 1, col: Math.floor(r() * 20), cols: 1 }));
     expect(disjoint(areas).length).toBeGreaterThan(0);
-    expect(best(() => disjoint(areas))).toBeLessThan(50);
+    scalesWell((n) => areas.slice(0, n));
   });
 
   it("splits the cap's worth of cells in one row and in a staircase quickly too", () => {
@@ -91,7 +107,7 @@ describe("disjoint", () => {
     const stairs: Rect[] = Array.from({ length: MAX_AREAS }, (_, i) => ({ row: i, rows: 1, col: i, cols: 1 }));
     for (const a of [row, stairs]) {
       expect(disjoint(a).reduce((n, r) => n + r.rows * r.cols, 0)).toBe(MAX_AREAS);
-      expect(best(() => disjoint(a))).toBeLessThan(50);
+      scalesWell((n) => a.slice(0, n));
     }
   });
 });
