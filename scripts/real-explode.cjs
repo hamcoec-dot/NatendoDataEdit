@@ -152,7 +152,8 @@ const WANT2 = [
   `1,${J1},gold,3,1.50,beta,vip|beta`,
   `2,${J2},free,,,beta,beta`,
   "3,{not json,,,,vip,vip",
-  `4,${J4},pro,,12345678901234567890,,`,
+  // Not touched by the unnest: the row keeps its bytes (as Split column leaves such rows).
+  `4,${J4},pro,,12345678901234567890,`,
   "",
 ].join(CRLF);
 const body = async (m) => ((await m.textContent("body")) || "").replace(/\s+/g, " ");
@@ -209,9 +210,15 @@ const proof = async () => {
   await m.keyboard.press("Control+z");
   await sleep(1000);
   f = await facts(m);
-  ok(!f.can_undo && f.cols === 3, "one Ctrl+Z takes the whole explode back");
+  ok(f.cols === 3 && f.can_redo, "one Ctrl+Z takes the whole explode back (the filter steps before it stay)");
+  await m.keyboard.press("Control+z");
+  await sleep(800);
+  ok((await facts(m)).cols === 3, "a second Ctrl+Z only undoes the filter, not part of the explode");
+  await m.keyboard.press("Control+y");
+  await sleep(800);
   await m.keyboard.press("Control+y");
   await sleep(1000);
+  ok((await facts(m)).cols === 6, "Ctrl+Y redoes it");
   await m.keyboard.press("Control+s");
   await sleep(2000);
   const got1 = fs.readFileSync(FILE, "utf8");
