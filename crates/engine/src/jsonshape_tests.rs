@@ -388,3 +388,21 @@ proptest! {
         prop_assert_eq!(norm(&out), norm(text.as_bytes()));
     }
 }
+
+/// The quick paths of the writer give what serde_json gives: strings with and without escapes, nested values
+/// with and without spaces.
+#[test]
+fn quick_writer_paths_match_serde() {
+    for s in ["plain", "caf\u{e9} \u{1F600}", "say \"hi\"", "back\\slash", "tab\tline\nend\u{1}", ""] {
+        let mut out = String::new();
+        json_string(s, &mut out);
+        assert_eq!(out, serde_json::to_string(s).unwrap(), "{s:?}");
+    }
+    for (s, want) in [("{\"a\":[1,2.50]}", "{\"a\":[1,2.50]}"), ("{ \"a\" : [1, \"x y\"] }", "{\"a\":[1,\"x y\"]}")] {
+        assert!(is_json_container(s));
+        let mut out = String::new();
+        push_compact(s, &mut out);
+        assert_eq!(out, want);
+    }
+    assert!(!is_json_container("{\"a\":"));
+}

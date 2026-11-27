@@ -1332,7 +1332,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         nt.headerTouched = true;
         nt.bump();
       }
-      say(`Imported ${plural(Math.max(0, d.rows - (header ? 1 : 0)), "row")} and ${plural(d.cols, "column")}. It is not saved yet: Save As (F12) writes it as delimited text.${notes?.summary ? ` ${notes.summary}` : ""}`);
+      say(`Imported ${plural(Math.max(0, d.rows - (header ? 1 : 0)), "row")} and ${plural(d.cols, "column")}.${d.json_format ? (d.json_refuse ? ` It can only be saved as another file: ${d.json_refuse}.` : ` Ctrl+S saves it back to ${(d.json_file ?? "").split(/[\\/]/).pop()} as ${d.json_format === "jsonl" ? "JSON Lines" : "JSON"}.`) : " It is not saved yet: Save As (F12) writes it as delimited text."}${notes?.summary ? ` ${notes.summary}` : ""}`);
     } catch (e) {
       say(errorText(e));
     } finally {
@@ -1408,7 +1408,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       return a === "as" ? save(true, true) : false;
     }
     const isPrivate = t.private.file || t.private.folder;
-    const file = choice ? "" : (t.info.json_file ?? "");
+    // The answer is kept for the JSON file the tab saves back to (a Save As uses it too).
+    const file = t.info.json_file ?? "";
     let blanks: JsonBlanks = "leave_out";
     let blankNote = "";
     if (check.ask_blanks) {
@@ -7830,6 +7831,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       /** Tests: the zip picker for a list of tables. */
       showZip(list: ZipList) {
         zipPick = list;
+      },
+      /** Tests: show a document the stand-in backend made as a new tab. */
+      addTab(d: DocInfo) {
+        addTab(d);
       },
       /** Tests: switch to tab `i`. */
       activate(i: number) {

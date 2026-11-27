@@ -9761,15 +9761,16 @@ impl Docs {
                 j.progress.cancel.store(true, Ordering::Relaxed);
             }
         }
+        let title = entry
+            .title
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let mut d = entry.write();
         f(&mut d)?;
-        entry.note_path(&d);
-        let mut info = describe(id, &d, entry.line_by_line.load(Ordering::Relaxed), error);
-        info.read_only = locked;
-        info.peeking = entry.peeking.load(Ordering::Relaxed);
-        // Every fresh reading is kept, so the stale answer of a later question is never older than this edit.
-        *entry.last_info.lock().unwrap_or_else(|p| p.into_inner()) = Some(info.clone());
-        Ok(info)
+        // The same reading as a question gets (a tab with no file keeps its name, a JSON tab its file);
+        // every fresh reading is kept, so the stale answer of a later question is never older than this edit.
+        Ok(Self::info_from(&entry, id, &d, error, title))
     }
 
     /// Say what column `col` (as shown) holds. Not an edit of the data: allowed on a read-only file, one
@@ -12835,9 +12836,11 @@ ca,California
             .save_json(id, None, None, Blanks::LeaveOut, false)
             .unwrap();
         assert!(r.own);
+        assert_eq!(r.info.name, "back");
         assert_eq!(r.report.records, 2);
         assert_eq!(std::fs::read(&p).unwrap(), body);
-        docs.set_cells(id, vec![(2, 1, "4.25".into())]).unwrap();
+        let e = docs.set_cells(id, vec![(2, 1, "4.25".into())]).unwrap();
+        assert_eq!(e.name, "back");
         assert!(docs.info(id).unwrap().modified);
         let r = docs
             .save_json(id, None, None, Blanks::LeaveOut, false)
