@@ -1653,7 +1653,9 @@ selection, a column or the whole table:
   block, its rows and its columns (right-click a cell, or the File menu).
   Fit **all columns to the page width** or **fit everything on one page**:
   Print and Save as PDF shrink the text by the same rule, never below 4 pt,
-  and the dialog says the size it will print at.
+  and the dialog says the size it will print at. A value too long for its
+  column is cut with "…" in the PDF and on a one-page print, and wraps onto
+  more lines in other prints.
 - **Save as PDF** at any size, written by the app itself.
 - **Mailing labels** on six common sheet sizes, starting part-way through the
   first sheet, and **one letter per row**, from a template with
