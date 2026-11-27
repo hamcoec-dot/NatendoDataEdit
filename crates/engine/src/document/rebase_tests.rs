@@ -234,7 +234,7 @@ fn check(acts: &[Act], save_at: usize, mark_at: usize, kind: u8) -> Result<(), T
     let (bytes, opts) = start_file(kind, 25);
     std::fs::write(&fx, &bytes).unwrap();
     std::fs::write(&fy, &bytes).unwrap();
-    let mut x = Document::open_indexed(&fx, opts.clone(), None).unwrap();
+    let mut x = Document::open_indexed(&fx, opts, None).unwrap();
     let mut y = Document::open_indexed(&fy, opts, None).unwrap();
     // Mostly without the work limit (so the rebase itself is what is tested), a third of runs with it.
     if (save_at + mark_at) % 3 != 0 {
@@ -468,7 +468,7 @@ fn the_estimate_is_not_below_what_is_held() {
         d.hide_rows(10, 5).unwrap();
         apply(&mut d, &Act::Insert(4, 3));
         assert!(d.undo() && d.undo(), "some steps on the redo side too");
-        let est = d.prepare_rebase().ok().expect("kept").estimate;
+        let est = d.prepare_rebase().expect("kept").estimate;
         d.save(SaveOptions::default()).unwrap();
         let real = d.undo_bytes + d.redo_bytes;
         let k = d.last_history().unwrap();
