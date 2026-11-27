@@ -181,6 +181,9 @@ export interface HistoryKept {
   redo_cut_columns: number;
   undo_cut_memory: number;
   redo_cut_memory: number;
+  /** Let go because carrying them across the save would make it slow. */
+  undo_cut_work: number;
+  redo_cut_work: number;
   /** Nothing could be kept: the undo history starts again. */
   cleared: boolean;
 }

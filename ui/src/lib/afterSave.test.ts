@@ -4,7 +4,7 @@ import type { DocInfo, HistoryKept } from "./backend";
 
 const info = (pos: number, can_undo = pos > 0, can_redo = false): DocInfo =>
   ({ id: 1, rows: 10, cols: 3, total_rows: 10, history_pos: pos, has_filter: false, filtered: false, can_undo, can_redo }) as unknown as DocInfo;
-const kept = (p: Partial<HistoryKept>): HistoryKept => ({ undo: 0, redo: 0, undo_cut_columns: 0, redo_cut_columns: 0, undo_cut_memory: 0, redo_cut_memory: 0, cleared: false, ...p });
+const kept = (p: Partial<HistoryKept>): HistoryKept => ({ undo: 0, redo: 0, undo_cut_columns: 0, redo_cut_columns: 0, undo_cut_memory: 0, redo_cut_memory: 0, undo_cut_work: 0, redo_cut_work: 0, cleared: false, ...p });
 
 /** A tab with engine steps at positions 1..n. */
 function tabWithSteps(n: number): Tab {

@@ -18,11 +18,16 @@ fn main() {
     let mut d = Document::open_indexed(&work, OpenOptions::default(), None).expect("open");
     let rows = d.row_count();
     let edits = |d: &mut Document, n: u64| {
-        let cells: Vec<(u64, u32, String)> = (0..n).map(|i| (1 + (i * 7919) % (rows - 1), 1, format!("e{i}"))).collect();
+        let cells: Vec<(u64, u32, String)> = (0..n)
+            .map(|i| (1 + (i * 7919) % (rows - 1), 1, format!("e{i}")))
+            .collect();
         d.set_cells(cells).expect("edits");
     };
     match case {
-        "none" => d.set_cells(vec![(1, 1, "x".into())]).map(|_| ()).expect("one edit"),
+        "none" => d
+            .set_cells(vec![(1, 1, "x".into())])
+            .map(|_| ())
+            .expect("one edit"),
         "e1k" => edits(&mut d, 1_000),
         "e100k" => edits(&mut d, 100_000),
         "e1m" => edits(&mut d, (rows - 1).min(1_000_000)),
@@ -30,8 +35,8 @@ fn main() {
             edits(&mut d, 100_000);
             let spec = SortSpec {
                 keys: vec![SortKey {
-                    col: 0,
-                    descending: false,
+                    col: 1,
+                    descending: true,
                     kind: Default::default(),
                     match_case: false,
                 }],
@@ -52,7 +57,9 @@ fn main() {
                     skip_first: true,
                     read: Default::default(),
                 };
-                let p = d.plan_clean(&spec, 20_000.0, 1, 0, &Progress::new()).expect("plan");
+                let p = d
+                    .plan_clean(&spec, 20_000.0, 1, 0, &Progress::new())
+                    .expect("plan");
                 d.apply_clean(p).expect("clean");
             }
         }
