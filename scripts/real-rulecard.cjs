@@ -176,8 +176,6 @@ const proof = async () => {
   await toShort(m);
   const t0 = Date.now();
   await m.keyboard.press("Control+e");
-  await sleep(1500);
-  await m.screenshot({ path: path.join(evidence, "after-ctrl-e.png") });
   ok(await waitFor(async () => (await cell(m, 3, 2)) === "C.Hart", 8000), `Ctrl+E fills (${Date.now() - t0} ms to the first cell)`);
   ok(await waitFor(async () => /look odd/.test(await status(m)), 8000), `the status line counts the odd results (${await status(m)})`);
   const st = await status(m);
