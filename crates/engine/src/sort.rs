@@ -63,6 +63,60 @@ pub const MAX_LISTS: usize = 64;
 pub const MAX_LIST_ITEMS: usize = 10_000;
 pub const MAX_ITEM_CHARS: usize = 1_000;
 
+/// The ready-made custom orders: the name on the command line, the name in
+/// the app's Sort dialog, and the values in order. (The app keeps the same
+/// list in ui/src/lib/m10.ts; a test checks the two agree.)
+pub const BUILTIN_LISTS: &[(&str, &str, &[&str])] = &[
+    (
+        "low-medium-high",
+        "Low, Medium, High",
+        &["Low", "Medium", "High"],
+    ),
+    (
+        "weekdays",
+        "Weekdays (Mon to Sun)",
+        &[
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ],
+    ),
+    (
+        "weekdays-short",
+        "Weekdays short (Mon to Sun)",
+        &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    ),
+    (
+        "months",
+        "Months (Jan to Dec)",
+        &[
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ],
+    ),
+    (
+        "months-short",
+        "Months short (Jan to Dec)",
+        &[
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ],
+    ),
+];
+
 /// One sort column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SortKey {
