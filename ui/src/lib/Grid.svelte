@@ -85,9 +85,9 @@
     /** A block dragged by its outline is over something outside the grid
      *  (the tab bar): the pointer's place, or null when it is back or the
      *  drag ended. */
-    onCellsOver?: (clientX: number | null, clientY: number | null) => void;
-    /** The block was let go outside the grid; `shift`: Shift was held. */
-    onCellsDropOutside?: (from: Rect, clientX: number, clientY: number, shift: boolean) => void;
+    onCellsOver?: (clientX: number | null, clientY: number | null, kind?: "cols" | "rows" | "cells", shift?: boolean) => void;
+    /** The block (or whole columns or rows) was let go outside the grid; `shift`: Shift was held. */
+    onCellsDropOutside?: (from: Rect, clientX: number, clientY: number, shift: boolean, kind?: "cols" | "rows" | "cells") => void;
     /** Ctrl+arrow (to the edge of the data), after Enter mode keeps an edit. */
     onJump?: (dir: "up" | "down" | "left" | "right", extend: boolean) => void;
     /** Double-click on a column heading: rename the column. */
@@ -1105,6 +1105,9 @@
     outside?: boolean;
     /** Several blocks (gap #6): they can go onto another file's tab only. */
     multi?: boolean;
+    /** The pointer outside the grid, last seen (Shift pressed or let go there says so again). */
+    ox?: number;
+    oy?: number;
   };
   let moving: Moving | null = null;
   const MOVE_SLOP = 4;
@@ -2873,7 +2876,7 @@
       if (m.outside) {
         // Let go outside the grid: over a tab means drop the cells there.
         onCellsOver?.(null, null);
-        if (m.active && m.kind === "cells") onCellsDropOutside?.(m.from, e.clientX, e.clientY, e.shiftKey);
+        if (m.active) onCellsDropOutside?.(m.from, e.clientX, e.clientY, e.shiftKey, m.kind);
       } else if (m.active && !m.to && m.blocked) {
         onMessage("Cells can't be dropped over hidden columns. Show them first (Ctrl+Shift+0).");
       } else if (m.active && m.to && m.multi) {
@@ -3437,13 +3440,20 @@
     // of the window; the canvas only hears the pointer while it is on it.
     const onWindowMove = (e: MouseEvent) => {
       const m = moving;
-      if (!m || m.kind !== "cells" || !m.active || !onCellsOver) return;
+      // Nothing at all unless a move is under way and the pointer has left the grid (no tab
+      // lookups while it is still over the grid).
+      if (!m || !m.active || !onCellsOver) return;
       const r = canvas.getBoundingClientRect();
       if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return;
+      // Whole columns or rows leave for a tab only upwards (the tab bar is above the grid): past
+      // the other edges they still scroll the grid to their new place.
+      if (m.kind !== "cells" && e.clientY >= r.top) return;
       m.outside = true;
       m.to = null;
+      m.ox = e.clientX;
+      m.oy = e.clientY;
       cursor = e.shiftKey ? "grabbing" : "copy";
-      onCellsOver(e.clientX, e.clientY);
+      onCellsOver(e.clientX, e.clientY, m.kind, e.shiftKey);
       redraw();
     };
     window.addEventListener("mousemove", onWindowMove);
@@ -3454,10 +3464,20 @@
         e.stopPropagation();
         cancelMove();
       }
+      onShift(e);
+    };
+    // Shift pressed or let go over a tab: the status line says copy or move again at once.
+    const onShift = (e: KeyboardEvent) => {
+      const m = moving;
+      if (e.key !== "Shift" || !m?.active || !m.outside || m.ox === undefined || m.oy === undefined) return;
+      cursor = e.shiftKey ? "grabbing" : "copy";
+      onCellsOver?.(m.ox, m.oy, m.kind, e.shiftKey);
     };
     window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onShift, true);
     return () => {
       window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onShift, true);
       ro.disconnect();
       host.removeEventListener("scroll", noNativeScroll);
       media.removeEventListener("change", onScheme);

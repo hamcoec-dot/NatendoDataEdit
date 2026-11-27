@@ -13,6 +13,7 @@ import { joinPreview } from "./repair";
 import { mockDrill, mockItems, mockPivot, type ItemList, type PivotField, type PivotGrid, type PivotSpec } from "./pivot";
 import { isIsoDate, shapeRegex } from "./lint";
 import { shapeOf } from "./insights";
+import type { XferDone, Wider } from "./backend";
 import type { ChipChange, ChipInfo, Explode, ExplodeDetect, ExplodePreview, ExplodeReport, ExplodeScan, FillOrder, FilterChips } from "./backend";
 import type { DropArea, DropNotice, DropOutcome, OtherTab, PasteSpec, TabRect } from "./backend";
 import { EXPLODE_BASE } from "./explode";
@@ -1328,6 +1329,68 @@ export class MockBackend implements Backend {
   async emptyExtraColumns(doc: number): Promise<[number, number]> {
     const m = this.fakeRagged.get(doc);
     return [m && !m.long.length ? 1 : 0, this.get(doc).undo.length];
+  }
+  // ---- cross-tab moves (the stand-in: several steps where the engine makes one) ----
+  private xferGuard(src: number, dst: number): void {
+    if (src === dst) throw err("bad_request", "that is this file's tab");
+    const t = this.get(dst).info;
+    if (t.read_only) throw err("read_only", "the file is read-only");
+  }
+  async xferCols(src: number, at: number, count: number, srcKeepFirst: boolean, dst: number, to: number, dstKeepFirst: boolean, mv: boolean): Promise<XferDone> {
+    this.calls.push(`xferCols:${mv ? "move" : "copy"}`);
+    this.xferGuard(src, dst);
+    const s = this.get(src);
+    const t = this.get(dst);
+    if (t.info.rows < t.info.total_rows) throw err("filtered", "that file has a filter on or rows hidden: show every row there first, so you can see where the values go");
+    const sFirst = srcKeepFirst ? 1 : 0;
+    const tFirst = dstKeepFirst ? 1 : 0;
+    const n = this.rowCount(s) - sFirst;
+    const mine = this.rowCount(t) - tFirst;
+    const vals = Array.from({ length: count }, (_, k) => Array.from({ length: n }, (_, i) => this.value(s, sFirst + i, at + k)));
+    const titles = srcKeepFirst ? Array.from({ length: count }, (_, k) => this.value(s, 0, at + k)) : [];
+    await this.change(dst, { op: "insert_cols", at: to, count });
+    if (n > mine) await this.change(dst, { op: "insert_rows", at: this.rowCount(t), count: n - mine });
+    const cells: [number, number, string][] = [];
+    if (dstKeepFirst) titles.forEach((v, k) => v && cells.push([0, to + k, v]));
+    vals.forEach((col, k) => col.forEach((v, i) => v && cells.push([tFirst + i, to + k, v])));
+    const info = cells.length ? await this.setCells(dst, cells) : this.refresh(t);
+    const report = { cols: count, rows: n, added_rows: Math.max(0, n - mine), added_cols: 0, hidden_carried: 0, title_left_out: !dstKeepFirst && titles.some((x) => x), by_title: false, lengths_differ: n !== mine };
+    const done: XferDone = { report, dst: info, src: null, kept: null };
+    if (mv) done.src = await this.change(src, { op: "delete_cols", at, count });
+    return done;
+  }
+  async xferRows(src: number, at: number, count: number, srcKeepFirst: boolean, dst: number, after: number | null, dstKeepFirst: boolean, wider: Wider, mv: boolean): Promise<XferDone> {
+    this.calls.push(`xferRows:${mv ? "move" : "copy"}`);
+    this.xferGuard(src, dst);
+    const s = this.get(src);
+    const t = this.get(dst);
+    const sw = s.info.cols;
+    const tw = t.info.cols;
+    const rows = Array.from({ length: count }, (_, i) => Array.from({ length: sw }, (_, c) => this.value(s, at + i, c)));
+    // By title: the same titles (ignoring case), none twice, another order.
+    let dest = Array.from({ length: sw }, (_, c) => c);
+    let byTitle = false;
+    if (srcKeepFirst && dstKeepFirst && sw === tw) {
+      const st = Array.from({ length: sw }, (_, c) => this.value(s, 0, c).toLowerCase());
+      const tt = Array.from({ length: tw }, (_, c) => this.value(t, 0, c).toLowerCase());
+      const ok = st.every((x) => x) && new Set(st).size === sw && new Set(tt).size === tw && st.every((x) => tt.includes(x));
+      if (ok) {
+        dest = st.map((x) => tt.indexOf(x));
+        byTitle = dest.some((c, k) => c !== k);
+      }
+    }
+    const extra = Math.max(0, sw - tw);
+    if (extra && !byTitle && wider === "add_columns") await this.change(dst, { op: "insert_cols", at: tw, count: extra });
+    const pos = after === null ? this.rowCount(t) : after + 1;
+    await this.change(dst, { op: "insert_rows", at: pos, count });
+    const width = this.get(dst).info.cols;
+    const cells: [number, number, string][] = [];
+    rows.forEach((r, i) => r.forEach((v, k) => v && dest[k]! < width && cells.push([pos + i, dest[k]!, v])));
+    const info = cells.length ? await this.setCells(dst, cells) : this.refresh(t);
+    const report = { cols: 0, rows: count, added_rows: 0, added_cols: wider === "add_columns" && !byTitle ? extra : 0, hidden_carried: 0, title_left_out: false, by_title: byTitle, lengths_differ: false };
+    const done: XferDone = { report, dst: info, src: null, kept: null };
+    if (mv) done.src = await this.change(src, { op: "delete_rows", at, count });
+    return done;
   }
   async removeEmptyExtraColumns(doc: number): Promise<DocInfo> {
     this.calls.push("removeEmptyExtraColumns");

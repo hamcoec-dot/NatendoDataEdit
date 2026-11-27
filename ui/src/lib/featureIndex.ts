@@ -105,6 +105,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "a spreadsheet style grid that stays": ["help.keys", "edit.repeat", "data.filter"],
   "a tab in its own window": ["window.moveToNew", "window.moveToMain"],
   "drag cells onto another tab": ["edit.copyToTab", "edit.moveToTab"],
+  "drag whole columns or rows onto another tab": ["edit.copyToTab", "edit.moveToTab"],
   "row heights": ["format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "format.rowHeight"],
   "select several blocks at once": ["edit.clear", "edit.copy", "format.alignLeft"],
   "find in several blocks": ["find.find", "find.replace", "find.next", "find.prev"],

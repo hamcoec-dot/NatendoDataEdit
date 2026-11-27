@@ -37,7 +37,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import SortDialog from "./lib/SortDialog.svelte";
   import FindPanel from "./lib/FindPanel.svelte";
   import { FIND_DEFAULTS, describeRule, ruleFor, withRule, type FindOptions } from "./lib/filters";
-  import type { Pattern, Rule, SortKey, SortSpec, DataOp, Dir, FillSpec, OpReport, TableOp, ChipInfo } from "./lib/backend";
+  import type { Pattern, Rule, SortKey, SortSpec, DataOp, Dir, FillSpec, OpReport, TableOp, ChipInfo, Wider } from "./lib/backend";
   import OpDialog, { type OpKind } from "./lib/OpDialog.svelte";
   import FormView from "./lib/FormView.svelte";
   import SymbolPicker from "./lib/SymbolPicker.svelte";
@@ -4540,15 +4540,45 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   function outsideWindow(x: number, y: number): boolean {
     return x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight;
   }
-  function cellsOver(x: number | null, y: number | null): void {
-    cellDropTab = x === null || y === null ? null : (tabUnder(x, y)?.id ?? null);
-    if (x === null || y === null || !outsideWindow(x, y)) {
-      tabAtNext = null;
-      if (otherDrop) otherDrop = null;
+  /** The status line says what a drop would do while the drag is over another file's tab. */
+  let dropHintShown = false;
+  function cellsOver(x: number | null, y: number | null, kind: "cols" | "rows" | "cells" = "cells", shift = false): void {
+    // Out of the window: a block of cells may go onto a tab of the other window.
+    if (x !== null && y !== null && outsideWindow(x, y)) {
+      cellDropTab = null;
+      if (dropHintShown) {
+        message = "";
+        dropHintShown = false;
+      }
+      if (kind === "cells") {
+        tabAtNext = [x, y];
+        if (!tabAtAsking) void askTabAt();
+      }
       return;
     }
-    tabAtNext = [x, y];
-    if (!tabAtAsking) void askTabAt();
+    tabAtNext = null;
+    if (otherDrop) otherDrop = null;
+    const dst = x === null || y === null ? null : tabUnder(x, y);
+    cellDropTab = dst?.id ?? null;
+    const src = tab;
+    const from = src ? src.singleRect() : null;
+    if (!dst || !src || !from) {
+      if (dropHintShown) {
+        message = "";
+        dropHintShown = false;
+      }
+      return;
+    }
+    const verb = shift ? "move" : "copy";
+    const tail = shift ? " (let go of Shift to copy instead)" : " (Shift: move)";
+    let what: string;
+    if (kind === "cols") what = `${plural(from.cols, "column")} into ${dst.info.name}, ${colPlace(dst)}`;
+    else if (kind === "rows") what = `${plural(from.rows, "row")} into ${dst.info.name}, ${rowPlace(dst)}`;
+    else what = `${plural(cellCount(from), "cell")} into ${dst.info.name} at its selected cell`;
+    message = `Drop to ${verb} ${what}${tail}`;
+    messageAction = null;
+    clearTimeout(messageTimer);
+    dropHintShown = true;
   }
   async function askTabAt(): Promise<void> {
     tabAtAsking = true;
@@ -4565,6 +4595,16 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     } finally {
       tabAtAsking = false;
     }
+  }
+
+  /** Where columns go in another file, in words (its titles only when it is not private). */
+  function colPlace(dst: Tab): string {
+    const c = Math.min(dst.cell.col, dst.info.cols - 1);
+    const named = dst.header && !dst.private.file && !dst.private.folder ? ` (${columnTitle(dst, c)})` : "";
+    return `after its column ${c + 1}${named}`;
+  }
+  function rowPlace(dst: Tab): string {
+    return `below its row ${(dst.cell.row + 1).toLocaleString()}`;
   }
 
   /** Why a tab's cells may not go to another file, or "". Private and
@@ -5005,9 +5045,13 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   /** Released outside the grid: on a tab (of this window, or of the other
    *  one once the pointer has left this window) means drop there (Shift:
-   *  move). */
-  function cellsDropOutside(_from: Rect, x: number, y: number, shift: boolean): void {
+   *  move). Whole columns and rows go onto a tab of this window. */
+  function cellsDropOutside(from: Rect, x: number, y: number, shift: boolean, kind: "cols" | "rows" | "cells" = "cells"): void {
     cellDropTab = null;
+    if (dropHintShown) {
+      message = "";
+      dropHintShown = false;
+    }
     const wasOther = otherDrop;
     otherDrop = null;
     tabAtNext = null;
@@ -5015,6 +5059,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (!src) return;
     const done = () => void tick().then(() => grid?.focus());
     const dst = tabUnder(x, y);
+    if (kind !== "cells") {
+      if (dst) void (kind === "cols" ? dropColsOnTab(src, from, dst, shift) : dropRowsOnTab(src, from, dst, shift)).finally(done);
+      return;
+    }
     if (!dst && !outsideWindow(x, y)) return;
     const b = dropBlocks(src);
     if (!b) return;
@@ -5029,6 +5077,119 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       .then((o) => (o ? dropOnOtherWindow(src, b, o.doc, o.name, shift) : undefined))
       .finally(done);
   }
+
+  /** Why columns or rows can't go to another file now ("" when they can). */
+  async function xferRefused(src: Tab, dst: Tab, r: Rect): Promise<string> {
+    if (dst === src) return "That is this file's tab.";
+    if (!src.info.indexed || !dst.info.indexed || src.busy || dst.busy) return "Please wait until both files have been read, then try again.";
+    if (dst.info.read_only || dst.peeking || dst.info.peeking) return `${dst.info.name} is read-only (or showing an earlier step), so nothing can be put in it.`;
+    if (src.columns.hiddenIn(r.col, r.col + r.cols)) return "The selection has hidden columns. Show them first (Ctrl+Shift+0).";
+    if ((await sensitive(src)) && !(await sensitive(dst))) return `These come from a private or encrypted file, and ${dst.info.name} is not private: make it private first.`;
+    return "";
+  }
+
+  function goToTab(dst: Tab): () => void {
+    return () => {
+      const i = tabs.indexOf(dst);
+      if (i >= 0) active = i;
+    };
+  }
+
+  /** Whole columns dropped on another file's tab: inserted to the right of its selected column,
+   *  lined up by position over every row (Shift: then taken out here). One undo step in each file. */
+  async function dropColsOnTab(src: Tab, r: Rect, dst: Tab, move: boolean): Promise<void> {
+    const no = await xferRefused(src, dst, r);
+    if (no) return say(no);
+    if (rowsHidden(dst) || dst.info.filtered) {
+      return say(`${dst.info.name} has a filter on or rows hidden: show every row there first, so you can see where the values go.`);
+    }
+    const to = Math.min(dst.cell.col, dst.info.cols - 1) + 1;
+    const place = colPlace(dst);
+    const done = await runJob("Copying columns", () => backend().xferCols(src.id, r.col, r.cols, src.header, dst.id, to, dst.header, move && !src.info.read_only), dst.id).catch((e: unknown) => {
+      say(errorText(e));
+      return null;
+    });
+    if (!done) return;
+    dst.update(done.dst, true);
+    // Their widths go with them (read before the source shifts).
+    const widths = Array.from({ length: r.cols }, (_, k) => src.columns.customWidth(r.col + k));
+    dst.shiftCols(to, r.cols);
+    widths.forEach((w, k) => w !== undefined && dst.columns.setWidth(to + k, w));
+    if (done.src) src.shiftCols(r.col, -r.cols);
+    if (done.src) src.update(done.src, true);
+    const rep = done.report;
+    const notes: string[] = [];
+    if (rep.added_rows) notes.push(`added ${plural(rep.added_rows, "row")} there`);
+    if (rep.hidden_carried) notes.push(`including ${plural(rep.hidden_carried, "row")} hidden here`);
+    if (rep.title_left_out) notes.push(`the titles were left out: ${dst.info.name} has no title row`);
+    const extra = notes.length ? ` (${notes.join("; ")})` : "";
+    const sortOn = (t: Tab) => !!t.sort && t.sortAt !== null && t.info.history_pos >= t.sortAt;
+    const sorted = sortOn(src) || sortOn(dst);
+    const lineUp = rep.lengths_differ || sorted ? ` Rows are lined up by position${rep.lengths_differ ? ", and the two files have different numbers of rows" : ""}${sorted ? ", and one of them is sorted" : ""}: to line them up by a key, use Data › Join.` : "";
+    const verb = done.src ? "Moved" : "Copied";
+    const kept = move && !done.src ? ` Not taken out here: ${done.kept ?? (src.info.read_only ? "this file is read-only" : "")}.` : "";
+    const undo = done.src ? " Ctrl+Z in each file undoes its half." : ` Undo there with Ctrl+Z.`;
+    say(`${verb} ${plural(r.cols, "column")} into ${dst.info.name}, ${place}${extra}.${lineUp}${kept}${undo}`);
+    messageAction = { label: `Go to ${dst.info.name}`, run: goToTab(dst) };
+  }
+
+  /** Whole rows dropped on another file's tab: inserted below its selected row, under the
+   *  matching titles when both title sets are the same, else by position. */
+  async function dropRowsOnTab(src: Tab, r: Rect, dst: Tab, move: boolean): Promise<void> {
+    const no = await xferRefused(src, dst, r);
+    if (no) return say(no);
+    if (src.header && r.row === 0) return say("The title row can't be sent to another file: pick data rows only.");
+    let wider: Wider = "add_columns";
+    if (src.info.cols > dst.info.cols) {
+      const a = await ask(
+        "These rows are wider",
+        `${dst.info.name} has ${plural(dst.info.cols, "column")}; these rows have ${src.info.cols}.`,
+        [
+          { id: "add", label: `Add ${plural(src.info.cols - dst.info.cols, "column")}`, primary: true },
+          { id: "cut", label: `Cut them to ${dst.info.cols}` },
+          { id: "cancel", label: "Cancel" },
+        ],
+        "cancel",
+      );
+      if (a === "cancel") return;
+      wider = a === "cut" ? "cut" : "add_columns";
+    }
+    const after = dst.header && dst.cell.row < 1 ? 0 : dst.cell.row;
+    const place = rowPlace(dst);
+    const done = await runJob("Copying rows", () => backend().xferRows(src.id, r.row, r.rows, src.header, dst.id, after, dst.header, wider, move && !src.info.read_only), dst.id).catch((e: unknown) => {
+      say(errorText(e));
+      return null;
+    });
+    if (!done) return;
+    dst.update(done.dst, true);
+    if (done.src) src.update(done.src, true);
+    const rep = done.report;
+    const how = rep.by_title ? " under the matching titles" : src.header && dst.header ? " by position (the titles differ: Data › Append lines them up by name)" : "";
+    const added = rep.added_cols ? `, adding ${plural(rep.added_cols, "column")} there` : "";
+    const verb = done.src ? "Moved" : "Copied";
+    const kept = move && !done.src ? ` Not taken out here: ${done.kept ?? (src.info.read_only ? "this file is read-only" : "")}.` : "";
+    const undo = done.src ? " Ctrl+Z in each file undoes its half." : " Undo there with Ctrl+Z.";
+    say(`${verb} ${plural(r.rows, "row")} into ${dst.info.name}, ${place}${how}${added}.${kept}${undo}`);
+    messageAction = { label: `Go to ${dst.info.name}`, run: goToTab(dst) };
+  }
+
+  /** What the selection is for sending to another file: whole columns, whole rows or a block. */
+  function sendShape(t: Tab, r: Rect): "cols" | "rows" | "cells" {
+    if (wholeCols(r, t) && !wholeRows(r, t)) return "cols";
+    if (wholeRows(r, t) && !wholeCols(r, t)) return "rows";
+    return "cells";
+  }
+
+  /** Why Copy/Move selection to another file is greyed ("" when it isn't). Several blocks that line up, and the other
+   *  window's files, are checked when it runs. */
+  function sendWhy(): string {
+    const t = tab;
+    if (!t) return "";
+    const r = t.singleRect();
+    if (r && t.columns.hiddenIn(r.col, r.col + r.cols)) return "The selection has hidden columns";
+    return "";
+  }
+
 
   /** Copy or move the selection to a tab picked from a list (the keyboard
    *  and menu way of the same drop). */
@@ -5045,14 +5206,27 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
     const shown = others.slice(0, 12);
     const a = await ask(
-      move ? "Move the selected cells to which file?" : "Copy the selected cells to which file?",
-      `They go in at that file's selected cell${move ? ", and are cleared here once they are there" : ""}.${others.length > shown.length ? ` (Only the first ${shown.length} other files are listed.)` : ""}`,
+      move ? "Move the selection to which file?" : "Copy the selection to which file?",
+      `Whole columns go in to the right of that file's selected column, whole rows below its selected row, other cells at its selected cell${move ? "; they are taken out here once they are there" : ""}.${others.length > shown.length ? ` (Only the first ${shown.length} other files are listed.)` : ""}`,
       [...shown.map((x, i) => ({ id: String(i), label: x.name, primary: i === 0 })), { id: "cancel", label: "Cancel" }],
       "cancel",
     );
     const dst = a === "cancel" ? undefined : shown[Number(a)];
+    if (!dst || !tabs.includes(src)) return;
+    // Whole columns or rows go onto a tab of this window; cells (one block or several that line up) anywhere.
+    const from = src.singleRect();
+    const shape = from && src.extra.length === 0 ? sendShape(src, from) : "cells";
+    if (shape !== "cells" && from) {
+      if (!dst.local) {
+        say("Whole columns and rows go to a file in this window: move that tab here first (right-click it › Move tab back to the main window), or pick cells.");
+        return;
+      }
+      if (shape === "cols") await dropColsOnTab(src, from, dst.local, move);
+      else await dropRowsOnTab(src, from, dst.local, move);
+      return;
+    }
     const blocks = dropBlocks(src);
-    if (!dst || !blocks || !tabs.includes(src)) return;
+    if (!blocks) return;
     if (dst.local) await dropCellsOnTab(src, blocks, dst.local, move);
     else await dropOnOtherWindow(src, blocks, dst.doc, dst.name.replace(/ \(other window\)$/, ""), move);
   }
@@ -7147,7 +7321,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   // ---- long operations ------------------------------------------------------------
   /** Run a long engine call: the status bar shows progress and offers
    *  Cancel. Returns null when cancelled. */
-  async function runJob<T>(label: string, f: () => Promise<T>): Promise<T | null> {
+  async function runJob<T>(label: string, f: () => Promise<T>, on?: number): Promise<T | null> {
     const t = tab;
     if (!t) return null;
     // (No early several-blocks check here: this also carries read-only work
@@ -7158,9 +7332,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
     t.busy = `${label}…`;
     t.progress = null;
+    jobDoc = on ?? null;
     const poll = window.setInterval(async () => {
       try {
-        const j = await backend().jobProgress(t.id);
+        const j = await backend().jobProgress(on ?? t.id);
         if (j && t.busy) t.progress = j.fraction;
       } catch {
         // Closed meanwhile.
@@ -7178,6 +7353,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       clearInterval(poll);
       t.busy = null;
       t.progress = null;
+      jobDoc = null;
     }
   }
 
@@ -7215,8 +7391,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
 
+  /** The file whose job the busy tab is waiting on, when it is another one (a cross-tab copy). */
+  let jobDoc: number | null = null;
   function cancelJob(): void {
-    if (tab) void backend().cancelJob(tab.id);
+    if (tab) void backend().cancelJob(jobDoc ?? tab.id);
   }
 
   /** Run a long operation that returns the new document state. */
@@ -7901,8 +8079,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     })),
     { id: "window.next", label: "Next file", keys: ["Ctrl+PageDown", "Ctrl+Tab", "Ctrl+Shift+PageDown"], run: () => switchTab(1), enabled: () => tabs.length > 1 },
     { id: "window.prev", label: "Previous file", keys: ["Ctrl+PageUp", "Ctrl+Shift+Tab", "Ctrl+Shift+PageUp"], run: () => switchTab(-1), enabled: () => tabs.length > 1 },
-    { id: "edit.copyToTab", label: "Copy selection to another file…", run: () => void cellsToTab(false), enabled: () => ready(), multiArea: true },
-    { id: "edit.moveToTab", label: "Move selection to another file…", run: () => void cellsToTab(true), enabled: () => ready() && !tab?.info.read_only, multiArea: true },
+    { id: "edit.copyToTab", label: "Copy selection to another file…", run: () => void cellsToTab(false), enabled: () => ready() && !sendWhy(), why: sendWhy, multiArea: true },
+    { id: "edit.moveToTab", label: "Move selection to another file…", run: () => void cellsToTab(true), enabled: () => ready() && !tab?.info.read_only && !sendWhy(), why: () => sendWhy() || (tab?.info.read_only ? "This file is read-only" : ""), multiArea: true },
     { id: "window.moveToNew", label: "Move tab to a new window", run: () => void moveTabToWindow(), enabled: () => !SECOND_WINDOW && ready() },
     { id: "window.moveToMain", label: "Move tab back to the main window", run: () => void moveTabBack(), enabled: () => SECOND_WINDOW && !!tab },
     { id: "window.moveTabLeft", label: "Move file tab left", keys: ["Ctrl+Alt+Shift+PageUp"], run: () => moveTab(-1), enabled: () => active > 0 },
@@ -8157,9 +8335,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     totals: [...TOTAL_CHOICES.map(([c]) => `view.total.${c}`), "view.total.auto", "-", "view.copyTotal", "view.copyTotals", "-", "view.totalsRow"],
     tab: ["file.save", "file.saveAs", "-", "data.compareLists", "data.patchSave", "data.patchApply", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.orderFromCells", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear", "-", "file.printSel"],
-    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "data.headersStartHere", "data.setAsideFoot", "-", "edit.clear"],
+    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "edit.copyToTab", "edit.moveToTab", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "data.headersStartHere", "data.setAsideFoot", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "data.explode", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "data.explode", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "edit.copyToTab", "edit.moveToTab", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
