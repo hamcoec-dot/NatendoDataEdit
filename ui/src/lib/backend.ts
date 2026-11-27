@@ -86,6 +86,8 @@ export interface DocInfo {
   /** The usual number of fields, and the file's rows with another number. */
   /** What the steps of a recipe just run have to say. */
   run_notes?: string[];
+  /** Only in a save's answer: what the save did with the undo history. */
+  saved_history?: HistoryKept;
   usual_fields?: number;
   ragged_rows?: number;
   first_row_ragged?: boolean;
@@ -170,6 +172,19 @@ export interface LayoutChoices {
   preamble: string;
 }
 
+/** What a save did with the undo history: steps kept, and steps let go at a column, encoding or width step or
+ *  for memory (undo: the oldest; redo: the furthest from the present). */
+export interface HistoryKept {
+  undo: number;
+  redo: number;
+  undo_cut_columns: number;
+  redo_cut_columns: number;
+  undo_cut_memory: number;
+  redo_cut_memory: number;
+  /** Nothing could be kept: the undo history starts again. */
+  cleared: boolean;
+}
+
 /** A named moment in the undo history (a few bytes, no copy of the table). */
 export interface Checkpoint {
   id: number;
@@ -184,6 +199,9 @@ export interface Checkpoint {
   since_note: string;
   /** The table is in exactly this state now. */
   current: boolean;
+  /** When a save let it go (milliseconds since 1970), and why. */
+  gone_at?: number | null;
+  gone_why?: string | null;
 }
 
 /** Counts of what changed since a checkpoint. */

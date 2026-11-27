@@ -4991,7 +4991,7 @@ export class MockBackend implements Backend {
       const r = this.reach(d, c.mark);
       const since_note =
         r === null
-          ? "No longer reachable: the undo history was trimmed past it, a newer change replaced it, or the file was saved."
+          ? "No longer reachable: the undo history was trimmed past it, a newer change replaced it, or a save let it go."
           : r === 0
             ? "The table is in this state now: nothing has changed since."
             : r > 0
@@ -5019,7 +5019,7 @@ export class MockBackend implements Backend {
     const c = (d.checkpoints ?? []).find((x) => x.id === checkpoint);
     if (!c) throw err("invalid", "there is no such checkpoint");
     const r = this.reach(d, c.mark);
-    if (r === null) throw err("invalid", "That checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or the file was saved.");
+    if (r === null) throw err("invalid", "That checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or a save let it go.");
     if (r > 0) throw err("invalid", "That checkpoint is ahead of the table (you went back past it): go to it first, then compare.");
     const order = this.orderOf(d);
     const cols = this.colsOf(d);
@@ -5085,7 +5085,7 @@ export class MockBackend implements Backend {
     if (!c) throw err("invalid", "there is no such checkpoint");
     const leaving = this.markNow(d);
     const n = this.reach(d, c.mark);
-    if (n === null) throw err("invalid", "that checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or the file was saved");
+    if (n === null) throw err("invalid", "that checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or a save let it go");
     for (let i = 0; i < Math.abs(n); i++) {
       if (n < 0) {
         const step = d.undo.pop();

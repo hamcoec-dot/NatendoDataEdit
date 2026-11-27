@@ -77,6 +77,11 @@
       naming = false;
     }
   }
+
+  /** The person's local time of a save, as hours and minutes. */
+  const savedAt = (ms: number): string => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const goneText = (c: Checkpoint): string =>
+    c.gone_at ? `No longer reachable: let go at the save of ${savedAt(c.gone_at)} (${c.gone_why ?? "the undo history could not be kept"})` : "No longer reachable: the undo history was trimmed past it, or a newer change replaced it";
 </script>
 
 <section class="checkpoints" data-testid="checkpoints" aria-label="Checkpoints">
@@ -100,16 +105,16 @@
       <ul>
         {#each [...list].reverse() as c (c.id)}
           <li class:gone={!c.reachable} class:now={c.current} data-testid="checkpoint">
-            <button type="button" class="go" disabled={!c.reachable || c.current} title={c.reachable ? (c.current ? "The table is in this state now" : "Go back (or forward) to this moment") : "No longer reachable: the undo history was trimmed past it, a newer change replaced it, or the file was saved"} onclick={() => void restore(c)}>
+            <button type="button" class="go" disabled={!c.reachable || c.current} title={c.reachable ? (c.current ? "The table is in this state now" : "Go back (or forward) to this moment") : goneText(c)} onclick={() => void restore(c)}>
               <span class="n">{c.name}</span>
-              <span class="tag">{c.current ? "now" : !c.reachable ? "no longer reachable" : c.auto ? "automatic" : ""}</span>
+              <span class="tag">{c.current ? "now" : !c.reachable ? (c.gone_at ? `let go at the save of ${savedAt(c.gone_at)}` : "no longer reachable") : c.auto ? "automatic" : ""}</span>
             </button>
             <button type="button" class="diff" aria-label={`What changed since ${c.name}`} title={c.since_note || "What changed since this checkpoint (cells, rows and columns, was and now)"} disabled={c.since_note !== ""} onclick={() => onSince(c)}>Δ</button>
             <button type="button" class="x" aria-label={`Forget ${c.name}`} title="Forget this checkpoint (the table does not change)" onclick={() => void forget(c)}>✕</button>
           </li>
         {/each}
       </ul>
-      <p class="note">A checkpoint goes when the undo history is trimmed past it (10,000 steps or 512 MB), when a new change replaces what you undid, and when you save the file (saving starts the undo history again). They are not saved to disk and go when the tab closes.</p>
+      <p class="note">A checkpoint goes when the undo history is trimmed past it (10,000 steps or 512 MB), when a new change replaces what you undid, and when a save cannot keep it: a save keeps the undo history, except steps before a column, encoding or width change, and the oldest steps when the history would not fit in memory. They are not saved to disk and go when the tab closes.</p>
     {/if}
   {/if}
 </section>

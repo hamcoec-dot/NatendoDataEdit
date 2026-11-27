@@ -93,6 +93,7 @@ pub(crate) struct Rebase {
     redo_from: usize,
     kept: HistoryKept,
     /// What the kept steps will hold, worked out before (never below their real size).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) estimate: usize,
     /// New id of each old id (`u32::MAX`: not seen), indexed by old id.
     map: Vec<u32>,

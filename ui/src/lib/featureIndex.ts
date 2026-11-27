@@ -293,6 +293,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "change encoding": ["tools.encoding"],
   "record panel": ["view.panelRecord", "view.recordNext", "view.recordPrev"],
   checkpoints: ["edit.checkpoint", "edit.sinceCheckpoint", "view.panelSteps"],
+  "undo after save": ["edit.undo", "edit.redo", "edit.checkpoint"],
   "recipe questions": ["view.panelSteps", "tools.recipe", "tools.recipeFiles"],
   "run recipe on files": ["tools.recipeFiles", "tools.watch"],
   "watched folder": ["tools.watch"],
