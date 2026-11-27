@@ -17,6 +17,11 @@ describe("where a dialog puts the focus", () => {
     expect(focusPick([btn(), btn(true), btn()])).toBe(1);
     expect(focusPick([btn(), btn(true, true)])).toBe(-1);
   });
+  it("never a hidden input or one not drawn", () => {
+    const hidden: Control = { tag: "input", disabled: false, enter: false, hidden: true };
+    expect(focusPick([hidden, box()])).toBe(1);
+    expect(focusPick([hidden, { ...btn(true), hidden: true }])).toBe(-1);
+  });
   it("else the dialog itself", () => {
     expect(focusPick([])).toBe(-1);
   });

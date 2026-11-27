@@ -8,11 +8,13 @@ export interface Control {
   disabled: boolean;
   /** A button marked data-enter. */
   enter: boolean;
+  /** Not on screen (an input of type hidden, or not drawn): never focused. */
+  hidden?: boolean;
 }
 
 /** The index of the control to focus, or -1 for the dialog itself. */
 export function focusPick(controls: readonly Control[]): number {
-  const box = controls.findIndex((c) => c.tag !== "button" && !c.disabled);
+  const box = controls.findIndex((c) => c.tag !== "button" && !c.disabled && !c.hidden);
   if (box >= 0) return box;
-  return controls.findIndex((c) => c.tag === "button" && c.enter && !c.disabled);
+  return controls.findIndex((c) => c.tag === "button" && c.enter && !c.disabled && !c.hidden);
 }
