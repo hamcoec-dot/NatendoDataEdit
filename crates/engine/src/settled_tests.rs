@@ -7,10 +7,15 @@ use crate::sort::{SortKey, SortKind, SortSpec};
 use crate::OpenOptions;
 use proptest::prelude::*;
 
+/// Read as comma-separated: tiny random tables (a few rows of blanks and spaces) can
+/// otherwise be guessed another way, and these tests are about the rule, not the guess.
 fn doc(text: &str) -> Document {
     Document::from_bytes(
         text.as_bytes().to_vec(),
-        OpenOptions::default(),
+        OpenOptions {
+            dialect: Some(crate::Dialect::CSV),
+            ..Default::default()
+        },
         Some("csv"),
     )
     .unwrap()
