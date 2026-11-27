@@ -638,7 +638,7 @@ mod tests {
         };
         assert!(imports.preview(t.id, &bad).is_err());
         // A file path that is not a spreadsheet but named like one.
-        let dir = std::env::temp_dir().join(format!("natendo-imp-{}", std::process::id()));
+        let dir = crate::testdir::path("natendo-imp");
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("fake.xlsx");
         std::fs::write(&f, b"not a zip").unwrap();

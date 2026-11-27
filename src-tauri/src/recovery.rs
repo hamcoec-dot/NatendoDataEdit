@@ -940,7 +940,7 @@ mod tests {
     // One test: the store is set once per process.
     #[test]
     fn copies_versions_and_cleanup() {
-        let base = std::env::temp_dir().join(format!("nde-recovery-{}", std::process::id()));
+        let base = crate::testdir::path("nde-recovery");
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join("recovery")).unwrap();
         // Left-overs from an earlier run: a temporary file and an orphan.
@@ -1084,7 +1084,7 @@ mod under_tests {
 
     #[test]
     fn drive_roots_and_separators() {
-        let dir = std::env::temp_dir().join("natendo-under");
+        let dir = crate::testdir::path("natendo-under");
         let root: std::path::PathBuf = dir.ancestors().last().unwrap().to_path_buf();
         assert!(under(&dir.join("a.csv"), &root), "{root:?}");
         assert!(under(&dir.join("a.csv"), &dir));

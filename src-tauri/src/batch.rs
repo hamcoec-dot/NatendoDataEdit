@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn runs_every_file_and_never_changes_them() {
-        let dir = std::env::temp_dir().join(format!("nde-batch-{}", std::process::id()));
+        let dir = crate::testdir::path("nde-batch");
         let (src, out) = (dir.join("in"), dir.join("out"));
         std::fs::create_dir_all(&src).unwrap();
         std::fs::create_dir_all(&out).unwrap();

@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn never_keeps_values_from_the_file() {
-        let dir = std::env::temp_dir().join(format!("nde-session-v-{}", std::process::id()));
+        let dir = crate::testdir::path("nde-session-v");
         let _ = std::fs::create_dir_all(&dir);
         let a = dir.join("a.csv");
         std::fs::write(
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn remembers_paths_and_views_only() {
-        let dir = std::env::temp_dir().join(format!("nde-session-{}", std::process::id()));
+        let dir = crate::testdir::path("nde-session");
         let _ = std::fs::create_dir_all(&dir);
         let a = dir.join("a.csv");
         std::fs::write(&a, "x,y\n1,2\n").unwrap();

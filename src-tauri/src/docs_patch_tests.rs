@@ -25,7 +25,7 @@ fn column(docs: &Docs, id: u32, col: u32) -> Vec<String> {
 
 #[test]
 fn make_dry_run_apply_undo_and_privacy() {
-    let dir = std::env::temp_dir().join(format!("nde-sh-patch-{}", std::process::id()));
+    let dir = crate::testdir::path("nde-sh-patch");
     std::fs::create_dir_all(&dir).unwrap();
     let docs = Docs::default();
     let old = "id,n\r\n1,a\r\n2,b\r\n";

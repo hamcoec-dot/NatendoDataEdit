@@ -17,6 +17,8 @@ mod links;
 mod lockaudit;
 mod recovery;
 mod session;
+#[cfg(test)]
+mod testdir;
 mod watch;
 mod windows;
 mod zips;
@@ -5509,7 +5511,7 @@ mod private_copy_tests {
 
     #[test]
     fn files_written_from_a_private_tab_are_private() {
-        let dir = std::env::temp_dir().join(format!("natendo-pcopy-{}", std::process::id()));
+        let dir = crate::testdir::path("natendo-pcopy");
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("voters.csv");
         std::fs::write(&src, b"name,ssn\r\nAnn,1\r\n").unwrap();

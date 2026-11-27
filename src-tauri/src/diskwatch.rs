@@ -187,7 +187,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn table(name: &str) -> (std::path::PathBuf, Document) {
-        let p = std::env::temp_dir().join(format!("nd-watch-{name}-{}.csv", std::process::id()));
+        let p = crate::testdir::path(&format!("nd-watch-{name}.csv"));
         std::fs::write(&p, "a,b\r\n1,2\r\n").unwrap();
         let d = Document::open_indexed(&p, OpenOptions::default(), None).unwrap();
         (p, d)

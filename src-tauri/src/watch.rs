@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn a_receipt_is_written_beside_the_result_when_asked() {
         use natendo_engine::receipt::verify;
-        let base = std::env::temp_dir().join(format!("nd-watch-receipt-{}", std::process::id()));
+        let base = crate::testdir::path("nd-watch-receipt");
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         std::fs::write(base.join("a.csv"), b"name,n\r\nAnn Smith,1\r\n").unwrap();
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn runs_new_files_through_the_recipe() {
-        let base = std::env::temp_dir().join(format!("nd-watch-{}", std::process::id()));
+        let base = crate::testdir::path("nd-watch");
         let _ = std::fs::remove_dir_all(&base);
         let (inbox, outbox) = (base.join("in"), base.join("out"));
         std::fs::create_dir_all(&inbox).unwrap();
@@ -510,7 +510,7 @@ mod tests {
         use natendo_engine::coltype::ColumnType;
         use natendo_engine::recipe::ColumnTypeAt;
         use natendo_engine::sort::{SortKey, SortKind, SortSpec};
-        let base = std::env::temp_dir().join(format!("nd-watch-types-{}", std::process::id()));
+        let base = crate::testdir::path("nd-watch-types");
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         // The typed column is the SECOND one here, and not where it was when the recipe was recorded.

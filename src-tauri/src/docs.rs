@@ -10218,7 +10218,7 @@ mod tests {
             "temp file {name} is used by two tests; give one another name"
         );
         drop(owners);
-        let dir = std::env::temp_dir().join(format!("nde-docs-{}-{name}", std::process::id()));
+        let dir = crate::testdir::path(&format!("nde-docs-{name}"));
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join(name);
         std::fs::write(&p, body).unwrap();
@@ -11085,7 +11085,7 @@ mod tests {
     /// note names the column (never a value).
     #[test]
     fn open_a_table_keeps_text_and_integers_exact_and_notes_decimal_columns() {
-        let db = std::env::temp_dir().join(format!("nd-a1a-open-{}.sqlite", std::process::id()));
+        let db = crate::testdir::path("nd-a1a-open.sqlite");
         let _ = std::fs::remove_file(&db);
         {
             let c = rusqlite::Connection::open(&db).unwrap();
@@ -11674,7 +11674,7 @@ Ann Lee,00123
         other.columns = vec!["x".into()];
         assert!(docs.run_recipe(ib, &other, &[], 20_000.0, false).is_err());
         // Saved and read back; never over an open file.
-        let path = std::env::temp_dir().join("m14r.recipe.json");
+        let path = crate::testdir::path("m14r.recipe.json");
         assert!(docs.save_recipe(ia, &r, &a).is_err());
         docs.save_recipe(ia, &r, &path).unwrap();
         assert_eq!(read_recipe(&path).unwrap().steps.len(), 2);
@@ -12058,7 +12058,7 @@ Cy
         docs.set_private_check(Arc::new(move |p: &Path| p == only_a.as_path()));
         docs.private_changed();
         // N1: a split from a private tab reports each file it wrote.
-        let out = std::env::temp_dir().join(format!("natendo-n1-{}", std::process::id()));
+        let out = crate::testdir::path("natendo-n1");
         std::fs::create_dir_all(&out).unwrap();
         let written = Mutex::new(Vec::new());
         let r = docs
@@ -12919,7 +12919,7 @@ ca,California
         // The list says it can be compared.
         assert_eq!(docs.checkpoint_list(id).unwrap()[0].since_note, "");
         // The report: a CSV with a line per cell.
-        let out = std::env::temp_dir().join(format!("since-report-{}.csv", std::process::id()));
+        let out = crate::testdir::path("since-report.csv");
         assert_eq!(
             docs.checkpoint_since_report(id, begin, true, &out, false)
                 .unwrap()
@@ -12975,7 +12975,7 @@ ca,California
         let id = docs.open_path(&p, false).unwrap().id;
         wait(&docs, id);
         let begin = docs.checkpoint_add(id, "begin").unwrap()[0].id;
-        let dir = std::env::temp_dir().join(format!("nd-guard-{}", std::process::id()));
+        let dir = crate::testdir::path("nd-guard");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let read = |p: &Path| std::fs::read_to_string(p).unwrap();
@@ -13281,7 +13281,7 @@ ca,California
         docs.set_cells(id, vec![(1, 0, "Anna".into())]).unwrap();
         docs.delete_rows(id, 2, 1).unwrap();
         docs.delete_cols(id, 1, 1).unwrap();
-        let out = std::env::temp_dir().join(format!("since-titles-{}.csv", std::process::id()));
+        let out = crate::testdir::path("since-titles.csv");
         // Without a header row: "Column N", never a value of the first row.
         let n = docs
             .checkpoint_since_report(id, begin, false, &out, false)
@@ -13745,7 +13745,7 @@ by party ",
 
     #[test]
     fn part_files_already_there_are_found() {
-        let dir = std::env::temp_dir().join(format!("nde-clash-{}", std::process::id()));
+        let dir = crate::testdir::path("nde-clash");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for f in [
@@ -14592,7 +14592,7 @@ mod key_binding_tests {
     use natendo_engine::validate::{Check, CheckKind};
 
     fn file(dir: &str, name: &str, body: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("nde-fk-{}-{dir}", std::process::id()));
+        let d = crate::testdir::path(&format!("nde-fk-{dir}"));
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join(name);
         std::fs::write(&p, body).unwrap();

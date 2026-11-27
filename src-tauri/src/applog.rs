@@ -104,7 +104,7 @@ mod tests {
     fn lines_are_cleaned_and_files_turn_over() {
         assert_eq!(clean("a\nb\r\u{7}c"), "a\\nb\\r c");
         assert_eq!(clean(&"x".repeat(5_000)).len(), MAX_LINE);
-        let dir = std::env::temp_dir().join(format!("natendo-log-{}", std::process::id()));
+        let dir = crate::testdir::path("natendo-log");
         let _ = fs::remove_dir_all(&dir);
         init(dir.clone());
         let line = "y".repeat(MAX_LINE);

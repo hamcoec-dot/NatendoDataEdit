@@ -27,7 +27,7 @@ fn column(docs: &Docs, id: u32, col: u32) -> Vec<String> {
 /// pair must be accepted.
 #[test]
 fn three_of_a_kind_are_joined_through_one_row() {
-    let dir = std::env::temp_dir().join(format!("nde-sh-golden3-{}", std::process::id()));
+    let dir = crate::testdir::path("nde-sh-golden3");
     std::fs::create_dir_all(&dir).unwrap();
     let docs = Docs::default();
     let text = "name\r\nZebedee Quillfeather\r\nZebedee Quillfeather\r\nZebedee Quillfeather\r\n";
@@ -67,7 +67,7 @@ fn three_of_a_kind_are_joined_through_one_row() {
 
 #[test]
 fn plan_preview_create_stale_and_privacy() {
-    let dir = std::env::temp_dir().join(format!("nde-sh-golden-{}", std::process::id()));
+    let dir = crate::testdir::path("nde-sh-golden");
     std::fs::create_dir_all(&dir).unwrap();
     let docs = Docs::default();
     let text = "id,name,city\r\n1,Zebedee Quillfeather,Yarrowby\r\n2,Zebedee Quillfeather,\r\n3,Ottilie Vantree,Mossford\r\n4,Perrin Ashgrove,Hollin\r\n";

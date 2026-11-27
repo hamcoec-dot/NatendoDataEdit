@@ -912,7 +912,7 @@ mod tests {
 
     #[test]
     fn recent_list_is_bounded_and_untrusted() {
-        let dir = std::env::temp_dir().join(format!("natendo-recent-{}", std::process::id()));
+        let dir = crate::testdir::path("natendo-recent");
         std::fs::create_dir_all(&dir).unwrap();
         // A hostile list: relative paths dropped, length capped.
         let many: Vec<String> = (0..100).map(|i| format!("rel{i}.csv")).collect();
@@ -938,7 +938,7 @@ mod tests {
     /// file, before and after the list reorders.
     #[test]
     fn recent_ids_tell_same_named_files_apart() {
-        let dir = std::env::temp_dir().join(format!("natendo-recent-ids-{}", std::process::id()));
+        let dir = crate::testdir::path("natendo-recent-ids");
         let (old, new) = (dir.join("2024").join("Data"), dir.join("2025").join("Data"));
         std::fs::create_dir_all(&old).unwrap();
         std::fs::create_dir_all(&new).unwrap();
@@ -1011,7 +1011,7 @@ mod tests {
     /// never join the recent list; the setting survives a restart.
     #[test]
     fn private_files_stay_off_the_recent_list() {
-        let dir = std::env::temp_dir().join(format!("natendo-private-{}", std::process::id()));
+        let dir = crate::testdir::path("natendo-private");
         let sub = dir.join("voters");
         std::fs::create_dir_all(&sub).unwrap();
         let (a, b) = (dir.join("a.csv"), sub.join("b.csv"));

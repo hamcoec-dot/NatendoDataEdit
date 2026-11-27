@@ -122,7 +122,7 @@ struct Stage {
 }
 
 fn stage(name: &str) -> Stage {
-    let dir = std::env::temp_dir().join(format!("nde-audit-{}-{name}", std::process::id()));
+    let dir = crate::testdir::path(&format!("nde-audit-{name}"));
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("audit.csv");
     std::fs::write(&p, body()).unwrap();
@@ -264,7 +264,7 @@ fn effect(s: &Stage) -> String {
 
 /// Another tab beside the audited one.
 fn second_tab(s: &Stage, name: &str, body: &str) -> u32 {
-    let dir = std::env::temp_dir().join(format!("nde-audit-{}-other-{name}", std::process::id()));
+    let dir = crate::testdir::path(&format!("nde-audit-other-{name}"));
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join(format!("{name}.csv"));
     std::fs::write(&p, body).unwrap();

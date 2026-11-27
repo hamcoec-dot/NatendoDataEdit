@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn lists_and_opens_tables_in_memory() {
-        let dir = std::env::temp_dir().join(format!("nde-zip-{}", std::process::id()));
+        let dir = crate::testdir::path("nde-zip");
         let _ = std::fs::create_dir_all(&dir);
         let one = dir.join("one.zip");
         std::fs::write(
