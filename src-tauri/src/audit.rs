@@ -430,6 +430,7 @@ fn data_ops() -> Vec<DataOp> {
             spec: ExampleSpec {
                 col: 5,
                 skip_first: true,
+                ..Default::default()
             },
         },
         DataOp::Compute {

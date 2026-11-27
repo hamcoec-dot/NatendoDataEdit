@@ -29,7 +29,7 @@ const MAX_TOKENS: usize = 64;
 /// Search limits.
 const MAX_STATES: usize = 200_000;
 const MAX_EDGES: usize = 5_000_000;
-const MAX_TIME: Duration = Duration::from_secs(2);
+pub(crate) const MAX_TIME: Duration = Duration::from_secs(2);
 
 /// How a value is cut into pieces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -105,7 +105,7 @@ pub struct Program {
     pub pieces: Vec<Piece>,
 }
 
-fn tokens(v: &str, cut: Cut) -> Vec<&str> {
+pub(crate) fn tokens(v: &str, cut: Cut) -> Vec<&str> {
     let mut out = Vec::new();
     match cut {
         Cut::Whole => {
@@ -148,7 +148,7 @@ fn tokens(v: &str, cut: Cut) -> Vec<&str> {
     out
 }
 
-fn change_case(s: &str, case: Case) -> String {
+pub(crate) fn change_case(s: &str, case: Case) -> String {
     match case {
         Case::Keep => s.to_string(),
         Case::Upper => s.to_uppercase(),
@@ -174,7 +174,7 @@ fn change_case(s: &str, case: Case) -> String {
     }
 }
 
-fn pick<'a>(toks: &[&'a str], index: i32) -> Option<&'a str> {
+pub(crate) fn pick<'a>(toks: &[&'a str], index: i32) -> Option<&'a str> {
     if index >= 0 {
         toks.get(index as usize).copied()
     } else {
@@ -186,7 +186,7 @@ fn pick<'a>(toks: &[&'a str], index: i32) -> Option<&'a str> {
 
 /// One piece's text for a row (`row[c]` is logical column `c`'s value);
 /// `None` if the piece is not there.
-fn piece_text(p: &Piece, row: &dyn Fn(u32) -> Option<String>) -> Option<String> {
+pub(crate) fn piece_text(p: &Piece, row: &dyn Fn(u32) -> Option<String>) -> Option<String> {
     match p {
         Piece::Text { text } => Some(text.clone()),
         Piece::From {
@@ -224,7 +224,7 @@ impl Program {
     }
 
     /// The columns it reads.
-    fn cols(&self) -> Vec<u32> {
+    pub fn cols(&self) -> Vec<u32> {
         let mut c: Vec<u32> = self
             .pieces
             .iter()
@@ -314,7 +314,15 @@ fn value<'a>(e: &Example<'a>, c: u32) -> &'a str {
 /// Find the cheapest program that gives every example's result from its
 /// row. `sources`: the columns it may read. `Ok(None)`: none fits.
 pub fn learn(examples: &[Example], sources: &[u32]) -> Result<Option<Program>, Error> {
-    let started = Instant::now();
+    learn_until(examples, sources, Instant::now() + MAX_TIME)
+}
+
+/// [`learn`] that gives up at `deadline` (several learns can share one budget).
+pub(crate) fn learn_until(
+    examples: &[Example],
+    sources: &[u32],
+    deadline: Instant,
+) -> Result<Option<Program>, Error> {
     let ex: Vec<&Example> = examples
         .iter()
         .filter(|e| !e.out.is_empty() && e.out.chars().count() <= MAX_VALUE_CHARS)
@@ -367,7 +375,7 @@ pub fn learn(examples: &[Example], sources: &[u32]) -> Result<Option<Program>, E
             pieces.reverse();
             return Ok(Some(Program { pieces }));
         }
-        if best.len() > MAX_STATES || edges > MAX_EDGES || started.elapsed() > MAX_TIME {
+        if best.len() > MAX_STATES || edges > MAX_EDGES || Instant::now() > deadline {
             return Ok(None);
         }
         let mut relax = |next: State, c: u64, piece: Piece, heap: &mut BinaryHeap<_>| {
@@ -415,7 +423,7 @@ pub fn learn(examples: &[Example], sources: &[u32]) -> Result<Option<Program>, E
                     if !tok.to_lowercase().starts_with(&lead) {
                         continue;
                     }
-                    if edges % 4096 == 0 && started.elapsed() > MAX_TIME {
+                    if edges % 4096 == 0 && Instant::now() > deadline {
                         return Ok(None);
                     }
                     for first in [false, true] {
@@ -475,13 +483,24 @@ pub fn learn(examples: &[Example], sources: &[u32]) -> Result<Option<Program>, E
 // ---- on a document ----
 
 /// Fill one column by example.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ExampleSpec {
     /// The column to fill (logical).
     pub col: u32,
     /// Leave the first row (column titles) out.
     #[serde(default)]
     pub skip_first: bool,
+    /// The rule to fill with, as the rule card left it (C10); `None`: learn it from the column.
+    /// Recipes keep it, so a step with a rule fills the same way every time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<Program>,
+    /// Examples left out of learning (row ids), and their cells left as typed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub leave_out: Vec<u32>,
+    /// The data revision the rule card was worked out at: a change since refuses the fill
+    /// (never saved in a recipe).
+    #[serde(default, skip_serializing)]
+    pub revision: Option<u64>,
 }
 
 /// What fill by example did.
@@ -495,6 +514,10 @@ pub struct ExampleReport {
     pub missed: u64,
     /// The pattern, in words.
     pub pattern: String,
+    /// The rule it filled with, and the examples' row ids: what counting the odd results after
+    /// the fill needs (C10).
+    pub program: Program,
+    pub example_ids: Vec<u32>,
 }
 
 impl Document {
@@ -506,54 +529,34 @@ impl Document {
         progress: &Progress,
     ) -> Result<(CellPlan, ExampleReport), Error> {
         self.ready_for_bulk()?;
+        if spec.revision.is_some_and(|r| r != self.data_revision()) {
+            return Err(Error::Invalid(
+                "the table changed: the preview was worked out again".into(),
+            ));
+        }
         let ncols = self.col_count();
-        if spec.col >= ncols {
-            return Err(Error::Invalid("choose a column inside the table".into()));
-        }
-        let sources: Vec<u32> = (0..ncols)
-            .filter(|&c| c != spec.col)
-            .take(MAX_SOURCES)
-            .collect();
         let rows = self.data_rows(spec.skip_first);
-        // Examples: the first filled cells of the column.
-        let mut owned: Vec<(Vec<String>, String)> = Vec::new();
-        for r in rows.clone() {
-            if owned.len() >= MAX_EXAMPLES {
-                break;
+        let ex = self.example_rows(spec)?;
+        let program = match &spec.program {
+            Some(p) => {
+                p.validate(ncols, spec.col)?;
+                p.clone()
             }
-            let id = self.id_at(r).ok_or(Error::OutOfRange)?;
-            let out = self.cell_by_id(id, spec.col).unwrap_or_default();
-            if out.is_empty() {
-                continue;
+            None => {
+                if ex.owned.is_empty() {
+                    return Err(Error::Invalid(
+                        "type a few results in the column first, then fill by example".into(),
+                    ));
+                }
+                let Some(p) = learn(&ex.examples(), &ex.sources)? else {
+                    return Err(Error::Invalid(
+                        "no single pattern fits every example; check them, or type one more".into(),
+                    ));
+                };
+                p
             }
-            let row: Vec<String> = (0..ncols.min(MAX_SOURCES as u32 + 1))
-                .map(|c| {
-                    if c == spec.col {
-                        String::new()
-                    } else {
-                        self.cell_by_id(id, c).unwrap_or_default()
-                    }
-                })
-                .collect();
-            owned.push((row, out));
-        }
-        if owned.is_empty() {
-            return Err(Error::Invalid(
-                "type a few results in the column first, then fill by example".into(),
-            ));
-        }
-        let examples: Vec<Example> = owned
-            .iter()
-            .map(|(row, out)| Example {
-                row: row.iter().map(String::as_str).collect(),
-                out,
-            })
-            .collect();
-        let Some(program) = learn(&examples, &sources)? else {
-            return Err(Error::Invalid(
-                "no single pattern fits every example; check them, or type one more".into(),
-            ));
         };
+        let owned = &ex.owned;
         let reads = program.cols();
         let col = spec.col;
         // Each planned cell is counted as it is made, so a huge fill is
@@ -600,6 +603,8 @@ impl Document {
             filled,
             missed,
             pattern: program.describe(&names),
+            example_ids: ex.ids.clone(),
+            program,
         };
         Ok((plan, report))
     }
@@ -672,6 +677,7 @@ mod tests {
                 &ExampleSpec {
                     col: 2,
                     skip_first: true,
+                    ..Default::default()
                 },
                 &Progress::new(),
             )
@@ -693,6 +699,7 @@ mod tests {
                 &ExampleSpec {
                     col: 1,
                     skip_first: true,
+                    ..Default::default()
                 },
                 &Progress::new(),
             )
@@ -710,6 +717,7 @@ mod tests {
                 &ExampleSpec {
                     col: 1,
                     skip_first: true,
+                    ..Default::default()
                 },
                 &Progress::new(),
             )
@@ -849,6 +857,7 @@ mod review_tests {
                 &ExampleSpec {
                     col: 1,
                     skip_first: true,
+                    ..Default::default()
                 },
                 &Progress::new(),
             )
