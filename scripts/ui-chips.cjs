@@ -75,8 +75,14 @@ const city = (r) => CITY[(r * 3) % CITY.length];
   await wait();
   const both = rowsWhere((r) => isName(r) && isCity(r));
   ok((await p.locator(`${bar} .chip`).count()) === 2, "one chip per rule");
+  // Each column chip's own count reads the table, so it comes only when the bar is pointed at (C8 review M1).
+  const bare = words((await p.locator(chip(0)).textContent()) || "");
+  ok(/first_name/.test(bare) && !bare.includes(String(rowsWhere(isName).toLocaleString())), `the chip names its column and rule, with no count yet (${bare})`);
+  ok(!(await p.evaluate(() => window.__nde.backend.calls.includes("filterChipCounts"))), "the bar asked for no count on its own");
+  await p.hover(chip(0));
+  await p.waitForTimeout(400);
   const t0 = words((await p.locator(chip(0)).textContent()) || "");
-  ok(/first_name/.test(t0) && t0.includes(String(rowsWhere(isName).toLocaleString())), `the chip names its column and rule, with its own count (${t0})`);
+  ok(/first_name/.test(t0) && t0.includes(String(rowsWhere(isName).toLocaleString())), `pointing at the bar brings each chip's own count (${t0})`);
   ok((await countLine()) === `${both.toLocaleString()} of ${total.toLocaleString()} rows show.`, `the bar counts the rows shown (${await countLine()})`);
   if (out) await p.screenshot({ path: path.join(out, "chips-bar.png"), clip: { x: 0, y: 0, width: 1280, height: 260 } });
 

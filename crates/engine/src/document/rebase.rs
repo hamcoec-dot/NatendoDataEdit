@@ -639,6 +639,7 @@ impl Document {
                     v.sets = old.sets;
                     v.cols = old.cols;
                     v.cols_base = old.cols_base;
+                    v.after = old.after;
                     v
                 }
                 _ => View::all(),
@@ -794,23 +795,29 @@ impl Moving {
                     Some(m) => m.iter().position(|&x| x == p).map(|i| i as u32),
                     None => Some(p),
                 });
-                // The filter chips follow their rows (rows made after a chip let through by it, as they showed).
+                // The filter chips follow their rows. Rows made after the chips are not marked in any chip:
+                // they go in `after`, which passes every chip, inverted or not (C8 review M2).
                 let has = |b: &[u64], id: u32| {
                     b.get((id >> 6) as usize)
                         .is_some_and(|w| (w >> (id & 63)) & 1 == 1)
                 };
+                let newer =
+                    |id: u32| id >= f.base || f.after.as_deref().is_some_and(|a| has(a, id));
+                let after = (!f.sets.is_empty() || f.cols.is_some())
+                    .then(|| Arc::new(self.bits(newer)))
+                    .filter(|a| a.iter().any(|&w| w != 0));
                 let sets = f
                     .sets
                     .into_iter()
                     .map(|c| {
-                        let after = |id: u32| id >= c.base;
+                        let old = |id: u32| id < c.base;
                         crate::chips::SetChip {
-                            set: Arc::new(self.bits(|id| after(id) || has(&c.set, id))),
-                            looked: Arc::new(self.bits(|id| after(id) || has(&c.looked, id))),
+                            set: Arc::new(self.bits(|id| old(id) && has(&c.set, id))),
+                            looked: Arc::new(self.bits(|id| old(id) && has(&c.looked, id))),
                             errors: c
                                 .errors
                                 .as_ref()
-                                .map(|e| Arc::new(self.bits(|id| !after(id) && has(e, id)))),
+                                .map(|e| Arc::new(self.bits(|id| old(id) && has(e, id)))),
                             base: self.next,
                             ..c
                         }
@@ -819,7 +826,7 @@ impl Moving {
                 let cols = f
                     .cols
                     .as_ref()
-                    .map(|c| Arc::new(self.bits(|id| id >= f.cols_base || has(c, id))));
+                    .map(|c| Arc::new(self.bits(|id| id < f.cols_base && has(c, id))));
                 Box::new(FilterPart {
                     spec,
                     bits,
@@ -827,6 +834,7 @@ impl Moving {
                     sets,
                     cols,
                     cols_base: self.next,
+                    after,
                 })
             })),
             Op::Batch(v) => Op::Batch(v.into_iter().map(|o| self.op(o)).collect()),

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 78c721526342a38bc5fc57a9bd48bb9772f2acce4149885a367bf67899ee12a9 # shrinks to cells = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 1]], rules = [(0, 1, false, false)], sets = [([false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false], false, false)], combine_or = false, invert = false, moves = []

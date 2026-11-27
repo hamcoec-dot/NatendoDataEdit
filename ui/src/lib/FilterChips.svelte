@@ -83,6 +83,8 @@
   async function change(c: ChipChange, what: string): Promise<void> {
     if (busy) return;
     busy = true;
+    // Counts asked for before the change are of the chips before it: dropped.
+    seq++;
     try {
       const info = await backend().filterChange(tab.id, c);
       const next = await backend().filterChips(tab.id).catch(() => null);
@@ -104,8 +106,29 @@
   const negate = (c: ChipInfo, i: number) =>
     change({ op: "negate", index: i }, c.negate ? `The chip ${quote(c, i)} shows its own rows again.` : `The chip ${quote(c, i)} now shows the rows it does not match.`);
 
+  // Each column chip's own count reads the table, so it is asked for only when the person points at
+  // the bar or opens a chip's menu, once per state of the table (never after every edit: C8 review M1).
+  let counted = "";
+  function wantCounts(): void {
+    if (!chips || counted === key || !chips.chips.some((c) => c.kind === "column" && c.rows === null)) return;
+    counted = key;
+    const n = seq;
+    void backend()
+      .filterChipCounts(tab.id)
+      .then((c) => {
+        // The counts go into the chips shown (nothing else is drawn again, so a click under way lands).
+        const cur = chips;
+        if (n !== seq || busy || !cur || cur.chips.length !== c.chips.length) return;
+        c.chips.forEach((x, i) => {
+          if (cur.chips[i]!.rows !== x.rows) cur.chips[i]!.rows = x.rows;
+        });
+      })
+      .catch(() => {});
+  }
+
   function openMenu(e: MouseEvent | KeyboardEvent, i: number): void {
     e.preventDefault();
+    wantCounts();
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const at = e instanceof MouseEvent && e.clientX ? { x: e.clientX, y: e.clientY } : { x: r.left, y: r.bottom + 2 };
     menu = { i, x: at.x, y: at.y, hot: 0 };
@@ -177,7 +200,7 @@
 />
 
 {#if chips && chips.chips.length}
-  <div class="chips" role="toolbar" aria-label="Filter chips" bind:this={bar} data-testid="filter-chips">
+  <div class="chips" role="toolbar" aria-label="Filter chips" bind:this={bar} data-testid="filter-chips" tabindex="-1" onpointerenter={wantCounts}>
     <span class="lead">Filter</span>
     <div class="list">
       {#each chips.chips as c, i (i)}

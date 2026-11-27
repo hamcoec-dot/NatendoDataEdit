@@ -188,6 +188,9 @@ const proof = async () => {
   const both = PARTY.filter((p, i) => p === "DEM" && TOWN[i] === "Elmford").length;
   ok(c.chips.length === 2 && c.shown === both, `two rules, two chips, ${c.shown} rows shown (want ${both})`);
   ok((await countLine(m)) === `${both} of ${NAMES.length} rows show.`, `the bar's count line: ${await countLine(m)}`);
+  // A chip's own count reads the table: it comes when the bar is pointed at (C8 review M1).
+  await m.hover(chip(0));
+  await waitFor(async () => ((await m.textContent(chip(0))) || "").includes(String(PARTY.filter((p) => p === "DEM").length)), 5000);
   const t0 = ((await m.textContent(chip(0))) || "").replace(/\s+/g, " ");
   ok(/party/.test(t0) && t0.includes(String(dems)), `the party chip with its own count: ${t0.trim()}`);
 

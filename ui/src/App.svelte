@@ -2844,7 +2844,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         t.update(rep.info, true);
         noteProtected(rep.info);
       }
-      if (CHIP_OPS.has(op.op)) await chipJoined(t, op, before?.chips.length ?? 0, rep.rows);
+      if (CHIP_OPS.has(op.op)) {
+        chipsBefore = { doc: t.id, count: before?.chips.length ?? 0 };
+        await chipJoined(t, op, chipsBefore.count, rep.rows);
+      }
       return rep;
     } catch (e) {
       say(errorText(e));
@@ -2879,13 +2882,19 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     chipNote = rows > 0 && c.chips.length > had && others > 0 ? `Added as a filter chip beside ${plural(others, "other")}.` : "";
   }
 
-  /** A tool found no row: its chip goes again and the other chips stay (C8); alone, the filter goes. */
+  /** Chips before the last tool ran (to tell its own chip from older ones). */
+  let chipsBefore = { doc: -1, count: 0 };
+
+  /** A tool found no row. The engine adds no chip then; an inverted tool chip that shows nothing goes
+   *  again, the other chips staying (C8); alone, the filter goes. Only a chip that tool just added is
+   *  ever taken out (the count went up), never an older one. */
   async function dropEmptyChip(): Promise<void> {
     const t = tab;
     if (!t) return;
     const c = await backend().filterChips(t.id).catch(() => null);
     const last = c ? c.chips.length - 1 : -1;
-    if (!c || last < 0 || c.chips[last]!.kind === "column") return;
+    const had = chipsBefore.doc === t.id ? chipsBefore.count : Infinity;
+    if (!c || last < 0 || c.chips.length <= had || c.chips[last]!.kind === "column" || c.chips[last]!.rows !== 0) return;
     if (last === 0) {
       await clearFilter();
       return;

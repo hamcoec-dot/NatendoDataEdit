@@ -1928,6 +1928,8 @@ export interface Backend {
   filterSpec(doc: number): Promise<FilterSpec | null>;
   /** The filter chips (C8). */
   filterChips(doc: number): Promise<FilterChips>;
+  /** The chips with each column chip's own count (reads the table): only when the bar's menu or tooltip asks. */
+  filterChipCounts(doc: number): Promise<FilterChips>;
   /** Switch, invert, rename or remove a chip, Match all/any, Invert all (one undo step). */
   filterChange(doc: number, change: ChipChange): Promise<DocInfo>;
   filterValues(doc: number, col: number, spec: FilterSpec, search: string | null): Promise<ValueList>;
@@ -2593,6 +2595,9 @@ class TauriBackend implements Backend {
   }
   filterChips(doc: number) {
     return call<FilterChips>("filter_chips", { doc });
+  }
+  filterChipCounts(doc: number) {
+    return call<FilterChips>("filter_chip_counts", { doc });
   }
   filterChange(doc: number, change: ChipChange) {
     return call<DocInfo>("filter_change", { doc, change });

@@ -147,12 +147,35 @@ fn a_plain_filter_counts_each_chip() {
     let mut d = doc(TABLE);
     d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])]))
         .unwrap();
+    // The bar never reads the table: a plain filter's rules were read together, so no count yet.
     let c = d.filter_chips();
+    assert!(c.chips.iter().all(|x| x.rows.is_none()));
+    assert_eq!(d.rule_cache_len(), 0);
+    // Asked for (the bar's menu or tooltip): each rule's own count, kept for switching.
+    let c = d.filter_chip_counts(&Progress::new()).unwrap();
     assert!(
         c.chips.iter().all(|x| x.rows.is_some()),
         "each rule's own count"
     );
     assert_eq!(d.rule_cache_len(), 2, "and kept for switching");
+}
+
+/// C8 review M1: after an edit the bar reads no row (the counts it had are gone until asked for).
+#[test]
+fn the_bar_reads_no_row_after_an_edit() {
+    let mut d = doc(TABLE);
+    d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])]))
+        .unwrap();
+    d.filter_chip_counts(&Progress::new()).unwrap();
+    assert_eq!(d.rule_cache_len(), 2);
+    d.set_cell(1, 2, "B".into()).unwrap();
+    let c = d.filter_chips();
+    assert!(
+        c.chips.iter().all(|x| x.rows.is_none()),
+        "no count without reading"
+    );
+    assert_eq!(d.rule_cache_len(), 0, "and no rule was read again");
+    assert_eq!(c.shown + 1, d.row_count(), "the rows shown still known");
 }
 
 #[test]
@@ -633,8 +656,14 @@ proptest! {
         for (picks, on, neg) in &sets {
             let looked: Vec<u32> = rows.iter().map(|r| r.0).filter(|&id| d.view().unwrap().shows(id)).collect();
             let picked: Vec<u32> = looked.iter().copied().filter(|&id| picks[id as usize - 1]).collect();
+            let before = d.tool_chip_count();
             let plan = d.plan_show_ids(&picked, true);
             d.apply_rows(plan).unwrap();
+            if picked.is_empty() {
+                // A tool that finds nothing adds no chip.
+                prop_assert_eq!(d.tool_chip_count(), before);
+                continue;
+            }
             model.sets.push((picked, looked, *on, *neg));
         }
         // Now the rules, as the model has them (the tool chips stay).
@@ -695,4 +724,66 @@ proptest! {
             prop_assert_eq!(got(&d), reference(&model, &rows));
         }
     }
+}
+
+/// C8 review M2: a row put in after a tool chip shows whether the chip, or the whole filter, is inverted,
+/// after a save that keeps the history just as without one; undo across the save too.
+#[test]
+fn rows_added_after_a_tool_chip_show_after_a_save() {
+    for (k, invert_all) in [false, true].into_iter().enumerate() {
+        for save in [false, true] {
+            let dir = std::env::temp_dir()
+                .join(format!("nde-chips-m2-{}-{k}-{save}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("t.csv");
+            std::fs::write(&path, "id\n1\n2\n3\n4\n").unwrap();
+            let mut d = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
+            let id = d.id_at(1).unwrap();
+            let plan = d.plan_show_ids(&[id], true);
+            d.apply_rows(plan).unwrap();
+            assert_eq!(shown(&d), ["1"]);
+            d.insert_rows(1, vec![vec!["9".into()]]).unwrap();
+            assert_eq!(shown(&d), ["9", "1"], "a new row shows");
+            if save {
+                d.save(Default::default()).unwrap();
+                assert_eq!(shown(&d), ["9", "1"], "the save keeps what shows");
+            }
+            let c = if invert_all {
+                ChipChange::Invert { on: true }
+            } else {
+                ChipChange::Negate { index: 0 }
+            };
+            change(&mut d, c);
+            assert_eq!(
+                shown(&d),
+                ["9", "2", "3", "4"],
+                "invert_all {invert_all}, save {save}"
+            );
+            assert!(d.undo());
+            assert_eq!(shown(&d), ["9", "1"], "undo the inversion (save {save})");
+            assert!(d.undo());
+            assert_eq!(
+                shown(&d),
+                ["1"],
+                "undo the new row, across the save (save {save})"
+            );
+            assert!(d.redo());
+            assert!(d.redo());
+            assert_eq!(shown(&d), ["9", "2", "3", "4"], "redo (save {save})");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
+/// C8 review note 1: a tool that finds nothing adds no chip and no undo step.
+#[test]
+fn a_tool_that_finds_nothing_adds_no_chip() {
+    let mut d = doc(TABLE);
+    d.set_filter(&spec(vec![values(1, &["DEM"])])).unwrap();
+    let steps = d.history_pos();
+    let plan = d.plan_show_ids(&[], true);
+    d.apply_rows(plan).unwrap();
+    assert_eq!(d.tool_chip_count(), 0);
+    assert_eq!(d.history_pos(), steps, "no undo step");
+    assert_eq!(shown(&d), ["1", "3", "6"], "the filter as it was");
 }

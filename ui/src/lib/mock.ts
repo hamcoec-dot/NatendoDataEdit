@@ -1927,7 +1927,8 @@ export class MockBackend implements Backend {
     return this.setView(d, this.chipShown(d, spec, sets), spec, sets);
   }
 
-  async filterChips(doc: number): Promise<FilterChips> {
+  /** As the engine: the bar never reads the table, so a column chip has no count until asked for. */
+  async filterChips(doc: number, counts = false): Promise<FilterChips> {
     const d = this.get(doc);
     const spec = d.shown ? d.filter : null;
     const sets = d.shown ? (d.sets ?? []) : [];
@@ -1936,8 +1937,11 @@ export class MockBackend implements Backend {
     const data = n - first;
     const chips: ChipInfo[] = [];
     for (const c of spec?.columns ?? []) {
-      let rows = 0;
-      for (let p = first; p < n; p++) if (testRule(c.rule, this.valueAt(d, p, c.col)) !== !!c.negate) rows++;
+      let rows: number | null = null;
+      if (counts) {
+        rows = 0;
+        for (let p = first; p < n; p++) if (testRule(c.rule, this.valueAt(d, p, c.col)) !== !!c.negate) rows++;
+      }
       chips.push({ kind: "column", col: c.col, label: "", name: c.name ?? null, enabled: c.enabled !== false, negate: !!c.negate, rows, looked: null, not_looked: null, errors: 0, stale: false, made_at: 0 });
     }
     for (const x of sets) {
@@ -1946,6 +1950,11 @@ export class MockBackend implements Backend {
     }
     const shown = d.shown ? this.rowCount(d) - first : data;
     return { chips, combine: spec?.combine ?? "and", invert: !!spec?.invert, shown: Math.max(0, shown), total: data, all_off: chips.length > 0 && chips.every((c) => !c.enabled), sets_full: sets.length >= 20 };
+  }
+
+  async filterChipCounts(doc: number): Promise<FilterChips> {
+    this.calls.push("filterChipCounts");
+    return this.filterChips(doc, true);
   }
 
   async filterChange(doc: number, change: ChipChange): Promise<DocInfo> {

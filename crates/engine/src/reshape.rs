@@ -993,8 +993,12 @@ impl Document {
         }
         self.ready_for_bulk()?;
         if let Some(v) = plan.view {
-            // A "show these rows" tool: a chip beside the chips that are on.
+            // A "show these rows" tool: a chip beside the chips that are on. A tool that found nothing
+            // adds no chip and no undo step (the caller says so).
             let v = self.join_set(v, plan.chip)?;
+            if v.sets.last().is_some_and(|s| s.found_nothing()) {
+                return Ok(());
+            }
             self.set_view(Some(v));
             return Ok(());
         }

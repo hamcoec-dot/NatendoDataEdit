@@ -355,35 +355,44 @@ fn rule_key(c: &ColumnFilter, spec: &FilterSpec) -> String {
     serde_json::to_string(&(c.col, &c.rule, spec.read, spec.keep_first)).unwrap_or_default()
 }
 
-/// Renumber the chips of `v` to the positions of `ids` (after a save):
-/// rows put in after the filter count as passing every chip.
+/// Renumber the chips of `v` to the positions of `ids` (after a save). Rows put in after the chips are
+/// marked in no chip: they are returned as `after` (see `View::after`), which passes every chip whether
+/// it, or the whole filter, is inverted or not.
+#[allow(clippy::type_complexity)]
 pub(crate) fn renumber(
     v: &View,
     ids: impl Iterator<Item = u32>,
-) -> (Vec<SetChip>, Option<Arc<Vec<u64>>>) {
+) -> (Vec<SetChip>, Option<Arc<Vec<u64>>>, Option<Arc<Vec<u64>>>) {
     let pairs: Vec<(u32, u32)> = ids.enumerate().map(|(p, id)| (p as u32, id)).collect();
     let n = pairs.len();
     let words = n.div_ceil(64);
-    let after = |id: u32, base: u32| id >= base;
-    let remap = |bits: &[u64], base: u32, newer: bool| -> Arc<Vec<u64>> {
+    let remap = |bits: &[u64], base: u32| -> Arc<Vec<u64>> {
         let mut out = vec![0u64; words];
         for &(p, id) in &pairs {
-            if (newer && after(id, base)) || (id < base && has_bit(bits, id)) {
+            if id < base && has_bit(bits, id) {
                 set_bit(&mut out, p);
             }
         }
         Arc::new(out)
     };
     let view_base = v.base;
+    let mut after = vec![0u64; words];
+    let mut any = false;
+    for &(p, id) in &pairs {
+        if id >= view_base || v.after.as_deref().is_some_and(|a| has_bit(a, id)) {
+            set_bit(&mut after, p);
+            any = true;
+        }
+    }
     let sets = v
         .sets
         .iter()
         .map(|s| {
             let base = s.base.min(view_base);
             SetChip {
-                set: remap(&s.set, base, true),
-                looked: remap(&s.looked, base, true),
-                errors: s.errors.as_ref().map(|e| remap(e, base, false)),
+                set: remap(&s.set, base),
+                looked: remap(&s.looked, base),
+                errors: s.errors.as_ref().map(|e| remap(e, base)),
                 base: n as u32,
                 ..s.clone()
             }
@@ -392,8 +401,9 @@ pub(crate) fn renumber(
     let cols = v
         .cols
         .as_ref()
-        .map(|c| remap(c, v.cols_base.min(view_base), true));
-    (sets, cols)
+        .map(|c| remap(c, v.cols_base.min(view_base)));
+    let after = (any && (!v.sets.is_empty() || v.cols.is_some())).then(|| Arc::new(after));
+    (sets, cols, after)
 }
 
 /// The column rules after `change`, for a recipe (`None`: the change is to
@@ -425,11 +435,26 @@ pub fn spec_after(spec: &FilterSpec, change: &ChipChange) -> Option<FilterSpec> 
 pub(crate) struct SetMask {
     bits: Vec<u64>,
     base: u32,
+    after: Option<Arc<Vec<u64>>>,
 }
 
 impl SetMask {
     pub(crate) fn passes(&self, id: u32) -> bool {
-        id >= self.base || has_bit(&self.bits, id)
+        id >= self.base
+            || has_bit(&self.bits, id)
+            || self.after.as_deref().is_some_and(|a| has_bit(a, id))
+    }
+}
+
+impl SetChip {
+    /// It picked no row (and shows none, not being inverted).
+    pub(crate) fn found_nothing(&self) -> bool {
+        !self.negate
+            && self
+                .set
+                .iter()
+                .zip(self.looked.iter())
+                .all(|(a, b)| a & b == 0)
     }
 }
 
@@ -451,7 +476,11 @@ impl Document {
             })
             .collect();
         let bits = fold(&parts, Combine::And, false, (base as usize).div_ceil(64));
-        Some(SetMask { bits, base })
+        Some(SetMask {
+            bits,
+            base,
+            after: v.after.clone(),
+        })
     }
 
     /// Drop every cached rule result (tests).
@@ -732,6 +761,7 @@ impl Document {
         sets: Vec<SetChip>,
         cols: Option<Arc<Vec<u64>>>,
         cols_base: u32,
+        after: Option<Arc<Vec<u64>>>,
     ) -> View {
         let mut base = self.next_row_id();
         if cols.is_some() || !spec.columns.is_empty() {
@@ -753,7 +783,10 @@ impl Document {
             });
         }
         let mut bits = match (&parts[..], spec.invert) {
-            // The column chips alone: their rows as they are.
+            // The column chips alone: their rows as they are. (The column chips are folded together first,
+            // as one part: their FAIL is "not PASS", a two-valued part, and Match all and Match any are
+            // associative under the three-valued rules. A change that gives `Part::Cols` a third value
+            // must fold each column chip as its own part instead.)
             ([Part::Cols(c)], false) => {
                 let mut b = c.to_vec();
                 b.resize(words, 0);
@@ -766,11 +799,18 @@ impl Document {
                 set_bit(&mut bits, id);
             }
         }
+        // Rows put in after the chips (renumbered by a save) pass every chip.
+        if let Some(a) = &after {
+            for (b, w) in bits.iter_mut().zip(a.iter()) {
+                *b |= w;
+            }
+        }
         drop(parts);
         let mut v = View::new(spec, bits, base);
         v.sets = sets;
         v.cols = cols;
         v.cols_base = cols_base;
+        v.after = after;
         v
     }
 
@@ -855,9 +895,15 @@ impl Document {
             made_rev: self.data_revision(),
             made_at: now_secs(),
         };
-        let (mut spec, mut sets, cols, cols_base) = match cur {
-            Some(c) => (c.spec.clone(), c.sets.clone(), c.cols.clone(), c.cols_base),
-            None => (FilterSpec::default(), Vec::new(), None, base),
+        let (mut spec, mut sets, cols, cols_base, after) = match cur {
+            Some(c) => (
+                c.spec.clone(),
+                c.sets.clone(),
+                c.cols.clone(),
+                c.cols_base,
+                c.after.clone(),
+            ),
+            None => (FilterSpec::default(), Vec::new(), None, base, None),
         };
         if sets.len() >= MAX_SET_CHIPS {
             return Err(Error::Invalid(format!(
@@ -877,7 +923,7 @@ impl Document {
             .shrink(CHIP_BYTES.saturating_sub(bytes));
         spec.keep_first |= v.spec.keep_first;
         sets.push(chip);
-        Ok(self.chip_view(spec, sets, cols, cols_base))
+        Ok(self.chip_view(spec, sets, cols, cols_base, after))
     }
 
     /// Plan a change to the chips: no row is read again unless a column
@@ -895,6 +941,7 @@ impl Document {
         let mut sets = cur.sets.clone();
         let mut cols = cur.cols.clone();
         let mut cols_base = cur.cols_base;
+        let mut after = cur.after.clone();
         let n = spec.columns.len();
         let count = n + sets.len();
         let at = |i: usize| -> Result<(), Error> {
@@ -982,11 +1029,15 @@ impl Document {
         if refold {
             cols = self.cols_fold(&spec, progress)?;
             cols_base = self.next_row_id();
+            // Read again, the column rules judge every row; newer rows still pass the tool chips.
+            if sets.is_empty() {
+                after = None;
+            }
         }
         let view = if spec.columns.is_empty() && sets.is_empty() {
             None
         } else {
-            Some(self.chip_view(spec, sets, cols, cols_base))
+            Some(self.chip_view(spec, sets, cols, cols_base, after))
         };
         let shown = match &view {
             Some(v) => self.passing(v),
@@ -1003,7 +1054,25 @@ impl Document {
         Ok(shown)
     }
 
-    /// The chips of the filter that is on (empty without one).
+    /// The chips with every column chip's own count: the rules whose rows are not known are read (one
+    /// pass over the table). Only when the person asks (the bar's menu or tooltip): never after every edit.
+    pub fn filter_chip_counts(&self, progress: &Progress) -> Result<FilterChips, Error> {
+        if let Some(v) = self.view().filter(|v| v.filters()) {
+            self.rule_pass(&v.spec, &v.spec.columns, progress)?;
+        }
+        Ok(self.filter_chips())
+    }
+
+    /// Chips made by tools in the filter that is on.
+    pub fn tool_chip_count(&self) -> usize {
+        self.view()
+            .filter(|v| v.filters())
+            .map_or(0, |v| v.sets.len())
+    }
+
+    /// The chips of the filter that is on (empty without one). Never reads the table: a column chip whose
+    /// rows are not known (after an edit, or a filter read in one pass) has no count; see
+    /// [`Document::filter_chip_counts`].
     pub fn filter_chips(&self) -> FilterChips {
         let Some(v) = self.view().filter(|v| v.filters()) else {
             return FilterChips::default();
@@ -1015,10 +1084,6 @@ impl Document {
             Some(m) => m.iter().position(|&x| x == p).map(|i| i as u32),
             None => Some(p),
         };
-        // A rule read only with the others (a plain first filter) is read
-        // once more on its own here, for its count, and kept for switching.
-        // A failure (stopped, changed) leaves the count unknown.
-        let _ = self.rule_pass(&v.spec, &v.spec.columns, &Progress::new());
         let mut chips = Vec::new();
         {
             let mut cache = self.rule_cache.lock().unwrap_or_else(|p| p.into_inner());

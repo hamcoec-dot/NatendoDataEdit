@@ -3684,6 +3684,15 @@ async fn filter_chips(
 }
 
 #[tauri::command]
+async fn filter_chip_counts(
+    docs: DocsState<'_>,
+    doc: u32,
+) -> CmdResult<natendo_engine::chips::FilterChips> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.filter_chip_counts(doc)).await
+}
+
+#[tauri::command]
 async fn filter_change(
     docs: DocsState<'_>,
     doc: u32,
@@ -5267,6 +5276,7 @@ pub fn run() {
             clear_filter,
             filter_spec,
             filter_chips,
+            filter_chip_counts,
             filter_change,
             filter_values,
             find_next,
