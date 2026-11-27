@@ -108,13 +108,13 @@ fn hidden_rows_are_not_counted() {
     let plan = d
         .plan_filter(
             &FilterSpec {
-                columns: vec![ColumnFilter {
-                    col: 2,
-                    rule: Rule::Values {
+                columns: vec![ColumnFilter::new(
+                    2,
+                    Rule::Values {
                         values: vec!["y".into()],
                         blanks: false,
                     },
-                }],
+                )],
                 keep_first: true,
                 ..Default::default()
             },
@@ -226,7 +226,7 @@ proptest! {
         let mut d = doc(&t);
         if view & 1 == 1 {
             let plan = d.plan_filter(&FilterSpec {
-                columns: vec![ColumnFilter { col: 2, rule: Rule::Values { values: vec!["x".into()], blanks: false } }],
+                columns: vec![ColumnFilter::new(2, Rule::Values { values: vec!["x".into()], blanks: false })],
                 keep_first: true,
                 ..Default::default()
             }, &Progress::new()).unwrap();
