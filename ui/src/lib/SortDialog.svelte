@@ -6,21 +6,27 @@
   import { untrack } from "svelte";
   import type { SortKey, SortKind, SortSpec } from "./backend";
   import { prefs } from "./prefs.svelte";
-  import { BUILTIN_LISTS, parseList } from "./m10";
+  import { BUILTIN_LISTS, MAX_ORDERS, newOrderId, parseList, type FromCells, type SavedOrder } from "./m10";
 
   interface Props {
     /** Column titles (or numbers), one per column. */
     titles: string[];
     header: boolean;
     start: SortKey[];
+    /** Open with "New custom order" filled in from these cells. */
+    fromCells?: FromCells | null;
     onSort: (spec: SortSpec, header: boolean) => void;
     onClose: () => void;
   }
-  let { titles, header, start, onSort, onClose }: Props = $props();
+  let { titles, header, start, fromCells = null, onSort, onClose }: Props = $props();
+
+  /** A sort level; `order` is the id of the custom order it uses (kept
+   *  through rename and move), `gone` says its order was deleted. */
+  type Level = SortKey & { order?: string; gone?: boolean };
 
   const MAX_LEVELS = 64;
   // Starting values; the dialog edits its own copies.
-  let keys = $state<SortKey[]>(untrack(() => start.map((k) => ({ ...k }))));
+  let keys = $state<Level[]>(untrack(() => start.map((k) => ({ ...k }))));
   let hasHeader = $state(untrack(() => header));
   /** Sort hidden rows too (offered only while some are hidden). */
   let sortAll = $state(false);
@@ -37,34 +43,118 @@
   ];
 
   /** Custom orders: the built-in ones, then the user's own. */
-  const lists = $derived([...BUILTIN_LISTS, ...prefs.data.sortLists]);
-  const kindId = (k: SortKind): string => (typeof k === "object" ? `list:${k.list}` : k);
-  function setKind(k: SortKey, id: string, el: HTMLSelectElement): void {
+  const builtins: SavedOrder[] = BUILTIN_LISTS.map((l, i) => ({ id: `builtin-${i}`, name: l.name, items: l.items }));
+  const lists = $derived([...builtins, ...prefs.data.sortLists]);
+  const kindId = (k: Level): string => (k.order ? `list:${k.order}` : typeof k.kind === "object" ? "auto" : k.kind);
+  function setKind(k: Level, id: string, el: HTMLSelectElement): void {
     if (id === "new") {
       // The list picker shows the key's current kind again until the new order is added.
-      el.value = kindId(k.kind);
+      el.value = kindId(k);
       addingFor = k;
-      adding = true;
+      startAdding(false);
       return;
     }
-    k.kind = id.startsWith("list:") ? { list: Number(id.slice(5)) } : (id as SortKind);
+    k.gone = false;
+    if (id.startsWith("list:")) {
+      k.order = id.slice(5);
+      k.kind = "auto";
+    } else {
+      k.order = undefined;
+      k.kind = id as SortKind;
+    }
   }
+
+  // ---- a new order ----
   let adding = $state(false);
   let newName = $state("");
   let newItems = $state("");
+  /** The new order's values came from cells: one per line (a value may hold a comma). */
+  let newFromCells = $state(false);
+  let addProblem = $state("");
   /** The sort level that asked for the new order; it uses the order once added. */
-  let addingFor: SortKey | null = null;
+  let addingFor: Level | null = null;
+  const newParsed = $derived(parseList(newItems, !newFromCells));
+  function startAdding(cells: boolean): void {
+    adding = true;
+    newFromCells = cells;
+    addProblem = "";
+  }
   function addList(): void {
-    const items = parseList(newItems);
+    const items = newParsed;
     if (!items.length) return;
+    if (prefs.data.sortLists.length >= MAX_ORDERS) {
+      addProblem = `${MAX_ORDERS} custom orders is the most: delete one first (Manage custom orders).`;
+      return;
+    }
     const name = newName.trim().slice(0, 200) || items.slice(0, 3).join(", ");
-    prefs.data.sortLists = [...prefs.data.sortLists, { name, items }].slice(-60);
+    const id = newOrderId([...builtins, ...prefs.data.sortLists]);
+    prefs.data.sortLists = [...prefs.data.sortLists, { id, name, items, ...(newFromCells ? { fromCells: true } : {}) }];
     prefs.save();
-    if (addingFor) addingFor.kind = { list: BUILTIN_LISTS.length + prefs.data.sortLists.length - 1 };
+    if (addingFor) {
+      addingFor.order = id;
+      addingFor.kind = "auto";
+      addingFor.gone = false;
+    }
     addingFor = null;
     adding = false;
     newName = "";
     newItems = "";
+    newFromCells = false;
+  }
+  // Opened from selected cells: the new order's box, filled in.
+  untrack(() => {
+    if (fromCells) {
+      newItems = fromCells.items.join("\n");
+      startAdding(true);
+    }
+  });
+
+  // ---- managing the user's orders ----
+  let managing = $state(false);
+  /** The order whose values are being edited, and the text. */
+  let editing = $state<string | null>(null);
+  let editText = $state("");
+  /** The order asked about before it is deleted. */
+  let deleting = $state<string | null>(null);
+  function saveOrders(next: SavedOrder[]): void {
+    prefs.data.sortLists = next;
+    prefs.save();
+  }
+  function rename(id: string, name: string): void {
+    const n = name.trim().slice(0, 200);
+    if (!n) return;
+    saveOrders(prefs.data.sortLists.map((o) => (o.id === id ? { ...o, name: n } : o)));
+  }
+  function moveOrder(i: number, d: number): void {
+    const j = i + d;
+    const next = [...prefs.data.sortLists];
+    if (j < 0 || j >= next.length) return;
+    const [o] = next.splice(i, 1);
+    next.splice(j, 0, o!);
+    saveOrders(next);
+  }
+  function startEdit(o: SavedOrder): void {
+    editing = o.id;
+    editText = o.items.join("\n");
+  }
+  function saveEdit(o: SavedOrder): void {
+    // Values from cells may hold commas: one per line for them.
+    const items = parseList(editText, !o.fromCells);
+    if (!items.length) return;
+    saveOrders(prefs.data.sortLists.map((x) => (x.id === o.id ? { ...x, items } : x)));
+    editing = null;
+  }
+  function remove(id: string): void {
+    saveOrders(prefs.data.sortLists.filter((o) => o.id !== id));
+    deleting = null;
+    if (editing === id) editing = null;
+    // A level that used it sorts automatically, and says so.
+    for (const k of keys)
+      if (k.order === id) {
+        k.order = undefined;
+        k.kind = "auto";
+        k.gone = true;
+      }
   }
 
   function add(): void {
@@ -84,17 +174,15 @@
     if (keys.length === 0) return;
     // Only the custom orders used travel with the sort, renumbered.
     const used: string[][] = [];
-    const at = new Map<number, number>();
-    const ks = $state.snapshot(keys).map((k) => {
-      if (typeof k.kind !== "object") return k;
-      const i = k.kind.list;
-      const items = lists[i]?.items;
-      if (!items) return { ...k, kind: "natural" as const };
-      if (!at.has(i)) {
-        at.set(i, used.length);
+    const at = new Map<string, number>();
+    const ks: SortKey[] = $state.snapshot(keys).map(({ order, gone: _gone, ...k }) => {
+      const items = order ? lists.find((l) => l.id === order)?.items : undefined;
+      if (!order || !items) return { ...k, kind: typeof k.kind === "object" ? ("auto" as const) : k.kind };
+      if (!at.has(order)) {
+        at.set(order, used.length);
         used.push(items);
       }
-      return { ...k, kind: { list: at.get(i)! } };
+      return { ...k, kind: { list: at.get(order)! } };
     });
     const scope = hiddenRows.hidden && !sortAll ? "shown" : "all";
     onSort({ keys: ks, keep_first: hasHeader, scope, ...(used.length ? { lists: used } : {}) }, hasHeader);
@@ -105,14 +193,14 @@
     if (e.key === "Escape") {
       e.preventDefault();
       onClose();
-    } else if (e.key === "Enter" && !(e.target instanceof HTMLButtonElement)) {
+    } else if (e.key === "Enter" && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLInputElement && e.target.type === "text")) {
       e.preventDefault();
       ok();
     }
   }
 
   $effect(() => {
-    box.querySelector<HTMLSelectElement>("select")?.focus();
+    (fromCells ? box.querySelector<HTMLInputElement>(".newlist input") : box.querySelector<HTMLSelectElement>("select"))?.focus();
   });
 
   // The status pill turns amber while this includes hidden rows.
@@ -138,10 +226,10 @@
             <option value="a">A → Z, smallest first</option>
             <option value="d">Z → A, largest first</option>
           </select>
-          <select aria-label="Compare as" value={kindId(k.kind)} onchange={(e) => setKind(k, (e.currentTarget as HTMLSelectElement).value, e.currentTarget as HTMLSelectElement)}>
+          <select aria-label="Compare as" value={kindId(k)} onchange={(e) => setKind(k, (e.currentTarget as HTMLSelectElement).value, e.currentTarget as HTMLSelectElement)}>
             {#each KINDS as [v, label] (v)}<option value={v}>{label}</option>{/each}
             <optgroup label="Custom order">
-              {#each lists as l, i (i)}<option value={`list:${i}`}>{l.name}</option>{/each}
+              {#each lists as l (l.id)}<option value={`list:${l.id}`}>{l.name}</option>{/each}
               <option value="new">New custom order…</option>
             </optgroup>
           </select>
@@ -149,20 +237,56 @@
           <button type="button" aria-label="Move up" disabled={i === 0} onclick={() => moveKey(i, -1)}>↑</button>
           <button type="button" aria-label="Move down" disabled={i === keys.length - 1} onclick={() => moveKey(i, 1)}>↓</button>
           <button type="button" aria-label="Remove" disabled={keys.length === 1} onclick={() => keys.splice(i, 1)}>✕</button>
+          {#if k.gone}<span class="gone">Its custom order was deleted: this level sorts automatically.</span>{/if}
         </div>
       {/each}
     </div>
     <button type="button" class="link" disabled={keys.length >= MAX_LEVELS} onclick={add}>+ Add a level</button>
+    <button type="button" class="link" onclick={() => (managing = !managing)}>{managing ? "Close custom orders" : "Manage custom orders…"}</button>
     {#if adding}
       <fieldset class="newlist">
-        <legend>New custom order</legend>
+        <legend>New custom order{newFromCells ? " from the selected cells" : ""}</legend>
         <label>Name <input type="text" bind:value={newName} placeholder="Priority" /></label>
-        <label>Values in order (one per line, or separated by commas)<textarea rows="4" bind:value={newItems} placeholder={"Urgent\nHigh\nNormal\nLow"}></textarea></label>
+        <label>{newFromCells ? "Values in order (one per line)" : "Values in order (one per line, or separated by commas)"}<textarea rows="4" bind:value={newItems} placeholder={"Urgent\nHigh\nNormal\nLow"}></textarea></label>
+        {#if newFromCells && fromCells}
+          <p class="note">{newParsed.length.toLocaleString()} different values from the selected cells, row by row{fromCells.leftOut ? `; ${fromCells.leftOut.toLocaleString()} hidden ${fromCells.leftOut === 1 ? "cell was" : "cells were"} left out` : ""}. Check them before adding.</p>
+          {#if fromCells.private}<p class="warn" role="alert">These values will be kept in this app's settings, outside the file. Nothing is saved until you add the order.</p>{/if}
+        {/if}
+        {#if addProblem}<p class="warn" role="alert">{addProblem}</p>{/if}
         <div class="buttons">
-          <button type="button" onclick={addList} disabled={!parseList(newItems).length}>Add the order</button>
-          <button type="button" onclick={() => { adding = false; addingFor = null; }}>Cancel</button>
+          <button type="button" onclick={addList} disabled={!newParsed.length}>Add the order</button>
+          <button type="button" onclick={() => { adding = false; addingFor = null; newFromCells = false; }}>Cancel</button>
         </div>
         <p class="note">Values on the list sort in that order (capitals and accents ignored); other values follow.</p>
+      </fieldset>
+    {/if}
+    {#if managing}
+      <fieldset class="newlist manage">
+        <legend>Your custom orders</legend>
+        {#if !prefs.data.sortLists.length}<p class="note">None yet: "New custom order…" in Compare as adds one.</p>{/if}
+        {#each prefs.data.sortLists as o, i (o.id)}
+          <div class="order">
+            <input type="text" aria-label="Name of the order" value={o.name} onchange={(e) => rename(o.id, (e.currentTarget as HTMLInputElement).value)} />
+            <span class="count">{o.items.length.toLocaleString()} {o.items.length === 1 ? "value" : "values"}{o.fromCells ? ", from cells" : ""}</span>
+            <button type="button" onclick={() => (editing === o.id ? (editing = null) : startEdit(o))}>{editing === o.id ? "Close" : "Edit values"}</button>
+            <button type="button" aria-label="Move up" disabled={i === 0} onclick={() => moveOrder(i, -1)}>↑</button>
+            <button type="button" aria-label="Move down" disabled={i === prefs.data.sortLists.length - 1} onclick={() => moveOrder(i, 1)}>↓</button>
+            {#if deleting === o.id}
+              <span class="ask">Delete "{o.name}"?</span>
+              <button type="button" onclick={() => remove(o.id)}>Delete</button>
+              <button type="button" onclick={() => (deleting = null)}>Keep it</button>
+            {:else}
+              <button type="button" onclick={() => (deleting = o.id)}>Delete…</button>
+            {/if}
+          </div>
+          {#if editing === o.id}
+            <div class="edit">
+              <textarea rows="4" aria-label="Values in order" bind:value={editText}></textarea>
+              <button type="button" disabled={!parseList(editText, !o.fromCells).length} onclick={() => saveEdit(o)}>Save the values</button>
+            </div>
+          {/if}
+        {/each}
+        <p class="note">The built-in orders (Low, Medium, High; weekdays; months) cannot be changed. A recipe or saved view that sorts by a custom order keeps its values, so they go wherever you send it.</p>
       </fieldset>
     {/if}
     <p class="note">Empty cells always go last. Rows with equal values keep their order. Undo (Ctrl+Z) puts the rows back.</p>
@@ -172,6 +296,7 @@
     </div>
   </div>
 </div>
+
 
 <style>
   .backdrop {
@@ -281,5 +406,30 @@
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+  }
+  button.link + button.link {
+    margin-left: 14px;
+  }
+  .gone,
+  .warn {
+    color: var(--warn, #b45309);
+    font-size: 12px;
+  }
+  .manage .order {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin: 4px 0;
+  }
+  .manage .count,
+  .manage .ask {
+    color: var(--muted);
+  }
+  .manage .edit {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+    margin: 0 0 6px;
   }
 </style>

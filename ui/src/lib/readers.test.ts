@@ -89,7 +89,6 @@ const ALLOWED: Record<string, number> = {
   "./OptionsDialog.svelte": 1,
   "./PivotDialog.svelte": 10,
   "./SidePanel.svelte": 1,
-  "./SortDialog.svelte": 1,
   "./StreetDialog.svelte": 1,
   "./binary.ts": 2,
   "./goto.ts": 6,
