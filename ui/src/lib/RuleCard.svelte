@@ -108,7 +108,10 @@
       .catch(() => {});
   }
 
+  let root: HTMLDivElement;
   $effect(() => {
+    // The card itself takes the focus: Escape closes it, and Enter (off the boxes) applies.
+    root.focus();
     untrack(() => void work(null));
     return () => {
       seq++;
@@ -228,7 +231,7 @@
 
 <FormShell title={`The rule for ${name(target)}`} wide {onClose}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="card" onkeydown={onKey}>
+  <div class="card" tabindex="-1" bind:this={root} onkeydown={onKey}>
     {#if report?.conflict}
       {@const c = report.conflict}
       <div class="conflict" role="alert">
@@ -338,6 +341,7 @@
 
 <style>
   .card {
+    outline: none;
     display: flex;
     flex-direction: column;
     gap: 0.5rem;

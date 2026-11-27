@@ -48,7 +48,9 @@
   }
 
   $effect(() => {
-    box.querySelector<HTMLElement>("select, input, textarea, button")?.focus();
+    // The first box or button that can take the focus; else the dialog itself, so Escape and
+    // Enter still reach it (a screen still working has only greyed buttons).
+    (box.querySelector<HTMLElement>("select:not([disabled]), input:not([disabled]), textarea:not([disabled]), button:not([disabled])") ?? box).focus();
   });
 </script>
 
