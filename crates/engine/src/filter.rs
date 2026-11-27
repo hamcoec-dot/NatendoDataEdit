@@ -550,12 +550,13 @@ impl Document {
         self.ready_for_bulk()?;
         let spec = self.to_physical_spec(spec)?;
         let total = self.total_rows();
-        // Chips made by tools stay beside the new rules.
-        let sets = self
+        // Chips made by tools stay beside the new rules (with the rows put in after them).
+        let (sets, after) = self
             .view()
             .filter(|v| v.filters())
-            .map(|v| v.sets.clone())
+            .map(|v| (v.sets.clone(), v.after.clone()))
             .unwrap_or_default();
+        let after = after.filter(|_| !sets.is_empty());
         if spec.columns.is_empty() && sets.is_empty() {
             return Ok(FilterPlan {
                 revision: self.revision(),
@@ -571,7 +572,7 @@ impl Document {
             let (bits, passed) = self.all_rules_pass(&resolved, progress)?;
             let base = self.next_row_id();
             let title = usize::from(spec.keep_first && total > 0) as u64;
-            let view = self.chip_view(spec, sets, Some(std::sync::Arc::new(bits)), base);
+            let view = self.chip_view(spec, sets, Some(std::sync::Arc::new(bits)), base, None);
             return Ok(FilterPlan {
                 revision: self.revision(),
                 view: Some(view),
@@ -579,7 +580,7 @@ impl Document {
             });
         }
         let cols = self.cols_fold(&spec, progress)?;
-        let view = self.chip_view(spec, sets, cols, self.next_row_id());
+        let view = self.chip_view(spec, sets, cols, self.next_row_id(), after);
         let shown = self.passing(&view);
         Ok(FilterPlan {
             revision: self.revision(),

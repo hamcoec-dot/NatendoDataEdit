@@ -221,6 +221,7 @@ struct FilterPart {
     sets: Vec<crate::chips::SetChip>,
     cols: Option<std::sync::Arc<Vec<u64>>>,
     cols_base: u32,
+    after: Option<std::sync::Arc<Vec<u64>>>,
 }
 
 impl FilterPart {
@@ -232,6 +233,7 @@ impl FilterPart {
             sets: v.sets,
             cols: v.cols,
             cols_base: v.cols_base,
+            after: v.after,
         }
     }
 
@@ -240,6 +242,7 @@ impl FilterPart {
         v.sets = self.sets;
         v.cols = self.cols;
         v.cols_base = self.cols_base;
+        v.after = self.after;
         v
     }
 }
@@ -415,6 +418,9 @@ pub(crate) struct View {
     /// `cols_base`); `None` when no column chip is on.
     pub cols: Option<Arc<Vec<u64>>>,
     pub cols_base: u32,
+    /// Rows put in after the chips were made, below `base` because a save renumbered them (one bit per
+    /// row id): they pass every chip, inverted or not, as rows from `base` up do (C8 review M2).
+    pub after: Option<Arc<Vec<u64>>>,
     /// Document positions of the shown rows (rebuilt after row moves).
     visible: OnceLock<Vec<u32>>,
     /// Rows now in the document that are hidden (rebuilt with `visible`).
@@ -431,6 +437,7 @@ impl View {
             sets: Vec::new(),
             cols: None,
             cols_base: base,
+            after: None,
             visible: OnceLock::new(),
             hidden_rows: OnceLock::new(),
         }
@@ -2656,7 +2663,7 @@ impl Document {
                 None => Some(p),
             });
             // Chips follow their rows to the new numbering (rows put in
-            // after the filter count as passing every chip, as they show).
+            // after the filter pass every chip, as they show: see `View::after`).
             let chips = crate::chips::renumber(&v, self.ids());
             (v.filters(), spec, passing, hidden, chips)
         });
@@ -2717,10 +2724,11 @@ impl Document {
                 View::all()
             };
             if filters {
-                let (sets, cols) = chips;
+                let (sets, cols, after) = chips;
                 v.sets = sets;
                 v.cols = cols;
                 v.cols_base = n;
+                v.after = after;
             }
             if !hidden.is_empty() {
                 v.hidden = Some(Arc::new(to_bits(hidden)));

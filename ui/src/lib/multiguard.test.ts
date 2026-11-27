@@ -83,6 +83,7 @@ const NOT_WRITES = [
   "cancelJob",
   "filterSpec",
   "filterChips",
+  "filterChipCounts",
   "filterValues",
   "findNext",
   "findAll",

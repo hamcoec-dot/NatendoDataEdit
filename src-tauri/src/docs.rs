@@ -4583,6 +4583,14 @@ impl Docs {
         Ok(self.get(id)?.read().filter_chips())
     }
 
+    /// The chips with every column chip's own count (reads the rules not known since the last edit):
+    /// only when the bar's menu or tooltip asks (one pass over the table at most).
+    pub fn filter_chip_counts(&self, id: u32) -> CmdResult<natendo_engine::chips::FilterChips> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.filter_chip_counts(&Progress::new())?)
+    }
+
     /// Switch, invert, rename or remove a chip, or change Match all/any or
     /// Invert all (one undo step; it changes no data).
     pub fn filter_change(
@@ -4593,11 +4601,9 @@ impl Docs {
         let logged = {
             let entry = self.get(id)?;
             let d = entry.read();
-            let chips = d.filter_chips().chips;
-            let tools = chips.iter().any(|c| c.kind != "column");
-            let spec = d
-                .filter_spec()
-                .filter(|s| !tools && s.columns.len() == chips.len());
+            // Never reads the table (C8 review M1): the rules as they are, and whether a tool made a chip.
+            let tools = d.tool_chip_count() > 0;
+            let spec = d.filter_spec().filter(|_| !tools);
             match spec.and_then(|s| natendo_engine::chips::spec_after(&s, &change)) {
                 Some(s) if s.columns.is_empty() => Logged::Step(RecipeOp::ClearFilter),
                 Some(s) => Logged::Step(RecipeOp::Filter { spec: s }),
