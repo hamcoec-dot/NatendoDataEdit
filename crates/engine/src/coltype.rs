@@ -446,7 +446,12 @@ mod tests {
 30
 ";
         let over_ten = FilterSpec {
+            combine: Default::default(),
+            invert: false,
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: Rule::Conditions {
                     first: Condition::Number {

@@ -1253,6 +1253,9 @@ mod tests {
         let mut d = doc(src);
         d.set_filter(&FilterSpec {
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 1,
                 rule: Rule::Values {
                     values: vec!["1".into(), "2".into(), "3".into()],

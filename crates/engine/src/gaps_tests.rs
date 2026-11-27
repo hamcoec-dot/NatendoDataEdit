@@ -279,6 +279,9 @@ fn only_shown_rows_are_read_and_a_changed_table_is_refused() {
     let filter = FilterSpec {
         keep_first: true,
         columns: vec![ColumnFilter {
+            enabled: true,
+            negate: false,
+            name: None,
             col: 1,
             rule: Rule::Values {
                 values: vec!["y".into()],

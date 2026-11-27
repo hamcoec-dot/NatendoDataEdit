@@ -843,7 +843,12 @@ mod tests {
         std::fs::write(&path, "k,v\r\nc,\"x, 1\"\r\na,2\r\nb,3\r\n").unwrap();
         let mut d = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
         let spec = crate::filter::FilterSpec {
+            combine: Default::default(),
+            invert: false,
             columns: vec![crate::filter::ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: crate::filter::Rule::Values {
                     values: vec!["c".into(), "a".into()],

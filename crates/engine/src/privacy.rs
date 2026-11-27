@@ -850,6 +850,9 @@ mod tests {
         );
         d.set_filter(&crate::filter::FilterSpec {
             columns: vec![crate::filter::ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: crate::filter::Rule::Values {
                     values: vec!["Ann Lee".into(), "Bob".into()],

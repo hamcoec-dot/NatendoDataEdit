@@ -193,6 +193,8 @@ pub struct RowPlan {
     /// One new column put at this logical position first (unnest with the
     /// original kept): `changes` and `after` use the columns after it.
     pub(crate) insert_col: Option<u32>,
+    /// With `view`: the filter chip it makes (C8).
+    pub chip: crate::chips::ChipMaking,
 }
 
 /// Most cells left blank by the fill's stops that are listed for marking.
@@ -212,6 +214,7 @@ impl RowPlan {
             skipped: 0,
             marks: Vec::new(),
             insert_col: None,
+            chip: Default::default(),
         }
     }
 
@@ -977,6 +980,8 @@ impl Document {
         }
         self.ready_for_bulk()?;
         if let Some(v) = plan.view {
+            // A "show these rows" tool: a chip beside the chips that are on.
+            let v = self.join_set(v, plan.chip)?;
             self.set_view(Some(v));
             return Ok(());
         }
@@ -1508,6 +1513,9 @@ mod tests {
         let mut d = doc("k\na\nb\na\nb\n");
         d.set_filter(&FilterSpec {
             columns: vec![crate::filter::ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: crate::filter::Rule::Values {
                     values: vec!["a".into()],

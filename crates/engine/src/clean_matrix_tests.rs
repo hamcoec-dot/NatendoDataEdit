@@ -168,6 +168,9 @@ fn a_matrix_equals_the_columns_cleaned_one_by_one() {
             let filter = FilterSpec {
                 keep_first: m.skip_first,
                 columns: vec![ColumnFilter {
+                    enabled: true,
+                    negate: false,
+                    name: None,
                     col: 0,
                     rule: Rule::Values {
                         values: vec!["1".into(), "2".into()],

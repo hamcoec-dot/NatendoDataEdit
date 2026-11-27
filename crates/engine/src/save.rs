@@ -2302,8 +2302,8 @@ mod tests {
                         read: Default::default(),
                         lists: Vec::new(),
                     }).map(|_| ()),
-                    1 => d.set_filter(&FilterSpec {
-                        columns: vec![ColumnFilter {
+                    1 => d.set_filter(&FilterSpec { combine: Default::default(), invert: false,
+                        columns: vec![ColumnFilter { enabled: true, negate: false, name: None,
                             col: a % cols,
                             rule: Rule::Conditions {
                                 first: Condition::Text { op: TextOp::Contains, text: v.clone(), match_case: false },
@@ -2368,8 +2368,8 @@ mod tests {
                 let rows = d.row_count();
                 let sep = if v.contains(';') { ";".to_string() } else { " ".to_string() };
                 let _ = match kind {
-                    0 => d.set_filter(&FilterSpec {
-                        columns: vec![ColumnFilter {
+                    0 => d.set_filter(&FilterSpec { combine: Default::default(), invert: false,
+                        columns: vec![ColumnFilter { enabled: true, negate: false, name: None,
                             col: a % cols,
                             rule: Rule::Conditions {
                                 first: Condition::Text { op: TextOp::Contains, text: v.clone(), match_case: false },
@@ -2464,7 +2464,7 @@ mod tests {
             let original: Vec<Vec<String>> = (0..d.total_rows()).map(|r| d.row_values(r).unwrap()).collect();
             if let Some(f) = &filter {
                 let _ = d.set_filter(&FilterSpec {
-                    columns: vec![ColumnFilter { col: 0, rule: Rule::Conditions { first: Condition::Text { op: TextOp::Contains, text: f.clone(), match_case: false }, second: None, or: false } }],
+                    columns: vec![ColumnFilter { enabled: true, negate: false, name: None, col: 0, rule: Rule::Conditions { first: Condition::Text { op: TextOp::Contains, text: f.clone(), match_case: false }, second: None, or: false } }],
                     ..Default::default()
                 });
             }

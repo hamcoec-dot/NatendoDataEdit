@@ -2624,7 +2624,7 @@ impl Document {
         let first = u64::from(spec.keep_first && self.row_count() > 0);
         let errors = AtomicU64::new(0);
         // PREV and NEXT: the shown rows above and below.
-        let ids: Vec<u32> = self.par_rows_near(
+        let ids: Vec<(u32, bool)> = self.par_rows_near(
             self.data_rows(spec.keep_first),
             &reader,
             near,
@@ -2644,10 +2644,13 @@ impl Document {
                 let v = e.eval(&ctx);
                 if matches!(v, Value::Err(_)) {
                     errors.fetch_add(1, Ordering::Relaxed);
+                    return Ok(Some((id, true)));
                 }
-                Ok(matches!(to_bool(&v), Ok(true)).then_some(id))
+                Ok(matches!(to_bool(&v), Ok(true)).then_some((id, false)))
             },
         )?;
+        let (bad, ids): (Vec<(u32, bool)>, Vec<(u32, bool)>) = ids.into_iter().partition(|x| x.1);
+        let ids: Vec<u32> = ids.into_iter().map(|x| x.0).collect();
         let base = self.next_row_id();
         let mut bits = vec![0u64; (base as usize).div_ceil(64)];
         for &id in &ids {
@@ -2660,6 +2663,14 @@ impl Document {
         }
         let mut plan = crate::reshape::RowPlan::new(self);
         plan.rows = ids.len() as u64;
+        // Rows that gave an error are neither picked nor not (C8).
+        let mut err_bits = vec![0u64; (base as usize).div_ceil(64)];
+        for &(id, _) in &bad {
+            err_bits[(id >> 6) as usize] |= 1 << (id & 63);
+        }
+        plan.chip.errors = Some(err_bits);
+        plan.chip.error_count = bad.len() as u64;
+        plan.chip.kind = "formula".into();
         plan.view = Some(crate::document::View::new(
             crate::filter::FilterSpec {
                 keep_first,

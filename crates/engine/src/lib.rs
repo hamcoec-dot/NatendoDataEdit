@@ -20,6 +20,7 @@ pub mod areas;
 pub mod cellformula;
 pub mod changes;
 pub mod checkfile;
+pub mod chips;
 pub mod clean;
 pub mod colcompare;
 pub mod coltotals;

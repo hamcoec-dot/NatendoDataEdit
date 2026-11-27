@@ -218,6 +218,30 @@ struct FilterPart {
     spec: FilterSpec,
     bits: Vec<u64>,
     base: u32,
+    sets: Vec<crate::chips::SetChip>,
+    cols: Option<std::sync::Arc<Vec<u64>>>,
+    cols_base: u32,
+}
+
+impl FilterPart {
+    fn of(v: View) -> FilterPart {
+        FilterPart {
+            spec: v.spec,
+            bits: v.bits,
+            base: v.base,
+            sets: v.sets,
+            cols: v.cols,
+            cols_base: v.cols_base,
+        }
+    }
+
+    fn view(self) -> View {
+        let mut v = View::new(self.spec, self.bits, self.base);
+        v.sets = self.sets;
+        v.cols = self.cols;
+        v.cols_base = self.cols_base;
+        v
+    }
 }
 
 impl Op {
@@ -244,9 +268,11 @@ impl Op {
             Op::SetMap(m) | Op::SetOrder(m) => 32 + m.as_ref().map_or(0, |m| m.len() * 4),
             Op::SetHidden(h) => 32 + h.as_ref().map_or(0, |h| h.len() * 8),
             Op::SetFilter(f) => {
-                32 + f
-                    .as_ref()
-                    .map_or(0, |f| 64 + f.bits.len() * 8 + f.spec.columns.len() * 128)
+                32 + f.as_ref().map_or(0, |f| {
+                    64 + f.bits.len() * 8
+                        + f.spec.columns.len() * 128
+                        + f.sets.iter().map(|s| 256 + s.bytes()).sum::<usize>()
+                })
             }
             Op::Batch(ops) => 32 + ops.iter().map(Op::cost).sum::<usize>(),
             Op::SetNotes(n) => 32 + n.cost(),
@@ -382,6 +408,12 @@ pub(crate) struct View {
     /// Rows the user hid (one bit per row id; ids past the end are not
     /// hidden). Kept when the filter changes; `None` = no hidden rows.
     pub hidden: Option<Arc<Vec<u64>>>,
+    /// Filter chips made by "show these rows" tools (C8).
+    pub sets: Vec<crate::chips::SetChip>,
+    /// The column chips folded together (pass bits, ids below
+    /// `cols_base`); `None` when no column chip is on.
+    pub cols: Option<Arc<Vec<u64>>>,
+    pub cols_base: u32,
     /// Document positions of the shown rows (rebuilt after row moves).
     visible: OnceLock<Vec<u32>>,
     /// Rows now in the document that are hidden (rebuilt with `visible`).
@@ -395,6 +427,9 @@ impl View {
             bits,
             base,
             hidden: None,
+            sets: Vec::new(),
+            cols: None,
+            cols_base: base,
             visible: OnceLock::new(),
             hidden_rows: OnceLock::new(),
         }
@@ -425,7 +460,7 @@ impl View {
     /// Whether this view filters anything (a filter, show duplicates, show
     /// problems), apart from hidden rows.
     pub(crate) fn filters(&self) -> bool {
-        self.base > 0 || !self.spec.columns.is_empty()
+        self.base > 0 || !self.spec.columns.is_empty() || !self.sets.is_empty()
     }
 }
 
@@ -476,6 +511,8 @@ pub struct Document {
     map_identity: AtomicU8,
     /// The filter, if one is on.
     view: Option<View>,
+    /// Column rules' results for the filter chips (C8).
+    pub(crate) rule_cache: std::sync::Mutex<crate::chips::RuleCache>,
     /// Bumped by every change, so a long operation computed under a read
     /// lock can tell whether the document changed before it applies.
     revision: u64,
@@ -661,6 +698,7 @@ impl Document {
             swapped: HashMap::new(),
             map_identity: AtomicU8::new(0),
             view: None,
+            rule_cache: crate::chips::new_cache(),
             revision: 0,
             data_revision: 0,
             rows_revision: 0,
@@ -1101,13 +1139,9 @@ impl Document {
     /// spreadsheet, though it changes no data (it leaves the document saved).
     /// Hidden rows stay hidden whatever the new filter is.
     pub(crate) fn set_view(&mut self, view: Option<View>) {
-        let part = view.filter(View::filters).map(|v| {
-            Box::new(FilterPart {
-                spec: v.spec,
-                bits: v.bits,
-                base: v.base,
-            })
-        });
+        let part = view
+            .filter(View::filters)
+            .map(|v| Box::new(FilterPart::of(v)));
         if part.is_none() && !self.has_filter() {
             // Clearing a filter that is not on changes nothing.
             return;
@@ -2549,19 +2583,14 @@ impl Document {
             Op::SetFilter(f) => {
                 let (old, hidden) = match self.view.take() {
                     Some(v) => {
-                        let old = v.filters().then(|| {
-                            Box::new(FilterPart {
-                                spec: v.spec,
-                                bits: v.bits,
-                                base: v.base,
-                            })
-                        });
-                        (old, v.hidden)
+                        let hidden = v.hidden.clone();
+                        let old = v.filters().then(|| Box::new(FilterPart::of(v)));
+                        (old, hidden)
                     }
                     None => (None, None),
                 };
                 let mut v = match f {
-                    Some(f) => View::new(f.spec, f.bits, f.base),
+                    Some(f) => f.view(),
                     None => View::all(),
                 };
                 v.hidden = hidden;
@@ -2585,6 +2614,11 @@ impl Document {
             Some(o) => o.get(usize::try_from(pos).ok()?).copied(),
             None => (pos < self.index.rows()).then_some(pos as u32),
         }
+    }
+
+    /// Rows were moved, put in or taken out (ids are not 0..rows in order).
+    pub(crate) fn rows_reordered(&self) -> bool {
+        self.order.is_some()
     }
 
     /// Iterate row ids in document order.
@@ -2620,7 +2654,10 @@ impl Document {
                 Some(m) => m.iter().position(|&x| x == p).map(|i| i as u32),
                 None => Some(p),
             });
-            (v.filters(), spec, passing, hidden)
+            // Chips follow their rows to the new numbering (rows put in
+            // after the filter count as passing every chip, as they show).
+            let chips = crate::chips::renumber(&v, self.ids());
+            (v.filters(), spec, passing, hidden, chips)
         });
         self.revision += 1;
         self.data_revision += 1;
@@ -2664,7 +2701,7 @@ impl Document {
         self.undo_bytes = 0;
         self.redo_bytes = 0;
         self.clean_depth = Some(0);
-        if let Some((filters, spec, passing, hidden)) = kept {
+        if let Some((filters, spec, passing, hidden, chips)) = kept {
             let n = self.next_id;
             let to_bits = |list: Vec<u32>| {
                 let mut bits = vec![0u64; (n as usize).div_ceil(64)];
@@ -2678,6 +2715,12 @@ impl Document {
             } else {
                 View::all()
             };
+            if filters {
+                let (sets, cols) = chips;
+                v.sets = sets;
+                v.cols = cols;
+                v.cols_base = n;
+            }
             if !hidden.is_empty() {
                 v.hidden = Some(Arc::new(to_bits(hidden)));
             }

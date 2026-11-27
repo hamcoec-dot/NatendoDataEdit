@@ -96,7 +96,12 @@ fn main() {
     best("filter amount > 50000", repeats, || {
         let mut d = open();
         d.set_filter(&FilterSpec {
+            combine: Default::default(),
+            invert: false,
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 2,
                 rule: Rule::Conditions {
                     first: Condition::Number {

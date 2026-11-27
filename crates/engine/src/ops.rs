@@ -1803,6 +1803,9 @@ X
         let mut d = doc("k,v\na,1\nb,\na,\na,\n");
         d.set_filter(&crate::filter::FilterSpec {
             columns: vec![crate::filter::ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: crate::filter::Rule::Values {
                     values: vec!["a".into()],
@@ -1837,6 +1840,9 @@ X
         use crate::filter::{ColumnFilter, FilterSpec, Rule};
         d.set_filter(&FilterSpec {
             columns: vec![ColumnFilter {
+                enabled: true,
+                negate: false,
+                name: None,
                 col: 0,
                 rule: Rule::Values {
                     values: vec!["a".into()],
