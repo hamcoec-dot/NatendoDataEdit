@@ -52,7 +52,7 @@
     // The first box that can take the focus, else the main button, else the dialog itself, so
     // Escape and Enter still reach it (see focusPick).
     const els = [...box.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>("select, input, textarea, button")];
-    const i = focusPick(els.map((e) => ({ tag: e.tagName.toLowerCase(), disabled: e.disabled, enter: e.hasAttribute("data-enter") })));
+    const i = focusPick(els.map((e) => ({ tag: e.tagName.toLowerCase(), disabled: e.disabled, enter: e.hasAttribute("data-enter"), hidden: (e instanceof HTMLInputElement && e.type === "hidden") || e.getClientRects().length === 0 })));
     (els[i] ?? box).focus();
   });
 </script>
