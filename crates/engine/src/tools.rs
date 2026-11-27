@@ -2596,15 +2596,17 @@ mod tests {
     const GROUPED: &str = "region,id,amount\r\nNorth,101,5\r\n,102,7\r\nSubtotal,,12\r\n,,\r\n,103,2\r\nSouth,104,9\r\n,105,1\r\n,,10\r\n";
 
     /// The proptest's found case (seven rows of only commas, then ",a,"):
-    /// read with a comma, Fill blank cells gives what the plain fill gives.
-    /// (Read without one, the file is taken to have ",," between fields and
-    /// its last row is shorter than the others.)
+    /// opened as it is, it reads with a comma, 3 columns and its title row
+    /// (rows of separators only no longer make ",," the separator); read with
+    /// a comma, Fill blank cells gives what the plain fill gives.
     #[test]
     fn fill_found_case_with_a_comma() {
         let text = format!("x,y,z\r\n{},a,\r\n", ",,\r\n".repeat(7));
         let plain = doc(&text);
-        let last = plain.row_count() - 1;
-        assert!(plain.row_values(last).unwrap().len() < 3, "read as before");
+        assert_eq!(plain.row_values(0).unwrap(), ["x", "y", "z"]);
+        for r in 0..plain.row_count() {
+            assert_eq!(plain.row_values(r).unwrap().len(), 3, "row {r}");
+        }
         let mut d = comma_doc(&text);
         let spec = FillBlanks {
             cols: vec![0, 1],

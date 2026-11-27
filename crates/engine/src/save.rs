@@ -1479,6 +1479,37 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// A blank template (titles over rows of separators only), comma and
+    /// tab, opened as it is: typing into a row and saving writes that row
+    /// with the file's own separator, and the titles stay as they were.
+    #[test]
+    fn typing_into_a_blank_template_saves_its_own_separator() {
+        let dir = tmpdir("template");
+        for (name, text, want) in [
+            ("t.csv", "x,y,z\n,,\n,,\n,,\n", "ann,,lee"),
+            ("t.txt", "x,y,z\n,,\n,,\n,,\n", "ann,,lee"),
+            ("t.tsv", "a\tb\tc\n\t\t\n\t\t\n\t\t\n", "ann\t\tlee"),
+            ("tab.txt", "a\tb\tc\n\t\t\n\t\t\n\t\t\n", "ann\t\tlee"),
+        ] {
+            let p = dir.join(name);
+            fs::write(&p, text).unwrap();
+            let mut d = Document::open_indexed(&p, OpenOptions::default(), None).unwrap();
+            assert_eq!(d.col_count(), 3, "{name}");
+            d.set_cell(2, 0, "ann".into()).unwrap();
+            d.set_cell(2, 2, "lee".into()).unwrap();
+            d.save(SaveOptions::default()).unwrap();
+            let saved = fs::read_to_string(&p).unwrap();
+            let lines: Vec<&str> = saved.lines().collect();
+            assert_eq!(lines[0], text.lines().next().unwrap(), "{name}");
+            assert_eq!(lines[2], want, "{name}");
+            assert_eq!(lines.len(), 4, "{name}");
+            // Any other program splits the edited row into 3 fields.
+            let sep = if want.contains('\t') { '\t' } else { ',' };
+            assert_eq!(lines[2].split(sep).collect::<Vec<_>>(), ["ann", "", "lee"]);
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
     /// A save keeps the undo history: marks made before it still work, and the saved state is not modified.
     #[test]
     fn marks_survive_a_save() {

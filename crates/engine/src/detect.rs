@@ -481,10 +481,17 @@ fn candidates(
 }
 
 /// Runs of 2 to 4 punctuation bytes that appear on most lines.
+///
+/// A run of one byte repeated (`,,`, `;;`) is judged on the lines that hold a
+/// value only, both the lines it is seen on and the lines it is compared
+/// with: in a blank template every empty row is exactly `,,`, and those rows
+/// must not make `,,` the separator of a comma file.
 fn repeated_runs(head: &[u8], lines: &[(usize, usize, usize)], n: usize) -> Vec<Vec<u8>> {
-    // (run, lines seen on, last line index)
-    let mut runs: Vec<(Vec<u8>, u32, usize)> = Vec::new();
+    // (run, lines seen on, last line index, lines with a value seen on)
+    let mut runs: Vec<(Vec<u8>, u32, usize, u32)> = Vec::new();
     let part = |b: u8| b.is_ascii_punctuation() && b != b'"' && b != b'\'';
+    let value = |b: u8| !b.is_ascii_punctuation() && !b.is_ascii_whitespace();
+    let mut valued_lines = 0u32;
     for (li, &(s, e, _)) in lines
         .iter()
         .filter(|l| l.1 > l.0)
@@ -492,6 +499,8 @@ fn repeated_runs(head: &[u8], lines: &[(usize, usize, usize)], n: usize) -> Vec<
         .enumerate()
     {
         let line = &head[s..e];
+        let valued = line.iter().any(|&b| value(b));
+        valued_lines += u32::from(valued);
         let mut i = 0;
         while i < line.len() {
             if !part(line[i]) {
@@ -508,9 +517,10 @@ fn repeated_runs(head: &[u8], lines: &[(usize, usize, usize)], n: usize) -> Vec<
                     Some(k) if runs[k].2 != li => {
                         runs[k].1 += 1;
                         runs[k].2 = li;
+                        runs[k].3 += u32::from(valued);
                     }
                     Some(_) => {}
-                    None if runs.len() < 64 => runs.push((run.to_vec(), 1, li)),
+                    None if runs.len() < 64 => runs.push((run.to_vec(), 1, li, u32::from(valued))),
                     None => {}
                 }
             }
@@ -528,8 +538,36 @@ fn repeated_runs(head: &[u8], lines: &[(usize, usize, usize)], n: usize) -> Vec<
         }
         all > 0 && inside * 4 >= all * 3
     };
+    // A run of one byte repeated is that byte's own separator only when the
+    // lines with a value that hold the byte hold the run too, the first of
+    // them always: `id,,name` over `1,,a|b` yes, but not `id,first,last`
+    // over `1,,,W2` (blank middle columns of a comma file).
+    let whole_runs = |run: &[u8]| {
+        let (mut with, mut without, mut first) = (0usize, 0usize, None);
+        for &(s, e, _) in lines.iter().filter(|l| l.1 > l.0).take(COUNT_LINES) {
+            let line = &head[s..e];
+            if !line.iter().any(|&c| value(c)) || !line.contains(&run[0]) {
+                continue;
+            }
+            let has = memchr::memmem::find(line, run).is_some();
+            first.get_or_insert(has);
+            if has {
+                with += 1;
+            } else {
+                without += 1;
+            }
+        }
+        first == Some(true) && without * 10 <= with + without
+    };
+    let most = |r: &(Vec<u8>, u32, usize, u32)| {
+        if r.0.iter().all(|&b| b == r.0[0]) {
+            valued_lines > 0 && r.3 as f32 / valued_lines as f32 >= 0.6 && whole_runs(&r.0)
+        } else {
+            n > 0 && r.1 as f32 / n as f32 >= 0.6
+        }
+    };
     runs.into_iter()
-        .filter(|r| n > 0 && r.1 as f32 / n as f32 >= 0.6 && mostly_whole(&r.0))
+        .filter(|r| most(r) && mostly_whole(&r.0))
         .take(3)
         .map(|r| r.0)
         .collect()
@@ -907,11 +945,22 @@ fn judge_split(
     let (mut plaus, mut cells) = (0f32, 0u32);
     let (mut prose, mut filled_cells, mut quoted_cells) = (0u32, 0u32, 0u32);
     let mut words = 0usize;
+    // Rows of empty cells only (`,,` in a blank template) have counted for
+    // agreement with the fields they split into; their cells are not judged.
+    let all_empty = |r: &Row| {
+        r.spans
+            .iter()
+            .all(|&(s, e)| head[s..e].trim_ascii().is_empty())
+    };
     let judged: Vec<&Row> = rows
         .iter()
         .skip(1)
-        .filter(|r| !r.spans.is_empty())
+        .filter(|r| !r.spans.is_empty() && !all_empty(r))
         .collect();
+    // No value under the first row: nothing to judge the reading by.
+    if judged.is_empty() && rows.iter().skip(1).any(|r| !r.spans.is_empty()) {
+        doubt = true;
+    }
     for r in &judged {
         for (c, &(s, e)) in r.spans.iter().enumerate() {
             let raw = &head[s..e];
@@ -1314,6 +1363,10 @@ fn is_flag(t: &[u8]) -> bool {
     .iter()
     .any(|w| t.eq_ignore_ascii_case(w))
 }
+
+#[cfg(test)]
+#[path = "detect_template_tests.rs"]
+mod template_tests;
 
 #[cfg(test)]
 mod tests {
