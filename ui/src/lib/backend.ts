@@ -23,7 +23,11 @@ export interface AppInfo {
 }
 
 /** Rows inserted or deleted, by document position. */
-export type RowsChange = { kind: "insert"; at: number; count: number } | { kind: "delete"; runs: [number, number][] };
+export type RowsChange =
+  | { kind: "insert"; at: number; count: number }
+  | { kind: "delete"; runs: [number, number][] }
+  /** These runs were gathered, in order, starting at `to` (a position once they were out). */
+  | { kind: "move"; runs: [number, number][]; to: number };
 
 export interface DocInfo {
   id: number;
@@ -280,7 +284,7 @@ export function errorText(e: unknown): string {
 export type Change =
   | { op: "insert_rows"; at: number; count: number }
   | { op: "delete_rows"; at: number; count: number }
-  | { op: "move_rows"; at: number; count: number; to: number }
+  | { op: "move_rows"; at: number; count: number; to: number; /** Shown rows the window counted (a stale move is refused). */ shown?: number }
   | { op: "insert_cols"; at: number; count: number; /** Not a recipe step (Split into columns). */ unrecorded?: boolean }
   | { op: "delete_cols"; at: number; count: number }
   | { op: "move_cols"; at: number; count: number; to: number }

@@ -280,9 +280,19 @@ describe("heights while rows are hidden (filter on)", () => {
       [14, 60],
     ]);
     expect(t.rowHeightsNote).toBe("");
+    // A move: rows 3 and 7 (hidden rows between) gathered at 12.
+    t.pendingRows = { kind: "report" };
+    t.update(
+      info({ filtered: true, rows: 499, total_rows: 999, history_pos: 3, has_filter: true, rows_change: { kind: "move", runs: [[3, 1], [7, 1]], to: 12 } }),
+      true,
+    );
+    expect(t.rowHeights.toView()).toEqual([
+      [12, 60],
+      [14, 60],
+    ]);
     // No report (past the cap): cleared with the note.
     t.pendingRows = { kind: "report" };
-    t.update(info({ filtered: true, rows: 300, total_rows: 800, history_pos: 3, has_filter: true }), true);
+    t.update(info({ filtered: true, rows: 300, total_rows: 800, history_pos: 4, has_filter: true }), true);
     expect(t.rowHeights.empty).toBe(true);
     expect(t.rowHeightsNote).toMatch(/cleared/);
   });

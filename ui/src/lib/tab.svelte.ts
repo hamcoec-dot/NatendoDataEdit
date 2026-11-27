@@ -994,6 +994,7 @@ export class Tab {
       const c = info.rows_change;
       if (c?.kind === "insert") return this.rowHeights.insertRows(c.at, c.count);
       if (c?.kind === "delete") return this.rowHeights.deleteRuns(c.runs);
+      if (c?.kind === "move") return this.rowHeights.moveRuns(c.runs, c.to);
     }
     if (pend && pend.kind !== "reset" && pend.kind !== "report" && after > before) {
       if (pend.kind === "insert") this.rowHeights.insertRows(pend.at, pend.count);

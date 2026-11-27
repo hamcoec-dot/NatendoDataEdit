@@ -3506,6 +3506,9 @@ enum Structure {
         at: u64,
         count: u64,
         to: u64,
+        /// The shown rows the window counted (a stale move is refused).
+        #[serde(default)]
+        shown: Option<u64>,
     },
     InsertCols {
         at: u32,
@@ -3551,7 +3554,12 @@ async fn change(docs: DocsState<'_>, doc: u32, change: Structure) -> CmdResult<D
     blocking(move || match change {
         Structure::InsertRows { at, count } => docs.insert_rows(doc, at, count),
         Structure::DeleteRows { at, count } => docs.delete_rows(doc, at, count),
-        Structure::MoveRows { at, count, to } => docs.move_rows(doc, at, count, to),
+        Structure::MoveRows {
+            at,
+            count,
+            to,
+            shown,
+        } => docs.move_rows(doc, at, count, to, shown),
         Structure::InsertCols {
             at,
             count,

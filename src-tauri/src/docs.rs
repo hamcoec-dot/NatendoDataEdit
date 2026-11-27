@@ -1957,6 +1957,10 @@ pub enum RowsChange {
     Insert { at: u64, count: u64 },
     /// These runs `(first, count)` were deleted, positions as before.
     Delete { runs: Vec<(u64, u64)> },
+    /// These runs `(first, count)` (positions as before) were taken out and
+    /// put together, in their order, starting at `to` (a position once they
+    /// were out).
+    Move { runs: Vec<(u64, u64)>, to: u64 },
 }
 
 /// Most rows a delete reports by position (more: the heights are cleared).
@@ -4205,8 +4209,31 @@ impl Docs {
         Ok(r?)
     }
 
-    pub fn move_rows(&self, id: u32, at: u64, count: u64, to: u64) -> CmdResult<DocInfo> {
-        self.edit(id, |d| d.move_rows(at, count, to))
+    /// Move rows `at..at + count` to start at `to` (shown positions while a
+    /// filter is on). `shown`, when given, is how many rows the window thought
+    /// were shown: a move made from an older picture is refused.
+    pub fn move_rows(
+        &self,
+        id: u32,
+        at: u64,
+        count: u64,
+        to: u64,
+        shown: Option<u64>,
+    ) -> CmdResult<DocInfo> {
+        let mut moved = None;
+        let mut info = self.edit(id, |d| {
+            if shown.is_some_and(|s| s != d.row_count()) {
+                return Err(natendo_engine::Error::Invalid(
+                    "the rows changed; try again".into(),
+                ));
+            }
+            moved = d.move_rows_at(at, count, to)?;
+            Ok(())
+        })?;
+        if count <= MAX_ROWS_CHANGE {
+            info.rows_change = moved.map(|(runs, to)| RowsChange::Move { runs, to });
+        }
+        Ok(info)
     }
 
     pub fn insert_cols(&self, id: u32, at: u32, count: u32) -> CmdResult<DocInfo> {
@@ -11043,6 +11070,25 @@ r7,x
         let json = serde_json::to_value(&del).unwrap();
         assert_eq!(json["rows_change"]["kind"], "delete");
         assert!(serde_json::to_value(&ins).unwrap()["rows_change"]["at"] == 5);
+        // A move: shown rows 2..4 (document rows 3 and 5, row 4 hidden between)
+        // to the end, after the last shown row (7).
+        let mv = docs.move_rows(id, 2, 2, 3, Some(5)).unwrap();
+        assert_eq!(
+            mv.rows_change,
+            Some(RowsChange::Move {
+                runs: vec![(3, 1), (5, 1)],
+                to: 6
+            })
+        );
+        assert_eq!(docs.doc_rows(id, 0, 10).unwrap(), [0, 2, 5, 6, 7]);
+        assert_eq!(
+            serde_json::to_value(&mv).unwrap()["rows_change"]["kind"],
+            "move"
+        );
+        // Made from an older picture of the shown rows: refused, nothing moves.
+        let e = docs.move_rows(id, 1, 1, 2, Some(9)).unwrap_err();
+        assert!(e.message.contains("rows changed"), "{}", e.message);
+        assert_eq!(docs.doc_rows(id, 0, 10).unwrap(), [0, 2, 5, 6, 7]);
     }
 
     #[test]
@@ -14681,7 +14727,7 @@ B,y
         assert_eq!(i.cols, 3);
         assert!(i.column_changes);
         docs.move_cols(id, 2, 1, 0).unwrap();
-        docs.move_rows(id, 1, 1, 0).unwrap();
+        docs.move_rows(id, 1, 1, 0, None).unwrap();
         assert_eq!(docs.copy(id, 0, 2, 0, 3).unwrap(), "2\t1\t\r\nb\ta\t\r\n");
         docs.delete_cols(id, 2, 1).unwrap();
         docs.delete_rows(id, 0, 1).unwrap();

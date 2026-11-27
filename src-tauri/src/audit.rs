@@ -759,7 +759,9 @@ fn what_each_writing_operation_does_to_hidden_rows() {
             .map(drop)
     });
     run("put_back_notes", &|s| s.docs.put_back_notes(s.id).map(drop));
-    run("move_rows", &|s| s.docs.move_rows(s.id, 2, 2, 8).map(drop));
+    run("move_rows", &|s| {
+        s.docs.move_rows(s.id, 2, 2, 8, None).map(drop)
+    });
     run("insert_cols", &|s| s.docs.insert_cols(s.id, 1, 1).map(drop));
     run("delete_cols", &|s| s.docs.delete_cols(s.id, 4, 1).map(drop));
     run("move_cols", &|s| s.docs.move_cols(s.id, 1, 1, 4).map(drop));
@@ -779,7 +781,9 @@ fn what_each_writing_operation_does_to_hidden_rows() {
         ("sort", "moved"),
         // Refused while rows are hidden.
         ("shift_cells#29", "refused"),
-        ("move_rows", "refused"),
+        // Shown rows moved past hidden ones shift where those sit; the hidden
+        // rows keep their order among themselves (gap #5, tested in the engine).
+        ("move_rows", "moved"),
         // Report notes are the first and last rows of the file: refused
         // while some rows are hidden (C4).
         ("set_aside", "refused"),

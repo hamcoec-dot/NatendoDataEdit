@@ -347,6 +347,54 @@ describe("heights while rows are hidden", () => {
     ]);
   });
 
+  it("moveRuns takes heights with the gathered rows and leaves the rest in order", () => {
+    const h = new RowHeights();
+    h.set([2], 20);
+    h.set([3], 30);
+    h.set([5], 50);
+    h.set([9], 90);
+    // Rows 3 and 5 (row 4 between stays) gathered to start at 6 once out.
+    h.moveRuns(
+      [
+        [3, 1],
+        [5, 1],
+      ],
+      6,
+    );
+    expect(h.toView()).toEqual([
+      [2, 20],
+      [6, 30],
+      [7, 50],
+      [9, 90],
+    ]);
+  });
+
+  it("moveRuns agrees with moving each row by hand", () => {
+    const r = rnd(9);
+    for (let t = 0; t < 300; t++) {
+      const n = 60;
+      const a = new RowHeights();
+      const order = Array.from({ length: n }, (_, i) => i);
+      for (let i = 0; i < 12; i++) a.set([Math.floor(r() * n)], 20 + i);
+      const px = new Map(a.toView());
+      const runs: [number, number][] = [];
+      let at = Math.floor(r() * 5);
+      while (at < n - 5 && runs.length < 4) {
+        const k = 1 + Math.floor(r() * 3);
+        runs.push([at, k]);
+        at += k + 1 + Math.floor(r() * 8);
+      }
+      const total = runs.reduce((s, x) => s + x[1], 0);
+      const to = Math.floor(r() * (n - total + 1));
+      const moved = runs.flatMap(([p, k]) => order.slice(p, p + k));
+      const kept = order.filter((x) => !moved.includes(x));
+      kept.splice(to, 0, ...moved);
+      const want = kept.flatMap((was, now) => (px.has(was) ? [[now, px.get(was)!]] : []));
+      a.moveRuns(runs, to);
+      expect(a.toView()).toEqual(want);
+    }
+  });
+
   it("deleteRuns agrees with deleting each run by hand, last first", () => {
     const r = rnd(4);
     for (let t = 0; t < 200; t++) {

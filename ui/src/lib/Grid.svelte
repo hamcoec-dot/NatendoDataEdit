@@ -2481,7 +2481,6 @@
         const r = tab.drawRect;
         if (!e.shiftKey && !e.ctrlKey && onMoveRows && !readOnly && !tab.extra.length && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) {
           moving = { kind: "rows", from: r, startX: x, startY: y, active: false, grab: { row: h.row, col: 0 }, to: null, px: x, py: y, offset: y - rowY(r.row, visibleRows()) };
-          if (tab.info.filtered) moving.refuse = "Rows can't be moved while a filter is on. Clear the filter first (Filtered ✕).";
           break;
         }
         if (e.ctrlKey && !e.shiftKey) addBlock({ row: h.row, col: 0 }, { row: h.row, col: fullCols });
@@ -2683,7 +2682,7 @@
       const grab =
         !readOnly &&
         ((h.area === "col" && h.edge === null && !!onMoveCols && wholeColsSel(r) && h.col >= r.col && h.col < r.col + r.cols) ||
-          (h.area === "row" && !!onMoveRows && !tab.info.filtered && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) ||
+          (h.area === "row" && !!onMoveRows && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) ||
           (h.area === "cell" && !!onMoveCells && !editing && onSelOutline(x, y)));
       const fz = onFreezeEdge(x, y);
       if (!fz && !onHandle(x, y) && h.area === "row" && h.edge !== undefined) {

@@ -1,5 +1,6 @@
 ## Not yet released
 
+- **Move rows while filtered:** with a filter on or rows hidden, Alt+Shift+Up/Down and dragging row numbers move the shown rows; hidden rows stay where they are, and the status line says so when the move passed them. Row heights go with the moved rows.
 - **Row heights while filtered:** with a filter on or rows hidden, each shown row now keeps its own height, and you can drag, set, fit and reset the heights of the rows you see. Inserting and deleting rows while filtered keeps the heights on their rows instead of clearing them, and Excel export of a filtered table writes the shown rows' heights.
 - **Print the selection:** right-click a cell (or File > Print the selection) to print just the selected block, its rows and its columns. Save as PDF does the same. With several blocks selected the choice is off and says why.
 - **Print fits for real:** "All columns to the page width" now shrinks the text in Print the way Save as PDF does, instead of squeezing the columns. The new **Everything on one page** fit shrinks it so all rows fit one page too. Neither goes below 4 pt, and the dialog says the size it will print at, or how many pages it still needs.

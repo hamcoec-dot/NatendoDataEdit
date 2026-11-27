@@ -2137,7 +2137,11 @@ mod tests {
             ["name", "eve"]
         );
         assert_eq!(d.total_rows(), 4);
-        assert!(matches!(d.move_rows(0, 1, 1), Err(Error::FilterActive)));
+        // Moving shown rows works while filtered (gap #5); Undo puts them back.
+        d.move_rows(0, 1, 1).unwrap();
+        assert_eq!(d.cell(0, 0).unwrap(), "eve");
+        assert!(d.undo());
+        assert_eq!(d.cell(0, 0).unwrap(), "name");
         d.save(crate::SaveOptions::default()).unwrap();
         assert!(d.is_filtered());
         assert_eq!(d.row_count(), 2);

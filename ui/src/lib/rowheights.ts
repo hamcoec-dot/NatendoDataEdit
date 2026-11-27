@@ -287,6 +287,47 @@ export class RowHeights {
     this.commit(keep, pk);
   }
 
+  /** These document rows, as runs `[first, count]` in order (positions as
+   *  before), were taken out and put together in their order starting at `to`
+   *  (a position once they were out): their heights go with them. One pass,
+   *  then a merge of two sorted lists. */
+  moveRuns(runs: readonly (readonly [number, number])[], to: number): void {
+    if (!this.rows.length || !runs.length) return;
+    const total = runs.reduce((a, r) => a + r[1], 0);
+    const kr: number[] = [];
+    const kp: number[] = [];
+    const mr: number[] = [];
+    const mp: number[] = [];
+    let j = 0;
+    let gone = 0;
+    for (let i = 0; i < this.rows.length; i++) {
+      const r = this.rows[i]!;
+      while (j < runs.length && runs[j]![0] + runs[j]![1] <= r) gone += runs[j++]![1];
+      if (j < runs.length && r >= runs[j]![0]) {
+        mr.push(to + gone + (r - runs[j]![0]));
+        mp.push(this.px[i]!);
+      } else {
+        const left = r - gone;
+        kr.push(left >= to ? left + total : left);
+        kp.push(this.px[i]!);
+      }
+    }
+    const rows: number[] = [];
+    const px: number[] = [];
+    let a = 0;
+    let b = 0;
+    while (a < kr.length || b < mr.length) {
+      if (b >= mr.length || (a < kr.length && kr[a]! < mr[b]!)) {
+        rows.push(kr[a]!);
+        px.push(kp[a++]!);
+      } else {
+        rows.push(mr[b]!);
+        px.push(mp[b++]!);
+      }
+    }
+    this.commit(rows, px);
+  }
+
   snapshot(): RowHeightSnap {
     return this.rows.length ? { rows: this.rows, px: this.px, sum: this.sum } : NONE;
   }

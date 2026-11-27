@@ -3668,12 +3668,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   /** How custom row heights must follow a change to the rows (null: not
    *  needed). Shown rows are the file's rows unless some are hidden or filtered
-   *  out; then an insert or delete follows the document positions the engine
-   *  reports with its answer (moving rows is refused there). */
+   *  out; then an insert, delete or move follows the document positions the
+   *  engine reports with its answer. */
   function rowMapFor(t: Tab, c: Change): RowMap | null {
     if (t.rowHeights.empty) return null;
     if (c.op !== "insert_rows" && c.op !== "delete_rows" && c.op !== "move_rows") return null;
-    if (t.info.filtered || t.info.rows !== t.info.total_rows) return c.op === "move_rows" ? { kind: "reset" } : { kind: "report" };
+    if (t.info.filtered || t.info.rows !== t.info.total_rows) return { kind: "report" };
     if (c.op === "insert_rows") return { kind: "insert", at: c.at, count: c.count };
     if (c.op === "delete_rows") return { kind: "delete", at: c.at, count: c.count };
     return { kind: "move", at: c.at, count: c.count, to: c.to };
@@ -3683,6 +3683,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const t = tab;
     if (t && c.op !== "undo" && c.op !== "redo") t.whatNext = CHANGE_WHAT[c.op] ?? null;
     if (t) t.pendingRows = rowMapFor(t, c);
+    // While rows are hidden a move names shown rows: the engine refuses it if
+    // they changed since this picture of them.
+    if (t && c.op === "move_rows" && someHidden(t)) c = { ...c, shown: t.info.rows };
     const ok = await apply((x) => backend().change(x.id, c), dataChanged);
     if (t) t.pendingRows = null;
     return ok;
@@ -4364,6 +4367,28 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     say(`${insert ? "Inserted" : "Deleted"} ${plural(cellCount(r), "cell")}; ${how}. Undo (Ctrl+Z) takes it back.`);
   }
 
+  function someHidden(t: Tab): boolean {
+    return t.info.filtered || t.info.rows !== t.info.total_rows;
+  }
+
+  /** What a move made while rows were hidden did around them ("" when it
+   *  passed no hidden row): hidden rows between the moved ones, above them at
+   *  the top of the shown rows or below them at the bottom stay where they are. */
+  function movedNote(t: Tab, count: number, to: number): string {
+    const c = t.info.rows_change;
+    if (c?.kind !== "move" || !c.runs.length) return "";
+    const first = c.runs[0]!;
+    const last = c.runs[c.runs.length - 1]!;
+    const between = last[0] + last[1] - first[0] - count;
+    const above = to === t.firstRow ? c.to - to : 0;
+    const below = to + count === t.info.rows ? t.info.total_rows - (c.to + count) : 0;
+    const parts: string[] = [];
+    if (between > 0) parts.push(`${plural(between, "hidden row")} between them stayed in place.`);
+    if (above > 0) parts.push(`They are at the top of the shown rows; ${plural(above, "hidden row")} above stayed in place.`);
+    if (below > 0) parts.push(`They are at the bottom of the shown rows; ${plural(below, "hidden row")} below stayed in place.`);
+    return parts.length ? `Moved ${plural(count, "row")}. ${parts.join(" ")} Ctrl+Z puts ${count === 1 ? "it" : "them"} back.` : "";
+  }
+
   async function moveRows(dir: -1 | 1): Promise<void> {
     const t = tab;
     if (!t) return;
@@ -4371,7 +4396,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (!r) return;
     const to = r.row + dir;
     if (to < t.firstRow || to + r.rows > t.info.rows) return;
+    const hidden = someHidden(t);
     if (await change({ op: "move_rows", at: r.row, count: r.rows, to })) {
+      const note = hidden ? movedNote(t, r.rows, to) : "";
+      if (note) say(note);
       const a = t.sel.active;
       grid?.select({ row: t.sel.anchor.row + dir, col: t.sel.anchor.col }, { row: t.sel.focus.row + dir, col: t.sel.focus.col }, true, a && { row: a.row + dir, col: a.col });
     }
@@ -4407,13 +4435,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   async function dragRows(at: number, count: number, to: number): Promise<void> {
     const t = tab;
     if (!t || !ready()) return;
-    if (t.info.filtered) {
-      say("Rows can't be moved while a filter is on. Clear the filter first (Filtered ✕).");
-      return;
-    }
+    const hidden = someHidden(t);
     if (await change({ op: "move_rows", at, count, to })) {
       grid?.select({ row: to, col: 0 }, { row: to + count - 1, col: Math.max(0, t.info.cols - 1) }, false);
-      say(`Moved ${count === 1 ? "1 row" : `${count.toLocaleString()} rows`}. Ctrl+Z puts ${count === 1 ? "it" : "them"} back.`);
+      say((hidden && movedNote(t, count, to)) || `Moved ${count === 1 ? "1 row" : `${count.toLocaleString()} rows`}. Ctrl+Z puts ${count === 1 ? "it" : "them"} back.`);
     }
   }
 

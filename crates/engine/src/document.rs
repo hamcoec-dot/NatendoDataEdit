@@ -22,6 +22,8 @@ use crate::scan::{self, Mode};
 use crate::source::Source;
 use crate::Error;
 
+#[cfg(test)]
+mod move_tests;
 pub mod ragged;
 mod rebase;
 pub use rebase::HistoryKept;
@@ -399,6 +401,10 @@ impl Progress {
         }
     }
 }
+
+/// Rows a move took out, as runs `(first, count)` of document positions
+/// before the move, and the position they start at once they are out.
+pub type RowsMoved = (Vec<(u64, u64)>, u64);
 
 /// A filter's result: which rows show. Fixed when the filter is applied
 /// (editing a row does not hide it until the filter is applied again).
@@ -2086,24 +2092,98 @@ impl Document {
     /// Move `count` rows at position `at` so they start at position `to`
     /// afterwards (for example, to make a row the header row).
     pub fn move_rows(&mut self, at: u64, count: u64, to: u64) -> Result<(), Error> {
+        self.move_rows_at(at, count, to).map(drop)
+    }
+
+    /// [`Document::move_rows`], returning what moved in document positions:
+    /// the runs taken out `(first, count)`, first run first, as they were
+    /// before the move, and the position the gathered rows start at once they
+    /// are out (`None` when nothing moved).
+    ///
+    /// With a filter on (or rows hidden), `at`, `count` and `to` are shown
+    /// positions and only the shown rows move: they are gathered, in their
+    /// order, straight before the shown row that ends up after them (straight
+    /// after the last shown row when `to` is the end). Hidden rows stay where
+    /// they are, in their order.
+    pub fn move_rows_at(
+        &mut self,
+        at: u64,
+        count: u64,
+        to: u64,
+    ) -> Result<Option<RowsMoved>, Error> {
         self.ready()?;
-        if self.view.is_some() {
-            return Err(Error::FilterActive);
-        }
-        let n = self.total_rows();
+        let n = self.row_count();
         let fits = |p: u64| p.checked_add(count).is_some_and(|e| e <= n);
         if !fits(at) || !fits(to) {
             return Err(Error::OutOfRange);
         }
-        if count == 0 || at == to {
-            return Ok(());
+        if count == 0 {
+            return Ok(None);
         }
-        self.push(Op::MoveRows {
-            at: at as usize,
-            count: count as usize,
-            to: to as usize,
-        });
-        Ok(())
+        let Some(v) = &self.view else {
+            if at == to {
+                return Ok(None);
+            }
+            self.push(Op::MoveRows {
+                at: at as usize,
+                count: count as usize,
+                to: to as usize,
+            });
+            return Ok(Some((vec![(at, count)], to)));
+        };
+        let vis = self.visible(v);
+        let (a, c) = (at as usize, count as usize);
+        let moved = &vis[a..a + c];
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for &p in moved {
+            match runs.last_mut() {
+                Some((s, k)) if *s + *k == p as usize => *k += 1,
+                _ => runs.push((p as usize, 1)),
+            }
+        }
+        // The shown rows that stay, by index: before the block, then after it.
+        let rest = |i: usize| if i < a { vis[i] } else { vis[i + c] } as usize;
+        let left = vis.len() - c;
+        // Moved rows before document position p.
+        let before = |p: usize| moved.partition_point(|&m| (m as usize) < p);
+        let dest = if (to as usize) < left {
+            let p = rest(to as usize);
+            p - before(p)
+        } else if left > 0 {
+            let p = rest(left - 1) + 1;
+            p - before(p)
+        } else {
+            // Nothing else is shown: the rows gather where the first one is.
+            runs[0].0
+        };
+        let out: Vec<(u64, u64)> = runs.iter().map(|&(s, k)| (s as u64, k as u64)).collect();
+        if runs.len() == 1 {
+            if runs[0].0 == dest {
+                return Ok(None);
+            }
+            self.push(Op::MoveRows {
+                at: runs[0].0,
+                count: c,
+                to: dest,
+            });
+        } else {
+            // Rows with hidden rows between them: one new order, as sorting
+            // makes (one undo step).
+            let mut take = moved.iter().map(|&m| m as usize).peekable();
+            let mut kept = Vec::with_capacity(self.total_rows() as usize);
+            let mut ids = Vec::with_capacity(c);
+            for (pos, id) in self.ids().enumerate() {
+                if take.peek() == Some(&pos) {
+                    take.next();
+                    ids.push(id);
+                } else {
+                    kept.push(id);
+                }
+            }
+            kept.splice(dest..dest, ids);
+            self.push(Op::SetOrder(Some(kept)));
+        }
+        Ok(Some((out, dest as u64)))
     }
 
     /// Insert rows before position `at` (`at == row_count()` appends).
@@ -2326,6 +2406,42 @@ impl Document {
             v.visible = OnceLock::new();
             v.hidden_rows = OnceLock::new();
         }
+    }
+
+    /// Rows `at..at + count` moved to start at `to` (a position once they
+    /// were out): the shown positions between are renumbered in place instead
+    /// of listing them again (a move does not change which rows show).
+    fn visible_moved(&mut self, at: usize, count: usize, to: usize) {
+        let Some(v) = &mut self.view else {
+            return;
+        };
+        let Some(vis) = v.visible.get_mut() else {
+            return;
+        };
+        let (lo, hi) = (at.min(to), at.max(to) + count);
+        let a = vis.partition_point(|&p| (p as usize) < lo);
+        let b = vis.partition_point(|&p| (p as usize) < hi);
+        let slice = &mut vis[a..b];
+        let mut moved = 0;
+        for p in slice.iter_mut() {
+            let q = *p as usize;
+            *p = if (at..at + count).contains(&q) {
+                moved += 1;
+                q - at + to
+            } else if at < to {
+                q - count
+            } else {
+                q + count
+            } as u32;
+        }
+        // The moved rows were first (moving down) or last (moving up) of the
+        // range; each part is still in order.
+        if at < to {
+            slice.rotate_left(moved);
+        } else {
+            slice.rotate_right(moved);
+        }
+        debug_assert!(slice.windows(2).all(|w| w[0] < w[1]));
     }
 
     /// Put rows in a new order (every id exactly once), as one undo step.
@@ -2611,7 +2727,8 @@ impl Document {
                 let o = self.order_mut();
                 let ids: Vec<u32> = o.drain(at..at + count).collect();
                 o.splice(to..to, ids);
-                self.rows_moved();
+                self.rows_changed();
+                self.visible_moved(at, count, to);
                 Op::MoveRows {
                     at: to,
                     count,

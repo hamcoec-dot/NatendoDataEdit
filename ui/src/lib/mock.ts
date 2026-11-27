@@ -1773,7 +1773,6 @@ export class MockBackend implements Backend {
         };
       });
     }
-    if (d.shown && c.op === "move_rows") throw err("filter_active", "turn the filter off to move rows (browser preview)");
     switch (c.op) {
       case "undo": {
         const step = d.undo.pop();
@@ -1820,12 +1819,44 @@ export class MockBackend implements Backend {
         });
         return c.count <= 100_000 ? { ...info, rows_change: { kind: "delete", runs } } : info;
       }
-      case "move_rows":
+      case "move_rows": {
+        if (c.shown !== undefined && c.shown !== rows) throw err("invalid", "the rows changed; try again");
         if (c.at + c.count > rows || c.to + c.count > rows) throw range();
-        return this.push(d, () => {
-          move(this.orderOf(d), c.at, c.count, c.to);
-          return () => move(this.orderOf(d), c.to, c.count, c.at);
+        const vis = this.visible(d);
+        if (!vis) {
+          const info = await this.push(d, () => {
+            move(this.orderOf(d), c.at, c.count, c.to);
+            return () => move(this.orderOf(d), c.to, c.count, c.at);
+          });
+          return c.count && c.at !== c.to ? { ...info, rows_change: { kind: "move", runs: [[c.at, c.count]], to: c.to } } : info;
+        }
+        // With rows hidden (as the engine): the shown rows gather straight
+        // before the shown row that ends up after them; hidden rows stay.
+        const moved = vis.slice(c.at, c.at + c.count);
+        const runs: [number, number][] = [];
+        for (const p of moved) {
+          const last = runs[runs.length - 1];
+          if (last && last[0] + last[1] === p) last[1]++;
+          else runs.push([p, 1]);
+        }
+        const rest = vis.filter((_, i) => i < c.at || i >= c.at + c.count);
+        const before = (p: number) => moved.filter((m) => m < p).length;
+        const dest = c.to < rest.length ? rest[c.to]! - before(rest[c.to]!) : rest.length ? rest[rest.length - 1]! + 1 - before(rest[rest.length - 1]! + 1) : runs[0]![0];
+        if (!c.count || (runs.length === 1 && runs[0]![0] === dest)) return this.refresh(d);
+        const was = this.orderOf(d).slice();
+        const take = new Set(moved);
+        const kept = was.filter((_, p) => !take.has(p));
+        kept.splice(dest, 0, ...moved.map((p) => was[p]!));
+        const info = await this.push(d, () => {
+          d.order = kept.slice();
+          d.visible = null;
+          return () => {
+            d.order = was.slice();
+            d.visible = null;
+          };
         });
+        return c.count <= 100_000 ? { ...info, rows_change: { kind: "move", runs, to: dest } } : info;
+      }
       case "insert_cols":
         if (c.at > cols) throw range();
         return this.push(d, () => {

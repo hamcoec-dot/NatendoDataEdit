@@ -324,7 +324,7 @@ everything is also in command search.
 - Tabs for each open file, frozen rows and columns, insert, delete, move,
   hide, resize and auto-fit columns, hide and show rows (Ctrl+9,
   Ctrl+Shift+9).
-- **Row heights:** drag the line under a row number to make that row taller or shorter (14 to 400 pixels); with several rows selected, dragging the line of one sets them all. Double-click the line to fit the row to its wrapped text (rows you can see; scroll to others and fit again). Format > Height of the selected rows… types an exact height, Fit the selected rows to their text and Reset the height of the selected rows do the other two, and the same three are in the row-number right-click menu. Wrapped text fills the row's own height. Ctrl+Z undoes each change in one step. A row you resize keeps its height as rows are inserted, deleted or moved around it (and Undo and Redo keep it on the same data row); inserting and deleting rows while a filter is on or rows are hidden keeps them on their rows too. If rows change in a way the grid cannot follow (a tool that adds or removes rows, moving rows while some are hidden, or deleting more than 100,000 rows at once while filtered) the heights are cleared with a message and Ctrl+Z brings them back. Sorting leaves each height where it is (the row position), as in Excel. While a filter is on or rows are hidden, each shown row keeps its own height (as in Excel), and the drag, Height of the selected rows, Fit and Reset work on the rows you see; a hidden row keeps its height for when it shows again. Views and "Pick up where you left off" keep row heights, and Excel export writes them (for the shown rows while filtered); PDF and print draw every row at the same height, and heights in an Excel file you open are not imported. "Row height of every row (lines)" is still there for the plain height; a row's own height wins over it, and Reset takes the row back to it.
+- **Row heights:** drag the line under a row number to make that row taller or shorter (14 to 400 pixels); with several rows selected, dragging the line of one sets them all. Double-click the line to fit the row to its wrapped text (rows you can see; scroll to others and fit again). Format > Height of the selected rows… types an exact height, Fit the selected rows to their text and Reset the height of the selected rows do the other two, and the same three are in the row-number right-click menu. Wrapped text fills the row's own height. Ctrl+Z undoes each change in one step. A row you resize keeps its height as rows are inserted, deleted or moved around it (and Undo and Redo keep it on the same data row); inserting and deleting rows while a filter is on or rows are hidden keeps them on their rows too. If rows change in a way the grid cannot follow (a tool that adds or removes rows, or deleting or moving more than 100,000 rows at once while filtered) the heights are cleared with a message and Ctrl+Z brings them back; moving rows while filtered keeps them on their rows too. Sorting leaves each height where it is (the row position), as in Excel. While a filter is on or rows are hidden, each shown row keeps its own height (as in Excel), and the drag, Height of the selected rows, Fit and Reset work on the rows you see; a hidden row keeps its height for when it shows again. Views and "Pick up where you left off" keep row heights, and Excel export writes them (for the shown rows while filtered); PDF and print draw every row at the same height, and heights in an Excel file you open are not imported. "Row height of every row (lines)" is still there for the plain height; a row's own height wins over it, and Reset takes the row back to it.
 
 ![Rows of different heights: one fitted to its wrapped note, others dragged taller, the rest plain](docs/screenshots/row-heights.png)
 
@@ -368,7 +368,11 @@ everything is also in command search.
   again, drag the edges of the top-left corner to freeze rows or columns, and
   drag file tabs into another order (the tab follows the pointer and the
   others slide aside to show where it will land; Esc puts it back;
-  Ctrl+Alt+Shift+PageUp/PageDown moves the shown tab from the keyboard). Each move is one undo step, and colour
+  Ctrl+Alt+Shift+PageUp/PageDown moves the shown tab from the keyboard). While
+  a filter is on or rows are hidden, moving rows (by their numbers or with
+  Alt+Shift+Up/Down) moves only the shown rows, gathered in their order, and
+  every hidden row stays where it is; the status line says when hidden rows
+  between them, above them or below them stayed in place. Each move is one undo step, and colour
   scales, highlight rules and checks move with their columns. Help > Mouse
   and drag moves lists them all.
 - **Split view** (View > Split top and bottom, Alt+Shift+W, or Split side by
@@ -1987,7 +1991,7 @@ request must carry the key. Requests are one JSON object per line:
 - PDF output does not include Chinese, Japanese or Korean characters yet.
 - Dragging or cutting and pasting a block of cells moves up to 50,000 cells
   at once (Ctrl+drag copies up to 100,000); whole rows and columns have no
-  such limit. Rows cannot be moved while a filter is on.
+  such limit.
 - Undo does not cover: saving (it is not a step, and changes to the data
   made before a save cannot be undone after it, as the file is rewritten;
   changes to the look still can), opening, closing and moving tabs, scrolling, zoom and the
