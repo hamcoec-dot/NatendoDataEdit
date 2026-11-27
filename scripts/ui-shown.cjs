@@ -172,7 +172,9 @@ const url = process.argv[3] || "http://localhost:5301";
   });
   await p.waitForTimeout(700);
   await hide(6, 1);
-  const only = await findSeam(box.y + 40, box.y + 75, /filtered out here/);
+  // The filter chips bar above the grid moves it down: measure it again.
+  const fbox = await p.locator("canvas").first().boundingBox();
+  const only = await findSeam(fbox.y + 40, fbox.y + 75, /filtered out here/);
   ok(!!only && only.tip === "1 row filtered out here. Click for the filter.", `a filter-only gap promises nothing hidden by hand (${only?.tip})`);
   const before = await hiddenNow();
   if (only) await p.mouse.click(box.x + 25, only.y);

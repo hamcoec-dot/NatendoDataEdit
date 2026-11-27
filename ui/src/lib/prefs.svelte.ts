@@ -53,6 +53,8 @@ export interface PrefsData {
   totalsShown: TotalKind[];
   /** Alternating row colours for new tabs (each tab and view can differ). */
   banded: boolean;
+  /** The filter chips bar above the grid while a filter is on (C8). */
+  filterChips: boolean;
   /** Suggest the rest of a value from the column while typing. */
   typeahead: boolean;
   /** Custom sort orders the user added. */
@@ -162,6 +164,7 @@ const DEFAULTS: PrefsData = {
   totals: "sum",
   totalsShown: ["sum", "count"],
   banded: false,
+  filterChips: true,
   typeahead: true,
   sortLists: [],
   autosave: true,
@@ -214,6 +217,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       totals: TOTAL_KINDS.includes(p.totals as TotalKind) ? p.totals! : "sum",
       totalsShown: shownTotals(p.totalsShown),
       banded: p.banded === true,
+      filterChips: p.filterChips !== false,
       typeahead: p.typeahead !== false,
       sortLists: Array.isArray(p.sortLists) ? p.sortLists.filter((l) => l && typeof l.name === "string" && Array.isArray(l.items)).slice(0, 60).map((l) => ({ name: String(l.name).slice(0, 200), items: l.items.filter((i): i is string => typeof i === "string").slice(0, 10_000).map((i) => i.slice(0, 1000)) })) : [],
       autosave: p.autosave !== false,

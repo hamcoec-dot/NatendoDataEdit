@@ -76,13 +76,30 @@ pub(crate) struct RuleCache {
     map: HashMap<String, (Arc<Vec<u64>>, u64)>,
     tick: u64,
     bytes: usize,
+    /// For the column chips last folded: how many rules that are on each
+    /// row passes (one byte a row, by row id). A switch then reads only the
+    /// rule switched, never all the others again.
+    count: Option<PassCount>,
 }
+
+/// How many of `keys` (rules that are on, "!" before an inverted one) each
+/// row passes, by row id.
+struct PassCount {
+    /// The reading options and title row the keys were read with.
+    ctx: String,
+    keys: Vec<String>,
+    per_row: Vec<u8>,
+}
+
+/// Most column rules a filter's chips count row by row (one byte a row).
+const MAX_COUNTED: usize = 255;
 
 impl RuleCache {
     fn at(&mut self, rev: u64) {
         if self.rev != rev {
             self.map.clear();
             self.bytes = 0;
+            self.count = None;
             self.rev = rev;
         }
     }
@@ -379,6 +396,30 @@ pub(crate) fn renumber(
     (sets, cols)
 }
 
+/// The column rules after `change`, for a recipe (`None`: the change is to
+/// a tool's chip, which a recipe cannot repeat).
+pub fn spec_after(spec: &FilterSpec, change: &ChipChange) -> Option<FilterSpec> {
+    let mut s = spec.clone();
+    let n = s.columns.len();
+    match change {
+        ChipChange::Toggle { index } if *index < n => s.columns[*index].enabled ^= true,
+        ChipChange::Negate { index } if *index < n => s.columns[*index].negate ^= true,
+        ChipChange::Remove { index } if *index < n => {
+            s.columns.remove(*index);
+        }
+        ChipChange::Rename { index, name } if *index < n => {
+            s.columns[*index].name = name
+                .as_ref()
+                .map(|n| n.trim().chars().take(80).collect::<String>())
+                .filter(|n| !n.is_empty());
+        }
+        ChipChange::Combine { combine } => s.combine = *combine,
+        ChipChange::Invert { on } => s.invert = *on,
+        _ => return None,
+    }
+    Some(s)
+}
+
 /// The tool chips that are on, folded with Match all (for the filter
 /// panel's counts).
 pub(crate) struct SetMask {
@@ -468,49 +509,47 @@ impl Document {
         Ok(out.into_iter().map(|b| b.expect("found")).collect())
     }
 
-    /// One pass over every row: each rule's PASS rows.
+    /// One pass over every row: each rule's PASS rows, set straight into
+    /// one bit set per rule (no list of rows is kept on the way).
     fn each_rule_pass(
         &self,
         rules: &[ColumnFilter],
         spec: &FilterSpec,
         progress: &Progress,
     ) -> Result<Vec<Vec<u64>>, Error> {
+        use std::sync::atomic::{AtomicU64, Ordering};
         let compiled = crate::filter::Compiled::new(rules, &self.read_ctx(spec.read))?;
         let total = self.total_rows();
         let first = usize::from(spec.keep_first && total > 0);
         let n = rules.len();
+        let words = (self.next_row_id() as usize).div_ceil(64);
+        let bits: Vec<Vec<AtomicU64>> = (0..n)
+            .map(|_| (0..words).map(|_| AtomicU64::new(0)).collect())
+            .collect();
         progress.start(total);
         let chunks = (total as usize).div_ceil(crate::filter::CHUNK);
-        let parts: Vec<Vec<Vec<u32>>> = (0..chunks)
+        (0..chunks)
             .into_par_iter()
-            .map(|c| -> Result<Vec<Vec<u32>>, Error> {
+            .try_for_each(|c| -> Result<(), Error> {
                 let s = c * crate::filter::CHUNK;
                 let e = (s + crate::filter::CHUNK).min(total as usize);
-                let mut out = vec![Vec::new(); n];
                 let mut buf = Vec::new();
                 for pos in s.max(first)..e {
                     let id = self.doc_id_at(pos as u64).expect("in range");
                     self.read_cells(id, compiled.wanted(), &mut buf);
-                    for (i, o) in out.iter_mut().enumerate() {
+                    for (i, b) in bits.iter().enumerate() {
                         if compiled.passes_one(i, &buf) {
-                            o.push(id);
+                            b[(id >> 6) as usize].fetch_or(1 << (id & 63), Ordering::Relaxed);
                         }
                     }
                 }
                 progress.step((e - s) as u64)?;
-                Ok(out)
-            })
-            .collect::<Result<_, _>>()?;
-        let words = (self.next_row_id() as usize).div_ceil(64);
-        let mut bits = vec![vec![0u64; words]; n];
-        for part in parts {
-            for (i, ids) in part.into_iter().enumerate() {
-                for id in ids {
-                    set_bit(&mut bits[i], id);
-                }
-            }
-        }
-        Ok(bits)
+                Ok(())
+            })?;
+        Ok(bits
+            .into_iter()
+            .map(|b| b.into_iter().map(AtomicU64::into_inner).collect())
+            .collect())
     }
 
     /// The column chips folded together (`spec` physical): PASS rows, or
@@ -530,6 +569,11 @@ impl Document {
             ..spec.clone()
         };
         let resolved = self.resolve_top(&only_on, progress)?;
+        if resolved.columns.len() <= MAX_COUNTED {
+            return self
+                .cols_counted(spec, &resolved.columns, progress)
+                .map(Some);
+        }
         let each = self.rule_pass(spec, &resolved.columns, progress)?;
         let words = (self.next_row_id() as usize).div_ceil(64);
         let mut out = match spec.combine {
@@ -547,6 +591,137 @@ impl Document {
             }
         }
         Ok(Some(Arc::new(out)))
+    }
+
+    /// The column chips that are on (`on`, resolved), folded through the
+    /// count of rules each row passes: the count kept from the last fold is
+    /// brought to these rules by reading only the rules added or taken out
+    /// (all of them when that is fewer, or after an edit).
+    fn cols_counted(
+        &self,
+        spec: &FilterSpec,
+        on: &[ColumnFilter],
+        progress: &Progress,
+    ) -> Result<Arc<Vec<u64>>, Error> {
+        let keys: Vec<String> = on
+            .iter()
+            .map(|c| format!("{}{}", if c.negate { "!" } else { "" }, rule_key(c, spec)))
+            .collect();
+        let ids = self.next_row_id() as usize;
+        let rev = self.data_revision();
+        let ctx = serde_json::to_string(&(spec.read, spec.keep_first)).unwrap_or_default();
+        let kept = {
+            let mut cache = self.rule_cache.lock().unwrap_or_else(|p| p.into_inner());
+            cache.at(rev);
+            cache.count.take()
+        };
+        // What to add and take out, as multisets of keys.
+        let mut add: Vec<usize> = Vec::new();
+        let mut sub: Vec<String> = Vec::new();
+        let mut per_row = match kept {
+            Some(k) if k.per_row.len() == ids && k.ctx == ctx => {
+                let mut left = k.keys.clone();
+                for (i, key) in keys.iter().enumerate() {
+                    match left.iter().position(|x| x == key) {
+                        Some(j) => {
+                            left.swap_remove(j);
+                        }
+                        None => add.push(i),
+                    }
+                }
+                sub = left;
+                if add.len() + sub.len() > keys.len() {
+                    add = (0..keys.len()).collect();
+                    sub.clear();
+                    vec![0u8; ids]
+                } else {
+                    k.per_row
+                }
+            }
+            _ => {
+                add = (0..keys.len()).collect();
+                vec![0u8; ids]
+            }
+        };
+        // The rules to read (their own PASS rows, inverted here).
+        let strip = |k: &str| -> (bool, String) {
+            match k.strip_prefix('!') {
+                Some(r) => (true, r.to_string()),
+                None => (false, k.to_string()),
+            }
+        };
+        let mut want: Vec<ColumnFilter> = add.iter().map(|&i| on[i].clone()).collect();
+        let mut signs: Vec<(bool, i8)> = add.iter().map(|&i| (on[i].negate, 1)).collect();
+        for k in &sub {
+            let (neg, rk) = strip(k);
+            let Some(c) = self.rule_from_key(&rk, spec) else {
+                // A rule no longer known: count again from nothing.
+                return self.cols_counted_fresh(spec, on, &keys, progress);
+            };
+            want.push(c);
+            signs.push((neg, -1));
+        }
+        let each = self.rule_pass(spec, &want, progress)?;
+        for (bits, (neg, sign)) in each.iter().zip(&signs) {
+            per_row.par_iter_mut().enumerate().for_each(|(id, c)| {
+                let b = has_bit(bits, id as u32) != *neg;
+                if b {
+                    *c = if *sign > 0 {
+                        c.saturating_add(1)
+                    } else {
+                        c.saturating_sub(1)
+                    };
+                }
+            });
+        }
+        let n = keys.len() as u8;
+        let words = ids.div_ceil(64);
+        let any = spec.combine == Combine::Or;
+        let out: Vec<u64> = (0..words)
+            .into_par_iter()
+            .map(|w| {
+                let mut word = 0u64;
+                for b in 0..64 {
+                    let id = w * 64 + b;
+                    if id >= ids {
+                        break;
+                    }
+                    let c = per_row[id];
+                    if (any && c > 0) || (!any && c == n) {
+                        word |= 1 << b;
+                    }
+                }
+                word
+            })
+            .collect();
+        let mut cache = self.rule_cache.lock().unwrap_or_else(|p| p.into_inner());
+        if cache.rev == rev {
+            cache.count = Some(PassCount { ctx, keys, per_row });
+        }
+        Ok(Arc::new(out))
+    }
+
+    fn cols_counted_fresh(
+        &self,
+        spec: &FilterSpec,
+        on: &[ColumnFilter],
+        _keys: &[String],
+        progress: &Progress,
+    ) -> Result<Arc<Vec<u64>>, Error> {
+        {
+            let mut cache = self.rule_cache.lock().unwrap_or_else(|p| p.into_inner());
+            cache.count = None;
+        }
+        self.cols_counted(spec, on, progress)
+    }
+
+    /// The rule a cache key names (the key is the rule's JSON).
+    fn rule_from_key(&self, key: &str, _spec: &FilterSpec) -> Option<ColumnFilter> {
+        let v: serde_json::Value = serde_json::from_str(key).ok()?;
+        let rule = v.get(1).cloned()?;
+        let col = v.get(0).and_then(|c| c.as_u64())? as u32;
+        let rule: crate::filter::Rule = serde_json::from_value(rule).ok()?;
+        Some(ColumnFilter::new(col, rule))
     }
 
     /// The view the chips make: `spec` physical, its column chips folded
@@ -840,6 +1015,10 @@ impl Document {
             Some(m) => m.iter().position(|&x| x == p).map(|i| i as u32),
             None => Some(p),
         };
+        // A rule read only with the others (a plain first filter) is read
+        // once more on its own here, for its count, and kept for switching.
+        // A failure (stopped, changed) leaves the count unknown.
+        let _ = self.rule_pass(&v.spec, &v.spec.columns, &Progress::new());
         let mut chips = Vec::new();
         {
             let mut cache = self.rule_cache.lock().unwrap_or_else(|p| p.into_inner());

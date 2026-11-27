@@ -270,6 +270,7 @@ impl Op {
             Op::SetFilter(f) => {
                 32 + f.as_ref().map_or(0, |f| {
                     64 + f.bits.len() * 8
+                        + f.cols.as_ref().map_or(0, |c| c.len() * 8)
                         + f.spec.columns.len() * 128
                         + f.sets.iter().map(|s| 256 + s.bytes()).sum::<usize>()
                 })

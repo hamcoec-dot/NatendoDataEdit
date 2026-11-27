@@ -76,7 +76,10 @@ fn main() {
         d.apply_filter(plan).unwrap();
         runs.push(ms(t));
     }
-    println!("filter of 5 rules, plan and apply: median {:.1} ms ({shown} rows)", median(runs));
+    println!(
+        "filter of 5 rules, plan and apply: median {:.1} ms ({shown} rows)",
+        median(runs)
+    );
     println!("plan alone: median {:.1} ms", median(plans));
     if plain {
         return;
@@ -105,7 +108,10 @@ fn run_chips(d: &mut Document) {
     time(
         d,
         "switch a chip off and on",
-        &[ChipChange::Toggle { index: 2 }, ChipChange::Toggle { index: 2 }],
+        &[
+            ChipChange::Toggle { index: 2 },
+            ChipChange::Toggle { index: 2 },
+        ],
     );
     time(
         d,
@@ -122,12 +128,18 @@ fn run_chips(d: &mut Document) {
     time(
         d,
         "Invert all and back",
-        &[ChipChange::Invert { on: true }, ChipChange::Invert { on: false }],
+        &[
+            ChipChange::Invert { on: true },
+            ChipChange::Invert { on: false },
+        ],
     );
     time(
         d,
         "invert one chip and back",
-        &[ChipChange::Negate { index: 0 }, ChipChange::Negate { index: 0 }],
+        &[
+            ChipChange::Negate { index: 0 },
+            ChipChange::Negate { index: 0 },
+        ],
     );
     let ids: Vec<u32> = (1..1_000_000u32).step_by(3).collect();
     let t = Instant::now();
@@ -137,7 +149,10 @@ fn run_chips(d: &mut Document) {
     time(
         d,
         "switch the tool chip off and on",
-        &[ChipChange::Toggle { index: 5 }, ChipChange::Toggle { index: 5 }],
+        &[
+            ChipChange::Toggle { index: 5 },
+            ChipChange::Toggle { index: 5 },
+        ],
     );
     let c = d.filter_chips();
     println!("chips: {} shown of {}", c.shown, c.total);

@@ -210,6 +210,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "value dictionaries": ["data.loadDictionary", "data.saveDictionary", "data.values"],
   "group look alikes by sound or spelling": ["data.valuesLookalikes", "data.values"],
   "explode cells": ["data.explode"],
+  "filter chips": ["view.filterChips", "data.filter"],
   // Checking data
   "data checks": ["data.checks", "data.unmarkChecks", "data.clearChecks"],
   "no repeats across several columns": ["data.uniqueTogether", "data.checks"],

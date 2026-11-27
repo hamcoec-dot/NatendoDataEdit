@@ -2649,7 +2649,9 @@ impl Document {
                 Ok(matches!(to_bool(&v), Ok(true)).then_some((id, false)))
             },
         )?;
-        let (bad, ids): (Vec<(u32, bool)>, Vec<(u32, bool)>) = ids.into_iter().partition(|x| x.1);
+        // (id, gave an error): the errors, and the rows that passed.
+        type Found = Vec<(u32, bool)>;
+        let (bad, ids): (Found, Found) = ids.into_iter().partition(|x| x.1);
         let ids: Vec<u32> = ids.into_iter().map(|x| x.0).collect();
         let base = self.next_row_id();
         let mut bits = vec![0u64; (base as usize).div_ceil(64)];

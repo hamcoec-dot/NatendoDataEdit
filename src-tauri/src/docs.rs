@@ -4578,6 +4578,42 @@ impl Docs {
         Ok(self.get(id)?.read().filter_spec())
     }
 
+    /// The filter chips (C8): one per column rule, then one per tool.
+    pub fn filter_chips(&self, id: u32) -> CmdResult<natendo_engine::chips::FilterChips> {
+        Ok(self.get(id)?.read().filter_chips())
+    }
+
+    /// Switch, invert, rename or remove a chip, or change Match all/any or
+    /// Invert all (one undo step; it changes no data).
+    pub fn filter_change(
+        &self,
+        id: u32,
+        change: natendo_engine::chips::ChipChange,
+    ) -> CmdResult<DocInfo> {
+        let logged = {
+            let entry = self.get(id)?;
+            let d = entry.read();
+            let chips = d.filter_chips().chips;
+            let tools = chips.iter().any(|c| c.kind != "column");
+            let spec = d
+                .filter_spec()
+                .filter(|s| !tools && s.columns.len() == chips.len());
+            match spec.and_then(|s| natendo_engine::chips::spec_after(&s, &change)) {
+                Some(s) if s.columns.is_empty() => Logged::Step(RecipeOp::ClearFilter),
+                Some(s) => Logged::Step(RecipeOp::Filter { spec: s }),
+                None => Logged::LeftOut("a change to a filter chip made by a tool".into()),
+            }
+        };
+        self.recorded(id, logged, || {
+            self.compute_apply(
+                id,
+                "Filtering",
+                |d, p| d.plan_filter_change(&change, p),
+                |d, plan| d.apply_filter(plan),
+            )
+        })
+    }
+
     /// A column's values for its header menu.
     pub fn filter_values(
         &self,
@@ -4869,7 +4905,10 @@ impl Docs {
                     "Filtering",
                     |d, p| {
                         same(d)?;
-                        d.plan_show_matching(&spec, p)
+                        d.plan_show_matching(&spec, p).map(|mut c| {
+                            c.name_chip("matching", "Rows found");
+                            c
+                        })
                     },
                     |d, plan| d.apply_rows(plan),
                 )
@@ -5181,7 +5220,11 @@ impl Docs {
         self.compute_apply(
             id,
             "Filtering",
-            |d, _| Ok(d.plan_show_ids(&ids, keep_first)),
+            |d, _| {
+                let mut c = d.plan_show_ids(&ids, keep_first);
+                c.name_chip("ids", "Rows picked");
+                Ok(c)
+            },
             |d, plan| d.apply_rows(plan),
         )
     }
@@ -5545,7 +5588,12 @@ impl Docs {
         self.compute_apply(
             id,
             "Filtering",
-            |d, p| d.plan_show_noted(&book, flag, p),
+            |d, p| {
+                d.plan_show_noted(&book, flag, p).map(|mut c| {
+                    c.name_chip("notes", "Rows with notes");
+                    c
+                })
+            },
             |d, plan| d.apply_rows(plan),
         )
     }
@@ -7100,6 +7148,11 @@ impl Docs {
                     Planned::Cells(d.plan_fill_special(spec, value, p)?)
                 }
             };
+            let mut planned = planned;
+            if let Planned::Rows(c) = &mut planned {
+                let (kind, label) = chip_words(&op);
+                c.name_chip(kind, label);
+            }
             let mut r = report.borrow_mut();
             *r = OpReport::default();
             match &planned {
@@ -8208,7 +8261,8 @@ impl Docs {
     pub fn encoding_show_rows(&self, id: u32, keep_first: bool) -> CmdResult<DocInfo> {
         let scan = self.scan_encodings(id, keep_first)?;
         self.edit_as(id, false, |d| {
-            let plan = d.plan_show_encoding_rows(&scan, keep_first)?;
+            let mut plan = d.plan_show_encoding_rows(&scan, keep_first)?;
+            plan.name_chip("encoding", "Rows with characters that could not be read");
             d.apply_rows(plan)
         })
     }
@@ -8217,7 +8271,8 @@ impl Docs {
     pub fn xray_show(&self, id: u32, cols: &[u32], keep_first: bool) -> CmdResult<DocInfo> {
         let report = self.xray_report(id, cols, keep_first)?;
         self.edit_as(id, false, |d| {
-            let plan = d.plan_show_xray(&report, keep_first)?;
+            let mut plan = d.plan_show_xray(&report, keep_first)?;
+            plan.name_chip("xray", "Rows X-ray picked");
             d.apply_rows(plan)
         })
     }
@@ -9794,6 +9849,23 @@ fn replace_key(spec: &FindSpec, replacement: &str) -> String {
 }
 
 /// Value lists from the UI are bounded in count and size.
+/// The filter chip a "show these rows" tool makes (C8): its kind and words.
+fn chip_words(op: &DataOp) -> (&'static str, &'static str) {
+    match op {
+        DataOp::ShowDuplicates { .. } => ("duplicates", "Duplicates"),
+        DataOp::ShowExplodeBad { .. } => ("explode", "Cells that could not be split"),
+        DataOp::FormulaFilter { .. } => ("formula", "Formula"),
+        DataOp::ShowProblems { passing: true, .. } => ("problems", "Rows without problems"),
+        DataOp::ShowProblems { .. } => ("problems", "Rows with problems"),
+        DataOp::ShowShape { .. } => ("shape", "Pattern"),
+        DataOp::ShowRelationExceptions { .. } => ("relations", "Relation exceptions"),
+        DataOp::ShowGapRows { .. } => ("gaps", "Gaps"),
+        DataOp::ShowRagged { .. } => ("ragged", "Ragged rows"),
+        DataOp::CompareShow { .. } => ("compare", "Compared rows"),
+        _ => ("rows", "Rows a tool picked"),
+    }
+}
+
 pub(crate) fn check_filter(spec: &FilterSpec) -> CmdResult<()> {
     let (mut n, mut bytes) = (0usize, 0usize);
     for c in &spec.columns {

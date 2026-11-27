@@ -3675,6 +3675,25 @@ async fn filter_spec(docs: DocsState<'_>, doc: u32) -> CmdResult<Option<FilterSp
 }
 
 #[tauri::command]
+async fn filter_chips(
+    docs: DocsState<'_>,
+    doc: u32,
+) -> CmdResult<natendo_engine::chips::FilterChips> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.filter_chips(doc)).await
+}
+
+#[tauri::command]
+async fn filter_change(
+    docs: DocsState<'_>,
+    doc: u32,
+    change: natendo_engine::chips::ChipChange,
+) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.filter_change(doc, change)).await
+}
+
+#[tauri::command]
 async fn filter_values(
     docs: DocsState<'_>,
     doc: u32,
@@ -5247,6 +5266,8 @@ pub fn run() {
             set_filter,
             clear_filter,
             filter_spec,
+            filter_chips,
+            filter_change,
             filter_values,
             find_next,
             find_all,

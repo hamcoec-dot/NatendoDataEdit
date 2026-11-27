@@ -32,6 +32,7 @@ const INCLUDES_HIDDEN: Record<string, string> = {
   change: "column operations change every row; deleting and inserting rows leave hidden rows (audit)",
   setFilter: "chooses which rows are hidden",
   clearFilter: "shows rows again",
+  filterChange: "chooses which rows are hidden",
   repairRow: "repairs the one row named",
   fixAll: "every row of the same shape, counted, hidden ones too",
   removeEmptyExtraColumns: "a column operation",
