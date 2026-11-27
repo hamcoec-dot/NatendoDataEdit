@@ -133,6 +133,20 @@ fn a_command_that_writes_a_file_finishes_it_when_nobody_reads_its_output() {
 }
 
 #[test]
+fn output_up_to_a_real_panic_is_not_lost() {
+    let o = Command::new(env!("CARGO_BIN_EXE_natendo-cli"))
+        .arg("--version")
+        .env("NATENDO_CLI_TEST_PANIC", "1")
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(out, "printed before the panic\n");
+    assert!(err.contains("a test panic"), "{err}");
+    assert_eq!(o.status.code(), Some(101));
+}
+
+#[test]
 fn no_print_bypasses_the_output_module() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     for e in std::fs::read_dir(src).unwrap().flatten() {
@@ -161,11 +175,18 @@ fn no_print_bypasses_the_output_module() {
 fn another_write_failure_fails_the_run_without_a_panic() {
     let d = Folder::new("fail");
     let a = d.write("a.csv", &voters(100));
-    // Standard output on a file opened for reading only: every write fails.
-    let ro = std::fs::File::open(&a).unwrap();
+    // Standard output where every write fails: on Windows a file opened for reading only;
+    // elsewhere /dev/full (a bad handle is taken as a sink there, so it would not fail).
+    #[cfg(windows)]
+    let sink = std::fs::File::open(&a).unwrap();
+    #[cfg(unix)]
+    let sink = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_natendo-cli"))
         .args(["view", &a, "0", "50"])
-        .stdout(Stdio::from(ro))
+        .stdout(Stdio::from(sink))
         .stderr(Stdio::piped())
         .output()
         .unwrap();

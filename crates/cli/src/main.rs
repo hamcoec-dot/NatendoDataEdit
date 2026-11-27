@@ -140,7 +140,11 @@ fn main() -> ExitCode {
     let code = match std::panic::catch_unwind(run) {
         Ok(code) => code,
         Err(p) if out::is_pipe_panic(&panic_text(&*p)) => ExitCode::SUCCESS,
-        Err(p) => std::panic::resume_unwind(p),
+        Err(p) => {
+            // A real bug: what was printed up to it still goes out first.
+            let _ = out::finish();
+            std::panic::resume_unwind(p)
+        }
     };
     // The output is flushed last; a write that failed for another reason than a reader
     // going away fails the run.
@@ -165,6 +169,12 @@ fn run() -> ExitCode {
     // First, while main is the only thread (P3): take the secrets out of
     // the environment.
     secret::take_env();
+    // Test builds only: print a line, then panic (the output up to a crash must not be lost).
+    #[cfg(debug_assertions)]
+    if std::env::var_os("NATENDO_CLI_TEST_PANIC").is_some() {
+        let _ = crate::outln!("printed before the panic");
+        panic!("a test panic");
+    }
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let json = match args.iter().position(|a| a == "--json") {
         Some(i) => {
