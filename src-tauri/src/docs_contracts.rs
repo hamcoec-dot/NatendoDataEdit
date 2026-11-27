@@ -417,10 +417,24 @@ impl Docs {
                 ));
             }
         }
-        write_contract(folder, c)?;
-        if let Some(old) = was.filter(|o| !o.eq_ignore_ascii_case(&c.name)) {
-            check_name(old)?;
-            let _ = std::fs::remove_file(folder.join(contract::file_name(old)));
+        match was.filter(|o| *o != c.name) {
+            // Capitals only: rename the file first (on Windows writing over it would keep the old
+            // capitals; on a case-sensitive disk it would leave both), then write it.
+            Some(old) if old.eq_ignore_ascii_case(&c.name) => {
+                check_name(old)?;
+                std::fs::rename(
+                    folder.join(contract::file_name(old)),
+                    folder.join(contract::file_name(&c.name)),
+                )
+                .map_err(|_| io("the contract could not be renamed"))?;
+                write_contract(folder, c)?;
+            }
+            Some(old) => {
+                check_name(old)?;
+                write_contract(folder, c)?;
+                let _ = std::fs::remove_file(folder.join(contract::file_name(old)));
+            }
+            None => write_contract(folder, c)?,
         }
         Ok(self.contracts_reload(folder))
     }
@@ -653,6 +667,13 @@ mod tests {
             .unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "MONTHLY VOTERS");
+        // One file, with the new capitals in its name on disk (every disk).
+        let on_disk: Vec<String> = std::fs::read_dir(&store)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(on_disk, [contract::file_name("MONTHLY VOTERS")]);
         // A broken file is listed with its reason; the others still load.
         std::fs::write(store.join("broken.ndcontract"), b"{oops").unwrap();
         let list = docs.contracts_list(&store).unwrap();

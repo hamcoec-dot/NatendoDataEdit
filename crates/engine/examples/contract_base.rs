@@ -87,10 +87,19 @@ fn main() {
                             for (c, k) in [
                                 (7, r#"{"type":"number"}"#),
                                 (6, r#"{"type":"date"}"#),
-                                (3, r#"{"type":"list","values":["DEM","GRN","IND","LIB","REP"],"match_case":true}"#),
-                                (8, r#"{"type":"list","values":["active","moved"],"match_case":true}"#),
+                                (
+                                    3,
+                                    r#"{"type":"list","values":["DEM","GRN","IND","LIB","REP"],"match_case":true}"#,
+                                ),
+                                (
+                                    8,
+                                    r#"{"type":"list","values":["active","moved"],"match_case":true}"#,
+                                ),
                             ] {
-                                checks.push(Check::new(Some(c), serde_json::from_str(k).expect("a rule")));
+                                checks.push(Check::new(
+                                    Some(c),
+                                    serde_json::from_str(k).expect("a rule"),
+                                ));
                             }
                         }
                         let spec = CheckSpec {
