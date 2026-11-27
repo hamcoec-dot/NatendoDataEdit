@@ -24,6 +24,8 @@ const NOT_WRITES = [
   "focusDoc",
   "onDropCells",
   "onSelectDoc",
+  "duplicateDoc",
+  "encryptedCopy",
   "exampleLearn",
   "examplePreview",
   "exampleOutliers",

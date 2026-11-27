@@ -14,7 +14,7 @@
   import { contains, rectOf, type Cell, type Rect, type Selection, touching, containsAny, MAX_AREAS, stepAcrossBlocks, stepInBlock } from "./selection";
   import { blockTarget, dropIndex, gapAt, onOutline } from "./dragmove";
   import type { ViewportData } from "./binary";
-  import { backend, errorText, type Dir } from "./backend";
+  import { backend, errorText, type ColumnTotal, type Dir } from "./backend";
   import { PALETTE } from "./views";
   import { localDays } from "./m8";
   import { formatCell, linkOf, MAX_ROW_LINES, pickMatches, tickOf, toggled, wrapLines } from "./m9";
@@ -110,8 +110,10 @@
     bottomInset?: number;
     /** A click on a cell of the totals row (column -1: beside the columns). */
     onTotals?: (col: number, x: number, y: number) => void;
+    /** New totals-row results arrived (AutoSum settles the columns it waited for). */
+    onTotalsCame?: () => void;
   }
-  let { onSeam, pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onCellsOver, onCellsDropOutside, onRenameCol, onInsight, onPill, onXray, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0, onTotals }: Props = $props();
+  let { onSeam, pane = "main", tab, onCommit, onContext, onMessage, onFilterButton, onFill, onFillAuto, onOpenLink, onMoveCols, onMoveRows, onMoveCells, onCellsOver, onCellsDropOutside, onRenameCol, onInsight, onPill, onXray, onActivate, onJump, onFillClear, readOnly, locked = false, bottomInset = 0, onTotals, onTotalsCame }: Props = $props();
   // Where this pane is scrolled to (a split view's second pane keeps its own).
   const view = $derived(pane === "split" ? tab.splitScroll : tab);
 
@@ -274,7 +276,10 @@
       const header = tab.header;
       const data = `${doc}|${i.data_revision ?? 0}|${header}|${JSON.stringify(i.typed ?? null)}`;
       const key = `${data}|${i.history_pos}|${i.rows}|${i.total_rows}|${JSON.stringify(tab.filter ?? null)}`;
-      totals.want(key, data, shown, (ask) => backend().columnTotals(doc, ask, header, TOTALS_READ), redraw);
+      totals.want(key, data, shown, (ask) => backend().columnTotals(doc, ask, header, TOTALS_READ), () => {
+        redraw();
+        onTotalsCame?.();
+      });
     }
     const y = h - th;
     const first = y + th * 0.28;
@@ -3035,6 +3040,12 @@
       editing.w = r.w;
       editing.h = r.h;
     }
+  }
+
+  /** The totals row's result for a column as it is now (null: not worked out yet, or out of date). */
+  export function totalOf(col: number): ColumnTotal | null {
+    const got = totals.get(col);
+    return got && !got.stale ? got.total : null;
   }
 
   export function isEditing(): boolean {

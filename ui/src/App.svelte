@@ -145,6 +145,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import type { Check, CheckReport, CheckSpec, ComputeSpec, PageSetup, TableCheck } from "./lib/backend";
   import { exportDefaults } from "./lib/transfer";
   import { cleanShortcuts, matchColumns, safeFont, MAX_VIEWS, sessionView, type RecentItem, type Shortcuts, type View } from "./lib/views";
+  import { autoSumPlan, autoSumWords, isAutoSumKey, settlePending } from "./lib/autosum";
+  import { cleanColour, copyName, namedView, rememberable, tabLabel, TAB_COLOURS } from "./lib/tabcolour";
 
   const DEFAULT_COL_WIDTH = 130;
   const MAX_CELLS_PER_CHANGE = 100_000;
@@ -1067,6 +1069,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       })),
       banded: t.banded,
       totals_row: t.totalsOn || undefined,
+      tab_colour: t.colour ?? undefined,
       row_lines: t.rowLines,
       row_heights: t.rowHeights.empty ? undefined : t.rowHeights.toView(),
       facets: t.facetCards.map((c) => ({ col: c.col, kind: c.kind })),
@@ -1090,7 +1093,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       note: "A view keeps column widths and hidden columns, frozen panes, the sort, the filter, highlight rules, data checks, display formats, wrapping and row colours. It works on any file with the same column titles.",
       check: (v) => (!v.trim() ? "Give the view a name." : v.trim().length > 100 ? "Use 100 characters or fewer." : ""),
       done: (name) => {
-        const v = currentView(t, name);
+        const v = namedView(currentView(t, name));
         const rest = prefs.data.views.filter((x) => x.name.toLowerCase() !== name.toLowerCase());
         if (rest.length >= MAX_VIEWS) {
           say(`You can keep up to ${MAX_VIEWS} views; forget one first (Alt+Q, then type “forget”).`);
@@ -1107,7 +1110,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const t = tab;
     if (!t) return;
     try {
-      const path = await backend().viewSave(currentView(t, t.info.name));
+      const path = await backend().viewSave(namedView(currentView(t, t.info.name)));
       if (path) say(`Saved the view to ${path}.`);
     } catch (e) {
       say(errorText(e));
@@ -1238,6 +1241,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
     t.banded = v.banded === true;
     t.totalsOn = v.totals_row === true;
+    // The tab colour comes back with the remembered session (named views have none, and leave it as it is).
+    if (v.tab_colour !== undefined) t.colour = cleanColour(v.tab_colour);
     t.facetCards = (v.facets ?? []).slice(0, 32).flatMap((f) => {
       const c = to(f.col);
       return c === null || c === undefined || c < 0 ? [] : [{ col: c, kind: f.kind === "numbers" || f.kind === "dates" ? f.kind : "values", range: null }];
@@ -1637,10 +1642,13 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     // A tab from an encrypted file saves encrypted unless the user says
     // plainly that a readable copy is wanted.
     const origin = await backend().encryptedOrigin(t.id).catch(() => null);
-    if (origin) {
+    // A Duplicate of such a tab offers the same (into a new file: it has none yet).
+    if (origin || t.encryptedCopy) {
       const a = await ask(
         "Keep it encrypted?",
-        `This tab came from the encrypted file ${origin}. A normal save writes a plain file that anyone can read.`,
+        origin
+          ? `This tab came from the encrypted file ${origin}. A normal save writes a plain file that anyone can read.`
+          : "This tab is a copy of a tab from an encrypted file. A normal save writes a plain file that anyone can read.",
         [
           { id: "enc", label: "Save encrypted…", primary: true },
           { id: "plain", label: "Save a plain copy anyone can read…", danger: true },
@@ -1858,6 +1866,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       const st = h.state as HandTab | null;
       if (st && typeof st === "object" && "snap" in st) importHandTab(t, st);
       else void guessHeader(t);
+      t.colour = cleanColour((h.view as View | undefined)?.tab_colour);
       active = tabs.length - 1;
       await tick();
       grid?.select(t.sel.anchor, t.sel.focus, true, t.sel.active);
@@ -1905,7 +1914,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   async function saveSession(force = false): Promise<void> {
     if (!sessionReady || prefs.data.reopenLast === "never") return;
     const list = tabs
-      .filter((t) => t.info.path && !t.private?.file && !t.private?.folder)
+      .filter((t) => rememberable({ info: { path: t.info.path ?? null }, private: t.private ?? { file: false, folder: false } }))
       .map((t) => ({
         doc: t.id,
         // Layout only: never anything that can hold values from the file.
@@ -7331,6 +7340,140 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (moved) t.checkVersion++;
   }
 
+  // ---- AutoSum (Alt+=) ----
+  /** What the last AutoSum said, for the words once the columns it waited on are known. */
+  let autoSumSaid: { doc: number; sum: number[]; text: number[] } | null = null;
+
+  /** Why AutoSum can't run on these columns (`only`: one column, else the selection), or "". */
+  function autoSumWhy(only: number | null): string {
+    const t = tab;
+    if (!t) return "no file is open";
+    if (!t.info.indexed) return "the file is still loading";
+    if (t.info.rows <= (t.header ? 1 : 0)) return "there are no rows to total";
+    if (only !== null && t.columns.isHidden(only)) return "the column is hidden";
+    return "";
+  }
+
+  /** The totals row with Sum under the chosen columns that hold numbers (Alt+=, or one column from its heading).
+   *  View only, like View › Totals row: nothing is written to the file. */
+  function autoSum(only: number | null): void {
+    const t = tab;
+    if (!t || !ready()) return;
+    const why = autoSumWhy(only);
+    if (why) {
+      say(`AutoSum: ${why}.`);
+      return;
+    }
+    const cols = (only !== null ? [only] : selectedCols(t)).slice(0, MAX_ASKED);
+    if (!cols.length) {
+      say("Every selected column is hidden, so there is nothing to total.");
+      return;
+    }
+    const p = autoSumPlan(cols, t.info.typed, (c) => grid?.totalOf(c) ?? null, t.columns.totals, t.totalsOn, t.autoSumOn);
+    if (p.hide && only === null) {
+      t.totalsOn = false;
+      t.autoSumOn = false;
+      t.autoSumPending = [];
+      autoSumSaid = null;
+      t.bump();
+      say("Totals row hidden. Alt+= shows it again.");
+      return;
+    }
+    for (const c of p.sum) t.columns.totals.set(c, "sum");
+    if (!t.totalsOn) {
+      t.totalsOn = true;
+      t.autoSumOn = true;
+    }
+    t.autoSumPending = p.pending;
+    autoSumSaid = { doc: t.id, sum: p.sum, text: p.text };
+    t.bump();
+    say(autoSumWords(p.sum.map((c) => columnTitle(t, c)), p.text.map((c) => columnTitle(t, c)), p.pending.length));
+  }
+
+  /** New totals came: the columns AutoSum waited on get Sum if they hold numbers. */
+  function totalsCame(): void {
+    const t = tab;
+    if (!t || !t.autoSumPending.length) return;
+    const s = settlePending(t.autoSumPending, (c) => grid?.totalOf(c) ?? null);
+    if (!s.sum.length && !s.text.length) return;
+    for (const c of s.sum) t.columns.totals.set(c, "sum");
+    t.autoSumPending = s.still;
+    t.bump();
+    if (autoSumSaid?.doc === t.id) {
+      autoSumSaid = { doc: t.id, sum: [...autoSumSaid.sum, ...s.sum], text: [...autoSumSaid.text, ...s.text] };
+      const said = autoSumSaid;
+      say(autoSumWords(said.sum.map((c) => columnTitle(t, c)), said.text.map((c) => columnTitle(t, c)), s.still.length));
+    }
+  }
+
+  // ---- Duplicate tab and tab colour ----
+  function duplicateWhy(): string {
+    const t = tab;
+    if (!t) return "no file is open";
+    if (!t.info.indexed) return "the file is still loading";
+    if (t.busy) return "this file is busy: wait until it has finished";
+    if (t.peeking) return "this tab is showing an earlier step: go back to now first";
+    return "";
+  }
+
+  /** An unsaved copy of the file as it is now (edits, sort, filter and the look included) in a new tab beside it. */
+  async function duplicateTab(): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const why = duplicateWhy();
+    if (why) {
+      say(`Can't duplicate: ${why}.`);
+      return;
+    }
+    if (grid?.isEditing() && !(await grid.commitEdit())) return;
+    const name = copyName(t.info.name, tabs.map((x) => x.info.name));
+    const state = exportHandTab(t);
+    let d: DocInfo | null;
+    try {
+      d = await runJob("Duplicating", () => backend().duplicateDoc(t.id, name));
+    } catch (e) {
+      say(errorText(e));
+      return;
+    }
+    if (!d) return;
+    addTab(d, false);
+    const nt = tabs[tabs.length - 1];
+    if (!nt) return;
+    // Beside the original.
+    const at = tabs.indexOf(t) + 1;
+    if (at > 0 && at < tabs.length - 1) {
+      tabs.splice(tabs.length - 1, 1);
+      tabs.splice(at, 0, nt);
+    }
+    active = tabs.indexOf(nt);
+    importHandTab(nt, state);
+    nt.totalsOn = t.totalsOn;
+    nt.colour = t.colour;
+    nt.recordPins = [...t.recordPins];
+    nt.encryptedCopy = await backend().encryptedCopy(nt.id).catch(() => false);
+    // The copy's look is where it starts: not an undo step.
+    nt.baseline();
+    await tick();
+    grid?.select(nt.sel.anchor, nt.sel.focus, true, nt.sel.active);
+    const priv = nt.encryptedCopy ? " It is private, as its original is; Save offers to encrypt it." : t.private.file || t.private.folder ? " It is private, as its original is." : "";
+    say(`Duplicated ${t.info.name} as ${name}, with its edits, sort and filter.${priv} It is not saved yet: Ctrl+S saves it as a new file.`);
+  }
+
+  function setTabColour(k: number | null): void {
+    const t = tab;
+    if (!t) return;
+    t.colour = k;
+    say(k === null ? `${t.info.name} has no tab colour now.` : `${t.info.name}: tab colour ${TAB_COLOURS[k]?.name ?? ""}.`);
+  }
+
+  /** The colours, as a small menu under the active tab. */
+  function openTabColours(): void {
+    const el = tabBar?.querySelector<HTMLElement>(`[data-tab-index="${active}"]`);
+    const r = el?.getBoundingClientRect();
+    // After the menu that ran this has closed.
+    setTimeout(() => openContext(r ? r.left + 8 : 80, r ? r.bottom + 2 : 60, "tabcolour", -1), 0);
+  }
+
   // ---- long operations ------------------------------------------------------------
   /** Run a long engine call: the status bar shows progress and offers
    *  Cancel. Returns null when cancelled. */
@@ -7894,7 +8037,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     },
     { id: "edit.cut", label: "Cu&t", keys: ["Ctrl+X"], run: () => copy(true), enabled: ready },
     { id: "edit.copy", label: "&Copy", multiArea: true, keys: ["Ctrl+C"], run: () => copy(false), enabled: hasTab },
-    { id: "edit.paste", label: "&Paste", multiArea: true, run: pasteFromMenu, enabled: ready },
+    { id: "edit.paste", label: "&Paste", multiArea: true, keys: ["Ctrl+V", "Ctrl+Shift+V"], run: pasteFromMenu, enabled: ready },
     { id: "edit.moveCut", label: "&Move what was cut here", run: () => void pasteCut(null), enabled: () => ready() && !!tab?.cut },
     { id: "edit.cancelCut", label: "Ca&ncel cut", run: cancelCut, enabled: () => !!tab?.cut },
     { id: "edit.copyNames", label: "Copy column &names", run: () => void copyColumnNames(false), enabled: () => !!tab?.info.indexed },
@@ -8142,6 +8285,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "view.banded", label: "Alternating row &colours", run: toggleBanded, enabled: hasTab, checked: () => !!tab?.banded },
     { id: "view.filterChips", label: "Filter c&hips", run: () => { prefs.data.filterChips = !prefs.data.filterChips; prefs.save(); }, checked: () => prefs.data.filterChips },
     { id: "view.totalsRow", label: "Tota&ls row (under the shown rows)", run: () => { if (tab) { tab.totalsOn = !tab.totalsOn; tab.bump(); } }, enabled: hasTab, checked: () => !!tab?.totalsOn },
+    { id: "view.autoSum", label: "AutoSum (totals row with Sum)", multiArea: true, keys: ["Alt+="], run: () => autoSum(null), enabled: () => ready() && autoSumWhy(null) === "", why: () => autoSumWhy(null) },
+    { id: "view.autoSumCol", label: "Sum this column in the totals row", run: () => autoSum(totalColumn()), enabled: () => ready() && autoSumWhy(totalColumn()) === "", why: () => autoSumWhy(totalColumn()) },
     { id: "view.total.sum", ...totalCommand("sum") },
     { id: "view.total.average", ...totalCommand("average") },
     { id: "view.total.count", ...totalCommand("count") },
@@ -8177,6 +8322,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "tools.smallest", label: "Go to the smallest num&ber", run: () => void jumpExtreme(false), enabled: ready },
     { id: "file.revert", label: "Re&vert to saved", run: () => void revertFile(), enabled: () => !!tab?.info.path },
     { id: "file.rename", label: "Rena&me…", run: () => void renameFile(), enabled: () => !!tab && !tab.info.read_only },
+    { id: "file.duplicate", label: "Make a copy of this tab", run: () => void duplicateTab(), enabled: () => duplicateWhy() === "", why: duplicateWhy },
+    { id: "file.tabColour", label: "Tab colour…", run: () => openTabColours(), enabled: hasTab },
+    ...TAB_COLOURS.map((c, k) => ({ id: `file.tabColour.${c.name}`, label: `Tab colour: ${c.name}`, run: () => setTabColour(k), enabled: hasTab, checked: () => tab?.colour === k })),
+    { id: "file.tabColour.none", label: "Tab colour: none", run: () => setTabColour(null), enabled: hasTab, checked: () => !!tab && tab.colour === null },
     { id: "file.showFolder", label: "Show in File E&xplorer", run: () => void showInFolder(), enabled: () => !!tab?.info.path },
     { id: "file.copyPath", label: "Cop&y file path", run: () => void copyPath(), enabled: () => !!tab?.info.path },
     { id: "file.saveAll", label: "Save a&ll", keys: ["Ctrl+Alt+S"], run: () => void saveAll(), enabled: () => tabs.some((t) => t.info.modified) },
@@ -8278,7 +8427,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   reg.setOverrides(cleanShortcuts(prefs.data.shortcuts, (id) => !!reg.get(id)));
 
   const menus: Menu[] = [
-    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.importNotes", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.printSel", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "file.checkDisk", "-", "file.recover", "file.versions", "-", "window.moveToNew", "window.moveToMain", "-", "file.options", "-", "file.close", "file.closeOthers", "file.closeUnchanged", "file.reopenClosed", "file.quit"] },
+    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.importNotes", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.printSel", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.duplicate", "file.tabColour", "file.showFolder", "file.copyPath", "file.checkDisk", "-", "file.recover", "file.versions", "-", "window.moveToNew", "window.moveToMain", "-", "file.options", "-", "file.close", "file.closeOthers", "file.closeUnchanged", "file.reopenClosed", "file.quit"] },
     {
       label: "&Edit",
       items: [
@@ -8295,7 +8444,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelRecord", "view.panelNotes", "view.recordPrev", "view.recordNext", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.whichRows", "view.filterChips", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.totalsRow", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.whichRows", "view.filterChips", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.totalsRow", "view.autoSum", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
@@ -8345,12 +8494,13 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   const searchDocs = featureDocs(readmeBullets(readme), FEATURE_LINKS, (id) => (reg.get(id)?.label ?? id).replace(/&/g, ""));
 
   const contextItems: Record<string, string[]> = {
+    tabcolour: [...TAB_COLOURS.map((c) => `file.tabColour.${c.name}`), "-", "file.tabColour.none"],
     totals: [...TOTAL_CHOICES.map(([c]) => `view.total.${c}`), "view.total.auto", "-", "view.copyTotal", "view.copyTotals", "-", "view.totalsRow"],
-    tab: ["file.save", "file.saveAs", "-", "data.compareLists", "data.patchSave", "data.patchApply", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
+    tab: ["file.save", "file.saveAs", "-", "data.compareLists", "data.patchSave", "data.patchApply", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.duplicate", "file.tabColour", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.orderFromCells", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear", "-", "file.printSel"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "edit.copyToTab", "edit.moveToTab", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "data.headersStartHere", "data.setAsideFoot", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "data.explode", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "edit.copyToTab", "edit.moveToTab", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "data.explode", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "edit.copyToTab", "edit.moveToTab", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.autoSumCol", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -8541,8 +8691,15 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
     const gridFocused = (e.target as HTMLElement | null)?.dataset?.gridFocus !== undefined;
 
-    // Ctrl+V: let the browser deliver a paste event (handled below).
-    if (key === "Ctrl+V") return;
+    // Alt+= (AutoSum), matched by the key typed or its place, so other keyboard layouts work too.
+    if (!field && isAutoSumKey(e)) {
+      e.preventDefault();
+      void runCmd("view.autoSum");
+      return;
+    }
+    // Ctrl+V, and Ctrl+Shift+V (paste values, as in Excel and Google Sheets: a paste here is always values): let the
+    // browser deliver a paste event (handled below). In a text box it is that box's own paste.
+    if (key === "Ctrl+V" || key === "Ctrl+Shift+V") return;
 
     const cmd = reg.forKey(key);
     if (cmd && (!field || SAFE_IN_FIELDS.test(cmd.id))) {
@@ -9620,7 +9777,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** The column a heading's right-click menu was opened on (Rename acts
    *  on it, not on the selection's focus column). */
   let contextCol: number | null = null;
-  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner" | "tab" | "pill" | "type" | "totals", col: number): void {
+  function openContext(x: number, y: number, area: "cell" | "row" | "col" | "corner" | "tab" | "pill" | "type" | "totals" | "tabcolour", col: number): void {
     contextCol = area === "col" || area === "pill" || area === "type" || (area === "totals" && col >= 0) ? col : null;
     openMenu = null;
     // The cut items show only while something is cut.
@@ -10007,7 +10164,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   <!-- Double-clicking the empty part of the bar starts a new file. -->
   <div class="tabs" class:tab-dragging={tabDrag?.moved} role="tablist" aria-label="Open files" tabindex="-1" bind:this={tabBar} ondblclick={(e) => { if (e.target === e.currentTarget) void newFile(); }}>
     {#each tabs as t, i (t.id)}
-      <div class="tab" class:active={i === active} class:dragging={tabDrag?.moved && tabs[tabDrag.from] === t} class:drop={cellDropTab === t.id} style:transform={tabShift(i)} role="tab" aria-selected={i === active} tabindex="-1" title={t.info.path ?? t.info.name}
+      <div class="tab" class:active={i === active} class:dragging={tabDrag?.moved && tabs[tabDrag.from] === t} class:drop={cellDropTab === t.id} style:transform={tabShift(i)} role="tab" aria-selected={i === active} aria-label={tabLabel(t.info.name, t.colour)} tabindex="-1" title={t.info.path ?? t.info.name}
+        class:coloured={t.colour !== null} style:--tab-colour={t.colour !== null ? TAB_COLOURS[t.colour]?.css : undefined}
         data-tab-index={i}
         onmousedown={(e) => { if (e.button === 1) { e.preventDefault(); void closeTab(i); } }}
         oncontextmenu={(e) => tabMenu(e, i)}
@@ -10109,6 +10267,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
                   onCommit={commitCell}
                   onContext={openContext}
                   onTotals={(c, x, y) => openContext(x, y, "totals", c)}
+                  onTotalsCame={totalsCame}
                   onRenameCol={(c) => void askRename(c)}
                   onInsight={(c) => (profileCol = c)}
                   onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
@@ -10148,6 +10307,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
                   onCommit={commitCell}
                   onContext={openContext}
                   onTotals={(c, x, y) => openContext(x, y, "totals", c)}
+                  onTotalsCame={totalsCame}
                   onRenameCol={(c) => void askRename(c)}
                   onInsight={(c) => (profileCol = c)}
                   onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
@@ -10187,6 +10347,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           onCommit={commitCell}
           onContext={openContext}
           onTotals={(c, x, y) => openContext(x, y, "totals", c)}
+                  onTotalsCame={totalsCame}
           onRenameCol={(c) => void askRename(c)}
           onInsight={(c) => (profileCol = c)}
                   onXray={(cells, cols) => { xrayNow = cells || cols ? { cells, cols } : null; }}
@@ -11541,6 +11702,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     cursor: default;
     white-space: nowrap;
     font-size: 13px;
+  }
+  /* A border, not a fill: Windows high contrast keeps it (in its own colour) and the text keeps its contrast. */
+  .tab.coloured {
+    border-bottom: 3px solid var(--tab-colour);
   }
   .tab.active {
     background: var(--surface);
