@@ -521,6 +521,8 @@ pub struct Document {
     view: Option<View>,
     /// Column rules' results for the filter chips (C8).
     pub(crate) rule_cache: std::sync::Mutex<crate::chips::RuleCache>,
+    /// The JSON records file this tab came from, key by key (C11 save-back).
+    pub(crate) json_shape: Option<Arc<crate::jsonshape::JsonShape>>,
     /// Bumped by every change, so a long operation computed under a read
     /// lock can tell whether the document changed before it applies.
     revision: u64,
@@ -707,6 +709,7 @@ impl Document {
             map_identity: AtomicU8::new(0),
             view: None,
             rule_cache: crate::chips::new_cache(),
+            json_shape: None,
             revision: 0,
             data_revision: 0,
             rows_revision: 0,
@@ -2478,6 +2481,25 @@ impl Document {
     /// Count a document built in memory (pivot, unpivot) as unsaved.
     pub fn mark_modified(&mut self) {
         self.clean_depth = None;
+    }
+
+    /// Saved now (to a file in another format), without taking new text: the undo history stays.
+    pub(crate) fn mark_saved_here(&mut self) {
+        self.clean_depth = Some(self.undo.len());
+    }
+
+    /// The physical column a logical column reads (`None` past the end).
+    pub(crate) fn physical_col(&self, c: u32) -> Option<u32> {
+        match self.col_map() {
+            Some(m) => m.get(c as usize).copied(),
+            None => Some(c),
+        }
+    }
+
+    /// The values of the row at document position `pos` (filters and hidden rows aside).
+    pub(crate) fn row_values_doc(&self, pos: u64) -> Result<Vec<String>, Error> {
+        let id = self.doc_id_at(pos).ok_or(Error::OutOfRange)?;
+        self.logical_values(id)
     }
 
     fn apply(&mut self, op: Op) -> Op {

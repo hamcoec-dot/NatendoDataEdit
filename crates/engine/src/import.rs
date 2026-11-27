@@ -8,9 +8,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::jsonshape::{Cell, Kind, Row, ShapeBuilder};
 use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::dbf::{DbfInfo, DbfOptions, Sidecars};
 use crate::document::{Document, OpenOptions, Progress};
@@ -274,7 +274,9 @@ pub fn import_report(
             )?;
             return Ok((t, b.stats()));
         }
-        ImportFormat::Json => json(&text_input(data, MAX_JSON_INPUT)?, limit, &mut sink)?,
+        ImportFormat::Json => {
+            json(&text_input(data, MAX_JSON_INPUT)?, limit, &mut sink, None)?;
+        }
         ImportFormat::Xml => xml(
             &text_input(data, MAX_TEXT_INPUT)?,
             &opts.record,
@@ -366,10 +368,11 @@ pub const MAX_JSON_WHOLE: usize = 32 << 20;
 /// many times the room of its text.
 pub const MAX_JSON_ROW: usize = 16 << 20;
 
-/// Parse one row after checking the size of its text. The row's own cells keep a number exactly as it is
-/// written (`1.50`, `12345678901234567890123`, `1E5`): a number token becomes the text of the token.
-/// (Values nested inside a cell are read as before.)
-fn json_row(raw: &serde_json::value::RawValue) -> Result<Value, Error> {
+/// Parse one row after checking the size of its text. The row's cells keep a number exactly as it is
+/// written (`1.50`, `12345678901234567890123`, `1E5`): a number token becomes the text of the token, and a
+/// nested object or list its own JSON text (spaces outside strings taken out), so nested numbers are kept
+/// exactly too.
+fn json_row(raw: &serde_json::value::RawValue) -> Result<Row, Error> {
     if raw.get().len() > MAX_JSON_ROW {
         return Err(Error::Invalid(format!(
             "a row of the JSON is over {} MB and cannot be imported",
@@ -411,25 +414,35 @@ impl Pairs {
     }
 }
 
-/// One cell's value from its text: a number as the text of its token, anything else as a value.
-fn exact_cell(text: &str) -> Result<Value, Error> {
+/// One cell from its raw text: a number as the text of its token, a nested value as its own JSON text.
+fn exact_cell(text: &str) -> Result<Cell, Error> {
     let t = text.trim();
     if t.starts_with(|c: char| c == '-' || c.is_ascii_digit()) {
-        return Ok(Value::String(t.to_string()));
+        return Ok(Cell::of(Kind::Number, t));
     }
     // The common cases without a second parse: a plain string, true, false, null.
     if let Some(inner) = t.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
         if !inner.contains(['\\', '"']) {
-            return Ok(Value::String(inner.to_string()));
+            return Ok(Cell::text(inner.to_string()));
         }
     }
     match t {
-        "null" => return Ok(Value::Null),
-        "true" => return Ok(Value::Bool(true)),
-        "false" => return Ok(Value::Bool(false)),
+        "null" => return Ok(Cell::of(Kind::Null, "")),
+        "true" => return Ok(Cell::of(Kind::Bool, "true")),
+        "false" => return Ok(Cell::of(Kind::Bool, "false")),
         _ => {}
     }
-    serde_json::from_str(t).map_err(bad_json)
+    if t.starts_with(['{', '[']) {
+        return crate::jsonshape::compact_json(t)
+            .map(|j| Cell {
+                kind: Kind::Nested,
+                text: j,
+            })
+            .ok_or_else(|| Error::Invalid("the JSON is not valid".into()));
+    }
+    serde_json::from_str::<String>(t)
+        .map(Cell::text)
+        .map_err(bad_json)
 }
 
 fn skip_ws(b: &[u8], mut i: usize) -> usize {
@@ -533,25 +546,32 @@ fn scan_container(b: &[u8], i: usize) -> Option<usize> {
     }
 }
 
-/// One cell's value starting at `i` and where it ends: a number as its own text, a string unescaped, a
-/// nested container read as before. `None` for anything unexpected (the caller falls back to serde).
-fn fast_value(t: &str, i: usize) -> Option<(Value, usize)> {
+/// One cell starting at `i` and where it ends: a number as its own text, a string unescaped, a nested
+/// container as its own JSON text. `None` for anything unexpected (the caller falls back to serde).
+fn fast_value(t: &str, i: usize) -> Option<(Cell, usize)> {
     let b = t.as_bytes();
     match b.get(i)? {
         b'"' => {
             let (end, esc) = scan_string(b, i)?;
-            Some((Value::String(string_of(t, i, end, esc)?), end))
+            Some((Cell::text(string_of(t, i, end, esc)?), end))
         }
         c if *c == b'-' || c.is_ascii_digit() => {
             let j = scan_number(b, i)?;
-            Some((Value::String(t[i..j].to_string()), j))
+            Some((Cell::of(Kind::Number, &t[i..j]), j))
         }
-        b't' if t[i..].starts_with("true") => Some((Value::Bool(true), i + 4)),
-        b'f' if t[i..].starts_with("false") => Some((Value::Bool(false), i + 5)),
-        b'n' if t[i..].starts_with("null") => Some((Value::Null, i + 4)),
+        b't' if t[i..].starts_with("true") => Some((Cell::of(Kind::Bool, "true"), i + 4)),
+        b'f' if t[i..].starts_with("false") => Some((Cell::of(Kind::Bool, "false"), i + 5)),
+        b'n' if t[i..].starts_with("null") => Some((Cell::of(Kind::Null, ""), i + 4)),
         b'{' | b'[' => {
             let end = scan_container(b, i)?;
-            Some((serde_json::from_str::<Value>(&t[i..end]).ok()?, end))
+            let j = crate::jsonshape::compact_json(&t[i..end])?;
+            Some((
+                Cell {
+                    kind: Kind::Nested,
+                    text: j,
+                },
+                end,
+            ))
         }
         _ => None,
     }
@@ -559,7 +579,7 @@ fn fast_value(t: &str, i: usize) -> Option<(Value, usize)> {
 
 /// A whole row (an object or an array of cells) read by hand, much quicker than a general parse; `None`
 /// when anything is not as expected.
-fn fast_row(t: &str) -> Option<Value> {
+fn fast_row(t: &str) -> Option<Row> {
     let b = t.as_bytes();
     let mut i = skip_ws(b, 0);
     let open = *b.get(i)?;
@@ -568,7 +588,7 @@ fn fast_row(t: &str) -> Option<Value> {
     }
     let close = if open == b'{' { b'}' } else { b']' };
     i = skip_ws(b, i + 1);
-    let mut map = serde_json::Map::new();
+    let mut map: Vec<(String, Cell)> = Vec::new();
     let mut list = Vec::new();
     if b.get(i) != Some(&close) {
         loop {
@@ -581,7 +601,7 @@ fn fast_row(t: &str) -> Option<Value> {
                 }
                 i = skip_ws(b, i + 1);
                 let (v, end) = fast_value(t, i)?;
-                map.insert(key, v);
+                map.push((key, v));
                 i = end;
             } else {
                 let (v, end) = fast_value(t, i)?;
@@ -600,60 +620,37 @@ fn fast_row(t: &str) -> Option<Value> {
         return None;
     }
     Some(if open == b'{' {
-        Value::Object(map)
+        Row::Object(map)
     } else {
-        Value::Array(list)
+        Row::Array(list)
     })
 }
 
-/// A row's text as a value whose own cells keep their numbers exactly.
-fn exact_row(text: &str) -> Result<Value, Error> {
+/// A row's text as cells that keep their numbers (nested ones too) exactly.
+fn exact_row(text: &str) -> Result<Row, Error> {
     if let Some(v) = fast_row(text) {
         return Ok(v);
     }
     let t = text.trim_start();
     if t.starts_with('{') {
         let members: Pairs = serde_json::from_str(text).map_err(bad_json)?;
-        let mut out = serde_json::Map::new();
+        let mut out = Vec::with_capacity(members.0.len());
         for (k, v) in members.0 {
-            out.insert(k, exact_cell(v.get())?);
+            out.push((k, exact_cell(v.get())?));
         }
-        return Ok(Value::Object(out));
+        return Ok(Row::Object(out));
     }
     if t.starts_with('[') {
         let items: Vec<&serde_json::value::RawValue> =
             serde_json::from_str(text).map_err(bad_json)?;
-        return Ok(Value::Array(
+        return Ok(Row::Array(
             items
                 .into_iter()
                 .map(|v| exact_cell(v.get()))
                 .collect::<Result<_, _>>()?,
         ));
     }
-    exact_cell(text)
-}
-
-fn json_cell(v: &Value) -> String {
-    match v {
-        Value::Null => String::new(),
-        Value::String(s) => s.clone(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        other => other.to_string(),
-    }
-}
-
-/// [`json_cell`] written into a buffer that is reused from row to row (no new string per cell).
-fn json_cell_into(v: &Value, out: &mut String) {
-    use std::fmt::Write;
-    match v {
-        Value::Null => {}
-        Value::String(s) => out.push_str(s),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        other => {
-            let _ = write!(out, "{other}");
-        }
-    }
+    exact_cell(text).map(Row::Value)
 }
 
 const STOP: &str = "natendo: stop";
@@ -661,7 +658,7 @@ const STOP: &str = "natendo: stop";
 /// Hands each element of a top-level array to a callback as it is parsed,
 /// so only one row is in memory at a time.
 struct Elements<'a> {
-    f: &'a mut dyn FnMut(&Value) -> Result<bool, Error>,
+    f: &'a mut dyn FnMut(&Row) -> Result<bool, Error>,
     err: &'a mut Option<Error>,
 }
 
@@ -696,8 +693,9 @@ enum JsonRows {
     Array,
     /// JSON Lines: each value is a row (streamed).
     Lines,
-    /// One object (or value), small enough to hold: its rows.
-    Whole(Vec<Value>),
+    /// One object (or value), small enough to hold: its rows, and whether the text is one record itself
+    /// (a JSON Lines file of one line) rather than records inside an object.
+    Whole(Vec<Row>, bool),
 }
 
 impl JsonRows {
@@ -721,12 +719,13 @@ impl JsonRows {
         // Read from the raw text (not parsed to numbers first) so the rows' cells keep their numbers exactly.
         let raw: &serde_json::value::RawValue = serde_json::from_str(text).map_err(bad_json)?;
         let top = raw.get().trim_start();
-        let raw_rows = |s: &str| -> Result<Vec<Value>, Error> {
+        let raw_rows = |s: &str| -> Result<Vec<Row>, Error> {
             let items: Vec<&serde_json::value::RawValue> =
                 serde_json::from_str(s).map_err(bad_json)?;
             items.into_iter().map(|v| exact_row(v.get())).collect()
         };
-        Ok(JsonRows::Whole(if top.starts_with('[') {
+        let mut one = false;
+        let rows = if top.starts_with('[') {
             raw_rows(top)?
         } else if top.starts_with('{') {
             let members: Pairs = serde_json::from_str(top).map_err(bad_json)?;
@@ -751,33 +750,36 @@ impl JsonRows {
             {
                 let mut out = Vec::new();
                 for (k, v) in members.0 {
-                    let mut m = serde_json::Map::new();
-                    m.insert("key".into(), Value::String(k));
-                    if let Value::Object(inner) = exact_row(v.get())? {
+                    let mut m: Vec<(String, Cell)> = vec![("key".into(), Cell::text(k))];
+                    if let Row::Object(inner) = exact_row(v.get())? {
                         for (a, b) in inner {
-                            m.entry(a).or_insert(b);
+                            if !m.iter().any(|(x, _)| *x == a) {
+                                m.push((a, b));
+                            }
                         }
                     }
-                    out.push(Value::Object(m));
+                    out.push(Row::Object(m));
                 }
                 out
             } else {
+                one = true;
                 vec![exact_row(top)?]
             }
         } else {
-            vec![exact_cell(top)?]
-        }))
+            vec![Row::Value(exact_cell(top)?)]
+        };
+        Ok(JsonRows::Whole(rows, one))
     }
 
     /// Call `f` with each row until it returns `false`.
     fn each(
         &self,
         text: &str,
-        f: &mut dyn FnMut(&Value) -> Result<bool, Error>,
+        f: &mut dyn FnMut(&Row) -> Result<bool, Error>,
     ) -> Result<(), Error> {
         use serde::Deserializer as _;
         match self {
-            JsonRows::Whole(rows) => {
+            JsonRows::Whole(rows, _) => {
                 for r in rows {
                     if !f(r)? {
                         break;
@@ -814,27 +816,50 @@ impl JsonRows {
 
 /// Rows of JSON: two passes over the text (names first, then rows), so
 /// no more than one row is held at a time. A preview's first pass stops at
-/// its row limit too.
-fn json(text: &str, limit: Option<u64>, sink: &mut Sink) -> Result<(), Error> {
+/// its row limit too. With `shape`, each key's kinds are noted on the way (C11 save-back).
+fn json(
+    text: &str,
+    limit: Option<u64>,
+    sink: &mut Sink,
+    mut shape: Option<&mut ShapeBuilder>,
+) -> Result<bool, Error> {
     let rows = JsonRows::detect(text)?;
+    let lines = matches!(rows, JsonRows::Lines | JsonRows::Whole(_, true));
+    if let (Some(b), JsonRows::Whole(_, false)) = (shape.as_deref_mut(), &rows) {
+        b.refuse(
+            "its records are inside an object, not one record a line or one list of records".into(),
+        );
+    }
     let mut cols: Vec<String> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut objects = false;
     let mut seen = 0u64;
+    let mut members: Vec<(usize, Kind)> = Vec::new();
     rows.each(text, &mut |r| {
-        if let Value::Object(o) = r {
+        if let Row::Object(o) = r {
             objects = true;
-            for k in o.keys() {
-                if !index.contains_key(k) {
-                    if cols.len() >= MAX_IMPORT_COLS {
-                        return Err(Error::Invalid(
-                            "the JSON has more than 16,384 different names".into(),
-                        ));
+            members.clear();
+            for (k, cell) in o {
+                let at = match index.get(k) {
+                    Some(&at) => at,
+                    None => {
+                        if cols.len() >= MAX_IMPORT_COLS {
+                            return Err(Error::Invalid(
+                                "the JSON has more than 16,384 different names".into(),
+                            ));
+                        }
+                        index.insert(k.clone(), cols.len());
+                        cols.push(k.clone());
+                        cols.len() - 1
                     }
-                    index.insert(k.clone(), cols.len());
-                    cols.push(k.clone());
-                }
+                };
+                members.push((at, cell.kind));
             }
+            if let Some(b) = shape.as_deref_mut() {
+                b.count(cols.len(), &members, &|c| cols[c].clone());
+            }
+        } else if let Some(b) = shape.as_deref_mut() {
+            b.refuse("it holds lists of values, not records".into());
         }
         seen += 1;
         Ok(limit.is_none_or(|l| seen < l))
@@ -842,23 +867,41 @@ fn json(text: &str, limit: Option<u64>, sink: &mut Sink) -> Result<(), Error> {
     if objects {
         if cols.is_empty() {
             cols.push("value".into());
+            if let Some(b) = shape.as_deref_mut() {
+                b.refuse("its records have no keys".into());
+            }
+        }
+        if let Some(b) = shape.as_deref_mut() {
+            b.settle(&cols);
         }
         sink.row(&cols)?;
         let mut line = vec![String::new(); cols.len()];
+        let mut kinds = vec![Kind::Missing; cols.len()];
         rows.each(text, &mut |r| {
             line.iter_mut().for_each(String::clear);
+            kinds.iter_mut().for_each(|k| *k = Kind::Missing);
             match r {
-                Value::Object(o) => {
+                Row::Object(o) => {
                     for (k, v) in o {
                         // A name past a preview's first rows is left out.
                         if let Some(&i) = index.get(k) {
                             let cell = &mut line[i];
                             cell.clear();
-                            json_cell_into(v, cell);
+                            cell.push_str(&v.text);
+                            kinds[i] = v.kind;
                         }
                     }
                 }
-                other => line[0] = json_cell(other),
+                Row::Array(_) => {}
+                Row::Value(c) => line[0] = c.text.clone(),
+            }
+            if let Some(b) = shape.as_deref_mut() {
+                b.note(&kinds);
+                // An empty record is a record: written as a row of its own, never held back.
+                if line.iter().all(String::is_empty) {
+                    sink.blank_row()?;
+                    return Ok(!sink.full());
+                }
             }
             sink.row(&line)?;
             Ok(!sink.full())
@@ -866,19 +909,39 @@ fn json(text: &str, limit: Option<u64>, sink: &mut Sink) -> Result<(), Error> {
     } else {
         rows.each(text, &mut |r| {
             match r {
-                Value::Array(a) => {
+                Row::Array(a) => {
                     if a.len() > MAX_IMPORT_COLS {
                         return Err(Error::Invalid("a JSON row has too many values".into()));
                     }
-                    let line: Vec<String> = a.iter().map(json_cell).collect();
+                    let line: Vec<&str> = a.iter().map(|c| c.text.as_str()).collect();
                     sink.row(&line)?;
                 }
-                other => sink.row(&[json_cell(other)])?,
+                Row::Object(_) => {}
+                Row::Value(c) => sink.row(&[c.text.as_str()])?,
             }
             Ok(!sink.full())
         })?;
     }
-    Ok(())
+    Ok(lines)
+}
+
+/// A JSON file of records imported as a table, with each key's kinds noted for saving it back (C11).
+/// The shape says why when the file cannot be saved back as it is.
+pub fn import_json_shaped(
+    data: &[u8],
+    progress: &Progress,
+) -> Result<(Table, crate::jsonshape::JsonShape), Error> {
+    let _ = progress;
+    let text = text_input(data, MAX_JSON_INPUT)?;
+    let mut sink = Sink::new(None);
+    let mut b = ShapeBuilder::new();
+    // Saved back as UTF-8 only (JSON's own encoding): a file in another encoding is saved as another file.
+    if encoding::detect(data).encoding != encoding::Encoding::Utf8 {
+        b.refuse("it is not UTF-8 text".into());
+    }
+    let lines = json(&text, None, &mut sink, Some(&mut b))?;
+    let layout = crate::jsonshape::layout_of(data, &text, lines);
+    Ok((sink.finish(), b.finish(layout)))
 }
 
 // ---- XML ----
@@ -1602,14 +1665,14 @@ mod tests {
             // The general reader, with the same cell rule.
             let slow = if r.trim_start().starts_with('{') {
                 let m: Pairs = serde_json::from_str(r).unwrap();
-                let mut out = serde_json::Map::new();
+                let mut out = Vec::new();
                 for (k, v) in m.0 {
-                    out.insert(k, exact_cell(v.get()).unwrap());
+                    out.push((k, exact_cell(v.get()).unwrap()));
                 }
-                Value::Object(out)
+                Row::Object(out)
             } else {
                 let items: Vec<&serde_json::value::RawValue> = serde_json::from_str(r).unwrap();
-                Value::Array(
+                Row::Array(
                     items
                         .into_iter()
                         .map(|v| exact_cell(v.get()).unwrap())
@@ -1625,21 +1688,21 @@ mod tests {
     }
 
     /// What the general reader makes of a row (the cell rule of `exact_cell`), or `None` when it refuses.
-    fn general_row(r: &str) -> Option<Value> {
+    fn general_row(r: &str) -> Option<Row> {
         // The text must be one valid JSON value first (the general reader's own check).
         serde_json::from_str::<&serde_json::value::RawValue>(r).ok()?;
         if r.trim_start().starts_with('{') {
             let m: Pairs = serde_json::from_str(r).ok()?;
-            let mut out = serde_json::Map::new();
+            let mut out = Vec::new();
             for (k, v) in m.0 {
-                out.insert(k, exact_cell(v.get()).ok()?);
+                out.push((k, exact_cell(v.get()).ok()?));
             }
-            Some(Value::Object(out))
+            Some(Row::Object(out))
         } else if r.trim_start().starts_with('[') {
             let items: Vec<&serde_json::value::RawValue> = serde_json::from_str(r).ok()?;
-            let cells: Result<Vec<Value>, _> =
+            let cells: Result<Vec<Cell>, _> =
                 items.into_iter().map(|v| exact_cell(v.get())).collect();
-            Some(Value::Array(cells.ok()?))
+            Some(Row::Array(cells.ok()?))
         } else {
             None
         }
