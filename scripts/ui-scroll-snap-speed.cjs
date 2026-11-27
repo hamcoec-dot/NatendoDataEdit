@@ -101,6 +101,24 @@ const url = process.argv[2] || "http://localhost:5391";
   await p.waitForTimeout(1500);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: 20 });
   res.wide_right = await best(held("ArrowRight", 29), home);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+  // The reveal itself, without drawing: microseconds per call (best of 5 runs of 20,000).
+  res.reveal_us = await p.evaluate(() => {
+    const t = window.__nde.tab;
+    const g = window.__nde.grid;
+    let bestUs = Infinity;
+    for (let run = 0; run < 5; run++) {
+      const t0 = performance.now();
+      for (let i = 0; i < 20000; i++) {
+        t.scrollX = 0;
+        t.scrollY = 0;
+        g.scrollIntoView({ row: 1 + (i % 1500), col: i % 30 });
+      }
+      bestUs = Math.min(bestUs, ((performance.now() - t0) * 1000) / 20000);
+    }
+    return bestUs;
+  });
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 20 });
   res.wide_down = await best(held("ArrowDown", 60), home);
   await b.close();
   console.log(JSON.stringify(res));
