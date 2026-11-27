@@ -109,7 +109,7 @@ pub(crate) struct Rebase {
     /// Rows there now (new ids below this) are kept as patches against their saved row.
     saved_rows: u32,
     /// The new state of every slot of the kept steps (see `is_slot`), in walk order.
-    rows: Vec<Option<Edit>>,
+    rows: Vec<Vec<Option<Edit>>>,
     /// The order `SetOrder(None)` stands for (the old file's ids, mapped).
     file_order: Option<Vec<u32>>,
     undo_ids: VecDeque<u64>,
@@ -256,6 +256,8 @@ impl Document {
         while r > redo_from && under(&self.redo[r - 1]) {
             r -= 1;
         }
+        // The row set was for the work count only.
+        drop(present);
         kept.undo_cut_work = u - undo_from;
         kept.redo_cut_work = r - redo_from;
         undo_from = u;
@@ -323,11 +325,14 @@ impl Document {
                     slots.push((id, st));
                 }
             });
-            let states: Result<Vec<Option<Edit>>, Error> = slots
+            // (Collected straight into one vector, then checked in place: no second copy of the states.)
+            let states: Vec<Result<Option<Edit>, Error>> = slots
                 .par_iter()
                 .with_min_len(256)
                 .map(|&(id, st)| self.rebase_state(id, st, &logical, map[id as usize] < saved_rows))
                 .collect();
+            drop(slots);
+            let states: Result<Vec<Option<Edit>>, Error> = states.into_iter().collect();
             let Ok(states) = states else {
                 return Err(empty);
             };
@@ -374,7 +379,8 @@ impl Document {
         let (first_undo, first_redo) = (undo_from - u, redo_from - r);
         let mut by_step = done;
         by_step.sort_by_key(|(is_redo, i, _)| (*is_redo, *i));
-        let rows: Vec<Option<Edit>> = by_step
+        // (Each step's states stay where they were made: no second copy of them is held.)
+        let rows: Vec<Vec<Option<Edit>>> = by_step
             .into_iter()
             .filter(|(is_redo, i, _)| {
                 if *is_redo {
@@ -383,7 +389,7 @@ impl Document {
                     *i >= first_undo
                 }
             })
-            .flat_map(|(_, _, s)| s)
+            .map(|(_, _, s)| s)
             .collect();
         let file_order = file_order.then(|| {
             (0..self.index.rows() as usize)
@@ -607,7 +613,7 @@ impl Document {
             next,
             logical,
             saved_rows,
-            rows: rows.into_iter(),
+            rows: rows.into_iter().flatten(),
             file_order,
         };
         let undo: Vec<Op> = undo.into_iter().map(|o| mv.op(o)).collect();
@@ -695,7 +701,7 @@ struct Moving {
     next: u32,
     logical: Option<Vec<u32>>,
     saved_rows: u32,
-    rows: std::vec::IntoIter<Option<Edit>>,
+    rows: std::iter::Flatten<std::vec::IntoIter<Vec<Option<Edit>>>>,
     file_order: Option<Vec<u32>>,
 }
 
