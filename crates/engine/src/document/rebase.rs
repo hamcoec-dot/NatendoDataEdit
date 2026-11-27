@@ -632,7 +632,15 @@ impl Document {
         // The view `reset_to` rebuilt covers the saved rows only; rows only the history knows keep how they showed.
         if let (Some((passing, hidden)), Some(old)) = (view, self.view.take()) {
             let mut v = match passing {
-                Some(bits) if old.filters() => View::new(old.spec, bits, self.next_id),
+                Some(bits) if old.filters() => {
+                    // The filter chips `reset_to` numbered by saved row stay (rows only the history knows come
+                    // after them, so every chip lets them through).
+                    let mut v = View::new(old.spec, bits, self.next_id);
+                    v.sets = old.sets;
+                    v.cols = old.cols;
+                    v.cols_base = old.cols_base;
+                    v
+                }
                 _ => View::all(),
             };
             v.hidden = hidden.map(Arc::new);
@@ -786,10 +794,39 @@ impl Moving {
                     Some(m) => m.iter().position(|&x| x == p).map(|i| i as u32),
                     None => Some(p),
                 });
+                // The filter chips follow their rows (rows made after a chip let through by it, as they showed).
+                let has = |b: &[u64], id: u32| {
+                    b.get((id >> 6) as usize)
+                        .is_some_and(|w| (w >> (id & 63)) & 1 == 1)
+                };
+                let sets = f
+                    .sets
+                    .into_iter()
+                    .map(|c| {
+                        let after = |id: u32| id >= c.base;
+                        crate::chips::SetChip {
+                            set: Arc::new(self.bits(|id| after(id) || has(&c.set, id))),
+                            looked: Arc::new(self.bits(|id| after(id) || has(&c.looked, id))),
+                            errors: c
+                                .errors
+                                .as_ref()
+                                .map(|e| Arc::new(self.bits(|id| !after(id) && has(e, id)))),
+                            base: self.next,
+                            ..c
+                        }
+                    })
+                    .collect();
+                let cols = f
+                    .cols
+                    .as_ref()
+                    .map(|c| Arc::new(self.bits(|id| id >= f.cols_base || has(c, id))));
                 Box::new(FilterPart {
                     spec,
                     bits,
                     base: self.next,
+                    sets,
+                    cols,
+                    cols_base: self.next,
                 })
             })),
             Op::Batch(v) => Op::Batch(v.into_iter().map(|o| self.op(o)).collect()),

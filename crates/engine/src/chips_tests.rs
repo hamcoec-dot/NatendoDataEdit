@@ -358,6 +358,40 @@ fn chips_survive_a_save() {
     change(&mut d, ChipChange::Toggle { index: 0 });
     change(&mut d, ChipChange::Negate { index: 1 });
     assert_eq!(shown(&d), ["1", "6"]);
+    // Undo after the save goes back through the chip steps, chips and all.
+    assert!(d.undo());
+    assert!(d.undo());
+    assert_eq!(shown(&d), ["3"], "both chips on again");
+    assert_eq!(d.filter_chips().chips.len(), 2);
+    assert!(d.undo());
+    assert_eq!(shown(&d), ["1", "3", "6"], "the tool chip off again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn undo_after_a_save_brings_back_the_chips() {
+    let dir = std::env::temp_dir().join(format!("nde-chips-undo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("t.csv");
+    std::fs::write(&path, TABLE).unwrap();
+    let mut d = Document::open_indexed(&path, OpenOptions::default(), None).unwrap();
+    d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])]))
+        .unwrap();
+    let id = d.id_at(1).unwrap();
+    let plan = d.plan_show_ids(&[id], true);
+    d.apply_rows(plan).unwrap();
+    let before = shown(&d);
+    change(&mut d, ChipChange::Toggle { index: 2 });
+    let off = shown(&d);
+    d.save(Default::default()).unwrap();
+    assert_eq!(shown(&d), off, "the save keeps what shows");
+    assert!(d.undo());
+    assert_eq!(
+        shown(&d),
+        before,
+        "undo after the save switches the tool chip on again"
+    );
+    assert_eq!(d.filter_chips().chips.len(), 3);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
