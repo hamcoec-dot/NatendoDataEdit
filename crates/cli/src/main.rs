@@ -65,7 +65,7 @@ const USAGE: &str = "usage: natendo-cli --version
        natendo-cli info <file> [--json]
        natendo-cli view <file> [first-row] [row-count] [--json]
        natendo-cli clean <cleaner> <in> -o <out> [--columns 1,3] [--skip-header] [--overwrite]
-       natendo-cli convert <in> -o <out> [--to csv|tsv|psv|json|xml|html|md|xlsx|pdf|fixed] [--sheet N] [--no-header] [--landscape] [--overwrite]
+       natendo-cli convert <in> -o <out> [--to csv|tsv|psv|json|jsonl|xml|html|md|xlsx|pdf|fixed] [--sheet N] [--no-header] [--landscape] [--overwrite]
        natendo-cli compute <in> -o <out> --expr <expression> [--title <name>] [--no-header] [--overwrite]
        natendo-cli validate <in> --checks <checks.json> [--table name=file]... [--no-header] [--json]
        natendo-cli run <recipe.json> <in> -o <out> [--set <question>=<answer> ...] [--to <format>] [--force] [--dry-run] [--no-header] [--overwrite]
@@ -120,6 +120,8 @@ const USAGE: &str = "usage: natendo-cli --version
            (a phrase or password can also come from NATENDO_PHRASE / NATENDO_PASSWORD; never as an argument)
        natendo-cli --encoding <label> <command> ...   (read delimited text as this encoding)
        natendo-cli convert ... --to-encoding <label>   (write delimited text in this encoding)
+       natendo-cli convert data.jsonl -o out.jsonl   (JSON to JSON keeps numbers, true/false, null and
+           nested values as they were; CSV to JSON Lines or JSON writes every value as text)
 
 The command line gives no private data warnings: check what you write before sharing it.
 `app read` is refused for tabs in private file mode.";

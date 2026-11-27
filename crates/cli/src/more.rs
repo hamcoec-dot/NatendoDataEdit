@@ -103,6 +103,15 @@ pub(crate) fn load(path: &str, sheet: u32) -> Result<Document, String> {
         return Err(format!("{path}: too large to import"));
     }
     let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    // C11: JSON records keep each key's kinds, so writing JSON again keeps numbers, true/false,
+    // null, missing keys and nested values as they were.
+    if matches!(ext.as_deref(), Some("json" | "jsonl" | "ndjson")) {
+        let (t, shape) = import::import_json_shaped(&data, &Progress::new())
+            .map_err(|e| format!("{path}: {e}"))?;
+        let mut d = t.into_document().map_err(|e| format!("{path}: {e}"))?;
+        d.set_json_shape(Some(shape));
+        return Ok(d);
+    }
     let opts = ImportOptions {
         part: sheet,
         beside: (ext.as_deref() == Some("dbf"))
@@ -134,6 +143,7 @@ fn target(out: &str, to: Option<&str>) -> Result<Target, String> {
         "psv" => Target::Delimited(b'|'),
         "ssv" => Target::Delimited(b';'),
         "json" => Target::Export(ExportFormat::Json),
+        "jsonl" | "ndjson" => Target::Export(ExportFormat::JsonLines),
         "xml" => Target::Export(ExportFormat::Xml),
         "html" | "htm" => Target::Export(ExportFormat::Html),
         "md" | "markdown" => Target::Export(ExportFormat::Markdown),
@@ -195,6 +205,28 @@ pub(crate) fn write_out(d: &mut Document, input: &str, o: &Out) -> Result<String
         }
         Target::Export(_) if o.encoding.is_some() => {
             Err("--to-encoding is for delimited text (csv, tsv, psv, txt)".into())
+        }
+        Target::Export(format @ (ExportFormat::Json | ExportFormat::JsonLines))
+            if o.header && d.json_shape().is_some_and(|s| s.refuse.is_none()) =>
+        {
+            // From a JSON file: each value in the kind it had (see `load`).
+            use natendo_engine::jsonshape::{Blanks, JsonForm};
+            let lines = format == ExportFormat::JsonLines;
+            let layout = d.json_shape().map(|s| s.layout.clone());
+            let form = match layout {
+                Some(l) if l.lines == lines => JsonForm::from(&l),
+                _ => JsonForm {
+                    lines,
+                    indent: (!lines).then(|| "  ".to_string()),
+                    crlf: false,
+                    bom: false,
+                    final_newline: true,
+                },
+            };
+            let r = d
+                .write_json(out_path, &form, Blanks::LeaveOut, &Progress::new())
+                .map_err(|e| format!("{}: {e}", o.path))?;
+            Ok(format!("wrote {} records to {}", r.records, o.path))
         }
         Target::Export(format) => {
             let mut opts = ExportOptions {

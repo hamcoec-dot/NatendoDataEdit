@@ -96,6 +96,12 @@ export interface DocInfo {
   long_quoted_cells: boolean;
   line_bound_from: number | null;
   error: string | null;
+  /** C11: the tab saves back to a JSON file: JSON Lines or a JSON array. */
+  json_format?: "jsonl" | "json" | null;
+  /** C11: why that JSON file can only be saved as another file. */
+  json_refuse?: string | null;
+  /** C11: the JSON file (tooltips, and hashed to remember the blank-cell answer). */
+  json_file?: string | null;
 }
 
 /** How many lines of report notes a tab has: lines that are not rows of the
@@ -1660,6 +1666,39 @@ export interface SaveAsOptions {
   convert_line_breaks: boolean;
 }
 
+/** C11: how a newly blank cell is written in JSON (leave the key out unless the person picks otherwise). */
+export type JsonBlanks = "leave_out" | "empty_text" | "null";
+
+/** C11: JSON Lines, or one JSON array (over several lines when `pretty`). */
+export interface JsonChoice {
+  lines: boolean;
+  pretty: boolean;
+}
+
+/** C11: before a JSON save. */
+export interface JsonCheck {
+  /** Why it cannot be saved as JSON (a title blank or used twice, ...). */
+  refuse: string | null;
+  /** A newly blank cell has no form of its own: ask how blanks are written. */
+  ask_blanks: boolean;
+}
+
+/** C11: after a JSON save. */
+export interface JsonSaved {
+  info: DocInfo;
+  report: { records: number; as_text: number; bytes: number };
+  /** The tab is now saved (false: a copy of a tab with a file of its own). */
+  own: boolean;
+}
+
+export interface JsonSaveFlags {
+  /** Show the Save dialog (with `choice`); else save back to the tab's JSON file. */
+  saveAs: boolean;
+  choice: JsonChoice;
+  blanks: JsonBlanks;
+  overwriteChanged: boolean;
+}
+
 export interface SaveFlags {
   saveAs: boolean;
   overwriteChanged: boolean;
@@ -2221,6 +2260,10 @@ export interface Backend {
   watchStart(force: boolean, existing: boolean, receipt?: ReceiptAsk | null): Promise<import("./watch").WatchStatus>;
   /** What the last save with a receipt said about it (once). */
   receiptNote(doc: number): Promise<string | null>;
+  /** C11: whether the tab can be saved as JSON, and whether saving asks about blank cells. */
+  jsonCheck(doc: number): Promise<JsonCheck>;
+  /** C11: save as JSON Lines or JSON (null: the Save dialog was cancelled). */
+  saveJson(doc: number, flags: JsonSaveFlags): Promise<JsonSaved | null>;
   /** Tools > Verify a receipt: files are picked in the app's own dialogs. Null: cancelled. */
   receiptVerify(withFiles: boolean, chain: boolean): Promise<ReceiptReport | null>;
   watchStop(): Promise<import("./watch").WatchStatus>;
@@ -2575,6 +2618,19 @@ class TauriBackend implements Backend {
   }
   receiptNote(doc: number) {
     return call<string | null>("receipt_note", { doc });
+  }
+  jsonCheck(doc: number) {
+    return call<JsonCheck>("json_check", { doc });
+  }
+  saveJson(doc: number, f: JsonSaveFlags) {
+    return call<JsonSaved | null>("save_json", {
+      doc,
+      saveAs: f.saveAs,
+      lines: f.choice.lines,
+      pretty: f.choice.pretty,
+      blanks: f.blanks,
+      overwriteChanged: f.overwriteChanged,
+    });
   }
   receiptVerify(withFiles: boolean, chain: boolean) {
     return call<ReceiptReport | null>("receipt_verify", { withFiles, chain });

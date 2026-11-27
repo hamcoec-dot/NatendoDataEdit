@@ -3593,6 +3593,86 @@ async fn save(
     .await
 }
 
+/// C11: whether the tab can be saved as JSON (and why not), and whether saving asks about blank cells.
+#[tauri::command]
+async fn json_check(
+    docs: DocsState<'_>,
+    doc: u32,
+) -> CmdResult<natendo_engine::jsonshape::JsonCheck> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.json_check(doc)).await
+}
+
+/// C11: save as JSON Lines or JSON. `save_as` shows the Save dialog here (the webview never names a
+/// path), writing JSON Lines (`lines`) or a JSON array (`pretty`: over several lines); else the tab
+/// saves back to the JSON file it came from, in that file's own layout. `overwrite_changed` is passed
+/// only after the user agreed to save over a file another program changed. `None`: the dialog was
+/// cancelled.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn save_json(
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    recent: RecentState<'_>,
+    doc: u32,
+    save_as: bool,
+    lines: bool,
+    pretty: bool,
+    blanks: natendo_engine::jsonshape::Blanks,
+    overwrite_changed: bool,
+) -> CmdResult<Option<docs::JsonSaved>> {
+    let docs = docs.inner().clone();
+    let recent = recent.inner().clone();
+    blocking(move || {
+        let (path, form) = if save_as {
+            let ext = if lines { "jsonl" } else { "json" };
+            let mut dialog = rfd::FileDialog::new()
+                .set_title(if lines {
+                    "Save As JSON Lines"
+                } else {
+                    "Save As JSON"
+                })
+                .set_file_name(format!("{}.{ext}", docs::file_name_of(&docs.stem(doc))))
+                .set_parent(&window);
+            dialog = if lines {
+                dialog.add_filter("JSON Lines", &["jsonl", "ndjson"])
+            } else {
+                dialog.add_filter("JSON", &["json"])
+            };
+            dialog = dialog.add_filter("All files", &["*"]);
+            if let Some(dir) = docs.path_of(doc)?.as_ref().and_then(|p| p.parent()) {
+                dialog = dialog.set_directory(dir);
+            }
+            match dialog.save_file() {
+                Some(p) => (
+                    Some(p),
+                    Some(natendo_engine::jsonshape::JsonForm {
+                        lines,
+                        indent: (!lines && pretty).then(|| "  ".to_string()),
+                        crlf: false,
+                        bom: false,
+                        final_newline: true,
+                    }),
+                ),
+                None => return Ok(None),
+            }
+        } else {
+            (None, None)
+        };
+        let written = path.clone();
+        let saved = docs.save_json(doc, path, form, blanks, overwrite_changed)?;
+        // A private tab saved as a new file puts that file in private file mode.
+        if let Some(p) = written {
+            if docs.is_private(doc)? && !recent.is_private(&p) {
+                recent.set_private(&p, true)?;
+                docs.private_changed();
+            }
+        }
+        Ok(Some(saved))
+    })
+    .await
+}
+
 /// What the last save with a receipt said about the receipt (once).
 #[tauri::command]
 fn receipt_note(docs: DocsState<'_>, doc: u32) -> Option<String> {
@@ -5272,6 +5352,8 @@ pub fn run() {
             copy_cells,
             change,
             save,
+            json_check,
+            save_json,
             receipt_note,
             receipt_verify,
             job_progress,

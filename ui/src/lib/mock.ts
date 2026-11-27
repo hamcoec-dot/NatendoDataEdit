@@ -127,6 +127,8 @@ const fkNorm = (v: string, matchCase: boolean, trim: boolean): string => {
 
 interface MockDoc {
   info: DocInfo;
+  /** C11: the JSON file the tab saves back to (the stand-in keeps what it wrote). */
+  json?: { lines: boolean; refuse: string | null; file: string; mixedBlanks: boolean; changed: boolean; written: string };
   /** What the data revision was worked out from (see refresh). */
   dataSig?: string;
   /** Protected columns (physical), passed over by every change. */
@@ -1299,6 +1301,9 @@ export class MockBackend implements Backend {
         ? d.undo.slice(d.clean).some((s) => !VIEW_STEPS.has(s.apply))
         : d.clean - n > d.redo.length || d.redo.slice(d.redo.length - (d.clean - n)).some((a) => !VIEW_STEPS.has(a)));
     d.info.column_changes = d.cols !== null;
+    d.info.json_format = d.json ? (d.json.lines ? "jsonl" : "json") : null;
+    d.info.json_refuse = d.json?.refuse ?? null;
+    d.info.json_file = d.json?.file ?? null;
     const n0 = d.notes;
     d.info.notes = {
       above_file: n0?.fileAbove.length ?? 0,
@@ -1711,6 +1716,81 @@ export class MockBackend implements Backend {
       summary: { action: "save as", tool: "Natendo Data Edit (preview)", inputs: [], outputs: [] },
     };
   }
+  // ---- C11: JSON save-back (the stand-in: a tab made by mockJsonTab saves back; the file is a string) ----
+  /** Test hook: a tab that came from a JSON file (`refuse`: why it can only be saved as another file). */
+  mockJsonTab(name: string, rows: string[][], o: { lines?: boolean; refuse?: string | null; mixedBlanks?: boolean; changed?: boolean } = {}): DocInfo {
+    const info = this.fromRows(name.replace(/\.[^.]*$/, ""), rows);
+    const d = this.get(info.id);
+    d.clean = 0;
+    d.json = { lines: o.lines ?? true, refuse: o.refuse ?? null, file: `C:\\Data\\${name}`, mixedBlanks: o.mixedBlanks ?? true, changed: o.changed ?? false, written: "" };
+    return this.refresh(d);
+  }
+  /** Test hook: the JSON file as the last save wrote it. */
+  mockJsonWritten(doc: number): string {
+    return this.get(doc).json?.written ?? "";
+  }
+  /** Test hook: another program changes the JSON file. */
+  mockJsonChanged(doc: number): void {
+    const j = this.get(doc).json;
+    if (j) j.changed = true;
+  }
+  async jsonCheck(doc: number): Promise<import("./backend").JsonCheck> {
+    this.calls.push("jsonCheck");
+    const d = this.get(doc);
+    if (d.json?.refuse) return { refuse: d.json.refuse, ask_blanks: false };
+    const cols = this.colCount(d);
+    const titles = Array.from({ length: cols }, (_, c) => this.value(d, 0, c));
+    const seen = new Set<string>();
+    for (const t of titles) {
+      if (!t.trim()) return { refuse: "a column has no title: give it one to save as JSON", ask_blanks: false };
+      if (seen.has(t)) return { refuse: `two columns are both called '${t}': rename one to save as JSON`, ask_blanks: false };
+      seen.add(t);
+    }
+    // The stand-in asks when a changed tab has a blank cell (the engine asks only for a newly blank one).
+    let blank = false;
+    if (d.info.modified && (d.json?.mixedBlanks ?? true)) {
+      for (let r = 1; r < this.rowCount(d) && !blank; r++) for (let c = 0; c < cols && !blank; c++) blank = this.value(d, r, c) === "";
+    }
+    return { refuse: null, ask_blanks: blank };
+  }
+  async saveJson(doc: number, f: import("./backend").JsonSaveFlags): Promise<import("./backend").JsonSaved | null> {
+    this.calls.push(`saveJson:${f.saveAs ? "as" : "back"}:${f.choice.lines ? "lines" : f.choice.pretty ? "pretty" : "compact"}:${f.blanks}`);
+    const d = this.get(doc);
+    if (d.info.peeking) throw err("peeking", "looking at an earlier recipe step: go back to the latest step to change or save");
+    if (!f.saveAs && !d.json) throw err("no_json_file", "this tab did not come from a JSON file: use Save As");
+    if (!f.saveAs && d.info.read_only) throw err("read_only", "this file is read-only");
+    if (!f.saveAs && d.json?.changed && !f.overwriteChanged) throw err("changed_on_disk", "the file changed on disk");
+    const check = await this.jsonCheck(doc);
+    if (check.refuse) throw err("invalid", check.refuse);
+    const cols = this.colCount(d);
+    const keys = Array.from({ length: cols }, (_, c) => this.value(d, 0, c));
+    const recs: Record<string, unknown>[] = [];
+    let asText = 0;
+    for (let r = 1; r < this.rowCount(d); r++) {
+      const o: Record<string, unknown> = {};
+      keys.forEach((k, c) => {
+        const v = this.value(d, r, c);
+        if (v === "") {
+          if (f.blanks === "null") o[k] = null;
+          else if (f.blanks === "empty_text") o[k] = "";
+        } else if (d.json && /^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$/.test(v)) o[k] = Number(v);
+        else {
+          if (d.json && /^\d/.test(v) && k.toLowerCase().includes("amount")) asText++;
+          o[k] = v;
+        }
+      });
+      recs.push(o);
+    }
+    const lines = f.saveAs ? f.choice.lines : (d.json?.lines ?? true);
+    const text = lines ? recs.map((x) => JSON.stringify(x) + "\n").join("") : JSON.stringify(recs, null, f.choice.pretty || !f.saveAs ? 2 : undefined) + "\n";
+    const own = !d.info.path;
+    if (own) {
+      d.json = { lines, refuse: null, file: f.saveAs ? `C:\\Data\\${d.info.name}.${lines ? "jsonl" : "json"}` : (d.json?.file ?? ""), mixedBlanks: d.json?.mixedBlanks ?? true, changed: false, written: text };
+      d.clean = d.undo.length;
+    }
+    return { info: this.refresh(d), report: { records: recs.length, as_text: asText, bytes: text.length }, own };
+  }
+
   async save(doc: number, f: SaveFlags): Promise<DocInfo | null> {
     if (this.get(doc).info.peeking) throw err("peeking", "looking at an earlier recipe step: go back to the latest step to change or save");
     const d = this.get(doc);
@@ -1718,6 +1798,8 @@ export class MockBackend implements Backend {
     if (!d.info.path && !f.saveAs && d.info.name === "Untitled") {
       d.info.name = "Untitled.csv";
     }
+    // Saved as a delimited file of its own: no longer saved back to a JSON file (C11).
+    if (f.saveAs || d.info.path) delete d.json;
     // Like the engine: saving clears the undo history.
     d.undo = [];
     d.redo = [];

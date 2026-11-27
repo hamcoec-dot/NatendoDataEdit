@@ -560,6 +560,7 @@ impl Document {
 
     /// Each record in order as (key index, kind, text) members; `ask` is set when a newly blank cell
     /// had no kind of its own (the blank question), `as_text` counts cells that no longer fit their kind.
+    #[allow(clippy::type_complexity, clippy::needless_range_loop)]
     fn json_walk(
         &self,
         blanks: Blanks,
@@ -574,12 +575,7 @@ impl Document {
         let reader = crate::ops::Cols::new(self, &cols);
         let mut buf = Vec::new();
         let total = self.total_rows();
-        let new_blank = |c: Option<&ColShape>| -> Option<Kind> {
-            match c.and_then(ColShape::one_blank) {
-                Some(k) => Some(k),
-                None => None,
-            }
-        };
+        let new_blank = |c: Option<&ColShape>| -> Option<Kind> { c.and_then(ColShape::one_blank) };
         for pos in 1..total {
             let id = self.doc_id_at(pos).ok_or(Error::OutOfRange)?;
             reader.read(self, id, &mut buf);
@@ -640,6 +636,20 @@ impl Document {
     /// its own text is not replaced (the undo history stays).
     pub fn save_json(
         &mut self,
+        path: &Path,
+        form: &JsonForm,
+        blanks: Blanks,
+        progress: &Progress,
+    ) -> Result<JsonReport, Error> {
+        let report = self.write_json(path, form, blanks, progress)?;
+        self.mark_saved_here();
+        Ok(report)
+    }
+
+    /// [`Document::save_json`] without marking the tab saved: a copy of a tab that has a file of its own
+    /// (a CSV tab saved as JSON Lines).
+    pub fn write_json(
+        &self,
         path: &Path,
         form: &JsonForm,
         blanks: Blanks,
@@ -785,7 +795,7 @@ impl Document {
                 err.get_or_insert(e);
             }
             let flushed = w.flush().and_then(|_| w.get_ref().sync_all());
-            let result = walked.and_then(|_| match stopped {
+            let result = walked.and(match stopped {
                 Some(e) => Err(e),
                 None => Ok(()),
             });
@@ -807,7 +817,6 @@ impl Document {
         }
         report.as_text = as_text;
         report.bytes = written;
-        self.mark_saved_here();
         Ok(report)
     }
 }

@@ -15,6 +15,8 @@ const read = (f: string): string => {
  *  WRITE_METHODS (a new one fails the test until someone decides which), and
  *  WRITE_METHODS are refused at the backend while several blocks are selected. */
 const NOT_WRITES = [
+  "jsonCheck",
+  "saveJson",
   "checkpointList",
   "checkpointSince",
   "checkpointSinceReport",
