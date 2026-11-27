@@ -705,7 +705,8 @@ impl Document {
 
         // 1. Write and flush the temp file next to the target.
         let (temp, file) = create_temp(&target)?;
-        let written = (|| -> Result<Counts, Error> {
+        let this: &Document = self;
+        let write = || -> Result<Counts, Error> {
             let mut bw = BufWriter::with_capacity(1 << 20, &file);
             let c = if gzip {
                 let mut gz = ParGz::new(&mut bw);
@@ -713,7 +714,7 @@ impl Document {
                     inner: &mut gz,
                     n: 0,
                 };
-                let mut c = self.write_rows(
+                let mut c = this.write_rows(
                     &mut cw,
                     format,
                     opts.convert_line_breaks,
@@ -729,7 +730,7 @@ impl Document {
                     inner: &mut bw,
                     n: 0,
                 };
-                let mut c = self.write_rows(
+                let mut c = this.write_rows(
                     &mut cw,
                     format,
                     opts.convert_line_breaks,
@@ -743,7 +744,14 @@ impl Document {
             bw.flush()?;
             file.sync_all()?;
             Ok(c)
-        })();
+        };
+        // The undo history is moved onto the rows being written beside the write (it only reads; it is kept only if
+        // the save then succeeds). With no history there is nothing to do.
+        let (written, rebase) = if !this.has_history() {
+            (write(), Err(Default::default()))
+        } else {
+            rayon::join(write, || this.prepare_rebase())
+        };
         drop(file);
         let counts = match written {
             Ok(c) => c,
@@ -832,7 +840,7 @@ impl Document {
                 Err(e) => return Err(self.reload_failed(&target, e.to_string())),
             },
         };
-        self.reset_to(source, check_start, format, check_index);
+        self.reset_keeping(source, check_start, format, check_index, rebase);
         Ok(SaveReport {
             path: target,
             skipped: false,
@@ -1471,9 +1479,9 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
-    /// B4: a save that rewrites the file starts the undo history again, so every mark made before it is gone.
+    /// A save keeps the undo history: marks made before it still work, and the saved state is not modified.
     #[test]
-    fn a_save_ends_every_mark() {
+    fn marks_survive_a_save() {
         let dir = tmpdir("marks");
         let p = dir.join("m.csv");
         fs::write(&p, b"a,b\n1,2\n").unwrap();
@@ -1481,14 +1489,16 @@ mod tests {
         let start = d.step_mark();
         d.set_cell(1, 0, "x".into()).unwrap();
         let edited = d.step_mark();
-        assert!(d.step_reach(start).is_some() && d.step_reach(edited).is_some());
         d.save(SaveOptions::default()).unwrap();
-        assert_eq!(d.step_reach(start), None);
-        assert_eq!(d.step_reach(edited), None);
-        assert!(!d.go_to_mark(edited));
-        // The new history has marks of its own.
-        let now = d.step_mark();
-        assert_eq!(d.step_reach(now), Some(0));
+        // The history follows the saved file.
+        assert_eq!(d.step_reach(edited), Some(0));
+        assert_eq!(d.step_reach(start), Some(-1));
+        assert!(!d.is_modified());
+        assert!(d.go_to_mark(start));
+        assert_eq!(d.cell(1, 0).unwrap(), "1");
+        assert!(d.is_modified());
+        assert!(d.go_to_mark(edited));
+        assert!(!d.is_modified());
         let _ = fs::remove_dir_all(dir);
     }
 

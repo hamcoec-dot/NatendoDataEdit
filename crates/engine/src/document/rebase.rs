@@ -1,0 +1,813 @@
+//! Undo, redo and checkpoints that survive a save.
+//!
+//! A save writes the rows in their order, so row `pos` of the new file is the row with id `ids()[pos]` now. Every
+//! step of the history refers to the OLD file: row ids, `None` ("the row's own file bytes") and `Patch` (file bytes
+//! plus some cells). The history is moved onto the saved file in two halves:
+//!
+//! 1. [`Document::prepare_rebase`] (read-only, beside the write of the temp file, while the old file is still
+//!    there): decides which steps are kept, gives every row id a new id (a row that is there now gets its new
+//!    position; a row only the history knows gets a fresh id past the new file's rows) and reads every `None` and
+//!    `Patch` row out of the old bytes, in parallel, in the new file's column order. Nothing is changed, so a save
+//!    that then fails or is cancelled just drops it.
+//! 2. [`Document::apply_rebase`] (after the replace succeeded and the document was reset onto the saved file):
+//!    walks the old steps by value. `Full` rows are moved (not copied), the prepared rows fill the `None`/`Patch`
+//!    slots, ids go through the map, `SetOrder(None)` ("file order") is written out, hidden-row and filter sets are
+//!    mapped id by id.
+//!
+//! What is kept: steps that change the columns, the encoding or the file width are not followed, so undo is cut at
+//! the newest such step and redo at the one nearest the present. Then, newest first, the steps whose rebased size
+//! (worked out as `Op::cost` would count it, never below) fits the history's memory budget are kept and the older
+//! ones let go. If nothing fits, or a step cannot be followed exactly, the history is cleared as before.
+
+use super::*;
+use std::collections::VecDeque;
+
+/// What a save did with the undo history (for the status line and the checkpoints panel).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct HistoryKept {
+    /// Undo and redo steps still there after the save.
+    pub undo: usize,
+    pub redo: usize,
+    /// Undo steps let go at a column, encoding or width step (the oldest ones), and redo steps let go the same way
+    /// (the ones furthest from the present).
+    pub undo_cut_columns: usize,
+    pub redo_cut_columns: usize,
+    /// Steps let go because the history would not fit in its memory budget.
+    pub undo_cut_memory: usize,
+    pub redo_cut_memory: usize,
+    /// Steps let go because carrying them across the save would make it slow (more rows than the work limit).
+    pub undo_cut_work: usize,
+    pub redo_cut_work: usize,
+    /// Nothing could be kept (it did not fit, or could not be followed): the history is empty, as before.
+    pub cleared: bool,
+}
+
+impl HistoryKept {
+    /// Undo steps let go from the old end.
+    pub fn undo_cut(&self) -> usize {
+        self.undo_cut_columns + self.undo_cut_memory + self.undo_cut_work
+    }
+    /// Redo steps let go from the far end.
+    pub fn redo_cut(&self) -> usize {
+        self.redo_cut_columns + self.redo_cut_memory + self.redo_cut_work
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static REBASE_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Turn the rebase off on this thread (tests: today's save, for timings and twins).
+#[cfg(test)]
+pub(crate) fn set_rebase(on: bool) {
+    REBASE_OFF.with(|c| c.set(!on));
+}
+
+fn rebase_off() -> bool {
+    #[cfg(test)]
+    {
+        REBASE_OFF.with(|c| c.get())
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+fn structural(op: &Op) -> bool {
+    match op {
+        Op::ColInsert { .. }
+        | Op::ColRemove { .. }
+        | Op::MoveCols { .. }
+        | Op::SetMap(_)
+        | Op::SetEncoding(_)
+        | Op::SetWidth(_)
+        // Report notes name the old file's lines above and below the table (and set-aside rows by their state):
+        // not followed either.
+        | Op::SetNotes(_) => true,
+        Op::Batch(v) => v.iter().any(structural),
+        _ => false,
+    }
+}
+
+/// The history moved onto the file being saved: everything that needs the old file, worked out before it goes.
+pub(crate) struct Rebase {
+    /// Old undo steps from here on are kept (older ones are let go).
+    undo_from: usize,
+    /// Old redo steps from here on are kept (the ones before are further from the present).
+    redo_from: usize,
+    kept: HistoryKept,
+    /// What the kept steps will hold, worked out before (never below their real size).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) estimate: usize,
+    /// New id of each old id (`u32::MAX`: not seen), indexed by old id.
+    map: Vec<u32>,
+    next: u32,
+    /// Physical column of each new column (the column map now).
+    logical: Option<Vec<u32>>,
+    /// Rows there now (new ids below this) are kept as patches against their saved row.
+    saved_rows: u32,
+    /// The new state of every slot of the kept steps (see `is_slot`), in walk order.
+    rows: Vec<Vec<Option<Edit>>>,
+    /// The order `SetOrder(None)` stands for (the old file's ids, mapped).
+    file_order: Option<Vec<u32>>,
+    undo_ids: VecDeque<u64>,
+    redo_ids: Vec<u64>,
+    /// The mark before the oldest kept step.
+    base_mark: u64,
+    /// The view now, over the new ids (also the rows only the history knows): passing bits when filtered, hidden bits.
+    view: Option<RebasedView>,
+}
+
+/// Passing bits (when a filter is on) and hidden bits, over the new ids.
+type RebasedView = (Option<Vec<u64>>, Option<Vec<u64>>);
+
+/// The rows a save carries the history for, at most, as a share of the file's rows (timed on a 1M-row file so a
+/// save with history stays within 1.10x of one without).
+pub(crate) const REBASE_WORK_SHARE: f64 = 0.25;
+
+/// What `op` holds once rebased (`Op::cost` of the step `Moving::op` makes), with `states` its prepared slots.
+fn new_cost(
+    op: &Op,
+    states: &mut std::slice::Iter<'_, Option<Edit>>,
+    map: &[u32],
+    saved_rows: u32,
+    logical: &Option<Vec<u32>>,
+    file_rows: u64,
+    bit_words: usize,
+) -> usize {
+    let state = |st: &Option<Edit>| st.as_ref().map_or(0, Edit::cost);
+    match op {
+        Op::Restore(s) | Op::Insert { rows: s, .. } => {
+            32 + s
+                .iter()
+                .map(|(id, st)| {
+                    32 + if is_slot(map, saved_rows, *id, st) {
+                        states.next().map_or(0, state)
+                    } else {
+                        match (st, logical) {
+                            (Some(Edit::Full(v)), Some(lm)) => lm
+                                .iter()
+                                .map(|&p| 24 + v.get(p as usize).map_or(0, String::len))
+                                .sum(),
+                            _ => state(st),
+                        }
+                    }
+                })
+                .sum::<usize>()
+        }
+        Op::SetOrder(Some(o)) => 32 + o.len() * 4,
+        Op::SetOrder(None) => 32 + file_rows as usize * 4,
+        Op::SetHidden(h) => 32 + h.as_ref().map_or(0, |_| bit_words * 8),
+        Op::SetFilter(f) => {
+            32 + f
+                .as_ref()
+                .map_or(0, |f| 64 + bit_words * 8 + f.spec.columns.len() * 128)
+        }
+        Op::Batch(v) => {
+            32 + v
+                .iter()
+                .map(|o| new_cost(o, states, map, saved_rows, logical, file_rows, bit_words))
+                .sum::<usize>()
+        }
+        other => other.cost(),
+    }
+}
+
+/// Calls `f` on every row state of `op`, in walk order (the same order [`Moving::op`] takes them).
+fn each_state<'a>(op: &'a Op, f: &mut impl FnMut(u32, &'a Option<Edit>)) {
+    match op {
+        Op::Restore(s) | Op::Insert { rows: s, .. } => s.iter().for_each(|(id, st)| f(*id, st)),
+        Op::Batch(v) => v.iter().for_each(|o| each_state(o, f)),
+        _ => {}
+    }
+}
+
+fn has_file_order(op: &Op) -> bool {
+    match op {
+        Op::SetOrder(None) => true,
+        Op::Batch(v) => v.iter().any(has_file_order),
+        _ => false,
+    }
+}
+
+impl Document {
+    /// The rows a step would rebase (its slots, see `is_slot`).
+    fn step_work(&self, op: &Op, saved: &dyn Fn(u32) -> bool) -> usize {
+        let mut n = 0;
+        each_state(op, &mut |id, st| {
+            if saved(id) || !matches!(st, Some(Edit::Full(_))) {
+                n += 1;
+            }
+        });
+        n
+    }
+
+    /// The history rebased onto the rows as they are about to be saved (`Err`: nothing to keep, or it cannot be
+    /// followed exactly, and the history is cleared as before; the `HistoryKept` says why). Read-only: a save that
+    /// then fails changes nothing.
+    pub(crate) fn prepare_rebase(&self) -> Result<Rebase, HistoryKept> {
+        let empty = HistoryKept {
+            cleared: !(self.undo.is_empty() && self.redo.is_empty()),
+            ..Default::default()
+        };
+        if rebase_off() || (self.undo.is_empty() && self.redo.is_empty()) {
+            return Err(empty);
+        }
+        let mut kept = HistoryKept::default();
+        // 1. Cut at the column, encoding, width and report-note steps.
+        let mut undo_from = self.undo.iter().rposition(structural).map_or(0, |i| i + 1);
+        let mut redo_from = self.redo.iter().rposition(structural).map_or(0, |i| i + 1);
+        kept.undo_cut_columns = undo_from;
+        kept.redo_cut_columns = redo_from;
+        // 2. Newest first, keep the steps whose rows to rebase stay under the work limit (a share of the file's
+        //    rows, so the save stays about as fast as one without history). A row there now is one the saved file
+        //    has.
+        let present = {
+            let mut bits = vec![0u64; (self.next_id as usize).div_ceil(64).max(1)];
+            for id in self.ids() {
+                bits[(id >> 6) as usize] |= 1 << (id & 63);
+            }
+            bits
+        };
+        let saved = |id: u32| {
+            present
+                .get((id >> 6) as usize)
+                .is_some_and(|w| (w >> (id & 63)) & 1 == 1)
+        };
+        let limit = (self.index.rows().max(self.row_count()) as f64 * self.rebase_work_share).ceil()
+            as usize;
+        let mut work = 0usize;
+        let mut under = |op: &Op| {
+            let w = self.step_work(op, &saved);
+            if work + w > limit {
+                return false;
+            }
+            work += w;
+            true
+        };
+        let mut u = self.undo.len();
+        while u > undo_from && under(&self.undo[u - 1]) {
+            u -= 1;
+        }
+        let mut r = self.redo.len();
+        // Redo is a stack: the last step is the one nearest the present.
+        while r > redo_from && under(&self.redo[r - 1]) {
+            r -= 1;
+        }
+        // The row set was for the work count only.
+        drop(present);
+        kept.undo_cut_work = u - undo_from;
+        kept.redo_cut_work = r - redo_from;
+        undo_from = u;
+        redo_from = r;
+        if undo_from == self.undo.len() && redo_from == self.redo.len() {
+            kept.cleared = true;
+            return Err(kept);
+        }
+        let saved_rows = self.ids().count() as u32;
+        // 3. New ids: the rows there now first (their new positions), then the rows only the history knows.
+        let mut map = vec![u32::MAX; self.next_id as usize];
+        let mut next = 0u32;
+        let mut see = |old: u32, map: &mut Vec<u32>| {
+            let i = old as usize;
+            if i >= map.len() {
+                map.resize(i + 1, u32::MAX);
+            }
+            if map[i] == u32::MAX {
+                map[i] = next;
+                next += 1;
+            }
+        };
+        for id in self.ids() {
+            see(id, &mut map);
+        }
+        let (undo, redo) = (&self.undo[undo_from..], &self.redo[redo_from..]);
+        let file_order = undo.iter().chain(redo).any(has_file_order);
+        if file_order {
+            for id in 0..self.index.rows() as u32 {
+                see(id, &mut map);
+            }
+        }
+        fn more(op: &Op, see: &mut impl FnMut(u32)) {
+            match op {
+                Op::Restore(s) | Op::Insert { rows: s, .. } => {
+                    s.iter().for_each(|(id, _)| see(*id))
+                }
+                Op::SetOrder(Some(o)) => o.iter().for_each(|&id| see(id)),
+                Op::Batch(v) => v.iter().for_each(|o| more(o, see)),
+                _ => {}
+            }
+        }
+        for op in undo.iter().chain(redo) {
+            more(op, &mut |id| see(id, &mut map));
+        }
+        // 4. Newest first, each step's slots worked out in parallel while the old bytes are there (a patch against
+        //    the saved row for rows the saved file has, the whole row for the others; a `Full` row of those is moved
+        //    later), its exact size counted, until the memory budget is reached: that step and older ones go whole.
+        let logical = self.cols.clone();
+        let bit_words = (next as usize).div_ceil(64).max(1);
+        let mut left = self.undo_budget;
+        // (Index into `undo` then `redo` order, slots of that step.)
+        let mut done: Vec<(bool, usize, Vec<Option<Edit>>)> = Vec::new();
+        let order: Vec<(bool, usize)> = (0..undo.len())
+            .rev()
+            .map(|i| (false, i))
+            .chain((0..redo.len()).rev().map(|i| (true, i)))
+            .collect();
+        let mut mem_cut: Option<(bool, usize)> = None;
+        for &(is_redo, i) in &order {
+            let op = if is_redo { &redo[i] } else { &undo[i] };
+            let mut slots: Vec<(u32, &Option<Edit>)> = Vec::new();
+            each_state(op, &mut |id, st| {
+                if is_slot(&map, saved_rows, id, st) {
+                    slots.push((id, st));
+                }
+            });
+            // (Collected straight into one vector, then checked in place: no second copy of the states.)
+            let states: Vec<Result<Option<Edit>, Error>> = slots
+                .par_iter()
+                .with_min_len(256)
+                .map(|&(id, st)| self.rebase_state(id, st, &logical, map[id as usize] < saved_rows))
+                .collect();
+            drop(slots);
+            let states: Result<Vec<Option<Edit>>, Error> = states.into_iter().collect();
+            let Ok(states) = states else {
+                return Err(empty);
+            };
+            let mut it = states.iter();
+            let cost = new_cost(
+                op,
+                &mut it,
+                &map,
+                saved_rows,
+                &logical,
+                self.index.rows(),
+                bit_words,
+            );
+            match left.checked_sub(cost) {
+                Some(l) => left = l,
+                None => {
+                    mem_cut = Some((is_redo, i));
+                    break;
+                }
+            }
+            done.push((is_redo, i, states));
+        }
+        if let Some((is_redo, i)) = mem_cut {
+            if is_redo {
+                kept.redo_cut_memory = i + 1;
+                redo_from += i + 1;
+            } else {
+                // Every redo step is further back than the oldest undo step kept: they go too.
+                kept.undo_cut_memory = i + 1;
+                undo_from += i + 1;
+                kept.redo_cut_memory = redo.len();
+                redo_from = self.redo.len();
+            }
+        }
+        let estimate = self.undo_budget - left;
+        let (undo, redo) = (&self.undo[undo_from..], &self.redo[redo_from..]);
+        if undo.is_empty() && redo.is_empty() {
+            kept.cleared = true;
+            return Err(kept);
+        }
+        kept.undo = undo.len();
+        kept.redo = redo.len();
+        // The slots in walk order: undo oldest to newest, then redo (indexes into the slices after the work cut).
+        let (first_undo, first_redo) = (undo_from - u, redo_from - r);
+        let mut by_step = done;
+        by_step.sort_by_key(|(is_redo, i, _)| (*is_redo, *i));
+        // (Each step's states stay where they were made: no second copy of them is held.)
+        let rows: Vec<Vec<Option<Edit>>> = by_step
+            .into_iter()
+            .filter(|(is_redo, i, _)| {
+                if *is_redo {
+                    *i >= first_redo
+                } else {
+                    *i >= first_undo
+                }
+            })
+            .map(|(_, _, s)| s)
+            .collect();
+        let file_order = file_order.then(|| {
+            (0..self.index.rows() as usize)
+                .into_par_iter()
+                .map(|id| map[id])
+                .collect()
+        });
+        let bits = |set: &dyn Fn(u32) -> bool| -> Vec<u64> {
+            let mut bits = vec![0u64; (next as usize).div_ceil(64).max(1)];
+            for (old, &new) in map.iter().enumerate() {
+                if new != u32::MAX && set(old as u32) {
+                    bits[(new >> 6) as usize] |= 1 << (new & 63);
+                }
+            }
+            bits
+        };
+        let view = self.view.as_ref().map(|v| {
+            (
+                v.filters().then(|| bits(&|id| v.passes(id))),
+                v.hidden.is_some().then(|| bits(&|id| v.is_hidden(id))),
+            )
+        });
+        Ok(Rebase {
+            undo_from,
+            redo_from,
+            kept,
+            estimate,
+            map,
+            next,
+            logical,
+            saved_rows,
+            rows,
+            file_order,
+            undo_ids: self.undo_ids.iter().skip(undo_from).copied().collect(),
+            redo_ids: self.redo_ids[redo_from..].to_vec(),
+            // The state before the oldest kept step: the start, or the state the newest step let go left.
+            base_mark: match undo_from {
+                0 => self.base_mark,
+                n => self.undo_ids[n - 1],
+            },
+            view,
+        })
+    }
+
+    /// A state's values in the new column order.
+    fn state_values(
+        &self,
+        id: u32,
+        st: &Option<Edit>,
+        logical: &Option<Vec<u32>>,
+    ) -> Result<Vec<String>, Error> {
+        let mut phys = match st {
+            Some(Edit::Patch { width, cells }) => self.patched(id, *width, cells),
+            Some(Edit::Full(v)) => v.clone(),
+            None => {
+                if id as u64 >= self.index.rows() {
+                    return Err(Error::Invalid("rebase: a made row has no state".into()));
+                }
+                let (b, m) = self.raw_row(id);
+                let mut v = self.original_fields(id, b, m)?;
+                let w = self.home_width(v.len());
+                v.truncate(w);
+                v
+            }
+        };
+        Ok(match logical {
+            Some(lm) => lm
+                .iter()
+                .map(|&p| {
+                    phys.get_mut(p as usize)
+                        .map(std::mem::take)
+                        .unwrap_or_default()
+                })
+                .collect(),
+            None => phys,
+        })
+    }
+
+    /// The state `st` of row `id` on the saved file. A row the saved file has (`saved`) becomes the cells where
+    /// the state differs from the row as written (its values now, which the save's check read back), with the
+    /// state's own width; `None` when nothing differs. A state narrower than the saved row, and every row the saved
+    /// file does not have, stays whole.
+    fn rebase_state(
+        &self,
+        id: u32,
+        st: &Option<Edit>,
+        logical: &Option<Vec<u32>>,
+        saved: bool,
+    ) -> Result<Option<Edit>, Error> {
+        if saved && logical.is_none() && self.file_width.is_none() {
+            if let Some(r) = self.quick_patch(id, st) {
+                return r;
+            }
+        }
+        let v = self.state_values(id, st, logical)?;
+        if !saved {
+            return Ok(Some(Edit::Full(v)));
+        }
+        let now = self.logical_values(id)?;
+        if v.len() < now.len() {
+            return Ok(Some(Edit::Full(v)));
+        }
+        let width = v.len() as u32;
+        let cells: Vec<(u32, Box<str>)> = v
+            .into_iter()
+            .enumerate()
+            .filter(|(i, s)| now.get(*i).map_or(!s.is_empty(), |n| n != s))
+            .map(|(i, s)| (i as u32, s.into_boxed_str()))
+            .collect();
+        Ok(if cells.is_empty() && width as usize == now.len() {
+            None
+        } else {
+            Some(Edit::Patch {
+                width,
+                cells: cells.into(),
+            })
+        })
+    }
+
+    /// `rebase_state` for a file row whose state and whose state now are both its file bytes plus some cells (A):
+    /// only the columns either one patches can differ, so the row is read once (and only when a value from the
+    /// file is needed) and only those columns compared. `None`: not such a row, or the state is narrower than the
+    /// row now (it stays whole).
+    fn quick_patch(&self, id: u32, st: &Option<Edit>) -> Option<Result<Option<Edit>, Error>> {
+        let now = self.overlay.get(id);
+        fn cells_of(e: Option<&Edit>) -> Option<&[(u32, Box<str>)]> {
+            match e {
+                Some(Edit::Patch { cells, .. }) => Some(cells),
+                Some(Edit::Full(_)) => None,
+                None => Some(&[]),
+            }
+        }
+        fn find(p: &[(u32, Box<str>)], c: u32) -> Option<&str> {
+            p.iter().find(|x| x.0 == c).map(|x| &*x.1)
+        }
+        let (sp, np) = (cells_of(st.as_ref())?, cells_of(now)?);
+        if id as u64 >= self.index.rows() {
+            return None;
+        }
+        let mut union: Vec<u32> = sp.iter().chain(np).map(|c| c.0).collect();
+        union.sort_unstable();
+        union.dedup();
+        let need_file = st.is_none()
+            || now.is_none()
+            || union
+                .iter()
+                .any(|&c| find(sp, c).is_none() || find(np, c).is_none());
+        let file = if need_file {
+            match self.original_values(id) {
+                Ok(v) => Some(v),
+                Err(e) => return Some(Err(e)),
+            }
+        } else {
+            None
+        };
+        let fields = file.as_ref().map_or(0, |f| self.home_width(f.len()));
+        let width = |e: &Option<&Edit>| match e {
+            Some(Edit::Patch { width, .. }) => *width as usize,
+            _ => fields,
+        };
+        let (sw, nw) = (width(&st.as_ref()), width(&now));
+        if sw < nw {
+            return None;
+        }
+        fn value<'a>(
+            p: &'a [(u32, Box<str>)],
+            w: usize,
+            c: u32,
+            file: &'a Option<Vec<String>>,
+        ) -> &'a str {
+            if c as usize >= w {
+                ""
+            } else if let Some(s) = find(p, c) {
+                s
+            } else {
+                file.as_ref()
+                    .and_then(|f| f.get(c as usize))
+                    .map_or("", String::as_str)
+            }
+        }
+        let cells: Vec<(u32, Box<str>)> = union
+            .iter()
+            .filter(|&&c| value(sp, sw, c, &file) != value(np, nw, c, &file))
+            .map(|&c| (c, Box::from(value(sp, sw, c, &file))))
+            .collect();
+        Some(Ok(if cells.is_empty() && sw == nw {
+            None
+        } else {
+            Some(Edit::Patch {
+                width: sw as u32,
+                cells: cells.into(),
+            })
+        }))
+    }
+
+    /// Put the rebased history in place, after `reset_to` with the saved file. `undo` and `redo` are the old steps
+    /// (taken out before the reset); what is not kept is returned to be freed.
+    fn apply_rebase(&mut self, r: Rebase, mut undo: Vec<Op>, mut redo: Vec<Op>) -> Vec<Op> {
+        let Rebase {
+            undo_from,
+            redo_from,
+            kept,
+            map,
+            next,
+            logical,
+            saved_rows,
+            rows,
+            file_order,
+            undo_ids,
+            redo_ids,
+            base_mark,
+            view,
+            ..
+        } = r;
+        debug_assert!(next as u64 >= self.index.rows());
+        let mut gone: Vec<Op> = undo.drain(..undo_from).collect();
+        let keep_redo = redo.split_off(redo_from);
+        gone.append(&mut redo);
+        let mut mv = Moving {
+            map,
+            next,
+            logical,
+            saved_rows,
+            rows: rows.into_iter().flatten(),
+            file_order,
+        };
+        let undo: Vec<Op> = undo.into_iter().map(|o| mv.op(o)).collect();
+        let redo: Vec<Op> = keep_redo.into_iter().map(|o| mv.op(o)).collect();
+        debug_assert!(mv.rows.next().is_none(), "every prepared row was used");
+        self.undo_bytes = undo.iter().map(Op::cost).sum();
+        self.redo_bytes = redo.iter().map(Op::cost).sum();
+        self.undo = undo;
+        self.redo = redo;
+        self.undo_ids = undo_ids;
+        self.redo_ids = redo_ids;
+        self.base_mark = base_mark;
+        self.next_id = next;
+        self.clean_depth = Some(self.undo.len());
+        self.last_history = Some(kept);
+        // The view `reset_to` rebuilt covers the saved rows only; rows only the history knows keep how they showed.
+        if let (Some((passing, hidden)), Some(old)) = (view, self.view.take()) {
+            let mut v = match passing {
+                Some(bits) if old.filters() => View::new(old.spec, bits, self.next_id),
+                _ => View::all(),
+            };
+            v.hidden = hidden.map(Arc::new);
+            if v.filters() || v.hidden.is_some() {
+                self.view = Some(v);
+            }
+        }
+        gone
+    }
+
+    /// Any undo or redo steps.
+    pub(crate) fn has_history(&self) -> bool {
+        !(self.undo.is_empty() && self.redo.is_empty())
+    }
+
+    /// `reset_to` the saved file, keeping the history `prepare_rebase` moved onto it (or clearing it as before).
+    pub(crate) fn reset_keeping(
+        &mut self,
+        source: Source,
+        start: Start,
+        format: Format,
+        index: RowIndex,
+        rebase: Result<Rebase, HistoryKept>,
+    ) {
+        match rebase {
+            Ok(r) => {
+                let undo = std::mem::take(&mut self.undo);
+                let redo = std::mem::take(&mut self.redo);
+                self.reset_to(source, start, format, index);
+                let gone = self.apply_rebase(r, undo, redo);
+                // Freeing many let-go rows takes a while: big leftovers go on a background thread, as in `reset_to`.
+                if gone.iter().map(Op::cost).sum::<usize>() > 64 << 20 {
+                    let _ = std::thread::Builder::new()
+                        .name("free-edits".into())
+                        .spawn(move || drop(gone));
+                }
+            }
+            Err(kept) => {
+                self.reset_to(source, start, format, index);
+                self.last_history = kept.cleared.then_some(kept);
+            }
+        }
+    }
+
+    /// Where rows `ids` are in the order now, which is their id once this order is saved (rows not there are left
+    /// out). For a list of rows kept by id beside the document ("Show changed rows") across a save.
+    pub fn saved_ids_of(&self, ids: &[u32]) -> Vec<u32> {
+        let mut pos = vec![u32::MAX; self.next_id as usize];
+        for (p, id) in self.ids().enumerate() {
+            pos[id as usize] = p as u32;
+        }
+        ids.iter()
+            .filter_map(|&id| pos.get(id as usize).copied().filter(|&p| p != u32::MAX))
+            .collect()
+    }
+
+    /// What the last save did with the undo history (`None`: there was none, or nothing was saved yet).
+    pub fn last_history(&self) -> Option<HistoryKept> {
+        self.last_history
+    }
+}
+
+/// The old steps taken by value onto the new ids (see [`Document::apply_rebase`]).
+struct Moving {
+    map: Vec<u32>,
+    next: u32,
+    logical: Option<Vec<u32>>,
+    saved_rows: u32,
+    rows: std::iter::Flatten<std::vec::IntoIter<Vec<Option<Edit>>>>,
+    file_order: Option<Vec<u32>>,
+}
+
+/// A state worked out before the save (a row the saved file has, or one whose values must be read from the old
+/// bytes) rather than moved after it.
+fn is_slot(map: &[u32], saved_rows: u32, id: u32, st: &Option<Edit>) -> bool {
+    map[id as usize] < saved_rows || !matches!(st, Some(Edit::Full(_)))
+}
+
+impl Moving {
+    fn id(&self, old: u32) -> u32 {
+        self.map[old as usize]
+    }
+
+    fn state(&mut self, old: u32, st: Option<Edit>) -> Option<Edit> {
+        if is_slot(&self.map, self.saved_rows, old, &st) {
+            return self.rows.next().expect("a prepared state for every slot");
+        }
+        let Some(Edit::Full(mut v)) = st else {
+            unreachable!("only whole rows are moved")
+        };
+        Some(Edit::Full(match &self.logical {
+            Some(lm) => lm
+                .iter()
+                .map(|&p| {
+                    v.get_mut(p as usize)
+                        .map(std::mem::take)
+                        .unwrap_or_default()
+                })
+                .collect(),
+            None => v,
+        }))
+    }
+
+    fn states(&mut self, s: Vec<(u32, Option<Edit>)>) -> Vec<(u32, Option<Edit>)> {
+        s.into_iter()
+            .map(|(id, st)| (self.id(id), self.state(id, st)))
+            .collect()
+    }
+
+    fn bits(&self, set: impl Fn(u32) -> bool) -> Vec<u64> {
+        let mut bits = vec![0u64; (self.next as usize).div_ceil(64).max(1)];
+        for (old, &new) in self.map.iter().enumerate() {
+            if new != u32::MAX && set(old as u32) {
+                bits[(new >> 6) as usize] |= 1 << (new & 63);
+            }
+        }
+        bits
+    }
+
+    fn op(&mut self, op: Op) -> Op {
+        match op {
+            Op::Restore(s) => Op::Restore(self.states(s)),
+            Op::Insert { at, rows } => Op::Insert {
+                at,
+                rows: self.states(rows),
+            },
+            Op::SetOrder(Some(mut o)) => {
+                o.par_iter_mut().for_each(|id| *id = self.map[*id as usize]);
+                Op::SetOrder(Some(o))
+            }
+            Op::SetOrder(None) => {
+                Op::SetOrder(Some(self.file_order.clone().expect("file order prepared")))
+            }
+            Op::SetHidden(h) => Op::SetHidden(h.map(|h| {
+                let has = |id: u32| {
+                    h.get((id >> 6) as usize)
+                        .is_some_and(|w| (w >> (id & 63)) & 1 == 1)
+                };
+                Arc::new(self.bits(has))
+            })),
+            Op::SetFilter(f) => Op::SetFilter(f.map(|f| {
+                let passes = |id: u32| {
+                    id >= f.base
+                        || f.bits
+                            .get((id >> 6) as usize)
+                            .is_some_and(|w| (w >> (id & 63)) & 1 == 1)
+                };
+                let bits = self.bits(passes);
+                let logical = &self.logical;
+                let spec = f.spec.map_cols(|p| match logical {
+                    Some(m) => m.iter().position(|&x| x == p).map(|i| i as u32),
+                    None => Some(p),
+                });
+                Box::new(FilterPart {
+                    spec,
+                    bits,
+                    base: self.next,
+                })
+            })),
+            Op::Batch(v) => Op::Batch(v.into_iter().map(|o| self.op(o)).collect()),
+            // Row moves and removals hold positions only.
+            other @ (Op::Remove { .. } | Op::MoveRows { .. }) => other,
+            Op::ColInsert { .. }
+            | Op::ColRemove { .. }
+            | Op::MoveCols { .. }
+            | Op::SetMap(_)
+            | Op::SetEncoding(_)
+            | Op::SetWidth(_)
+            | Op::SetNotes(_) => {
+                unreachable!("the history is cut at column, encoding, width and report-note steps")
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "rebase_tests.rs"]
+mod tests;

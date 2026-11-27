@@ -1525,9 +1525,22 @@ selection, a column or the whole table:
   stay. Going to a checkpoint keeps the moment you left as "Before restoring ...",
   so the way back is one click. **Limits:** a checkpoint is greyed ("no longer
   reachable") when the undo history is trimmed past it (10,000 steps or 512 MB),
-  when a new change replaces what you had undone, and when you save the file,
-  because saving starts the undo history again. Checkpoints are not saved to disk
-  and go when the tab closes. **What changed since this checkpoint** (Edit > What changed
+  when a new change replaces what you had undone, and when a save cannot keep
+  it (it then says "let go at the save of 14:02" with the reason). Checkpoints are not saved to disk
+  and go when the tab closes.
+- **Undo after save:** saving keeps the undo history, redo and checkpoints, so
+  Ctrl+Z after Ctrl+S takes back what you did before the save (the table then
+  reads as changed again). **Limits:** steps before a column, encoding or file-width
+  change (inserting, deleting or moving columns) are let go at the save, and so
+  is redo past such a change (and past setting rows aside as report notes); when
+  the steps together changed more rows than the file has, or would not fit in the
+  history's memory budget (512 MB), the oldest steps are let go first. The status
+  line says so once, at that save. The save itself stays about as fast: the
+  history is moved onto the saved rows while the file is written, and each step
+  keeps only the cells it changed. A save holds a little extra memory while it carries the undo
+  history over (the cells the kept steps changed, and a number per row), freed
+  when the save is done. Row notes follow their rows by key and the
+  differences of a comparison go out of date after a save, as before. **What changed since this checkpoint** (Edit > What changed
   since a checkpoint, command search, the tab and cell right-click menus, which
   compare with the newest checkpoint they can; or the Δ button on any
   checkpoint): the counts first (cells changed and in how many rows, rows added

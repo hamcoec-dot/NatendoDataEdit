@@ -23,6 +23,8 @@ use crate::source::Source;
 use crate::Error;
 
 pub mod ragged;
+mod rebase;
+pub use rebase::HistoryKept;
 pub mod repair;
 pub mod report;
 pub mod since;
@@ -258,8 +260,8 @@ impl Op {
     }
 }
 
-/// What the thread is noting: the document and, once a change is made to it, the mark and row-id watermark just before.
-type Capture = Option<(u64, Option<(u64, u32)>)>;
+/// What the thread is noting: the document and, once a change is made to it, the mark just before.
+type Capture = Option<(u64, Option<u64>)>;
 
 thread_local! {
     /// While a bulk change runs on this thread: the document it edits and the mark of that document just before its
@@ -273,9 +275,8 @@ pub fn capture_mark_start(uid: u64) {
     CAPTURE.with(|c| *c.borrow_mut() = Some((uid, None)));
 }
 
-/// Stop noting, and the mark noted with the row-id watermark taken at the same moment (`next_row_id`): `None` when no
-/// change was made to the document meanwhile. Rows with an id from the watermark on were made after the mark.
-pub fn capture_mark_take() -> Option<(u64, u32)> {
+/// Stop noting, and the mark noted: `None` when no change was made to the document meanwhile.
+pub fn capture_mark_take() -> Option<u64> {
     CAPTURE.with(|c| c.borrow_mut().take().and_then(|(_, m)| m))
 }
 
@@ -493,6 +494,10 @@ pub struct Document {
     redo_bytes: usize,
     /// Memory budget for the history (MAX_UNDO_BYTES; smaller in tests).
     pub(crate) undo_budget: usize,
+    /// The rows a save carries the history for, as a share of the file's rows (`REBASE_WORK_SHARE`; changed in tests).
+    pub(crate) rebase_work_share: f64,
+    /// What the last save did with the undo history (see `last_history`).
+    last_history: Option<HistoryKept>,
     undo: Vec<Op>,
     redo: Vec<Op>,
     /// A unique, rising id for each undo step (same length and order as `undo`) and each redo step (as `redo`):
@@ -664,6 +669,8 @@ impl Document {
             undo_bytes: 0,
             redo_bytes: 0,
             undo_budget: MAX_UNDO_BYTES,
+            rebase_work_share: rebase::REBASE_WORK_SHARE,
+            last_history: None,
             undo: Vec::new(),
             redo: Vec::new(),
             undo_ids: Default::default(),
@@ -2166,7 +2173,7 @@ impl Document {
         CAPTURE.with(|c| {
             if let Some((uid, mark)) = c.borrow_mut().as_mut() {
                 if *uid == self.uid && mark.is_none() {
-                    *mark = Some((self.step_mark(), self.next_id));
+                    *mark = Some(self.step_mark());
                 }
             }
         });
@@ -3078,7 +3085,6 @@ mod tests {
 1
 ");
         let before = d.step_mark();
-        let wm_before = d.next_row_id();
         capture_mark_start(d.uid());
         other.set_cell(1, 0, "o".into()).unwrap();
         assert_eq!(
@@ -3091,8 +3097,8 @@ mod tests {
         d.set_cell(1, 0, "y".into()).unwrap();
         assert_eq!(
             capture_mark_take(),
-            Some((before, wm_before)),
-            "the first change's mark and watermark, not the last"
+            Some(before),
+            "the first change's mark, not the last"
         );
         capture_mark_start(d.uid());
         assert_eq!(capture_mark_take(), None, "no change, no mark");

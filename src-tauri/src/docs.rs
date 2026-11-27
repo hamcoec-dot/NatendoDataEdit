@@ -1170,10 +1170,10 @@ struct Checkpoint {
     id: u32,
     name: String,
     mark: u64,
-    /// `Document::next_row_id` at the same moment as the mark: rows with an id from it on were made later.
-    watermark: u32,
     /// Made by the app before a risky change, not by the person.
     auto: bool,
+    /// A save let it go: when (milliseconds since 1970) and why.
+    gone: Option<(u64, &'static str)>,
 }
 
 /// A tab's checkpoints, in the order they were made. They are not saved to disk and go with the tab.
@@ -1184,15 +1184,15 @@ struct Checkpoints {
 }
 
 impl Checkpoints {
-    fn add(&mut self, name: String, mark: u64, watermark: u32, auto: bool) -> u32 {
+    fn add(&mut self, name: String, mark: u64, auto: bool) -> u32 {
         self.next += 1;
         let id = self.next;
         self.list.push(Checkpoint {
             id,
             name,
             mark,
-            watermark,
             auto,
+            gone: None,
         });
         let cap = if auto {
             MAX_AUTO_CHECKPOINTS
@@ -1237,6 +1237,9 @@ pub struct CheckpointInfo {
     pub current: bool,
     /// Why "What changed since this?" cannot be answered ("" when it can).
     pub since_note: String,
+    /// When a save let it go (milliseconds since 1970), and why ("a column change", ...).
+    pub gone_at: Option<u64>,
+    pub gone_why: Option<&'static str>,
 }
 
 /// What a bulk change is called in "Before ..." and whether it gets an automatic checkpoint. No wildcard: a new
@@ -1867,6 +1870,9 @@ pub struct DocInfo {
     /// to running one).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub run_notes: Vec<String>,
+    /// Only in a save's answer: what the save did with the undo history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_history: Option<natendo_engine::document::HistoryKept>,
     pub usual_fields: u32,
     pub ragged_rows: u64,
     pub first_row_ragged: bool,
@@ -4107,6 +4113,7 @@ impl Docs {
             Some(p) => self.check_writable(p)?,
             None => {}
         }
+        let saved;
         {
             let mut d = entry.write();
             if entry.locked.load(Ordering::Relaxed)
@@ -4143,6 +4150,21 @@ impl Docs {
             {
                 std::thread::sleep(std::time::Duration::from_millis(ms));
             }
+            // "Show changed rows" keeps working across the save while it still describes the table (B4): its rows
+            // get their ids in the saved file. One made before a later change stays stale, as before.
+            let before = d.revision();
+            let reachable: Vec<u32> = {
+                let book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
+                book.list
+                    .iter()
+                    .filter(|c| d.step_reach(c.mark).is_some())
+                    .map(|c| c.id)
+                    .collect()
+            };
+            let changed = {
+                let c = entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner());
+                (c.0 == before && !c.1.is_empty()).then(|| d.saved_ids_of(&c.1))
+            };
             d.save(SaveOptions {
                 path,
                 overwrite_changed,
@@ -4152,6 +4174,33 @@ impl Docs {
                 quoting,
                 ..Default::default()
             })?;
+            if let Some(rows) = changed.filter(|_| d.revision() != before) {
+                *entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner()) =
+                    (d.revision(), rows);
+            }
+            // Checkpoints the save let go say when and why (U4).
+            if let Some(k) = d.last_history().filter(|_| d.revision() != before) {
+                let why = if k.undo_cut_columns + k.redo_cut_columns > 0 {
+                    "a column, encoding or width change"
+                } else if k.undo_cut_memory + k.redo_cut_memory > 0 {
+                    "not enough memory to keep the undo history"
+                } else if k.undo_cut_work + k.redo_cut_work > 0 {
+                    "the steps before it changed too many rows to carry across a save"
+                } else {
+                    "the undo history could not be kept"
+                };
+                let at = now_millis();
+                let mut book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
+                for c in book.list.iter_mut() {
+                    if c.gone.is_none()
+                        && reachable.contains(&c.id)
+                        && d.step_reach(c.mark).is_none()
+                    {
+                        c.gone = Some((at, why));
+                    }
+                }
+            }
+            saved = d.last_history().filter(|_| d.revision() != before);
         }
         // The saved copy was reopened normally (quotes may span lines).
         entry.line_by_line.store(false, Ordering::Relaxed);
@@ -4159,7 +4208,9 @@ impl Docs {
         crate::recovery::forget(id);
         entry.autosaved.store(u64::MAX, Ordering::Relaxed);
         entry.too_large.store(0, Ordering::Relaxed);
-        self.info(id)
+        let mut info = self.info(id)?;
+        info.saved_history = saved;
+        Ok(info)
     }
 
     /// [`Docs::save`] with a processing receipt written beside the saved file: the file the tab
@@ -5956,8 +6007,7 @@ impl Docs {
 
     /// The automatic checkpoint "Before <label>" at `mark`, when the change really made a step (the table is in a
     /// different state now) and no checkpoint already names that moment.
-    fn auto_checkpoint(&self, entry: &Entry, taken: (u64, u32), label: &str) {
-        let (mark, watermark) = taken;
+    fn auto_checkpoint(&self, entry: &Entry, mark: u64, label: &str) {
         if entry.read().step_mark() == mark {
             return;
         }
@@ -5965,7 +6015,7 @@ impl Docs {
         if book.list.iter().any(|c| c.mark == mark) {
             return;
         }
-        book.add(format!("Before {label}"), mark, watermark, true);
+        book.add(format!("Before {label}"), mark, true);
     }
 
     /// Name this moment: a checkpoint at the table's state now (a few bytes; nothing is copied).
@@ -5975,11 +6025,7 @@ impl Docs {
             return Err(CmdError::new("invalid", "give the checkpoint a name"));
         }
         let entry = self.get(id)?;
-        // The mark and the row-id watermark are read under one lock: the same moment.
-        let (mark, watermark) = {
-            let d = entry.read();
-            (d.step_mark(), d.next_row_id())
-        };
+        let mark = entry.read().step_mark();
         {
             let mut book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
             // Naming a moment that already has an automatic checkpoint turns that one into the person's own.
@@ -5987,7 +6033,7 @@ impl Docs {
                 c.auto = false;
                 c.name = name;
             } else {
-                book.add(name, mark, watermark, false);
+                book.add(name, mark, false);
             }
         }
         self.checkpoint_list(id)
@@ -6009,8 +6055,14 @@ impl Docs {
                 reachable: d.step_reach(c.mark).is_some(),
                 steps: d.step_reach(c.mark).unwrap_or(0),
                 current: c.mark == now,
+                gone_at: c.gone.map(|g| g.0),
+                gone_why: c.gone.map(|g| g.1),
                 since_note: match d.step_reach(c.mark) {
-                    None => "No longer reachable: the undo history was trimmed past it, a newer change replaced it, or the file was saved.".to_string(),
+                    None if c.gone.is_some() => format!(
+                        "No longer reachable: a save let it go ({}).",
+                        c.gone.map_or("", |g| g.1)
+                    ),
+                    None => "No longer reachable: the undo history was trimmed past it, or a newer change replaced it.".to_string(),
                     Some(0) => "The table is in this state now: nothing has changed since.".to_string(),
                     Some(s) if s > 0 => "This checkpoint is ahead of the table (you went back past it): go to it first, then compare.".to_string(),
                     Some(_) => String::new(),
@@ -6045,16 +6097,13 @@ impl Docs {
                 .ok_or_else(|| CmdError::new("invalid", "there is no such checkpoint"))?;
             (c.name.clone(), c.mark)
         };
-        let (leaving, leaving_wm) = {
-            let d = entry.read();
-            (d.step_mark(), d.next_row_id())
-        };
+        let leaving = entry.read().step_mark();
         let mut info = self.edit_any(id, true, |d| {
             if d.go_to_mark(mark) {
                 Ok(())
             } else {
                 Err(Error::Invalid(
-                    "that checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or the file was saved".into(),
+                    "that checkpoint can no longer be reached: the undo history was trimmed past it, a newer change replaced it, or a save let it go (a column change, or not enough memory for the history)".into(),
                 ))
             }
         })?;
@@ -6066,7 +6115,6 @@ impl Docs {
                 book.add(
                     format!("Before restoring \u{201c}{name}\u{201d}"),
                     leaving,
-                    leaving_wm,
                     true,
                 );
             }
@@ -6074,13 +6122,13 @@ impl Docs {
         Ok(info)
     }
 
-    /// The checkpoint's mark and watermark.
-    fn checkpoint_mark(&self, entry: &Entry, cp: u32) -> CmdResult<(u64, u32)> {
+    /// The checkpoint's mark.
+    fn checkpoint_mark(&self, entry: &Entry, cp: u32) -> CmdResult<u64> {
         let book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
         book.list
             .iter()
             .find(|c| c.id == cp)
-            .map(|c| (c.mark, c.watermark))
+            .map(|c| c.mark)
             .ok_or_else(|| CmdError::new("invalid", "there is no such checkpoint"))
     }
 
@@ -6093,9 +6141,9 @@ impl Docs {
         entry: &Entry,
         cp: u32,
         header: bool,
-        f: impl FnOnce(&Document, &SincePlan, u64, u32) -> CmdResult<T>,
+        f: impl FnOnce(&Document, &SincePlan, u64) -> CmdResult<T>,
     ) -> CmdResult<T> {
-        let (mark, wm) = self.checkpoint_mark(entry, cp)?;
+        let mark = self.checkpoint_mark(entry, cp)?;
         let d = entry.read();
         let kept = entry
             .since_plan
@@ -6108,7 +6156,7 @@ impl Docs {
             Some(plan) => plan,
             None => {
                 let job = entry.start("Comparing with the checkpoint")?;
-                let plan = Arc::new(d.since_plan(mark, wm, header, &job.progress)?);
+                let plan = Arc::new(d.since_plan(mark, header, &job.progress)?);
                 *entry.since_plan.lock().unwrap_or_else(|p| p.into_inner()) = Some(KeptSince {
                     checkpoint: cp,
                     header,
@@ -6118,7 +6166,7 @@ impl Docs {
                 plan
             }
         };
-        f(&d, &plan, mark, wm)
+        f(&d, &plan, mark)
     }
 
     /// What changed since a checkpoint: every count, and one page of the list (changed cells, rows taken out, rows
@@ -6132,10 +6180,10 @@ impl Docs {
         want: usize,
     ) -> CmdResult<SinceView> {
         let entry = self.get(id)?;
-        self.with_since(&entry, cp, header, |d, plan, mark, wm| {
+        self.with_since(&entry, cp, header, |d, plan, mark| {
             Ok(SinceView {
                 totals: plan.totals.clone(),
-                cells: d.since_page(plan, mark, wm, offset, want.min(500))?,
+                cells: d.since_page(plan, mark, offset, want.min(500))?,
             })
         })
     }
@@ -6155,7 +6203,7 @@ impl Docs {
         use std::io::Write as _;
         self.check_writable(path)?;
         let entry = self.get(id)?;
-        self.with_since(&entry, cp, header, |d, plan, mark, wm| {
+        self.with_since(&entry, cp, header, |d, plan, mark| {
             if d.path()
                 .is_some_and(|p| natendo_engine::save::same_path(p, path))
             {
@@ -6200,7 +6248,7 @@ impl Docs {
             put(&["Row now", "Column", "Was", "Now"], &mut out)?;
             let mut offset = 0u64;
             loop {
-                let page = d.since_page(plan, mark, wm, offset, 5_000)?;
+                let page = d.since_page(plan, mark, offset, 5_000)?;
                 if page.is_empty() {
                     break;
                 }
@@ -9984,6 +10032,7 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         lossy: d.is_lossy(),
         invalid_bytes: d.has_invalid_bytes(),
         run_notes: Vec::new(),
+        saved_history: None,
         usual_fields: d.ragged_at_open(false).map_or(0, |r| r.0),
         ragged_rows: d.ragged_at_open(false).map_or(0, |r| r.1),
         first_row_ragged: d.first_row_ragged(),
@@ -11128,6 +11177,99 @@ Ann Lee,00123
             format!("{}: people", db.file_name().unwrap().to_string_lossy())
         );
         let _ = std::fs::remove_file(&db);
+    }
+
+    /// U3/B4: a note (by key), a checkpoint and "Show changed rows" survive sort, save and undo; "Show changed rows"
+    /// made before a later edit stays stale across a save.
+    #[test]
+    fn notes_checkpoints_and_changed_rows_survive_sort_save_undo() {
+        let p = tmp(
+            "u3.csv",
+            b"id,name,town
+1,Zed,velmont
+2,Amy,tarrow
+3,Bo,velmont
+4,Cy,kessel
+",
+        );
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let sort = SortSpec {
+            keys: vec![natendo_engine::sort::SortKey {
+                col: 1,
+                descending: false,
+                kind: natendo_engine::sort::SortKind::Text,
+                match_case: false,
+            }],
+            keep_first: true,
+            ..Default::default()
+        };
+        docs.sort(id, sort).unwrap();
+        // Amy, Bo, Cy, Zed. A note on Bo, a checkpoint, then Replace all velmont -> Velmont (Bo and Zed).
+        docs.note_set(id, 2, 3, "moved").unwrap();
+        let cps = docs.checkpoint_add(id, "sorted").unwrap();
+        let cp = cps[0].id;
+        let spec = FindSpec {
+            pattern: Pattern {
+                text: "velmont".into(),
+                match_case: true,
+                ..Default::default()
+            },
+            scope: natendo_engine::find::Scope::All,
+            skip_first: true,
+            skip_cols: Vec::new(),
+            ..Default::default()
+        };
+        docs.replace_preview(id, spec.clone(), "Velmont".into())
+            .unwrap();
+        docs.replace_confirm(id, spec, "Velmont".into()).unwrap();
+        docs.save(id, None, false, false, None).unwrap();
+        let names = |docs: &Docs| -> Vec<String> {
+            let n = docs.info(id).unwrap().rows;
+            (1..n)
+                .map(|r| docs.cell_text(id, r, 1).unwrap().0)
+                .collect()
+        };
+        // Show changed rows after the save: the same people.
+        docs.show_changed(id, true).unwrap();
+        assert_eq!(names(&docs), ["Bo", "Zed"]);
+        docs.undo(id).unwrap();
+        // The note is still on Bo, the checkpoint still reachable and the replace undoes across the save.
+        let marks = docs.note_marks(id, 0, 10).unwrap();
+        assert_eq!(marks.len(), 1);
+        assert_eq!(docs.cell_text(id, marks[0].row, 1).unwrap().0, "Bo");
+        assert!(docs.checkpoint_list(id).unwrap()[0].reachable);
+        docs.undo(id).unwrap();
+        assert_eq!(docs.cell_text(id, 2, 2).unwrap().0, "velmont");
+        docs.undo(id).unwrap();
+        assert_eq!(
+            names(&docs),
+            ["Zed", "Amy", "Bo", "Cy"],
+            "the sort undoes across the save"
+        );
+        docs.checkpoint_restore(id, cp).unwrap();
+        assert_eq!(
+            names(&docs),
+            ["Amy", "Bo", "Cy", "Zed"],
+            "back to the checkpoint"
+        );
+        // Replace all, then an edit, then a save: the changed rows no longer describe the table.
+        let spec = FindSpec {
+            pattern: Pattern {
+                text: "kessel".into(),
+                ..Default::default()
+            },
+            scope: natendo_engine::find::Scope::All,
+            skip_first: true,
+            skip_cols: Vec::new(),
+            ..Default::default()
+        };
+        docs.replace_preview(id, spec.clone(), "K".into()).unwrap();
+        docs.replace_confirm(id, spec, "K".into()).unwrap();
+        docs.set_cells(id, vec![(1, 2, "edited".into())]).unwrap();
+        docs.save(id, None, false, false, None).unwrap();
+        assert_eq!(docs.show_changed(id, true).unwrap_err().kind, "changed");
     }
 
     #[test]
@@ -12721,14 +12863,14 @@ ca,California
             "read_only"
         );
         docs.set_read_only(id, false).unwrap();
-        // A save that rewrites the file starts the history again: every checkpoint is gone.
+        // A save keeps the history, so the checkpoint before the edits is still there.
         docs.save(id, None, false, true, None).unwrap();
         assert!(docs
             .checkpoint_list(id)
             .unwrap()
             .iter()
-            .all(|c| !c.reachable));
-        assert!(docs.checkpoint_restore(id, start).is_err());
+            .any(|c| c.reachable));
+        assert!(docs.checkpoint_restore(id, start).is_ok());
         // Forgetting one leaves the table alone.
         let n = docs.checkpoint_list(id).unwrap().len();
         assert_eq!(docs.checkpoint_remove(id, start).unwrap().len(), n - 1);
