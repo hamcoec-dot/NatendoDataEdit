@@ -133,7 +133,8 @@ const url = process.argv[3] || "http://localhost:5213";
   const said = await status();
   const histBefore = await p.evaluate(() => window.__nde.tab.info.history_pos);
   await dragTo(0);
-  ok((await status()) === said && (await p.evaluate(() => window.__nde.tab.info.history_pos)) === histBefore, "dropping on the source tab does nothing special");
+  void said;
+  ok(/That is this file's tab/.test(await status()) && (await p.evaluate(() => window.__nde.tab.info.history_pos)) === histBefore, `dropping on the source tab changes nothing and says so (${await status()})`);
 
   // ---- Shift: move ----
   await showTab(0);
@@ -223,7 +224,7 @@ const url = process.argv[3] || "http://localhost:5213";
   await p.keyboard.press("Enter");
   await p.waitForTimeout(500);
   const dlg = p.locator(".dialog[role=alertdialog]");
-  ok(/Copy the selected cells to which file/.test((await dlg.textContent().catch(() => "")) || ""), "the command asks which file");
+  ok(/Copy the selection to which file/.test((await dlg.textContent().catch(() => "")) || ""), "the command asks which file");
   if (out) await p.screenshot({ path: path.join(out, "celltab-picker.png") });
   await dlg.getByRole("button", { name: /sample-1M/ }).first().click();
   await p.waitForTimeout(500);
