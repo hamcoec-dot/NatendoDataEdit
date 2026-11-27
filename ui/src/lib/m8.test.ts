@@ -160,6 +160,16 @@ describe("printing", () => {
     expect(html).toContain(`font: ${+fit.size.toFixed(3)}pt/1.25 Arial`);
     expect((html.match(/<col style="width:/g) ?? []).length).toBe(12);
     expect(html).not.toContain("text-overflow: ellipsis");
+    // On one page with nothing to shrink, the widths are still fixed (G2).
+    const roomy = { ...p, fit_page: true };
+    const f0 = printFit([5, 5, 5], roomy, 10, true);
+    expect(f0.size).toBe(9);
+    expect(f0.widths).toHaveLength(3);
+    const h0 = printHtml(["a", "b", "c"], [], roomy, "Arial", false, [], f0);
+    expect(h0).toContain("table-layout: fixed");
+    expect((h0.match(/<col style="width:/g) ?? []).length).toBe(3);
+    // Fit to width alone, nothing to shrink: laid out as before.
+    expect(printFit([5, 5, 5], p, 10, true).widths).toBeNull();
     // On one page, long values are cut (as in the PDF), never wrapped onto more lines.
     const one = { ...p, fit_page: true };
     expect(printHtml(["t"], [["x"]], one, "Arial", false, [], printFit([6], one, 1, true))).toContain("th, td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }");

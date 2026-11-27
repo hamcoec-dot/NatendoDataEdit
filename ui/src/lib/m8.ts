@@ -556,7 +556,9 @@ export function printFit(w1: number[], p: PageSetup, rows: number, header: boole
   }
   const size = want < fs ? Math.max(MIN_FONT, want) : fs;
   const k = size / fs;
-  const widths = size < fs ? nat.map((w) => Math.min(w * k, width) + (pdf ? 0 : RULE)) : null;
+  // On one page the widths are always fixed (cells are cut there, never
+  // wrapped, so a long value must not widen its column past the page).
+  const widths = size < fs || p.fit_page ? nat.map((w) => Math.min(w * k, width) + (pdf ? 0 : RULE)) : null;
   const sum = (widths ?? nat).reduce((a, b) => a + b, 0);
   const fitsWidth = sum <= width + (pdf ? 0 : RULE * w1.length) + 0.01;
   let across = 1;

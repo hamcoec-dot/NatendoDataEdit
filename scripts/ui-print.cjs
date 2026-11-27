@@ -243,6 +243,28 @@ const fixture = path.join(__dirname, "..", "crates", "engine", "tests", "print-f
   });
   ok(h5.cut, "the long note is held to its column (cut with …, not wrapped)");
   ok(h5.table <= h5.content, `with values at the 40% cap the 40-row table (${h5.table.toFixed(0)} px high) still fits one page (${h5.content.toFixed(0)} px)`);
+  // One page with nothing to shrink: a 125-character note must not widen
+  // its column past the page (fixed widths, the note cut with …).
+  const roomy = [["id", "name", "note"]];
+  for (let i = 0; i < 10; i++) roomy.push([String(i + 1), names[i % 6], i === 3 ? "This visit note runs on and on with every detail of the day, the weather, the people met and the plans made for later in the week." : "short"]);
+  await table(tsv(roomy));
+  await sel(1, 0);
+  await openP("file.print");
+  await dlg().locator("select[aria-label=Fit]").selectOption("page");
+  await settle(300);
+  html = await srcdoc();
+  ok(!/Text will print at/.test(await dlg().textContent()), "10 rows at 9 pt need no shrinking");
+  await close();
+  await lay.setContent(html);
+  await lay.waitForTimeout(300);
+  const h6 = await lay.evaluate(() => {
+    const body = getComputedStyle(document.body);
+    const content = parseFloat(body.width) - parseFloat(body.paddingLeft) - parseFloat(body.paddingRight);
+    const note = document.querySelectorAll("tbody tr")[3].querySelectorAll("td")[2];
+    return { content, table: document.querySelector("table").getBoundingClientRect().width, cut: note.scrollWidth > note.clientWidth, len: note.textContent.length };
+  });
+  ok(h6.len >= 125 && h6.cut, `the ${h6.len}-character note is cut with … in its column`);
+  ok(h6.table <= h6.content + 0.5, `the table (${h6.table.toFixed(1)} px) stays within the page width (${h6.content.toFixed(1)} px)`);
   const many = [["id", "name", "note"]];
   for (let i = 0; i < 2000; i++) many.push([String(i + 1), names[i % 6], "ok"]);
   // Far down (past the 60 rows the dialog opens on), very long values with
