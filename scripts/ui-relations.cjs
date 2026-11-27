@@ -1,5 +1,5 @@
 // UI test of Data > Find relationships in the browser stand-in: columns unticked, a planted dependency found, the
-// greyed "Make this a check" with its reason, the exceptions view, copy, a stale refusal and command search.
+// "Make this a check" (adds the data check), the exceptions view, copy, a stale refusal and command search.
 // (The stand-in finds dependencies only; the real rules are the engine's tests.)
 // Run: (cd ui && npx vite --port 5364) then NODE_PATH=<folder with playwright> node scripts/ui-relations.cjs [screenshot dir] [url]
 const { chromium } = require("playwright");
@@ -50,7 +50,11 @@ const url = process.argv[3] || "http://localhost:5364";
   let t = await text();
   ok(/ZIP -> State: holds in 99\.0% \(198 of 200 rows whose ZIP repeats; 1 value breaks it\)/.test(t), "the dependency with its coverage");
   const check = dlg.getByRole("button", { name: "Make line 1 a check" });
-  ok((await check.isDisabled()) && /Waits for table checks/.test((await check.getAttribute("title")) || "") && /Make this a check: Waits for table checks/.test(t), "Make this a check is greyed with its reason");
+  ok(!(await check.isDisabled()) && /marks the rows that break it/.test((await check.getAttribute("title")) || ""), "Make this a check is offered, saying what it adds");
+  await check.click();
+  await p.waitForTimeout(800);
+  const added = await p.evaluate(() => (window.__nde.tab.checks || []).map((c) => c.kind?.type ?? c.kind));
+  ok((await check.textContent()).includes("Added") && (await check.isDisabled()) && added.includes("settled_by"), `Make this a check adds a "same for each value" data check (${JSON.stringify(added)})`);
   if (out) await p.screenshot({ path: path.join(out, "relations.png") });
   await dlg.getByRole("button", { name: "Copy", exact: true }).click();
   await p.waitForTimeout(300);
