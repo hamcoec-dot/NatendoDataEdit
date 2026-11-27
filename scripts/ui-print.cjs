@@ -127,7 +127,9 @@ const fixture = path.join(__dirname, "..", "crates", "engine", "tests", "print-f
   await settle(300);
   html = await srcdoc();
   const size = Number((html.match(/body \{ font: ([\d.]+)pt\//) || [])[1]);
-  ok(Math.abs(size - rec.pdf_size) <= 0.5, `Print's size ${size.toFixed(3)} pt is within 0.5 pt of the PDF's ${rec.pdf_size} pt`);
+  // The record was made with Segoe UI (Windows); elsewhere the fonts differ.
+  if (process.platform === "win32") ok(Math.abs(size - rec.pdf_size) <= 0.5, `Print's size ${size.toFixed(3)} pt is within 0.5 pt of the PDF's ${rec.pdf_size} pt`);
+  else console.log(`SKIP size against the PDF's: the record is for Segoe UI on Windows (here ${size.toFixed(3)} pt)`);
   ok(new RegExp(`Text will print at ${size.toFixed(1).replace(/\.0$/, "")} pt \\(small\\)\\.`).test(await dlg().textContent()), "the dialog says the size, and that it is small (already landscape: no hint)");
   ok(html.includes("table-layout: fixed"), "shrunk text uses fixed column widths");
   await shot("print-fit-30.png");
@@ -219,6 +221,28 @@ const fixture = path.join(__dirname, "..", "crates", "engine", "tests", "print-f
     return { content, table: document.querySelector("table").getBoundingClientRect().height };
   });
   ok(h4.table <= h4.content, `the 40-row table (${h4.table.toFixed(0)} px high) fits one page's content (${h4.content.toFixed(0)} px)`);
+  // A value held to 40% of the page and then shrunk no longer fits its
+  // column: on one page it is cut with "…", so the table still fits.
+  const capped = [["id", "name", "note"]];
+  for (let i = 0; i < 40; i++) capped.push([String(i + 1), names[i % 6], "a fairly long note about the visit and what came of it"]);
+  await table(tsv(capped));
+  await sel(1, 0);
+  await openP("file.print");
+  await dlg().locator("label:has-text('Text size') input").fill("24");
+  await dlg().locator("select[aria-label=Fit]").selectOption("page");
+  await settle(300);
+  html = await srcdoc();
+  await close();
+  await lay.setContent(html);
+  await lay.waitForTimeout(300);
+  const h5 = await lay.evaluate(() => {
+    const body = getComputedStyle(document.body);
+    const content = parseFloat(body.height) - parseFloat(body.paddingTop) - parseFloat(body.paddingBottom);
+    const note = document.querySelectorAll("tbody tr")[0].querySelectorAll("td")[2];
+    return { content, table: document.querySelector("table").getBoundingClientRect().height, cut: note.scrollWidth > note.clientWidth };
+  });
+  ok(h5.cut, "the long note is held to its column (cut with …, not wrapped)");
+  ok(h5.table <= h5.content, `with values at the 40% cap the 40-row table (${h5.table.toFixed(0)} px high) still fits one page (${h5.content.toFixed(0)} px)`);
   const many = [["id", "name", "note"]];
   for (let i = 0; i < 2000; i++) many.push([String(i + 1), names[i % 6], "ok"]);
   // Far down (past the 60 rows the dialog opens on), very long values with

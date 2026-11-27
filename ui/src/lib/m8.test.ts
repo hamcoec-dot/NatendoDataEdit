@@ -159,6 +159,10 @@ describe("printing", () => {
     expect(html).toContain("table-layout: fixed");
     expect(html).toContain(`font: ${+fit.size.toFixed(3)}pt/1.25 Arial`);
     expect((html.match(/<col style="width:/g) ?? []).length).toBe(12);
+    expect(html).not.toContain("text-overflow: ellipsis");
+    // On one page, long values are cut (as in the PDF), never wrapped onto more lines.
+    const one = { ...p, fit_page: true };
+    expect(printHtml(["t"], [["x"]], one, "Arial", false, [], printFit([6], one, 1, true))).toContain("th, td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }");
   });
 });
 

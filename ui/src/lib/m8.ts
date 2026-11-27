@@ -585,6 +585,8 @@ export const PRINT_CSP = "default-src 'none'; style-src 'unsafe-inline'";
 
 /** A whole printable page (for a print frame): the table with its titles
  *  repeated on each page, sized by the page setup, or by `fit`
+ *  (on one page, a value too long for its column is cut with "…" as in the
+ *  PDF, so no row grows taller than the height rule counts; otherwise it wraps)
  *  (`printFit`: the shrunk size and fixed column widths). Nothing in it can
  *  fetch anything: the content policy comes first, and every value is escaped.
  *  `textCols`: by printed column, true for a column typed Text or Id (its values are never set as numbers). */
@@ -627,6 +629,7 @@ th { background: #ebebeb; text-align: left; font-weight: 600; }
 th, td { border: ${border}; padding: 0.15em 0.35em; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
 td.n { text-align: right; }
 tr { break-inside: avoid; }
+${p.fit_page ? "th, td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }" : ""}
 ${preview ? `body { padding: ${margin}mm; width: ${w}mm; height: ${h}mm; box-sizing: border-box; overflow: hidden; } .title { font-size: ${size + 3}pt; margin: 0 0 0.6em; }` : ""}
 </style></head><body>${preview && p.title.trim() ? `<p class="title">${escapeHtml(p.title)}</p>` : ""}<table>${cols}${head}<tbody>
 ${body}
