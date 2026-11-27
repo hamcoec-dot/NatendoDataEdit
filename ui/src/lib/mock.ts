@@ -1415,6 +1415,24 @@ export class MockBackend implements Backend {
     d.edits.set(`${this.rowId(d, 0)}:${this.physCol(d, 0)}`, "");
     return info;
   }
+  /** The stand-in copies the shown rows (the engine copies every row, its sort, filter and hidden rows). */
+  duplicateCalls: { doc: number; title: string }[] = [];
+  encryptedCopies = new Set<number>();
+  async duplicateDoc(doc: number, title: string): Promise<DocInfo> {
+    this.calls.push("duplicateDoc");
+    this.duplicateCalls.push({ doc, title });
+    const d = this.get(doc);
+    if (!title.trim()) throw { kind: "invalid", message: "the copy needs a name" };
+    const cols = this.colCount(d);
+    const rows: string[][] = [];
+    for (let r = 0; r < this.rowCount(d); r++) rows.push(Array.from({ length: cols }, (_, c) => this.value(d, r, c)));
+    const info = this.fromRows(title, rows);
+    if (this.encryptedFrom.has(doc) || this.encryptedCopies.has(doc)) this.encryptedCopies.add(info.id);
+    return info;
+  }
+  async encryptedCopy(doc: number): Promise<boolean> {
+    return this.encryptedCopies.has(doc);
+  }
   async closeDocument(doc: number): Promise<void> {
     this.docs.delete(doc);
   }

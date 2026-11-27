@@ -2226,6 +2226,19 @@ fn encrypted_origin(docs: DocsState<'_>, doc: u32) -> CmdResult<Option<String>> 
     Ok(docs.encrypted_from(doc)?.map(|p| p.display().to_string()))
 }
 
+/// An unsaved copy of tab `doc` in a new tab called `title` (Duplicate tab).
+#[tauri::command]
+async fn duplicate_doc(docs: DocsState<'_>, doc: u32, title: String) -> CmdResult<DocInfo> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.duplicate(doc, &title)).await
+}
+
+/// Whether tab `doc` is a Duplicate of a tab from an encrypted file.
+#[tauri::command]
+fn encrypted_copy(docs: DocsState<'_>, doc: u32) -> CmdResult<bool> {
+    docs.encrypted_copy(doc)
+}
+
 /// Where to save a patch of tabs `a` (`None` if cancelled).
 #[tauri::command]
 async fn patch_pick_save(
@@ -6155,6 +6168,8 @@ pub fn run() {
             save_change_report,
             street_lookup,
             encrypted_origin,
+            duplicate_doc,
+            encrypted_copy,
             sqlite_pick,
             sqlite_open,
             sqlite_save,

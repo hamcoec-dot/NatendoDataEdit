@@ -111,6 +111,8 @@ export interface View {
   record_pins?: string[];
   /** The totals row under the table is on. */
   totals_row?: boolean;
+  /** The tab's colour (remembered session only; see tabcolour.ts). */
+  tab_colour?: number;
 }
 /** A view as "Pick up where you left off" keeps it on disk: only how the
  *  table is laid out. Filters, highlight rules and data checks can hold

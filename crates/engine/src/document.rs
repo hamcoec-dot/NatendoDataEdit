@@ -27,6 +27,9 @@ mod move_tests;
 pub mod ragged;
 mod rebase;
 pub use rebase::HistoryKept;
+pub mod duplicate;
+#[cfg(test)]
+mod duplicate_tests;
 pub mod repair;
 pub mod report;
 pub mod since;
@@ -123,7 +126,7 @@ fn cut_back(values: &mut Vec<String>, file_width: usize) {
 }
 
 /// Overlay of edited rows, tracking the widest row cheaply.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Overlay {
     rows: HashMap<u32, Edit>,
     widths: BTreeMap<u32, u32>,
@@ -408,6 +411,7 @@ pub type RowsMoved = (Vec<(u64, u64)>, u64);
 
 /// A filter's result: which rows show. Fixed when the filter is applied
 /// (editing a row does not hide it until the filter is applied again).
+#[derive(Clone)]
 pub(crate) struct View {
     /// The rules, by physical column.
     pub spec: FilterSpec,
