@@ -258,7 +258,7 @@ const shownNames = async (m, from, n) => {
     const p11 = all.indexOf("Person 11") + 1;
     const all40 = await shownNames(m, 1, 40);
     const q = all40.indexOf("Person 11");
-    ok(JSON.stringify(all40.slice(q - 2, q + 3)) === JSON.stringify(["Person 30", "Person 31", "Person 11", "Person 18", "Person 32"]), `Persons 11 and 18 sit straight before the next shown row (Person 32); hidden Persons 26-31 stayed above (${all40.slice(q - 2, q + 3)})`);
+    ok(JSON.stringify(all40.slice(q - 2, q + 3)) === JSON.stringify(["Person 24", "Person 25", "Person 11", "Person 18", "Person 26"]), `Persons 11 and 18 sit straight after Person 25, the row they passed; hidden Persons 26-31 stayed below (${all40.slice(q - 2, q + 3)})`);
     ok(JSON.stringify(all.filter((n) => ["Person 12", "Person 13", "Person 14", "Person 15", "Person 16", "Person 17"].includes(n))) === JSON.stringify(["Person 12", "Person 13", "Person 14", "Person 15", "Person 16", "Person 17"]), "the hidden rows between kept their order");
     ok((await height(m, p11)) === "40", "Person 11's height went with it");
     // Undo (the filter clear, then the move): every row back.

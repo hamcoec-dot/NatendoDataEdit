@@ -4384,8 +4384,9 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const below = to + count === t.info.rows ? t.info.total_rows - (c.to + count) : 0;
     const parts: string[] = [];
     if (between > 0) parts.push(`${plural(between, "hidden row")} between them stayed in place.`);
-    if (above > 0) parts.push(`They are at the top of the shown rows; ${plural(above, "hidden row")} above stayed in place.`);
-    if (below > 0) parts.push(`They are at the bottom of the shown rows; ${plural(below, "hidden row")} below stayed in place.`);
+    const they = count === 1 ? "It is" : "They are";
+    if (above > 0) parts.push(`${they} at the top of the shown rows; ${plural(above, "hidden row")} above stayed in place.`);
+    if (below > 0) parts.push(`${they} at the bottom of the shown rows; ${plural(below, "hidden row")} below stayed in place.`);
     return parts.length ? `Moved ${plural(count, "row")}. ${parts.join(" ")} Ctrl+Z puts ${count === 1 ? "it" : "them"} back.` : "";
   }
 
@@ -9936,7 +9937,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   <footer class="status">
     {#if message}
-      <span class="msg">{message}</span>
+      <span class="msg" title={message}>{message}</span>
       {#if messageAction}<button type="button" class="small" onclick={() => { const run = messageAction?.run; messageAction = null; run?.(); }}>{messageAction.label}</button>{/if}
     {:else if tab?.busy}
       <span>{tab.busy}{tab.progress !== null ? ` ${Math.round(tab.progress * 100)}%` : ""}</span>

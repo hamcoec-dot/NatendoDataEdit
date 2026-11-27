@@ -370,8 +370,9 @@ everything is also in command search.
   others slide aside to show where it will land; Esc puts it back;
   Ctrl+Alt+Shift+PageUp/PageDown moves the shown tab from the keyboard). While
   a filter is on or rows are hidden, moving rows (by their numbers or with
-  Alt+Shift+Up/Down) moves only the shown rows, gathered in their order, and
-  every hidden row stays where it is; the status line says when hidden rows
+  Alt+Shift+Up/Down) moves only the shown rows, gathered in their order next
+  to the shown row they were moved past (straight below it moving down,
+  straight above it moving up), and every hidden row stays where it is; the status line says when hidden rows
   between them, above them or below them stayed in place. Each move is one undo step, and colour
   scales, highlight rules and checks move with their columns. Help > Mouse
   and drag moves lists them all.

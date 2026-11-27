@@ -74,6 +74,13 @@ fn check_move(d: &mut Document, at: u64, count: u64, to: u64) -> Result<(), Test
     let first = after.iter().position(|id| moved.contains(id)).unwrap();
     prop_assert_eq!(&after[first..first + moving.len()], &moving[..]);
     prop_assert_eq!(d.id_at(to), Some(moving[0]));
+    // Where: next to the shown row passed. Down, straight after it; up (or in
+    // place), straight before the shown row after the block.
+    if to > at {
+        prop_assert_eq!(Some(after[first - 1]), d.id_at(to - 1));
+    } else if to + count < d.row_count() {
+        prop_assert_eq!(Some(after[first + moving.len()]), d.id_at(to + count));
+    }
     // (c) every row's cells are the same; (d) the same number of rows.
     prop_assert_eq!(cells(d), before_cells);
     prop_assert_eq!((d.row_count(), d.total_rows()), (rows, total));
@@ -205,6 +212,23 @@ fn where_the_rows_go() {
     e.move_rows_at(1, 2, rows - 2).unwrap();
     e.clear_filter();
     assert_eq!(names(&e)[16..], ["r18", "r19", "r1", "r3", "r20"]);
+    // Down one shown row: straight after the row passed (r5), not before the
+    // next shown one (r7): hidden r6 stays below.
+    let mut f = doc(20, 2);
+    f.set_filter(&only(&["k1".into()])).unwrap();
+    f.move_rows_at(1, 2, 2).unwrap();
+    assert_eq!(names(&f)[..5], ["name", "r5", "r1", "r3", "r7"]);
+    f.clear_filter();
+    assert_eq!(
+        names(&f)[..8],
+        ["name", "r2", "r4", "r5", "r1", "r3", "r6", "r7"]
+    );
+    // Up: straight before the row passed (r3); hidden r2 stays above.
+    let mut g = doc(20, 2);
+    g.set_filter(&only(&["k1".into()])).unwrap();
+    g.move_rows_at(3, 1, 2).unwrap();
+    g.clear_filter();
+    assert_eq!(names(&g)[..6], ["name", "r1", "r2", "r5", "r3", "r4"]);
 }
 
 #[test]

@@ -2101,9 +2101,10 @@ impl Document {
     /// are out (`None` when nothing moved).
     ///
     /// With a filter on (or rows hidden), `at`, `count` and `to` are shown
-    /// positions and only the shown rows move: they are gathered, in their
-    /// order, straight before the shown row that ends up after them (straight
-    /// after the last shown row when `to` is the end). Hidden rows stay where
+    /// positions and only the shown rows move, gathered in their order, next
+    /// to the shown row they were moved past: moving down, straight after the
+    /// last shown row passed; moving up (or gathering in place), straight
+    /// before the shown row that ends up after them. Hidden rows stay where
     /// they are, in their order.
     pub fn move_rows_at(
         &mut self,
@@ -2146,7 +2147,11 @@ impl Document {
         let left = vis.len() - c;
         // Moved rows before document position p.
         let before = |p: usize| moved.partition_point(|&m| (m as usize) < p);
-        let dest = if (to as usize) < left {
+        let dest = if to > at {
+            // Down: straight after the last shown row passed (`to` >= 1).
+            let p = rest(to as usize - 1) + 1;
+            p - before(p)
+        } else if (to as usize) < left {
             let p = rest(to as usize);
             p - before(p)
         } else if left > 0 {

@@ -87,6 +87,8 @@ const url = process.argv.find((a) => a.startsWith("http")) || "http://localhost:
   ok(J(a1.slice(1, 8)) === J(["Person 01", "Person 02", "Person 04", "Person 05", "Person 07", "Person 03", "Person 06"]), `gathered after Person 07; Persons 04-05 stayed where they were (${J(a1.slice(1, 8))})`);
   const s1 = await status();
   ok(/Moved 2 rows\. 2 hidden rows between them stayed in place\./.test(s1), `the status line says the hidden rows stayed (${s1.slice(0, 120)})`);
+  const tip = await p.locator("footer.status .msg").getAttribute("title");
+  ok(tip === (await p.locator("footer.status .msg").textContent()), "the whole message is its tooltip, so a cut-off line can be read");
   ok(J(await selection()) === "[4,5]", `the selection follows the rows (${J(await selection())})`);
   const h1 = await p.evaluate(async () => {
     const t = window.__nde.tab;
@@ -125,7 +127,7 @@ const url = process.argv.find((a) => a.startsWith("http")) || "http://localhost:
   names = await shownNames();
   const s2 = await status();
   ok(names[1] === "Person 07", `Person 07 is the first shown row (${J(names.slice(0, 4))})`);
-  ok(/at the top of the shown rows; 2 hidden rows above stayed in place\./.test(s2), `the status line says the hidden rows above stayed (${s2.slice(0, 140)})`);
+  ok(/Moved 1 row\. It is at the top of the shown rows; 2 hidden rows above stayed in place\./.test(s2), `the status line says the hidden rows above stayed (${s2.slice(0, 140)})`);
   ok(J((await all()).slice(1, 3)) === J(["Person 01", "Person 02"]), "Persons 01-02 are still the first rows of the file");
 
   // Moving to the bottom: Persons 29-30 hidden below.
@@ -139,7 +141,7 @@ const url = process.argv.find((a) => a.startsWith("http")) || "http://localhost:
   names = await shownNames();
   const s3 = await status();
   ok(names[names.length - 1] === "Person 08", `Person 08 is the last shown row (${J(names.slice(-3))})`);
-  ok(/at the bottom of the shown rows; 2 hidden rows below stayed in place\./.test(s3), `the status line says the hidden rows below stayed (${s3.slice(0, 140)})`);
+  ok(/Moved 1 row\. It is at the bottom of the shown rows; 2 hidden rows below stayed in place\./.test(s3), `the status line says the hidden rows below stayed (${s3.slice(0, 140)})`);
   ok(J((await all()).slice(-2)) === J(["Person 29", "Person 30"]), "Persons 29-30 are still the last rows of the file");
 
   // Dragging row numbers while rows are hidden: shown row 2 to after shown row 5.
@@ -183,7 +185,7 @@ const url = process.argv.find((a) => a.startsWith("http")) || "http://localhost:
   await sel(1, 0);
   await run("edit.moveRowsDown", 600);
   const B2 = await p.evaluate(async () => window.__nde.backend.docRows(window.__nde.tab.id, 1, 3));
-  ok(B2[1] === B.pos[2] - 1 && B2[0] === B.pos[1] - 1, `filtered: the first Osaka row moved past the hidden rows to just before the third (${J(B.pos)} -> ${J(B2)})`);
+  ok(B2[0] === B.pos[1] - 1 && B2[1] === B.pos[1] && B2[2] === B.pos[2], `filtered: the first Osaka row moved down to straight after the second, the row it passed (${J(B.pos)} -> ${J(B2)})`);
   await run("edit.undo", 600);
   ok(J(await p.evaluate(async () => window.__nde.backend.docRows(window.__nde.tab.id, 1, 3))) === J(B.pos), "Undo puts it back");
 

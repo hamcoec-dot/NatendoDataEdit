@@ -70,12 +70,12 @@ describe("browser stand-in", () => {
     const v = await b.viewport(id, 0, 3, 3, 1, 50);
     expect(v.cells.slice(1)).toEqual(["Osaka", "Osaka"]);
     expect(v.rowNumbers?.[0]).toBe(0);
-    // Moving shown rows while filtered: they gather before the next shown row
-    // and report it; a move made from an older count of shown rows is refused.
+    // Moving shown rows while filtered: down, straight after the shown row
+    // passed, and reported; a move made from an older count of shown rows is refused.
     const [p1, p2, p3] = await b.docRows(id, 1, 3);
     const mv = await b.change(id, { op: "move_rows", at: 1, count: 1, to: 2, shown: info.rows });
-    expect(mv.rows_change).toEqual({ kind: "move", runs: [[p1, 1]], to: p3! - 1 });
-    expect(await b.docRows(id, 1, 3)).toEqual([p2! - 1, p3! - 1, p3]);
+    expect(mv.rows_change).toEqual({ kind: "move", runs: [[p1, 1]], to: p2 });
+    expect(await b.docRows(id, 1, 3)).toEqual([p2! - 1, p2, p3]);
     await expect(b.change(id, { op: "move_rows", at: 1, count: 1, to: 2, shown: info.rows + 1 })).rejects.toMatchObject({ kind: "invalid" });
     await b.change(id, { op: "undo" });
     expect(await b.docRows(id, 1, 3)).toEqual([p1, p2, p3]);

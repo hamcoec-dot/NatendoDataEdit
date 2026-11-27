@@ -1830,8 +1830,9 @@ export class MockBackend implements Backend {
           });
           return c.count && c.at !== c.to ? { ...info, rows_change: { kind: "move", runs: [[c.at, c.count]], to: c.to } } : info;
         }
-        // With rows hidden (as the engine): the shown rows gather straight
-        // before the shown row that ends up after them; hidden rows stay.
+        // With rows hidden (as the engine): the shown rows gather next to the
+        // shown row they pass (down: straight after it; up or in place:
+        // straight before the row after them); hidden rows stay.
         const moved = vis.slice(c.at, c.at + c.count);
         const runs: [number, number][] = [];
         for (const p of moved) {
@@ -1841,7 +1842,8 @@ export class MockBackend implements Backend {
         }
         const rest = vis.filter((_, i) => i < c.at || i >= c.at + c.count);
         const before = (p: number) => moved.filter((m) => m < p).length;
-        const dest = c.to < rest.length ? rest[c.to]! - before(rest[c.to]!) : rest.length ? rest[rest.length - 1]! + 1 - before(rest[rest.length - 1]! + 1) : runs[0]![0];
+        const after = (p: number) => p + 1 - before(p + 1);
+        const dest = c.to > c.at ? after(rest[c.to - 1]!) : c.to < rest.length ? rest[c.to]! - before(rest[c.to]!) : rest.length ? after(rest[rest.length - 1]!) : runs[0]![0];
         if (!c.count || (runs.length === 1 && runs[0]![0] === dest)) return this.refresh(d);
         const was = this.orderOf(d).slice();
         const take = new Set(moved);
