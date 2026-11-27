@@ -1301,10 +1301,10 @@ impl Document {
                 for r in s..e {
                     let id = self.doc_id_at(r).ok_or(Error::OutOfRange)?;
                     reader.read(self, id, &mut buf);
-                    for c in 0..n as usize {
+                    for (c, blank) in blanks.iter_mut().enumerate() {
                         let v = reader.get(&buf, c).trim();
                         if v.is_empty() {
-                            blanks[c] += 1;
+                            *blank += 1;
                         } else if let Some(&i) = slot_of.get(&(c as u32)) {
                             let set = &mut sets[i];
                             if set.len() <= MAX_ALLOWED && !set.contains(v) {
@@ -1320,8 +1320,8 @@ impl Document {
         let mut blanks = vec![0u64; n as usize];
         let mut sets: Vec<HashSet<String>> = vec![HashSet::new(); want.len()];
         for (b, s) in parts {
-            for c in 0..n as usize {
-                blanks[c] += b[c];
+            for (x, y) in blanks.iter_mut().zip(&b) {
+                *x += y;
             }
             for (i, set) in s.into_iter().enumerate() {
                 if sets[i].len() <= MAX_ALLOWED {

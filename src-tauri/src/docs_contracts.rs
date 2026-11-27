@@ -495,7 +495,14 @@ mod tests {
     fn open_more(docs: &Docs, dir: &Path, name: &str, body: &str) -> u32 {
         let p = dir.join(name);
         std::fs::write(&p, body).unwrap();
-        docs.open_path(&p, false).unwrap().id
+        let id = docs.open_path(&p, false).unwrap().id;
+        for _ in 0..1000 {
+            if docs.info(id).unwrap().indexed {
+                return id;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("indexing did not finish");
     }
 
     const JAN: &str = "id,name,party\r\n1,Ann,DEM\r\n2,Bo,REP\r\n";
