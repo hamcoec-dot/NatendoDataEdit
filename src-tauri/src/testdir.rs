@@ -75,12 +75,22 @@ fn sweep(tmp: &Path) {
         if !old {
             continue;
         }
-        let p = e.path();
-        let _ = if p.is_dir() {
-            std::fs::remove_dir_all(&p)
-        } else {
-            std::fs::remove_file(&p)
+        // The entry's own type: a link is removed as a link and never
+        // followed into what it points at.
+        let Ok(t) = e.file_type() else {
+            continue;
         };
+        let p = e.path();
+        if t.is_symlink() {
+            // A Windows link to a folder goes with remove_dir.
+            if std::fs::remove_file(&p).is_err() {
+                let _ = std::fs::remove_dir(&p);
+            }
+        } else if t.is_dir() {
+            let _ = std::fs::remove_dir_all(&p);
+        } else if t.is_file() {
+            let _ = std::fs::remove_file(&p);
+        }
     }
 }
 
