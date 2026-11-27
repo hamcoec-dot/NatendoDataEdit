@@ -232,6 +232,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "export": ["file.export"],
   "json lines": ["file.import", "file.export", "file.saveAs"],
   "save json back to its file": ["file.save", "file.saveAs", "file.import"],
+  "file contracts": ["data.contractMake", "data.contracts", "data.contractCheck", "data.contractReview"],
   "split one file into many": ["tools.split", "tools.combine"],
   "excel files made for excel users": ["file.export"],
   "more rows than excel holds": ["file.export", "tools.split"],

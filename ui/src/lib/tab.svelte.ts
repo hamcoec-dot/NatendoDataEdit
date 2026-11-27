@@ -221,6 +221,10 @@ export class Tab {
   busy = $state<string | null>(null);
   /** Private file mode (the file itself, or its folder). */
   private = $state<{ file: boolean; folder: boolean }>({ file: false, folder: false });
+  /** The file contract this tab looks like and its check (C9), shown as a bar above the table; `null`: none. */
+  contract = $state<{ match: import("./backend").ContractMatch; phase: "checking" | "report" | "stopped" | "error"; report: import("./backend").DriftReport | null; error: string } | null>(null);
+  /** Contracts this tab was told it is not (Not this contract), for as long as it is open. */
+  notContracts = new Set<string>();
   /** What the private data finder found (null: not looked yet). */
   findings: import("./backend").Finding[] | null = null;
   /** The user said not to warn again about this tab's private data. */

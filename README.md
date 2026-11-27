@@ -1191,6 +1191,36 @@ everything is also in command search.
   Apply is one undo step, refused if the table changed since the dry run.
   Applying a protected or private patch turns private file mode on for the
   tab. Patches are never written on their own, logged or put into recipes.
+- **File contracts** (Data > Make a contract from this file): for a file you
+  get again and again (a monthly voter list, a weekly export), say once what
+  it should look like: its columns in order, other titles a column may come
+  under, each column's type, the tab's data checks, the values a column may
+  hold (ticked by you; none to begin with), each column's share of blank
+  cells and, if you like, the row count expected. A contract is recognised by
+  a file-name pattern (`voters_*.csv`), by the same column titles (at least
+  80% of them), or both. When a file like it opens, a bar above the table
+  says what differs ("Looks like Monthly voters: 1 renamed column, 2 new
+  values in party, blanks in phone up 14 points"); the check runs after the
+  file is open, never blocks, and any edit stops it (Check again). **Review**
+  lists renamed (a single unknown column where a known one was is "probably
+  renamed", never a guess between two), missing, new and moved columns, cells
+  not of their type, broken rules, new values, blank shares that moved more
+  than 5 points (you can change that) and the row count; each count shows its
+  rows as a filter chip. **Fix what I can** renames the columns to the
+  contract's titles, puts them in its order (new columns at the end), sets its
+  types and adds its checks, all one Ctrl+Z; it never changes a value or
+  deletes a column. Accept these new values, Update the baseline and Add this
+  title as an alias change the contract and save it only when pressed. Data >
+  File contracts lists them (change or rename, delete, export, import, check
+  this tab against one). Contracts live in the app's data folder and are
+  written only when you save one. **A contract keeps** titles, types, blank
+  shares, its checks and the allowed values you ticked, and those are values
+  from the file: a column that looks like personal data asks first. A
+  contract is never made or changed from a private tab or one opened from an
+  encrypted file, and such a tab is never checked by itself. Limits: at most
+  500 allowed values a column (200 columns), 20 other titles a column, a 4 MB
+  contract file; a rule that names a column the file does not have is listed
+  as not run. `natendo-cli drift` checks a file from the command line.
 - **Check fields with patterns:** one simple screen with a pattern box next to
   each column and ready-made patterns (e-mail, ZIP, phone, web address,
   letters, digits). Then show the rows that fail or pass, put failing rows

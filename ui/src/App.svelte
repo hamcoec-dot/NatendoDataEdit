@@ -112,6 +112,13 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import EncryptDialog from "./lib/EncryptDialog.svelte";
   import { MAX_ASKED, TOTAL_CHOICES, totalCopy, type TotalChoice } from "./lib/totalsRow";
   import DiskBanner from "./lib/DiskBanner.svelte";
+  import ContractBanner from "./lib/ContractBanner.svelte";
+  import ContractPanel from "./lib/ContractPanel.svelte";
+  import ContractDialog from "./lib/ContractDialog.svelte";
+  import ContractsDialog from "./lib/ContractsDialog.svelte";
+  import { movesFor } from "./lib/contractText";
+  import { nameProblem } from "./lib/contractMock";
+  import type { Contract, ContractDraft, ContractFixed, ContractItem, ContractMatch, DriftOptions, DriftReport, DriftRows } from "./lib/backend";
   import { DISK_AGAIN, DISK_EVERY, diskBanner, takeDisk } from "./lib/disk";
   import SqliteDialog from "./lib/SqliteDialog.svelte";
   import NotesDialog from "./lib/NotesDialog.svelte";
@@ -485,7 +492,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     active = tabs.length - 1;
     void tick().then(() => grid?.focus());
     if (guess) {
-      void guessHeader(t).then(() => checkTotalRow(t));
+      void guessHeader(t).then(() => {
+        checkTotalRow(t);
+        void matchContract(t);
+      });
       void applyRememberedTypes(t, false);
     }
     void loadSidecar(t);
@@ -4378,6 +4388,250 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     return !!(await backend().encryptedOrigin(t.id).catch(() => null));
   }
 
+  // ---- file contracts (C9) ------------------------------------------------------------------------------
+  const CONTRACT_PRIVATE = "This tab is private (or from an encrypted file): a contract would keep its titles and values";
+  /** Review: the tab, its contract and the last report. */
+  let contractPanel = $state<{ doc: number; contract: Contract; report: DriftReport; locked: string } | null>(null);
+  /** Make (or change) a contract: the draft the dialog starts from. */
+  let contractMake = $state<{ doc: number | null; draft: ContractDraft; checks: number; was: string | null } | null>(null);
+  /** The Contracts list, while open. */
+  let contractItems = $state<ContractItem[] | null>(null);
+
+  function driftOpts(t: Tab): DriftOptions {
+    return { keep_first: t.header, read: READ, now: localNow() };
+  }
+
+  /** Why a contract cannot be made or changed from this tab ("" when it can). */
+  async function contractLocked(t: Tab): Promise<string> {
+    return (await sensitive(t)) ? CONTRACT_PRIVATE : "";
+  }
+
+  /** After a tab opens and its title row is settled: does it look like a saved contract? File name and
+   *  titles only; nothing is read when there are none, and a private tab is never matched. */
+  async function matchContract(t: Tab): Promise<void> {
+    try {
+      const m = await backend().contractMatch(t.id, t.header);
+      if (!m || t.notContracts.has(m.name) || !tabs.includes(t)) return;
+      await checkContract(t, m);
+    } catch {
+      // No contracts folder: nothing to say.
+    }
+  }
+
+  /** Check a tab against a contract: a count that runs after the file is open and stops on any change. */
+  async function checkContract(t: Tab, m: ContractMatch): Promise<void> {
+    t.contract = { match: m, phase: "checking", report: null, error: "" };
+    try {
+      const report = await backend().contractDrift(t.id, m.name, driftOpts(t));
+      if (t.contract?.match.name !== m.name) return;
+      t.contract = { match: m, phase: "report", report, error: "" };
+      if (contractPanel?.doc === t.id) contractPanel = { ...contractPanel, report, contract: await backend().contractGet(m.name) };
+    } catch (e) {
+      if (t.contract?.match.name !== m.name) return;
+      const kind = isCmdError(e) ? e.kind : "";
+      t.contract = { match: m, phase: kind === "cancelled" || kind === "busy" ? "stopped" : "error", report: null, error: errorText(e) };
+    }
+  }
+
+  async function openContractReview(): Promise<void> {
+    const t = tab;
+    const s = t?.contract;
+    if (!t || !s?.report) return;
+    try {
+      contractPanel = { doc: t.id, contract: await backend().contractGet(s.match.name), report: s.report, locked: await contractLocked(t) };
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  async function contractShow(what: DriftRows, words: string): Promise<void> {
+    const t = tab;
+    const p = contractPanel;
+    if (!t || !p || t.id !== p.doc) return;
+    const rep = await runJob("Finding the rows", () => backend().contractShowRows(t.id, p.contract.name, what, driftOpts(t)));
+    if (!rep) return;
+    if (rep.info) t.update(rep.info, true);
+    await syncFilter(t);
+    grid?.select({ row: t.firstRow, col: t.cell.col });
+    say(rep.rows ? `Showing ${plural(rep.rows, "row")} with ${words} (a filter chip). Ctrl+Z goes back.` : `No rows with ${words} now.`);
+  }
+
+  /** Fix what I can: titles and order (one engine step), then the contract's types and checks, all one Ctrl+Z. */
+  async function contractFixNow(): Promise<void> {
+    const t = tab;
+    const p = contractPanel;
+    if (!t || !p || t.id !== p.doc) return;
+    if (t.info.read_only) {
+      say("This file is locked (read-only); unlock it to fix its columns.");
+      return;
+    }
+    const r = p.report;
+    const lines: string[] = [];
+    if (r.renamed.length) lines.push(`Rename ${r.renamed.map((x) => `${x.from} to ${x.to}`).join(", ")}.`);
+    if (r.moved.length || r.added.length) lines.push(`Put the columns in the contract's order${r.added.length ? ` (${r.added.join(", ")} at the end)` : ""}.`);
+    lines.push("Set the contract's column types and add its data checks. No cell value changes and no column is deleted.");
+    const go = await ask("Fix what I can?", lines.join(" "), [
+      { id: "fix", label: "Fix", primary: true },
+      { id: "cancel", label: "Cancel" },
+    ], "cancel");
+    if (go !== "fix") return;
+    t.recordView();
+    const start = t.info.history_pos;
+    t.grouping = true;
+    let done: ContractFixed | null = null;
+    try {
+      done = await backend().contractFix(t.id, p.contract.name, t.header);
+      t.update(done.info, true);
+      for (const m of movesFor(done.fix.order)) t.noteColMove(m.at, 1, m.to);
+      for (const [c, ty] of done.fix.types) t.update(await backend().setColumnType(t.id, c, ty), false);
+      const ck = done.checks;
+      if (ck && (ck.checks.length || (ck.table_checks ?? []).length)) {
+        t.checks = [...t.checks, ...ck.checks];
+        t.tableChecks = [...t.tableChecks, ...(ck.table_checks ?? [])];
+        t.checksMarked = true;
+        t.checkVersion++;
+      }
+    } catch (e) {
+      say(errorText(e));
+    } finally {
+      t.endGroup(start);
+    }
+    if (!done) return;
+    const said: string[] = [];
+    if (done.fix.renamed.length) said.push(`renamed ${done.fix.renamed.map(([a, b]) => `${a} to ${b}`).join(", ")}`);
+    if (done.fix.moved) said.push("put the columns in the contract's order");
+    if (done.fix.types.length) said.push(`set ${plural(done.fix.types.length, "column type")}`);
+    if (done.checks?.checks.length) said.push(`added ${plural(done.checks.checks.length, "data check")}`);
+    say(said.length ? `Fixed: ${said.join(", ")}. Ctrl+Z undoes all of it.` : "Nothing to fix in the columns.");
+    if (t.contract) void checkContract(t, t.contract.match);
+  }
+
+  /** A change to the contract from Review (accepted values, the baseline, an alias, the threshold). */
+  async function contractSaveChange(c: Contract, what: string): Promise<void> {
+    const t = tab;
+    const p = contractPanel;
+    if (!t || !p) return;
+    try {
+      await backend().contractSave(c, p.contract.name, t.id);
+      contractPanel = { ...p, contract: c };
+      say(`${what} Saved in the contract ${c.name}.`);
+      if (t.contract) void checkContract(t, t.contract.match);
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  async function openContractMake(): Promise<void> {
+    const t = tab;
+    if (!t || !ready()) return;
+    const why = await contractLocked(t);
+    if (why) {
+      say(`${why}.`);
+      return;
+    }
+    let name = t.info.name.replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ").trim().slice(0, 100).replace(/[. ]+$/, "");
+    if (nameProblem(name)) name = "My file contract";
+    const draft = await runJob("Reading the columns", () =>
+      backend().contractDraft(t.id, {
+        name,
+        keep_first: t.header,
+        allowed_cols: Array.from({ length: Math.min(t.info.cols, 200) }, (_, i) => i),
+        checks: t.checks,
+        table_checks: t.tableChecks,
+        read: READ,
+      }),
+    );
+    if (draft) contractMake = { doc: t.id, draft, checks: t.checks.length + t.tableChecks.length, was: null };
+  }
+
+  async function contractMakeSave(c: Contract): Promise<void> {
+    const m = contractMake;
+    if (!m) return;
+    try {
+      const list = await backend().contractSave(c, m.was, m.doc);
+      contractMake = null;
+      if (contractItems) contractItems = list;
+      say(m.was ? `Saved the contract ${c.name}.` : `Saved the contract ${c.name}. A file like it now shows a bar above the table when it opens.`);
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  async function confirmPersonal(title: string): Promise<boolean> {
+    return (
+      (await ask(
+        "Keep these values?",
+        `This column looks like personal data: its values will be kept in the contract. Most of the values in ${title} differ, or it holds IDs. Anyone who gets the contract file can read them.`,
+        [
+          { id: "keep", label: "Keep them", danger: true },
+          { id: "cancel", label: "Cancel", primary: true },
+        ],
+        "cancel",
+      )) === "keep"
+    );
+  }
+
+  async function openContracts(): Promise<void> {
+    try {
+      contractItems = await backend().contractsList();
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  function contractCheckByHand(name: string): void {
+    const t = tab;
+    contractItems = null;
+    if (!t) return;
+    t.notContracts.delete(name);
+    void checkContract(t, { name, by_pattern: false, title_share: 0, others: [], ties: [] });
+  }
+
+  async function contractEdit(name: string): Promise<void> {
+    try {
+      const c = await backend().contractGet(name);
+      const rows = c.rows ? Math.round((c.rows.min + c.rows.max) / 2) : 0;
+      contractMake = { doc: null, draft: { contract: c, rows, values: [] }, checks: 0, was: name };
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  async function contractDelete(name: string): Promise<void> {
+    const go = await ask("Delete the contract?", `Delete ${name}? Files like it will open without its bar. This cannot be undone (export it first to keep a copy).`, [
+      { id: "delete", label: "Delete", danger: true },
+      { id: "cancel", label: "Cancel", primary: true },
+    ], "cancel");
+    if (go !== "delete") return;
+    try {
+      contractItems = await backend().contractDelete(name);
+      for (const x of tabs) if (x.contract?.match.name === name) x.contract = null;
+      say(`Deleted the contract ${name}.`);
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  async function contractExport(name: string): Promise<void> {
+    try {
+      if (await backend().contractExport(name)) say(`Exported the contract ${name}.`);
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
+  async function contractImport(): Promise<void> {
+    try {
+      const list = await backend().contractImport();
+      if (list) {
+        contractItems = list;
+        say("Imported the contract.");
+      }
+    } catch (e) {
+      say(errorText(e));
+    }
+  }
+
   /** The most cells in any row (a loop: spreading a long list into Math.max overflows the stack). */
   function widest(rows: string[][]): number {
     let w = 0;
@@ -7067,6 +7321,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.existsCheck", label: "Check that values exist in another file…", run: addExistsCheck, enabled: ready },
     { id: "data.uniqueTogether", label: "No repeats across these columns together…", run: addUniqueTogether, enabled: ready },
     { id: "data.tableChecks", label: "Table checks (row count, totals that add up)…", run: openTableChecks, enabled: ready },
+    { id: "data.contractMake", label: "Make a contract from this file…", run: () => void openContractMake(), enabled: () => ready() && !tab!.private.file && !tab!.private.folder, why: () => (tab && (tab.private.file || tab.private.folder) ? CONTRACT_PRIVATE : "") },
+    { id: "data.contracts", label: "File contracts…", run: () => void openContracts(), enabled: () => true },
+    { id: "data.contractCheck", label: "Check this tab against a contract…", run: () => void openContracts(), enabled: ready },
+    { id: "data.contractReview", label: "Review against the contract", run: () => void openContractReview(), enabled: () => !!tab?.contract?.report, why: () => (tab?.contract?.report ? "" : "open a file that looks like a saved contract, or use Check this tab against a contract") },
     { id: "data.typeRule", label: "Data rule from this column's type (must read as a number or date)", run: addTypeRule, enabled: ready },
     { id: "data.fieldCheck", label: "Check &fields with patterns…", run: () => { fieldCheckOpen = true; }, enabled: ready },
     { id: "data.nextProblem", label: "Jump to &next problem", keys: ["F7"], run: () => void jumpProblem(false), enabled: ready },
@@ -7520,7 +7778,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.headersStartHere", "data.setAsideFoot", "data.findTotalRow", "data.putBackNotes", "file.keepNotes", "view.panelNotes", "-",
         "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "data.explode", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
-        "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
+        "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "data.typeRule", "data.contractMake", "data.contracts", "data.contractCheck", "data.contractReview", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
         "data.join", "data.match", "data.street", "data.append", "data.compareCols", "data.compareLists", "data.gaps", "data.relations", "data.patchSave", "data.patchApply", "-",
         "data.values", "data.valuesLookalikes", "data.loadDictionary", "data.saveDictionary", "data.group", "data.arrange", "data.extract", "data.build", "-",
@@ -9217,6 +9475,23 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     {/if}
   {/if}
 
+  {#if tab?.contract}
+    {@const t = tab}
+    {@const s = tab.contract}
+    <ContractBanner
+      match={s.match}
+      phase={s.phase}
+      report={s.report}
+      error={s.error}
+      onReview={() => void openContractReview()}
+      onNotThis={() => { t.notContracts.add(s.match.name); void backend().contractDriftStop(t.id).catch(() => {}); t.contract = null; if (contractPanel?.doc === t.id) contractPanel = null; }}
+      onClose={() => { void backend().contractDriftStop(t.id).catch(() => {}); t.contract = null; if (contractPanel?.doc === t.id) contractPanel = null; }}
+      onCancel={() => void backend().contractDriftStop(t.id).catch(() => {})}
+      onAgain={() => void checkContract(t, s.match)}
+      onPick={(name) => void checkContract(t, { ...s.match, name, others: [s.match.name, ...s.match.others.filter((o) => o !== name)], ties: [] })}
+    />
+  {/if}
+
   {#if tab && prefs.data.filterChips && tab.info.has_filter}
     {@const t = tab}
     <FilterChipsBar
@@ -9380,6 +9655,20 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
           <p class="hint">Alt+Q searches every command.</p>
         </div>
       </div>
+    {/if}
+    {#if contractPanel && tab && contractPanel.doc === tab.id}
+      {@const cp = contractPanel}
+      {#key cp.contract.name + cp.report.rows}
+        <ContractPanel
+          report={cp.report}
+          contract={cp.contract}
+          lockedWhy={cp.locked}
+          onShow={(what, words) => void contractShow(what, words)}
+          onFix={() => void contractFixNow()}
+          onSave={(c, what) => void contractSaveChange(c, what)}
+          onClose={() => (contractPanel = null)}
+        />
+      {/key}
     {/if}
     {#if prefs.data.panel}
       <SidePanel
@@ -9620,6 +9909,24 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 {#if jsonBlanksReq}
   {@const req = jsonBlanksReq}
   <JsonSaveDialog file={req.file} start={req.start} privateFile={req.privateFile} onSave={(b, r) => req.done({ blanks: b, remember: r })} onClose={() => req.done(null)} />
+{/if}
+
+{#if contractMake}
+  {@const m = contractMake}
+  <ContractDialog draft={m.draft} checks={m.checks} was={m.was} {confirmPersonal} onSave={(c) => void contractMakeSave(c)} onClose={() => (contractMake = null)} />
+{/if}
+
+{#if contractItems && !contractMake}
+  <ContractsDialog
+    items={contractItems}
+    tabName={tab?.info.name ?? ""}
+    onCheck={contractCheckByHand}
+    onEdit={(n) => void contractEdit(n)}
+    onDelete={(n) => void contractDelete(n)}
+    onExport={(n) => void contractExport(n)}
+    onImport={() => void contractImport()}
+    onClose={() => (contractItems = null)}
+  />
 {/if}
 
 {#if exportOpen && tab}

@@ -3569,6 +3569,8 @@ export const WRITE_METHODS: readonly string[] = [
   "tidyTitles",
   "setFirstRowCell",
   "setColumnNames",
+  "contractFix",
+  "contractShowRows",
   "updatesAccept", "patchApply",
   "matchAccept",
   "recipeRun",

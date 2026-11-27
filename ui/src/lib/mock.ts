@@ -86,6 +86,7 @@ import { stubProfile } from "./profile";
 import { shapeMatches, stubInsights } from "./insights";
 import { stubFacets } from "./facets";
 import { previewOf, simulateJoin } from "./joins";
+import * as cm from "./contractMock";
 
 const FIRST = ["Ada", "Bo", "Cy", "Dee", "Eli", "Fay", "Gus", "Hal", "Ivy", "Jo"];
 const LAST = ["Stone", "Rivera", "Okafor", "Lind", "Nakamura", "Quinn", "Varga", "Wells"];
@@ -184,6 +185,7 @@ const MOCK_CHIPS: Record<string, [string, string, boolean]> = {
   formula_filter: ["formula", "Formula", false],
   compare_show: ["compare", "Compared rows", false],
   show_explode_bad: ["explode", "Cells that could not be split", true],
+  show_contract_rows: ["contract", "Rows a contract found", true],
 };
 
 interface MockPatch {
@@ -1323,6 +1325,8 @@ export class MockBackend implements Backend {
 
   /** The tool running now (its chip's kind and words). */
   private chipOp = "";
+  /** A tool's own words for the chip it makes (else MOCK_CHIPS has them). */
+  private chipLabel: string | null = null;
 
   /** Rows the chips show (C8, as the engine): a column chip passes or fails a
    *  row; a tool chip passes the rows it picked, fails the rows it looked at
@@ -1368,7 +1372,8 @@ export class MockBackend implements Backend {
     if (shown === null && d.shown === null) return this.refresh(d);
     let nextSets = sets ?? (filter ? (d.sets ?? []) : []);
     if (sets === null && filter && filter.columns.length === 0 && shown) {
-      const [kind, label, all] = MOCK_CHIPS[this.chipOp] ?? ["rows", "Rows a tool picked", false];
+      const [kind, named, all] = MOCK_CHIPS[this.chipOp] ?? ["rows", "Rows a tool picked", false];
+      const label = this.chipLabel ?? named;
       const had = d.shown ? (d.sets ?? []) : [];
       if (had.length >= 20) throw err("invalid", "a filter holds at most 20 chips made by tools: remove one first");
       const title = filter.keep_first && this.totalRows(d) > 0 ? this.rowId(d, 0) : null;
@@ -1716,6 +1721,14 @@ export class MockBackend implements Backend {
       summary: { action: "save as", tool: "Natendo Data Edit (preview)", inputs: [], outputs: [] },
     };
   }
+  /** Test hook (C9): a tab as if opened from the file `name` (its path is made up). */
+  mockFileTab(name: string, rows: string[][]): DocInfo {
+    const info = this.fromRows(name.replace(/\.[^.]*$/, ""), rows);
+    const d = this.get(info.id);
+    d.clean = 0;
+    d.info.path = "C:/Data/" + name;
+    return this.refresh(d);
+  }
   // ---- C11: JSON save-back (the stand-in: a tab made by mockJsonTab saves back; the file is a string) ----
   /** Test hook: a tab that came from a JSON file (`refuse`: why it can only be saved as another file). */
   mockJsonTab(name: string, rows: string[][], o: { lines?: boolean; refuse?: string | null; mixedBlanks?: boolean; changed?: boolean } = {}): DocInfo {
@@ -2041,6 +2054,216 @@ export class MockBackend implements Backend {
   async filterChipCounts(doc: number): Promise<FilterChips> {
     this.calls.push("filterChipCounts");
     return this.filterChips(doc, true);
+  }
+
+  // ---- file contracts (C9): the Contracts folder is a list here ----
+  contracts: import("./backend").Contract[] = [];
+  /** Broken files in the folder (shown with their reason). */
+  contractBroken: { file: string; problem: string }[] = [];
+  private contractList(): import("./backend").ContractItem[] {
+    const ok = [...this.contracts]
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
+      .map((c) => ({ name: c.name, file: `${c.name}.ndcontract`, columns: c.columns.length, pattern: c.recognise.pattern ?? null, problem: null }));
+    return [...ok, ...this.contractBroken.map((b) => ({ name: b.file, file: b.file, columns: 0, pattern: null, problem: b.problem }))];
+  }
+  private contractNamed(name: string): import("./backend").Contract {
+    const c = this.contracts.find((x) => x.name === name);
+    if (!c) throw err("not_found", "that contract is not in the list any more");
+    return c;
+  }
+  private tabPrivate(doc: number): boolean {
+    const p = this.privateDocs.get(this.privateKey(doc));
+    return !!(p?.file || p?.folder);
+  }
+  private contractTable(d: MockDoc, keepFirst: boolean): { titles: string[]; rows: string[][] } {
+    const all = this.table(d);
+    const titles = keepFirst ? (all[0] ?? []).map((t, c) => t || `Column ${c + 1}`) : Array.from({ length: this.colCount(d) }, (_, c) => `Column ${c + 1}`);
+    return { titles, rows: keepFirst ? all.slice(1) : all };
+  }
+  private contractPairing(d: MockDoc, c: import("./backend").Contract, keepFirst: boolean): cm.MockPairing {
+    const { titles } = this.contractTable(d, keepFirst);
+    if (keepFirst) return cm.pair(c, titles);
+    const n = titles.length;
+    const k = c.columns.length;
+    return {
+      map: c.columns.map((_, i) => (i < n ? i : null)),
+      renamed: [],
+      by_alias: [],
+      missing: Array.from({ length: Math.max(0, k - n) }, (_, i) => n + i),
+      added: Array.from({ length: Math.max(0, n - k) }, (_, i) => k + i),
+      moved: [],
+    };
+  }
+  async contractsList(): Promise<import("./backend").ContractItem[]> {
+    this.calls.push("contractsList");
+    return this.contractList();
+  }
+  async contractGet(name: string): Promise<import("./backend").Contract> {
+    return JSON.parse(JSON.stringify(this.contractNamed(name))) as import("./backend").Contract;
+  }
+  async contractMatch(doc: number, keepFirst: boolean): Promise<import("./backend").ContractMatch | null> {
+    this.calls.push("contractMatch");
+    if (this.tabPrivate(doc) || !this.contracts.length) return null;
+    const d = this.get(doc);
+    const { titles } = this.contractTable(d, keepFirst);
+    const file = d.info.path ? d.info.path.split(/[\\/]/).at(-1)! : null;
+    const m = cm.recognise(this.contracts, file, keepFirst ? titles : null);
+    const best = m[0];
+    if (!best) return null;
+    const same = (x: typeof best) => x.by_pattern === best.by_pattern && x.title_share === best.title_share;
+    return {
+      name: this.contracts[best.index]!.name,
+      by_pattern: best.by_pattern,
+      title_share: best.title_share,
+      others: m.slice(1).map((x) => this.contracts[x.index]!.name),
+      ties: m
+        .slice(1)
+        .filter(same)
+        .map((x) => this.contracts[x.index]!.name),
+    };
+  }
+  /** Milliseconds a drift check takes here (tests set it to see "Checking…" and Cancel). */
+  contractDelay = 0;
+  private driftStopped = new Set<number>();
+  async contractDrift(doc: number, name: string, opts: import("./backend").DriftOptions): Promise<import("./backend").DriftReport> {
+    this.calls.push("contractDrift");
+    this.driftStopped.delete(doc);
+    const c = this.contractNamed(name);
+    if (this.contractDelay) await new Promise((r) => setTimeout(r, this.contractDelay));
+    if (this.driftStopped.has(doc)) throw err("cancelled", "cancelled");
+    const d = this.get(doc);
+    const { titles, rows } = this.contractTable(d, opts.keep_first);
+    return cm.drift(c, this.contractPairing(d, c, opts.keep_first), titles, rows);
+  }
+  async contractDriftStop(doc: number): Promise<void> {
+    this.calls.push("contractDriftStop");
+    this.driftStopped.add(doc);
+  }
+  async contractShowRows(doc: number, name: string, what: import("./backend").DriftRows, opts: import("./backend").DriftOptions): Promise<OpReport> {
+    const c = this.contractNamed(name);
+    const d = this.get(doc);
+    if (what.kind === "rule") throw err("invalid", "the browser preview does not do this; the desktop app does");
+    const p = this.contractPairing(d, c, opts.keep_first);
+    const col = c.columns[what.col]!;
+    const j = p.map[what.col];
+    if (j === null || j === undefined) throw err("invalid", `this file has no column ${col.title}`);
+    const first = opts.keep_first ? 1 : 0;
+    const keep = new Set<number>();
+    for (let r = first; r < this.rowCount(d); r++) if (cm.cellHits(col, what.kind, this.value(d, r, j))) keep.add(this.rowId(d, r));
+    const shown = keep.size;
+    if (!shown) return this.report(this.refresh(d), { rows: 0 });
+    if (opts.keep_first && this.rowCount(d) > 0) keep.add(this.rowId(d, 0));
+    this.chipOp = "show_contract_rows";
+    this.chipLabel = what.kind === "blanks" ? `Blanks in ${col.title}` : what.kind === "type_misses" ? `Not of the type of ${col.title}` : `New values in ${col.title}`;
+    try {
+      return this.report(this.setView(d, keep, { columns: [], keep_first: opts.keep_first }), { rows: shown });
+    } finally {
+      this.chipLabel = null;
+    }
+  }
+  async contractFix(doc: number, name: string, keepFirst: boolean): Promise<import("./backend").ContractFixed> {
+    this.calls.push("contractFix");
+    const c = this.contractNamed(name);
+    const d = this.get(doc);
+    const p = this.contractPairing(d, c, keepFirst);
+    const renamed: [string, string][] = [];
+    const cells: [number, string][] = [];
+    if (keepFirst)
+      p.map.forEach((j, k) => {
+        if (j === null) return;
+        const want = c.columns[k]!.title;
+        const have = this.value(d, 0, j);
+        if (have !== want) {
+          renamed.push([have, want]);
+          cells.push([this.physCol(d, j), want]);
+        }
+      });
+    const order = [...p.map.filter((j): j is number => j !== null), ...p.added];
+    const moved = order.some((j, i) => j !== i);
+    const types: [number, import("./readers").ColumnType][] = [];
+    let place = 0;
+    p.map.forEach((j, k) => {
+      if (j === null) return;
+      const ty = c.columns[k]!.ty;
+      if (ty && ty !== "auto") types.push([place, ty]);
+      place++;
+    });
+    if (!cells.length && !moved) return { info: this.refresh(d), fix: { renamed, moved, order: [], types }, checks: null };
+    const titleId = this.rowId(d, 0);
+    const info = this.push(d, () => {
+      const old = cells.map(([pc, v]) => {
+        const k = `${titleId}:${pc}`;
+        const prev = d.edits.get(k);
+        d.edits.set(k, v);
+        return [k, prev] as const;
+      });
+      const cur = this.colsOf(d);
+      const was = [...cur];
+      if (moved) cur.splice(0, cur.length, ...order.map((j) => was[j]!));
+      return () => {
+        for (const [k, prev] of old.reverse()) {
+          if (prev === undefined) d.edits.delete(k);
+          else d.edits.set(k, prev);
+        }
+        const now = this.colsOf(d);
+        now.splice(0, now.length, ...was);
+      };
+    });
+    return { info, fix: { renamed, moved, order: moved ? order : [], types }, checks: null };
+  }
+  async contractDraft(doc: number, spec: import("./backend").DraftSpec): Promise<import("./backend").ContractDraft> {
+    this.calls.push("contractDraft");
+    if (this.tabPrivate(doc)) throw err("private", "This tab is private (or from an encrypted file): a contract would keep its titles and values");
+    const bad = cm.nameProblem(spec.name);
+    if (bad) throw err("invalid", bad);
+    const d = this.get(doc);
+    const { titles, rows } = this.contractTable(d, spec.keep_first);
+    const typed = new Map((d.info.typed ?? []).map(([c, t]) => [c, t] as const));
+    const values: import("./backend").DraftValues[] = [];
+    const columns = titles.map((title, c) => {
+      const filled = rows.filter((r) => (r[c] ?? "").trim() !== "");
+      const col: import("./backend").ContractColumn = { title, ty: typed.get(c) ?? null, blank_rate: rows.length ? (rows.length - filled.length) / rows.length : 0 };
+      if (spec.allowed_cols.includes(c)) {
+        const set = [...new Set(filled.map((r) => r[c]!.trim()))].sort();
+        const looks_personal = (filled.length > 0 && set.length * 2 > filled.length) || col.ty === "id";
+        if (set.length > 500) values.push({ col: c, distinct: set.length, filled: filled.length, looks_personal: true, refused: "it has more than 500 different values" });
+        else {
+          col.allowed = { values: set, match_case: true };
+          values.push({ col: c, distinct: set.length, filled: filled.length, looks_personal, refused: null });
+        }
+      }
+      return col;
+    });
+    const checks = spec.checks.length || spec.table_checks.length ? { version: 1, keep_first: spec.keep_first, rules: spec.checks } : null;
+    return { contract: { contract: 1, name: spec.name, columns, checks, rows: null, recognise: { pattern: null, titles: true }, blank_points: 5 }, rows: rows.length, values };
+  }
+  async contractSave(contract: import("./backend").Contract, was: string | null, fromTab: number | null): Promise<import("./backend").ContractItem[]> {
+    this.calls.push("contractSave");
+    if (fromTab !== null && this.tabPrivate(fromTab)) throw err("private", "This tab is private (or from an encrypted file): a contract would keep its titles and values");
+    const bad = cm.nameProblem(contract.name);
+    if (bad) throw err("invalid", bad);
+    if (this.contracts.some((c) => c.name !== was && c.name.toLowerCase() === contract.name.toLowerCase())) throw err("exists", "a contract of that name already exists");
+    this.contracts = [...this.contracts.filter((c) => c.name !== was && c.name !== contract.name), JSON.parse(JSON.stringify(contract)) as import("./backend").Contract];
+    return this.contractList();
+  }
+  async contractDelete(name: string): Promise<import("./backend").ContractItem[]> {
+    this.calls.push("contractDelete");
+    this.contracts = this.contracts.filter((c) => c.name !== name);
+    this.contractBroken = this.contractBroken.filter((b) => b.file !== name);
+    return this.contractList();
+  }
+  async contractExport(name: string): Promise<boolean> {
+    this.calls.push(`contractExport:${name}`);
+    this.contractNamed(name);
+    return true;
+  }
+  /** What the Import dialog picks here (null: cancelled). */
+  contractToImport: import("./backend").Contract | null = null;
+  async contractImport(): Promise<import("./backend").ContractItem[] | null> {
+    this.calls.push("contractImport");
+    const c = this.contractToImport;
+    if (!c) return null;
+    return this.contractSave(c, null, null);
   }
 
   async filterChange(doc: number, change: ChipChange): Promise<DocInfo> {
