@@ -4175,7 +4175,8 @@ impl Docs {
                 ..Default::default()
             })?;
             if let Some(rows) = changed.filter(|_| d.revision() != before) {
-                *entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner()) = (d.revision(), rows);
+                *entry.changed_rows.lock().unwrap_or_else(|p| p.into_inner()) =
+                    (d.revision(), rows);
             }
             // Checkpoints the save let go say when and why (U4).
             if let Some(k) = d.last_history().filter(|_| d.revision() != before) {
@@ -4183,13 +4184,18 @@ impl Docs {
                     "a column, encoding or width change"
                 } else if k.undo_cut_memory + k.redo_cut_memory > 0 {
                     "not enough memory to keep the undo history"
+                } else if k.undo_cut_work + k.redo_cut_work > 0 {
+                    "the steps before it changed too many rows to carry across a save"
                 } else {
                     "the undo history could not be kept"
                 };
                 let at = now_millis();
                 let mut book = entry.checkpoints.lock().unwrap_or_else(|p| p.into_inner());
                 for c in book.list.iter_mut() {
-                    if c.gone.is_none() && reachable.contains(&c.id) && d.step_reach(c.mark).is_none() {
+                    if c.gone.is_none()
+                        && reachable.contains(&c.id)
+                        && d.step_reach(c.mark).is_none()
+                    {
                         c.gone = Some((at, why));
                     }
                 }
@@ -11215,12 +11221,15 @@ Ann Lee,00123
             skip_cols: Vec::new(),
             ..Default::default()
         };
-        docs.replace_preview(id, spec.clone(), "Velmont".into()).unwrap();
+        docs.replace_preview(id, spec.clone(), "Velmont".into())
+            .unwrap();
         docs.replace_confirm(id, spec, "Velmont".into()).unwrap();
         docs.save(id, None, false, false, None).unwrap();
         let names = |docs: &Docs| -> Vec<String> {
             let n = docs.info(id).unwrap().rows;
-            (1..n).map(|r| docs.cell_text(id, r, 1).unwrap().0).collect()
+            (1..n)
+                .map(|r| docs.cell_text(id, r, 1).unwrap().0)
+                .collect()
         };
         // Show changed rows after the save: the same people.
         docs.show_changed(id, true).unwrap();
@@ -11234,9 +11243,17 @@ Ann Lee,00123
         docs.undo(id).unwrap();
         assert_eq!(docs.cell_text(id, 2, 2).unwrap().0, "velmont");
         docs.undo(id).unwrap();
-        assert_eq!(names(&docs), ["Zed", "Amy", "Bo", "Cy"], "the sort undoes across the save");
+        assert_eq!(
+            names(&docs),
+            ["Zed", "Amy", "Bo", "Cy"],
+            "the sort undoes across the save"
+        );
         docs.checkpoint_restore(id, cp).unwrap();
-        assert_eq!(names(&docs), ["Amy", "Bo", "Cy", "Zed"], "back to the checkpoint");
+        assert_eq!(
+            names(&docs),
+            ["Amy", "Bo", "Cy", "Zed"],
+            "back to the checkpoint"
+        );
         // Replace all, then an edit, then a save: the changed rows no longer describe the table.
         let spec = FindSpec {
             pattern: Pattern {

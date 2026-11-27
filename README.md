@@ -1532,10 +1532,12 @@ selection, a column or the whole table:
   Ctrl+Z after Ctrl+S takes back what you did before the save (the table then
   reads as changed again). **Limits:** steps before a column, encoding or file-width
   change (inserting, deleting or moving columns) are let go at the save, and so
-  is redo past such a change; when the history would not fit in its memory budget
-  (512 MB) the oldest steps are let go first. The status line says so once, at
-  that save. The save itself is not slower: the history is moved onto the saved
-  rows while the file is written. Row notes follow their rows by key and the
+  is redo past such a change (and past setting rows aside as report notes); when
+  the steps together changed more rows than the file has, or would not fit in the
+  history's memory budget (512 MB), the oldest steps are let go first. The status
+  line says so once, at that save. The save itself stays about as fast: the
+  history is moved onto the saved rows while the file is written, and each step
+  keeps only the cells it changed. Row notes follow their rows by key and the
   differences of a comparison go out of date after a save, as before. **What changed since this checkpoint** (Edit > What changed
   since a checkpoint, command search, the tab and cell right-click menus, which
   compare with the newest checkpoint they can; or the Δ button on any

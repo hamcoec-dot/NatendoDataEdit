@@ -236,6 +236,10 @@ fn check(acts: &[Act], save_at: usize, mark_at: usize, kind: u8) -> Result<(), T
     std::fs::write(&fy, &bytes).unwrap();
     let mut x = Document::open_indexed(&fx, opts.clone(), None).unwrap();
     let mut y = Document::open_indexed(&fy, opts, None).unwrap();
+    // Mostly without the work limit (so the rebase itself is what is tested), a third of runs with it.
+    if (save_at + mark_at) % 3 != 0 {
+        x.rebase_work_share = f64::INFINITY;
+    }
     let mut marks = (x.step_mark(), y.step_mark());
     for (i, a) in acts.iter().enumerate() {
         if i == mark_at {
@@ -249,7 +253,10 @@ fn check(acts: &[Act], save_at: usize, mark_at: usize, kind: u8) -> Result<(), T
                 cut_like(&mut y, k);
             }
             // A mark older than a cut is gone (on the twin too); every other one sees the same changes.
-            prop_assert_eq!(x.step_reach(marks.0).is_some(), y.step_reach(marks.1).is_some());
+            prop_assert_eq!(
+                x.step_reach(marks.0).is_some(),
+                y.step_reach(marks.1).is_some()
+            );
             if x.step_reach(marks.0).is_some() {
                 prop_assert_eq!(
                     &before,
@@ -427,9 +434,17 @@ fn upper(d: &mut Document, c: u32) {
 #[test]
 fn the_estimate_is_not_below_what_is_held() {
     let short = {
-        let mut s = (0..20).map(|c| format!("c{c}")).collect::<Vec<_>>().join(",") + "\r\n";
+        let mut s = (0..20)
+            .map(|c| format!("c{c}"))
+            .collect::<Vec<_>>()
+            .join(",")
+            + "\r\n";
         for i in 0..400 {
-            s += &((0..20).map(|c| format!("{}", (i + c) % 7)).collect::<Vec<_>>().join(",") + "\r\n");
+            s += &((0..20)
+                .map(|c| format!("{}", (i + c) % 7))
+                .collect::<Vec<_>>()
+                .join(",")
+                + "\r\n");
         }
         s
     };
@@ -442,6 +457,7 @@ fn the_estimate_is_not_below_what_is_held() {
     };
     for (tag, bytes) in [("short", short), ("long", long)] {
         let (d0, mut d) = open_bytes(tag, bytes.as_bytes());
+        d.rebase_work_share = f64::INFINITY;
         // Cell edits, a bulk clean (Patch states), row deletes (None states), a sort, hidden rows, an insert.
         for r in 1..60u64 {
             d.set_cell(r * 5, 1, "z".into()).unwrap();
@@ -456,9 +472,15 @@ fn the_estimate_is_not_below_what_is_held() {
         d.save(SaveOptions::default()).unwrap();
         let real = d.undo_bytes + d.redo_bytes;
         let k = d.last_history().unwrap();
-        assert!(!k.cleared && k.undo_cut() == 0 && k.redo == 2, "{tag}: {k:?}");
+        assert!(
+            !k.cleared && k.undo_cut() == 0 && k.redo == 2,
+            "{tag}: {k:?}"
+        );
         assert!(real <= est, "{tag}: real {real} > estimate {est}");
-        eprintln!("{tag}: real {real}, estimate {est} ({:.2}x)", est as f64 / real as f64);
+        eprintln!(
+            "{tag}: real {real}, estimate {est} ({:.2}x)",
+            est as f64 / real as f64
+        );
         drop(d);
         let _ = std::fs::remove_dir_all(d0);
     }
@@ -474,11 +496,17 @@ fn a_save_keeps_the_newest_steps_that_fit() {
             d.set_cell(1 + i, 1, format!("edit{i}")).unwrap();
         }
     }
-    let one = x.rebased_cost(x.undo.last().unwrap(), 3, 1, &|_| true);
+    // Each of the 30 steps holds the same: one row, one cell.
+    x.rebase_work_share = f64::INFINITY;
+    let one = x.prepare_rebase().ok().unwrap().estimate / 30;
     x.undo_budget = one * 10 + one / 2;
     x.save(SaveOptions::default()).unwrap();
     let k = x.last_history().unwrap();
-    assert_eq!((k.undo, k.undo_cut_memory, k.cleared), (10, 20, false), "{k:?}");
+    assert_eq!(
+        (k.undo, k.undo_cut_memory, k.cleared),
+        (10, 20, false),
+        "{k:?}"
+    );
     assert!(x.undo_bytes <= x.undo_budget);
     for _ in 0..10 {
         assert!(x.undo() && y.undo());
@@ -515,8 +543,11 @@ fn three_whole_column_cleans_keep_the_newest_that_fits() {
     for c in 0..3 {
         upper(&mut d, c);
     }
+    d.rebase_work_share = f64::INFINITY;
+    // The newest clean holds one changed cell per row, the one before two, the first three (a patch against the
+    // saved row): a third of the whole fits the newest only.
     let all = d.prepare_rebase().ok().unwrap().estimate;
-    d.undo_budget = all / 2;
+    d.undo_budget = all / 3;
     d.save(SaveOptions::default()).unwrap();
     let k = d.last_history().unwrap();
     assert_eq!((k.undo, k.undo_cut_memory), (1, 2), "{k:?}");
@@ -543,7 +574,10 @@ fn the_redo_side_is_cut_at_a_column_step() {
     .unwrap();
     let k = d.last_history().unwrap();
     assert_eq!((k.redo, k.redo_cut_columns), (0, 1), "{k:?}");
-    assert!(!d.redo(), "the column delete cannot be redone after the save");
+    assert!(
+        !d.redo(),
+        "the column delete cannot be redone after the save"
+    );
     assert_eq!(d.col_count(), 3);
     // An edit, then a column delete, then both undone: redo holds [column delete, edit], the edit nearest the
     // present. The save keeps the edit's redo and lets the column delete go.
@@ -570,7 +604,12 @@ fn the_redo_side_is_cut_at_a_column_step() {
 fn a_kept_updates_plan_is_refused_after_a_save() {
     use crate::updates::{compare_newer, UpdateChoice, UpdateSpec};
     let (d0, mut d) = open_bytes("upd", b"id,name\r\n1,Ann\r\n2,Bo\r\n");
-    let newer = Document::from_bytes(b"id,name\r\n1,Anne\r\n2,Bo\r\n".to_vec(), OpenOptions::default(), Some("csv")).unwrap();
+    let newer = Document::from_bytes(
+        b"id,name\r\n1,Anne\r\n2,Bo\r\n".to_vec(),
+        OpenOptions::default(),
+        Some("csv"),
+    )
+    .unwrap();
     d.set_cell(2, 1, "Bob".into()).unwrap();
     let spec = UpdateSpec {
         keys: vec![0],
@@ -581,7 +620,10 @@ fn a_kept_updates_plan_is_refused_after_a_save() {
     assert!(d.plan_updates(&ups, &UpdateChoice::default()).is_ok());
     d.save(SaveOptions::default()).unwrap();
     assert!(d.has_history(), "the edit is still undoable");
-    assert!(matches!(d.plan_updates(&ups, &UpdateChoice::default()), Err(Error::Changed)));
+    assert!(matches!(
+        d.plan_updates(&ups, &UpdateChoice::default()),
+        Err(Error::Changed)
+    ));
     drop(d);
     let _ = std::fs::remove_dir_all(d0);
 }
@@ -594,6 +636,7 @@ fn a_clean_saved_then_edited_undoes_to_the_values_before_it() {
     let f = d0.join("t.csv");
     std::fs::write(&f, &bytes).unwrap();
     let mut d = Document::open_indexed(&f, opts, None).unwrap();
+    d.rebase_work_share = f64::INFINITY;
     let before: Vec<Vec<String>> = shown(&d);
     upper(&mut d, 0);
     let cleaned = shown(&d);
@@ -607,6 +650,96 @@ fn a_clean_saved_then_edited_undoes_to_the_values_before_it() {
     assert_eq!(shown(&d), before, "the values from before the clean");
     assert!(d.redo() && d.redo());
     assert_eq!(d.cell(1, 0).unwrap(), "edited 1");
+    drop(d);
+    let _ = std::fs::remove_dir_all(d0);
+}
+
+/// C-b: three whole-column cleans fit the default budget: none is let go for memory.
+#[test]
+fn three_cleans_fit_the_memory_budget() {
+    let mut s = String::from(
+        "a,b,c
+",
+    );
+    for i in 0..20_000 {
+        s += &format!(
+            "name{i},street {i},town{}
+",
+            i % 40
+        );
+    }
+    let (d0, mut d) = open_bytes("cleans-fit", s.as_bytes());
+    d.rebase_work_share = f64::INFINITY;
+    for c in 0..3 {
+        upper(&mut d, c);
+    }
+    d.save(SaveOptions::default()).unwrap();
+    let k = d.last_history().unwrap();
+    assert_eq!(
+        (k.undo, k.undo_cut_memory, k.undo_cut_work),
+        (3, 0, 0),
+        "{k:?}"
+    );
+    drop(d);
+    let _ = std::fs::remove_dir_all(d0);
+}
+
+/// C-c: past the work limit the newest steps under it are kept and the older ones let go whole (three cleans of
+/// every row keep the newest); a step under it keeps everything.
+#[test]
+fn the_work_limit_keeps_the_newest_steps_under_it() {
+    let mut s = String::from(
+        "a,b,c
+",
+    );
+    for i in 0..20_000 {
+        s += &format!(
+            "name{i},street {i},town{}
+",
+            i % 40
+        );
+    }
+    let (d0, mut d) = open_bytes("work", s.as_bytes());
+    // With the default limit (a quarter of the rows) a clean of every row is over it on its own: the history is
+    // cleared as before, and it says why.
+    upper(&mut d, 0);
+    d.save(SaveOptions::default()).unwrap();
+    let k = d.last_history().unwrap();
+    assert_eq!((k.undo, k.undo_cut_work, k.cleared), (0, 1, true), "{k:?}");
+    assert!(!d.undo());
+    // With room for one clean of every row (a limit of the file's rows), three cleans keep the newest.
+    d.rebase_work_share = 1.0;
+    for c in 0..3 {
+        upper(&mut d, c);
+    }
+    d.save(SaveOptions::default()).unwrap();
+    let k = d.last_history().unwrap();
+    // (Column 0 was cleaned already: two steps.)
+    assert_eq!((k.undo, k.undo_cut_work, k.cleared), (1, 1, false), "{k:?}");
+    assert!(d.undo());
+    assert_eq!(d.cell(2, 2).unwrap(), "town1");
+    assert!(!d.undo());
+    d.rebase_work_share = REBASE_WORK_SHARE;
+    // A tenth of the rows edited, then a sort: everything kept, nothing let go.
+    let cells: Vec<(u64, u32, String)> = (0..2_000u64)
+        .map(|i| (1 + i * 9, 1, format!("e{i}")))
+        .collect();
+    d.set_cells(cells).unwrap();
+    let spec = SortSpec {
+        keys: vec![SortKey {
+            col: 1,
+            descending: true,
+            kind: Default::default(),
+            match_case: false,
+        }],
+        keep_first: true,
+        ..Default::default()
+    };
+    d.sort(&spec).unwrap();
+    assert_eq!(d.undo.len(), 2, "the edits and the sort");
+    d.save(SaveOptions::default()).unwrap();
+    let k = d.last_history().unwrap();
+    assert_eq!((k.undo, k.undo_cut(), k.cleared), (2, 0, false), "{k:?}");
     drop(d);
     let _ = std::fs::remove_dir_all(d0);
 }

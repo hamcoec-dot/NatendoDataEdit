@@ -494,6 +494,8 @@ pub struct Document {
     redo_bytes: usize,
     /// Memory budget for the history (MAX_UNDO_BYTES; smaller in tests).
     pub(crate) undo_budget: usize,
+    /// The rows a save carries the history for, as a share of the file's rows (`REBASE_WORK_SHARE`; changed in tests).
+    pub(crate) rebase_work_share: f64,
     /// What the last save did with the undo history (see `last_history`).
     last_history: Option<HistoryKept>,
     undo: Vec<Op>,
@@ -667,6 +669,7 @@ impl Document {
             undo_bytes: 0,
             redo_bytes: 0,
             undo_budget: MAX_UNDO_BYTES,
+            rebase_work_share: rebase::REBASE_WORK_SHARE,
             last_history: None,
             undo: Vec::new(),
             redo: Vec::new(),
