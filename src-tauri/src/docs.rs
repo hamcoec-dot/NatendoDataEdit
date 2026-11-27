@@ -12854,6 +12854,27 @@ ca,California
         );
     }
 
+    /// An edit's reply keeps the name of a tab imported from a file that is not JSON (it once said
+    /// "Untitled" after any edit), and such a tab has no JSON file.
+    #[test]
+    fn an_imported_tab_keeps_its_name_after_an_edit() {
+        let docs = Docs::default();
+        let (id, _) = json_tab(
+            &docs,
+            "people.md",
+            b"| a | b |
+| --- | --- |
+| 1 | x |
+",
+        );
+        let i = wait(&docs, id);
+        assert_eq!(i.name, "people");
+        assert!(i.json_format.is_none());
+        let e = docs.set_cells(id, vec![(1, 1, "y".into())]).unwrap();
+        assert_eq!(e.name, "people");
+        assert!(e.json_format.is_none() && e.path.is_none());
+    }
+
     /// C11: the same safety as Save: another program's change stops the save (until agreed), a
     /// read-only tab and a peeking one are refused, and a failed write leaves the file as it was.
     #[test]
