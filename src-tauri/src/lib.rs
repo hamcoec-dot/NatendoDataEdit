@@ -3312,6 +3312,55 @@ async fn fix_all(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn xfer_cols(
+    docs: DocsState<'_>,
+    src: u32,
+    at: u32,
+    count: u32,
+    src_keep_first: bool,
+    dst: u32,
+    to: u32,
+    dst_keep_first: bool,
+    mv: bool,
+) -> CmdResult<docs::xfer::XferDone> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.xfer_cols(src, at, count, src_keep_first, dst, to, dst_keep_first, mv))
+        .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn xfer_rows(
+    docs: DocsState<'_>,
+    src: u32,
+    at: u64,
+    count: u64,
+    src_keep_first: bool,
+    dst: u32,
+    after: Option<u64>,
+    dst_keep_first: bool,
+    wider: natendo_engine::xfer::Wider,
+    mv: bool,
+) -> CmdResult<docs::xfer::XferDone> {
+    let docs = docs.inner().clone();
+    blocking(move || {
+        docs.xfer_rows(
+            src,
+            at,
+            count,
+            src_keep_first,
+            dst,
+            after,
+            dst_keep_first,
+            wider,
+            mv,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn example_learn(
     docs: DocsState<'_>,
     doc: u32,
@@ -5912,6 +5961,8 @@ pub fn run() {
             repair_row,
             same_shape,
             fix_all,
+            xfer_cols,
+            xfer_rows,
             example_learn,
             example_preview,
             example_outliers,

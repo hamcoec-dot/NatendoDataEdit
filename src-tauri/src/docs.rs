@@ -10662,6 +10662,9 @@ pub mod patching;
 #[path = "docs_contracts.rs"]
 pub mod contracts;
 
+#[path = "docs_xfer.rs"]
+pub mod xfer;
+
 use natendo_engine::combine::{CombinePlan, FileHead, Suggestion};
 
 /// Picked files for Combine with a column map.
