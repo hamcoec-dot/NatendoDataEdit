@@ -176,7 +176,7 @@ const url = process.argv[3] || "http://localhost:5215";
   ok(JSON.stringify(await heights()) === "[[6,60]]" && !/custom row heights were cleared/i.test(await status()), `a row inserted above while some rows are hidden moves the height down with its row (${JSON.stringify(await heights())})`);
   await p.keyboard.press("Control+z");
   await p.waitForTimeout(400);
-  ok((await custom(5)) === 60, "Ctrl+Z brings the heights back");
+  ok((await custom(5)) === 60, "Ctrl+Z takes the row out and the height moves back up");
   await p.keyboard.press("Control+Shift+9");
   await p.waitForTimeout(300);
 
