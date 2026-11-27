@@ -191,7 +191,7 @@ const proof = async () => {
   await m.screenshot({ path: path.join(evidence, "contract-review-real.png") });
   await m.click('[data-testid="contract-panel"] button.link:has-text("2 cells")');
   ok(await waitFor(async () => (await facts(m)).rows === 3, 8000), "the count shows its 2 rows (and the titles) as a filter chip");
-  await m.locator("canvas").first().click({ position: { x: 300, y: 300 } });
+  await m.locator("canvas").first().click({ position: { x: 80, y: 120 } });
   await m.keyboard.press("Control+z");
   ok(await waitFor(async () => (await facts(m)).rows === 5, 8000), "Ctrl+Z takes the chip off");
   await m.click('[data-testid="contract-panel"] button:has-text("Fix what I can")');
@@ -200,7 +200,7 @@ const proof = async () => {
   ok(await waitFor(async () => (await names(m, 1)).join() === "id,name,party,phone,email", 8000), `Fix renames and orders the columns (${(await names(m, 1)).join()})`);
   info(`status: ${await status(m)}`);
   await m.screenshot({ path: path.join(evidence, "contract-fixed-real.png") });
-  await m.locator("canvas").first().click({ position: { x: 300, y: 300 } });
+  await m.locator("canvas").first().click({ position: { x: 80, y: 120 } });
   await m.keyboard.press("Control+z");
   ok(await waitFor(async () => (await names(m, 1)).join() === "id,full_name,phone,party,email", 8000), `one Ctrl+Z puts both back (${(await names(m, 1)).join()})`);
   ok(!(await facts(m)).modified, "and the tab is unchanged again");

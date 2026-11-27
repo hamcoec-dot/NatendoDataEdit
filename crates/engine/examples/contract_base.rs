@@ -1,9 +1,11 @@
 //! The comparison points of the file contract (C9) speed gates, with APIs that main has too, so the
 //! same file builds on main and on the C9 branch and the two can be timed side by side:
-//! `cargo run --release --example contract_base -- <file.csv> <gen|checks|tally> [rows]`
+//! `cargo run --release --example contract_base -- <file.csv> <gen|checks|same|tally> [rows]`
 //! - gen: write a made-up monthly file (10 columns) of `rows` rows (1,000,000 by default);
 //! - checks: Data checks with the contract's two rules plus a "required" rule on each of the 10
 //!   columns (the blank count), as main runs them;
+//! - same: those plus the rules the contract implies (amount a number, joined a date, party and status
+//!   from their lists): the same checks as the drift pass, as main runs them;
 //! - tally: one Edit values tally of each of the 10 columns.
 //!
 //! Each prints the median of 5 runs in ms.
@@ -76,9 +78,21 @@ fn main() {
             for _ in 0..5 {
                 let t = Instant::now();
                 match mode {
-                    "checks" => {
+                    "checks" | "same" => {
                         let mut checks = rules();
                         checks.extend((0..10).map(|c| Check::new(Some(c), CheckKind::Required)));
+                        if mode == "same" {
+                            // What the contract also asks: amount a number, joined a date, party and
+                            // status from their lists.
+                            for (c, k) in [
+                                (7, r#"{"type":"number"}"#),
+                                (6, r#"{"type":"date"}"#),
+                                (3, r#"{"type":"list","values":["DEM","GRN","IND","LIB","REP"],"match_case":true}"#),
+                                (8, r#"{"type":"list","values":["active","moved"],"match_case":true}"#),
+                            ] {
+                                checks.push(Check::new(Some(c), serde_json::from_str(k).expect("a rule")));
+                            }
+                        }
                         let spec = CheckSpec {
                             checks,
                             keep_first: true,
@@ -102,7 +116,7 @@ fn main() {
                             std::hint::black_box(r);
                         }
                     }
-                    _ => panic!("gen, checks or tally"),
+                    _ => panic!("gen, checks, same or tally"),
                 }
                 times.push(t.elapsed().as_secs_f64() * 1000.0);
             }
