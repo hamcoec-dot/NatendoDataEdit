@@ -389,10 +389,29 @@ everything is also in command search.
   fields, such as "Rows for one city (voters)", never a value). Double-click a
   tab that is not saved yet (or right-click › Rename, or F2 on it) to give it
   your own name; Save then suggests that name for the file.
-- **File tabs** have a right-click menu (Save, Rename, Copy path, Show in
-  File Explorer, move left or right, Close, Close other tabs, Close tabs to
-  the right, Close unchanged tabs). Double-click the empty part of the tab
-  bar for a new file, and Ctrl+Shift+T opens the last closed file again.
+- **File tabs** have a right-click menu (Save, Rename, Make a copy of this
+  tab, Tab colour, Copy path, Show in File Explorer, move left or right, Close, Close
+  other tabs, Close tabs to the right, Close unchanged tabs). Double-click the
+  empty part of the tab bar for a new file, and Ctrl+Shift+T opens the last
+  closed file again.
+- **Duplicate tab** (right-click a tab › Make a copy of this tab, or the File
+  menu): an unsaved copy of the
+  file as it is now, edits included, in a new tab beside it, called
+  "voters.csv (copy)" (then "(copy 2)" and so on). Its sort, filter, hidden
+  rows, column widths, formats and the rest of the look come too; its undo
+  history starts empty, and Ctrl+S asks where to save it, so the original is
+  never written over by mistake. The copy is made in memory (refused, with
+  the memory it needs, when there is not enough free) and can be cancelled. A
+  copy of a private file is private, and a copy of a tab from an encrypted
+  file is private and offers to save encrypted. It is refused while the file
+  loads, is busy, or shows an earlier step.
+- **Tab colour** (right-click a tab › Tab colour…, or File menu): eight
+  colours and none, drawn as a thick line under the tab (a line Windows high
+  contrast keeps), and said by screen readers ("march.csv, tab colour
+  green"). It comes back with the remembered session; a private tab's colour
+  is never written down.
+
+  ![File tabs with a green and a blue colour line under them, beside two copies of a made-up file](docs/screenshots/tab-colours.png)
   Ctrl+PageDown and Ctrl+PageUp switch tabs (Ctrl+Shift+PageDown and
   Ctrl+Shift+PageUp too, as in Google Sheets).
 - Set column width… types an exact width; AutoFit (or a double-click on a
@@ -582,6 +601,12 @@ everything is also in command search.
   outline until Esc or the next change, and a copied block pasted into a
   bigger selection that it fits a whole number of times repeats to fill it
   (two cells into ten, a 2×2 block into 4×4).
+- **Paste values (Ctrl+Shift+V)**, the key Excel and Google Sheets use for
+  pasting values only, pastes into the grid exactly as Ctrl+V does: a paste
+  here is always plain values (no formats or formulas come with it), with the
+  same questions for a tall paste, hidden rows and columns, and a cut waiting
+  to move. In a text box (Find, a filter, a dialog, the cell bar) it is that
+  box's own paste, and no cell changes.
 - Fill handle, fill series, Ctrl+Enter to fill a whole selection, Paste
   Special (values only, swap rows and columns), special characters. Dragging
   the fill handle back inside the selection clears the cells it passes over.
@@ -862,6 +887,18 @@ everything is also in command search.
   choices are kept with saved views.
 
   ![The totals row under a filtered made-up voter list: IDs and ZIP codes counted, votes added](docs/screenshots/totals-row.png)
+- **AutoSum (Alt+=)**, as in Excel: turns on the totals row with Sum under
+  the selected columns that hold numbers (every selected area). A column set
+  as Number gets Sum straight away; a column set as Text, Id or Date, or one
+  with no numbers in it, keeps its count and the status bar says so. Nothing
+  is read again for this: the column's type, or the totals row's own count,
+  decides. Press it again to hide the row, unless a chosen column shows
+  something else (Average, say), which it sets to Sum instead. Right-click a
+  column heading › Sum this column in the totals row does it for one column.
+  Excel types =SUM into a cell; this app writes values, not formulas, so the
+  totals row is the honest equivalent and nothing goes into the file.
+
+  ![AutoSum: the totals row with Sum under the made-up amount and votes columns](docs/screenshots/autosum.png)
 - Charts (line, bar, pie, counts), subtotals and groups, highlight rules.
 - **Compare two open files**, by a key column or by whole rows: what was
   added, removed and changed (a diff of the two files).

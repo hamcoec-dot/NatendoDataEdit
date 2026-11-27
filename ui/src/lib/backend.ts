@@ -2022,6 +2022,10 @@ export interface Backend {
   layoutChoices(doc: number): Promise<LayoutChoices>;
   previewLayout(doc: number, layout: Layout): Promise<string[][]>;
   newDocument(): Promise<DocInfo>;
+  /** An unsaved copy of tab `doc` (edits, sort, filter included) in a new tab called `title`; runs as a job on `doc`. */
+  duplicateDoc(doc: number, title: string): Promise<DocInfo>;
+  /** The tab is a Duplicate of a tab from an encrypted file (Save offers encryption first). */
+  encryptedCopy(doc: number): Promise<boolean>;
   closeDocument(doc: number): Promise<void>;
   docInfo(doc: number): Promise<DocInfo>;
   /** Told the fresh info that follows a stale answer (the tab takes it as its state). */
@@ -2647,6 +2651,12 @@ class TauriBackend implements Backend {
   }
   newDocument() {
     return call<DocInfo>("new_document");
+  }
+  duplicateDoc(doc: number, title: string) {
+    return call<DocInfo>("duplicate_doc", { doc, title });
+  }
+  encryptedCopy(doc: number) {
+    return call<boolean>("encrypted_copy", { doc });
   }
   closeDocument(doc: number) {
     return call<void>("close_document", { doc });

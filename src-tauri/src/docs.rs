@@ -498,6 +498,8 @@ pub struct Entry {
     /// The encrypted file this tab was opened from or last saved to
     /// encrypted (Save keeps it encrypted there).
     encrypted_from: Mutex<Option<PathBuf>>,
+    /// A Duplicate of a tab from an encrypted file: Save offers encryption first.
+    encrypted_copy: AtomicBool,
     /// The steps done, for a recipe (see `Docs::recorded`).
     recipe: Mutex<RecipeLog>,
     /// Named moments in the undo history (see `Checkpoints`).
@@ -2233,6 +2235,7 @@ impl Docs {
             private: AtomicBool::new(false),
             private_origin: AtomicBool::new(false),
             encrypted_from: Mutex::new(None),
+            encrypted_copy: AtomicBool::new(false),
             golden: Mutex::new(None),
             patch: Mutex::new(None),
             recipe: Mutex::new(RecipeLog::default()),
@@ -10661,6 +10664,9 @@ pub mod patching;
 
 #[path = "docs_contracts.rs"]
 pub mod contracts;
+
+#[path = "docs_dup.rs"]
+pub mod dup;
 
 use natendo_engine::combine::{CombinePlan, FileHead, Suggestion};
 

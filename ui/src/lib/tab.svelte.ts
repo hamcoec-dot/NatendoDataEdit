@@ -331,6 +331,14 @@ export class Tab {
   banded = $state(false);
   /** The totals row under the table (view only). */
   totalsOn = $state(false);
+  /** AutoSum (Alt+=) turned the totals row on (its second press may hide it again). */
+  autoSumOn = false;
+  /** Columns AutoSum waits on: Sum once the totals row says they hold numbers. */
+  autoSumPending: number[] = [];
+  /** Tab colour (one of TAB_COLOURS by number, or null); kept in the remembered session, never for a private tab. */
+  colour = $state<number | null>(null);
+  /** A Duplicate of a tab from an encrypted file: Save offers encryption first. */
+  encryptedCopy = false;
   /** What the last look at the file on disk found (see disk.ts). */
   diskNote = $state<DiskNote | null>(null);
   diskIgnored = $state("");
