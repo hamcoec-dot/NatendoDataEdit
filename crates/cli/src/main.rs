@@ -4,7 +4,7 @@
 //! `--version`, `sniff`, `info`, `view`, `clean` (run a saved cleaner),
 //! `convert` (any importable file to any export format or delimited text),
 //! `compute` (add a computed column), `join` (bring in values from another
-//! table by key, or keep or drop rows on a list), `validate` (run data checks), `app`
+//! table by key, or keep or drop rows on a list), `validate` (run data checks), `drift` (check a file against a file contract), `app`
 //! (talk to the running app's agent link), and the toolkit: `headers`,
 //! `select`, `filter`, `sort`, `dedupe`, `stats`, `count`, `sample`,
 //! `slice`, `split` and `cat`; `compare`, `match`, `lookalikes`, `xray`,
@@ -68,6 +68,7 @@ const USAGE: &str = "usage: natendo-cli --version
        natendo-cli convert <in> -o <out> [--to csv|tsv|psv|json|jsonl|xml|html|md|xlsx|pdf|fixed] [--sheet N] [--no-header] [--landscape] [--overwrite]
        natendo-cli compute <in> -o <out> --expr <expression> [--title <name>] [--no-header] [--overwrite]
        natendo-cli validate <in> --checks <checks.json> [--table name=file]... [--no-header] [--json]
+       natendo-cli drift <in> --contract <file.ndcontract> [--no-header] [--sheet N] [--json]   (exit 1: something drifted)
        natendo-cli run <recipe.json> <in> -o <out> [--set <question>=<answer> ...] [--to <format>] [--force] [--dry-run] [--no-header] [--overwrite]
            [--receipt [--receipt-paths] [--receipt-full-steps]]   (also on convert)
        natendo-cli receipt verify <receipt> [--input <file>]... [--output <file>]... [--chain] [--json]
@@ -226,6 +227,11 @@ fn run() -> ExitCode {
         ["run", rest @ ..] => more::run(rest, json),
         ["pivot", rest @ ..] => more::pivot(rest, json),
         ["join", rest @ ..] => join::join(rest, json),
+        ["drift", rest @ ..] => match more::drift(rest, json) {
+            Ok(true) => Ok(()),
+            Ok(false) => return ExitCode::from(PROBLEMS),
+            Err(e) => Err(e),
+        },
         ["validate", rest @ ..] => match more::validate(rest, json) {
             Ok(true) => Ok(()),
             Ok(false) => return ExitCode::from(PROBLEMS),

@@ -1773,6 +1773,7 @@ natendo-cli convert data.xlsx -o data.csv        # to csv, tsv, psv, json, xml, 
 natendo-cli convert data.csv -o data.pdf --landscape
 natendo-cli compute data.csv -o out.csv --expr "[Price] * [Qty]" --title Total
 natendo-cli validate data.csv --checks checks.json --json
+natendo-cli drift voters_feb.csv --contract "Monthly voters.ndcontract"   # exit 0 nothing drifted, 1 drifted, 2 error; --json
 natendo-cli join data.csv other.csv -o out.csv --key ID --columns Phone,Email
 natendo-cli clean cleaner.ndclean data.csv -o out.csv
 natendo-cli run monthly.recipe.json data.csv -o out.csv   # --dry-run lists the steps

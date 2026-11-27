@@ -1098,6 +1098,138 @@ fn bind_tables(
     Ok(())
 }
 
+/// Check a file against a file contract (C9); `Ok(true)` when nothing drifted.
+pub fn drift(args: &[&str], json_out: bool) -> Result<bool, String> {
+    use natendo_engine::contract::{pair, pair_in_order, Contract, DriftOptions, MAX_FILE_BYTES};
+    let mut rest: Vec<&str> = Vec::new();
+    let mut contract: Option<&str> = None;
+    let mut it = args.iter();
+    while let Some(&x) = it.next() {
+        if x == "--contract" {
+            contract = Some(it.next().copied().ok_or("--contract needs a value")?);
+        } else {
+            rest.push(x);
+        }
+    }
+    let a = parse(&rest, &["--no-header", "--sheet"])?;
+    let ([input], Some(cpath)) = (a.plain.as_slice(), contract) else {
+        return Err(USAGE.to_string());
+    };
+    let len = std::fs::metadata(cpath)
+        .map_err(|e| format!("{cpath}: {e}"))?
+        .len();
+    if len > MAX_FILE_BYTES as u64 {
+        return Err(format!(
+            "{cpath}: the contract file is too large (over 4 MB)"
+        ));
+    }
+    let bytes = std::fs::read(cpath).map_err(|e| format!("{cpath}: {e}"))?;
+    let c = Contract::from_bytes(&bytes).map_err(|e| format!("{cpath}: {e}"))?;
+    let d = load(input, a.sheet)?;
+    let p = if a.header {
+        pair(&c, &d.rule_titles(true))
+    } else {
+        pair_in_order(&c, d.col_count())
+    };
+    let opts = DriftOptions {
+        keep_first: a.header,
+        ..Default::default()
+    };
+    let r = d
+        .drift(&c, &p, &opts, &Progress::new())
+        .map_err(|e| e.to_string())?;
+    if json_out {
+        print_json(&serde_json::to_value(&r).map_err(|e| e.to_string())?);
+        return Ok(!r.drifted);
+    }
+    let pct = |x: f32| format!("{:.0}%", x * 100.0);
+    let _ = crate::outln!(
+        "{} against {}: {}",
+        input,
+        r.contract,
+        if r.drifted {
+            "drifted"
+        } else {
+            "nothing drifted"
+        }
+    );
+    match r.row_range {
+        Some(range) => {
+            let _ = crate::outln!(
+                "  rows: {} (expected {} to {}{})",
+                r.rows,
+                range.min,
+                range.max,
+                if r.rows_out { ", outside" } else { "" }
+            );
+        }
+        None => {
+            let _ = crate::outln!("  rows: {}", r.rows);
+        }
+    }
+    for x in &r.renamed {
+        let _ = crate::outln!(
+            "  renamed: {} is {}{}",
+            x.from,
+            x.to,
+            if x.by_alias {
+                " (another title it accepts)"
+            } else {
+                " (probably: it sits where that column was)"
+            }
+        );
+    }
+    for t in &r.missing {
+        let _ = crate::outln!("  missing: {t}");
+    }
+    for t in &r.added {
+        let _ = crate::outln!("  new column: {t}");
+    }
+    if !r.moved.is_empty() {
+        let _ = crate::outln!("  moved: {}", r.moved.join(", "));
+    }
+    for col in &r.columns {
+        if col.new_values > 0 {
+            let _ = crate::outln!(
+                "  {}: {} new values ({})",
+                col.title,
+                col.new_values,
+                col.first_new.join(", ")
+            );
+        }
+        if col.type_misses > 0 {
+            let _ = crate::outln!("  {}: {} cells not of its type", col.title, col.type_misses);
+        }
+        if col.blank_jump {
+            let _ = crate::outln!(
+                "  {}: blank {} (was {})",
+                col.title,
+                pct(col.blank_rate),
+                pct(col.baseline.unwrap_or(0.0))
+            );
+        }
+    }
+    for x in &r.rules {
+        if x.failing > 0 {
+            let _ = crate::outln!("  rule {} ({}): {} rows", x.check + 1, x.name, x.failing);
+        }
+    }
+    for t in &r.table {
+        if t.ok == Some(false) {
+            let _ = crate::outln!(
+                "  table check {}: {} (wanted {})",
+                t.name,
+                t.actual,
+                t.expected
+            );
+        }
+    }
+    for x in &r.not_run {
+        let _ = crate::outln!("  rule {} did not run: {}", x.check + 1, x.why);
+    }
+    Ok(!r.drifted)
+}
+
 /// Run checks; `Ok(true)` when there are no problems.
 pub fn validate(args: &[&str], json_out: bool) -> Result<bool, String> {
     let (tables, args) = take_tables(args)?;
