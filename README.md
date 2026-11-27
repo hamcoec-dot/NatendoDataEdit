@@ -1792,6 +1792,7 @@ natendo-cli headers data.csv                               # column numbers and 
 natendo-cli select data.csv -o out.csv --columns name,3    # keep and order columns
 natendo-cli filter data.csv -o out.csv --expr "[Total] > 100"
 natendo-cli sort data.csv -o out.csv --by "last name,amount:desc"
+natendo-cli sort data.csv -o out.csv --by "priority:order=Urgent|High|Low,day:weekdays"   # custom orders
 natendo-cli dedupe data.csv -o out.csv --columns email     # the first copy stays
 natendo-cli stats data.csv --columns zip                   # each column's profile
 natendo-cli count data.csv --columns party,precinct        # the counts, most common first
@@ -1820,6 +1821,8 @@ natendo-cli share-safe data.csv --spec share.json -o share.csv --phrase-file phr
 natendo-cli encrypt data.csv -o data.ndenc --password-file pw.txt
 natendo-cli decrypt data.ndenc -o data.csv --password-stdin
 ```
+
+In `sort --by`, a key is `column[:desc][:order]`: the order is one of the ready-made ones (`low-medium-high`, `weekdays`, `weekdays-short`, `months`, `months-short`) or `order=A|B|C`, which takes the rest of the key, so values may hold `:` (write `\|` and `\,` for a `|` or `,` inside a value), or `order=@file` with one value per line. Values not on the order go after it (before it when descending), and capitals and accents are ignored, as in the app.
 
 `compare`, `match`, `lookalikes`, `xray`, `encoding`, `private`, `share-safe`,
 `encrypt` and `decrypt` run the engine calls the app's Compare, Match, Value

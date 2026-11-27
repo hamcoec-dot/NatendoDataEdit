@@ -75,7 +75,9 @@ const USAGE: &str = "usage: natendo-cli --version
        natendo-cli headers <in> [--json]
        natendo-cli select <in> -o <out> --columns <a,b,...>
        natendo-cli filter <in> -o <out> --expr <formula>
-       natendo-cli sort <in> -o <out> --by <col>[:desc][,<col>...]
+       natendo-cli sort <in> -o <out> --by <col>[:desc][:<order>|:order=A|B|C|:order=@file][,<col>...]
+           (orders: low-medium-high, weekdays, weekdays-short, months, months-short; order= takes the
+            rest of its key; \\| and \\, inside a value)
        natendo-cli dedupe <in> -o <out> [--columns <a,b>] [--match-case]
        natendo-cli stats <in> [--columns <a,b>] [--json]
        natendo-cli count <in> --columns <a[,b]> [-o <out>] [--json]
