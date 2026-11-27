@@ -386,3 +386,25 @@ fn validate_runs_table_checks() {
         assert_eq!(code, 2, "{bad}: {out}");
     }
 }
+
+/// C11: JSON to JSON keeps each value's kind (numbers exactly as written, true/false, null, missing keys,
+/// nested values); CSV to JSON Lines writes every value as text.
+#[test]
+fn convert_json_lines_keeps_kinds_and_csv_writes_text() {
+    let f = Folder::new("jsonl");
+    let src = "{\"id\":12345678901234567890,\"price\":1.50,\"ok\":true,\"tags\":[1,2.50],\"note\":null}\n{\"id\":2,\"price\":3,\"ok\":false,\"tags\":{\"a\":1e3}}\n";
+    let input = f.write("in.jsonl", src);
+    let out = f.path("out.jsonl");
+    let (code, _) = run(&["convert", &input, "-o", &out]);
+    assert_eq!(code, 0);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), src);
+    let csv = f.write("in.csv", "id,price\n7,1.50\n");
+    let out2 = f.path("out2.jsonl");
+    let (code, _) = run(&["convert", &csv, "-o", &out2, "--to", "jsonl"]);
+    assert_eq!(code, 0);
+    let text = std::fs::read_to_string(&out2).unwrap();
+    assert!(
+        text.contains("\"id\":\"7\"") && text.contains("\"price\":\"1.50\""),
+        "{text}"
+    );
+}

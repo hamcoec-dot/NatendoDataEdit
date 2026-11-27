@@ -6,6 +6,7 @@
 // guessed path can't be checked against it.
 
 import type { ColumnType } from "./readers";
+import type { JsonBlanks } from "./backend";
 
 const KEY = "nde.headers.v1";
 const SALT_KEY = "nde.headers.salt";
@@ -168,6 +169,44 @@ export async function rememberColumnTypes(path: string, mem: TypeMemory | null, 
   }
 }
 
+// C11: how new blank cells are written when a tab saves back to its JSON file, kept the same way: the
+// salted fingerprint of the path and the answer only, nothing for a private file.
+const BLANKS_KEY = "nde.jsonblanks.v1";
+const BLANKS: JsonBlanks[] = ["leave_out", "empty_text", "null"];
+type BlankStore = Record<string, [number, number]>;
+
+function loadBlanks(): BlankStore {
+  try {
+    const v = JSON.parse(localStorage.getItem(BLANKS_KEY) ?? "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as BlankStore) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The blank-cell answer remembered for this JSON file, or null. */
+export async function recallJsonBlanks(path: string): Promise<JsonBlanks | null> {
+  const e = loadBlanks()[await pathKey(path)];
+  return Array.isArray(e) ? (BLANKS[e[0]] ?? null) : null;
+}
+
+/** Remember the answer for this JSON file. */
+export async function rememberJsonBlanks(path: string, blanks: JsonBlanks): Promise<void> {
+  const k = await pathKey(path);
+  const s = loadBlanks();
+  s[k] = [Math.max(0, BLANKS.indexOf(blanks)), now()];
+  const keys = Object.keys(s);
+  if (keys.length > HEADER_MEMORY_MAX) {
+    keys.sort((a, b) => (s[a]?.[1] ?? 0) - (s[b]?.[1] ?? 0));
+    for (const old of keys.slice(0, keys.length - HEADER_MEMORY_MAX)) delete s[old];
+  }
+  try {
+    localStorage.setItem(BLANKS_KEY, JSON.stringify(s));
+  } catch {
+    // Not remembered this time.
+  }
+}
+
 /** How many files' choices are remembered. */
 export function rememberedHeaders(): number {
   return Object.keys(load()).length;
@@ -179,6 +218,7 @@ export function forgetHeaders(): void {
   try {
     localStorage.removeItem(KEY);
     localStorage.removeItem(PAD_KEY);
+    localStorage.removeItem(BLANKS_KEY);
     localStorage.removeItem(TYPES_KEY);
     localStorage.removeItem(SALT_KEY);
   } catch {

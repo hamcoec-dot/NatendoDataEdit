@@ -415,6 +415,8 @@ pub struct Entry {
     /// Opened with quoted cells never spanning lines (cleared once a save
     /// has reloaded the file normally).
     pub line_by_line: AtomicBool,
+    /// The JSON file this tab saves back to (C11), with its size and time when last read or written.
+    json_target: Mutex<Option<JsonTarget>>,
     /// Indexing failed (shown once; the document stays usable as far as read).
     error: Mutex<Option<String>>,
     /// Name shown for a document with no file yet (imports).
@@ -1886,6 +1888,43 @@ pub struct DocInfo {
     /// Report notes: lines above and below the table (C4).
     pub notes: NoteCounts,
     pub error: Option<String>,
+    /// C11: the tab saves back to a JSON file: "jsonl" (JSON Lines) or "json" (an array).
+    pub json_format: Option<&'static str>,
+    /// C11: why the JSON file can only be saved as another file (a key twice in a record, lists of
+    /// values). Title problems are found when saving (see `Docs::json_check`).
+    pub json_refuse: Option<String>,
+    /// C11: the JSON file it saves back to (shown in tooltips and used, hashed, to remember the blank-cell
+    /// answer; never accepted back from the UI).
+    pub json_file: Option<String>,
+}
+
+/// The JSON file a tab came from (C11), and its size and time when last read or written.
+#[derive(Clone)]
+struct JsonTarget {
+    path: PathBuf,
+    stamp: Option<natendo_engine::source::FileStamp>,
+    /// How it is written (from the file as it came, or the last Save As).
+    form: natendo_engine::jsonshape::JsonForm,
+}
+
+/// JSON Lines, LF, ending with a line break: how a tab with no JSON file of its own is saved as one.
+fn lines_form() -> natendo_engine::jsonshape::JsonForm {
+    natendo_engine::jsonshape::JsonForm {
+        lines: true,
+        indent: None,
+        crlf: false,
+        bom: false,
+        final_newline: true,
+    }
+}
+
+/// After a JSON save: the tab, and what the save wrote.
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonSaved {
+    pub info: DocInfo,
+    pub report: natendo_engine::jsonshape::JsonReport,
+    /// The file written was the tab's own (it is now saved), not a copy beside a file of its own.
+    pub own: bool,
 }
 
 /// Largest file compared with its copy on disk (both are held at once).
@@ -2093,6 +2132,7 @@ impl Docs {
             replace: Mutex::new(None),
             changed_rows: Mutex::new((0, Vec::new())),
             fill_marks: Mutex::new(HashMap::new()),
+            json_target: Mutex::new(None),
             fill_count: Mutex::new(None),
             cancel: AtomicBool::new(false),
             line_by_line: AtomicBool::new(line_by_line),
@@ -2872,6 +2912,11 @@ impl Docs {
         let mut info = describe(id, d, entry.line_by_line.load(Ordering::Relaxed), error);
         info.read_only = entry.locked.load(Ordering::Relaxed);
         info.peeking = entry.peeking.load(Ordering::Relaxed);
+        if let Some(t) = &*entry.json_target.lock().unwrap_or_else(|p| p.into_inner()) {
+            info.json_format = Some(if t.form.lines { "jsonl" } else { "json" });
+            info.json_refuse = d.json_shape().and_then(|s| s.refuse.clone());
+            info.json_file = Some(t.path.display().to_string());
+        }
         if let (None, Some(t)) = (&info.path, title) {
             info.name = t;
         }
@@ -2881,7 +2926,7 @@ impl Docs {
 
     /// The tab's name without its extension ("voters" for voters.csv), for
     /// naming tabs made from it.
-    fn stem(&self, id: u32) -> String {
+    pub fn stem(&self, id: u32) -> String {
         let name = self.info(id).map(|i| i.name).unwrap_or_default();
         match name.rsplit_once('.') {
             Some((s, ext)) if !s.is_empty() && ext.len() <= 5 && !ext.contains(' ') => {
@@ -4201,6 +4246,11 @@ impl Docs {
                 }
             }
             saved = d.last_history().filter(|_| d.revision() != before);
+            // Saved as a CSV file of its own: the tab no longer saves back to the JSON file (C11).
+            if d.path().is_some() {
+                d.set_json_shape(None);
+                *entry.json_target.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            }
         }
         // The saved copy was reopened normally (quotes may span lines).
         entry.line_by_line.store(false, Ordering::Relaxed);
@@ -4211,6 +4261,125 @@ impl Docs {
         let mut info = self.info(id)?;
         info.saved_history = saved;
         Ok(info)
+    }
+
+    /// C11: the tab saves back to the JSON file at `path` (read with this size and time), written as
+    /// `form` (`None`: as the file came, from the tab's JSON shape).
+    pub fn set_json_target(
+        &self,
+        id: u32,
+        path: PathBuf,
+        stamp: Option<natendo_engine::source::FileStamp>,
+        form: Option<natendo_engine::jsonshape::JsonForm>,
+    ) {
+        use natendo_engine::jsonshape::JsonForm;
+        if let Ok(entry) = self.get(id) {
+            let form = form
+                .or_else(|| entry.read().json_shape().map(|s| JsonForm::from(&s.layout)))
+                .unwrap_or_else(lines_form);
+            *entry.json_target.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(JsonTarget { path, stamp, form });
+        }
+    }
+
+    /// C11: whether the tab can be saved as JSON, and whether a save needs the blank-cell question.
+    pub fn json_check(&self, id: u32) -> CmdResult<natendo_engine::jsonshape::JsonCheck> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.json_check())
+    }
+
+    /// C11: save as JSON Lines or a JSON array. `path`: Save As (from the system dialog); `None`: back
+    /// to the JSON file the tab came from. `form`: the layout to write (`None`: the file's own). With the
+    /// same safety as Save: refused while peeking or read-only, stopped when another program changed
+    /// the file (unless `overwrite_changed`), an earlier save kept, a temp file moved into place. A
+    /// tab with a file of its own (a CSV tab) writes a copy and stays as it is.
+    pub fn save_json(
+        &self,
+        id: u32,
+        path: Option<PathBuf>,
+        form: Option<natendo_engine::jsonshape::JsonForm>,
+        blanks: natendo_engine::jsonshape::Blanks,
+        overwrite_changed: bool,
+    ) -> CmdResult<JsonSaved> {
+        use natendo_engine::source::FileStamp;
+        let entry = self.get(id)?;
+        if entry.peeking.load(Ordering::Relaxed) {
+            return Err(peeking());
+        }
+        let target = entry
+            .json_target
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let back = path.is_none();
+        let file = match (&path, &target) {
+            (Some(p), _) => p.clone(),
+            (None, Some(t)) => t.path.clone(),
+            (None, None) => {
+                return Err(CmdError::new(
+                    "no_json_file",
+                    "this tab did not come from a JSON file: use Save As",
+                ))
+            }
+        };
+        if back && entry.locked.load(Ordering::Relaxed) {
+            return Err(read_only());
+        }
+        self.check_writable(&file)?;
+        if back && !overwrite_changed {
+            if let Some(t) = &target {
+                if FileStamp::of(&t.path).ok() != t.stamp {
+                    return Err(Error::ChangedOnDisk.into());
+                }
+            }
+        }
+        let private = entry.private.load(Ordering::SeqCst);
+        let (report, own) = {
+            let mut d = entry.write();
+            if entry.locked.load(Ordering::Relaxed)
+                && d.path().is_some_and(|own| same_file(&file, own))
+            {
+                return Err(read_only());
+            }
+            let form = form
+                .or_else(|| target.as_ref().map(|t| t.form.clone()))
+                .unwrap_or_else(lines_form);
+            #[cfg(not(test))]
+            if !private {
+                crate::recovery::keep_version(&file);
+            }
+            let _ = private;
+            // A tab with a CSV file of its own writes a copy; an imported tab takes the file as its own.
+            let own = d.path().is_none();
+            let progress = Progress::new();
+            let report = if own {
+                d.save_json(&file, &form, blanks, &progress)?
+            } else {
+                d.write_json(&file, &form, blanks, &progress)?
+            };
+            if own {
+                // The file written is the one the tab saves back to, in the form just written.
+                *entry.json_target.lock().unwrap_or_else(|p| p.into_inner()) = Some(JsonTarget {
+                    path: file.clone(),
+                    stamp: FileStamp::of(&file).ok(),
+                    form: form.clone(),
+                });
+            }
+            (report, own)
+        };
+        if own {
+            if !back {
+                if let Some(stem) = file.file_stem() {
+                    self.set_title_of(id, stem.to_string_lossy().into_owned());
+                }
+            }
+            crate::recovery::forget(id);
+            entry.autosaved.store(u64::MAX, Ordering::Relaxed);
+            entry.too_large.store(0, Ordering::Relaxed);
+        }
+        let info = self.info(id)?;
+        Ok(JsonSaved { info, report, own })
     }
 
     /// [`Docs::save`] with a processing receipt written beside the saved file: the file the tab
@@ -10044,6 +10213,9 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         line_bound_from: d.index().line_bound_from(),
         notes: d.note_counts(),
         error,
+        json_format: None,
+        json_refuse: None,
+        json_file: None,
     }
 }
 
@@ -12627,6 +12799,195 @@ ca,California
         let i2 = wait(&docs, id2);
         assert!(i2.line_by_line);
         assert_eq!(i2.rows, 4);
+    }
+
+    /// C11: a JSON file opened from Import, as the app does it (the tab saves back to it).
+    fn json_tab(docs: &Docs, name: &str, body: &[u8]) -> (u32, PathBuf) {
+        let p = tmp(name, body);
+        let imports = crate::imports::Imports::default();
+        let start = imports.open_path(&p).unwrap();
+        let info = imports
+            .finish(
+                start.id,
+                &natendo_engine::import::ImportOptions::default(),
+                docs,
+            )
+            .unwrap();
+        (info.id, p)
+    }
+
+    /// C11: Ctrl+S on a JSON tab writes the file back in its own format and kinds; the tab is saved and
+    /// keeps its undo history; DocInfo says so.
+    #[test]
+    fn json_tab_saves_back_to_its_file() {
+        use natendo_engine::jsonshape::Blanks;
+        let docs = Docs::default();
+        let body = b"{\"id\":1,\"price\":1.50,\"ok\":true}
+{\"id\":2,\"price\":3}
+";
+        let (id, p) = json_tab(&docs, "back.jsonl", body);
+        let i = wait(&docs, id);
+        assert_eq!(i.json_format, Some("jsonl"));
+        assert_eq!(i.json_refuse, None);
+        assert!(i.json_file.is_some() && i.path.is_none());
+        // No edits: the same bytes.
+        let r = docs
+            .save_json(id, None, None, Blanks::LeaveOut, false)
+            .unwrap();
+        assert!(r.own);
+        assert_eq!(r.report.records, 2);
+        assert_eq!(std::fs::read(&p).unwrap(), body);
+        docs.set_cells(id, vec![(2, 1, "4.25".into())]).unwrap();
+        assert!(docs.info(id).unwrap().modified);
+        let r = docs
+            .save_json(id, None, None, Blanks::LeaveOut, false)
+            .unwrap();
+        assert!(!r.info.modified && r.info.can_undo);
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "{\"id\":1,\"price\":1.50,\"ok\":true}
+{\"id\":2,\"price\":4.25}
+"
+        );
+    }
+
+    /// C11: the same safety as Save: another program's change stops the save (until agreed), a
+    /// read-only tab and a peeking one are refused, and a failed write leaves the file as it was.
+    #[test]
+    fn json_save_back_is_as_safe_as_save() {
+        use natendo_engine::jsonshape::Blanks;
+        let docs = Docs::default();
+        let body = b"{\"a\":\"x\"}
+";
+        let (id, p) = json_tab(&docs, "safe.jsonl", body);
+        wait(&docs, id);
+        docs.set_cells(id, vec![(1, 0, "y".into())]).unwrap();
+        // Another program changes the file.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            &p,
+            b"{\"a\":\"theirs\"}
+",
+        )
+        .unwrap();
+        let e = docs
+            .save_json(id, None, None, Blanks::LeaveOut, false)
+            .unwrap_err();
+        assert_eq!(e.kind, "changed_on_disk");
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            b"{\"a\":\"theirs\"}
+"
+        );
+        docs.save_json(id, None, None, Blanks::LeaveOut, true)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            b"{\"a\":\"y\"}
+"
+        );
+        // Read-only.
+        docs.set_read_only(id, true).unwrap();
+        assert_eq!(
+            docs.save_json(id, None, None, Blanks::LeaveOut, false)
+                .unwrap_err()
+                .kind,
+            "read_only"
+        );
+        docs.set_read_only(id, false).unwrap();
+        // A write that cannot happen (the folder is gone) leaves no file and an error.
+        let gone = p.parent().unwrap().join("no-such-folder").join("x.jsonl");
+        assert!(docs
+            .save_json(id, Some(gone.clone()), None, Blanks::LeaveOut, false)
+            .is_err());
+        assert!(!gone.exists());
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            b"{\"a\":\"y\"}
+"
+        );
+    }
+
+    /// C11: a tab with a CSV file of its own writes a JSON copy (all text) and stays as it is; a JSON tab
+    /// saved as CSV no longer saves back to the JSON file.
+    #[test]
+    fn json_copies_and_csv_save_as() {
+        use natendo_engine::jsonshape::{Blanks, JsonForm};
+        let docs = Docs::default();
+        let csv = tmp(
+            "own.csv",
+            b"n,t
+1,x
+",
+        );
+        let id = docs.open_path(&csv, false).unwrap().id;
+        wait(&docs, id);
+        docs.set_cells(id, vec![(1, 1, "y".into())]).unwrap();
+        let out = csv.with_file_name("own-copy.jsonl");
+        let form = JsonForm {
+            lines: true,
+            indent: None,
+            crlf: false,
+            bom: false,
+            final_newline: true,
+        };
+        let r = docs
+            .save_json(id, Some(out.clone()), Some(form), Blanks::LeaveOut, false)
+            .unwrap();
+        assert!(!r.own && r.info.modified && r.info.json_format.is_none());
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            "{\"n\":\"1\",\"t\":\"y\"}
+"
+        );
+        // A JSON tab saved as CSV.
+        let (jid, _) = json_tab(
+            &docs,
+            "tocsv.jsonl",
+            b"{\"a\":1}
+",
+        );
+        wait(&docs, jid);
+        let target = csv.with_file_name("tocsv.csv");
+        let i = docs.save(jid, Some(target), false, false, None).unwrap();
+        assert!(i.json_format.is_none() && i.path.is_some());
+        assert_eq!(
+            docs.save_json(jid, None, None, Blanks::LeaveOut, false)
+                .unwrap_err()
+                .kind,
+            "no_json_file"
+        );
+    }
+
+    /// C11: a record with the same key twice cannot be saved back, and DocInfo says why.
+    #[test]
+    fn json_key_twice_is_refused_with_the_reason() {
+        use natendo_engine::jsonshape::Blanks;
+        let docs = Docs::default();
+        let (id, p) = json_tab(
+            &docs,
+            "twice.jsonl",
+            b"{\"a\":1}
+{\"a\":2,\"a\":3}
+",
+        );
+        let i = wait(&docs, id);
+        assert!(
+            i.json_refuse
+                .as_deref()
+                .is_some_and(|w| w.contains("twice")),
+            "{:?}",
+            i.json_refuse
+        );
+        assert!(docs
+            .save_json(id, None, None, Blanks::LeaveOut, false)
+            .is_err());
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            b"{\"a\":1}
+{\"a\":2,\"a\":3}
+"
+        );
     }
 
     /// Review finding 6: after a save, a line-by-line document is a normal one.

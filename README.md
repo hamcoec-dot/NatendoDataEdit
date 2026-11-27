@@ -1212,6 +1212,24 @@ everything is also in command search.
 - **JSON Lines** (`.jsonl`, `.ndjson`): open them (one record per line, read
   as it streams) and export to them, the format web tools and databases use
   for logs and records.
+- **Save JSON back to its file:** a `.jsonl`, `.ndjson` or `.json` file of
+  records opened from Import saves back to that file with Ctrl+S, in its own
+  format. Records you did not change come back the same: the same keys and
+  values, numbers exactly as written (`1.50` and 20-digit IDs are not
+  rounded, nested ones too), `true`/`false`, `null`, empty text and missing
+  keys as they were, nested objects and arrays still nested, and the file's
+  line endings, indent and byte-order mark. An edited value keeps its kind
+  when it still fits (a number column takes a plain JSON number, so `012`,
+  `1,234` or `NaN` are written as text, and the status line counts them).
+  The first save with a newly blank cell asks once per file whether to leave
+  the key out (the default), write `""` or write `null`. Save As offers JSON
+  Lines and JSON (over several lines or one) beside delimited text; from a CSV
+  tab every value is written as text. A save stops if another program changed
+  the file, and goes through a temporary file like every save. Limits: keys
+  are written in column order, blank lines between records and escapes such
+  as `é` are not kept, and a file whose record has the same key twice,
+  or whose records sit inside an object, can only be saved as another file
+  (Save says why).
 - **Export:** Excel, JSON, JSON Lines, XML, HTML, Markdown, fixed width, PDF, SQL
   statements (standard SQL, MySQL, or SQL Server/Access style) or a template
   of your own; to a file or the clipboard, with a preview.

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { savedHistoryNote } from "./lib/savedHistory";
   import { actingWords, hiddenRows, hiddenWords, kindOfOp } from "./lib/shown.svelte";
-  import { forgetHeaders, recallColumnTypes, recallHeader, rememberColumnTypes, rememberedHeaders, rememberHeader, type TypeMemory } from "./lib/headerMemory";
+  import { forgetHeaders, recallColumnTypes, recallHeader, recallJsonBlanks, rememberColumnTypes, rememberedHeaders, rememberHeader, rememberJsonBlanks, type TypeMemory } from "./lib/headerMemory";
+  import JsonSaveDialog from "./lib/JsonSaveDialog.svelte";
 import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type ColumnType } from "./lib/readers";
   import { sessionToOffer } from "./lib/sessionOffer";
   import { namesFromText } from "./lib/columnNames";
@@ -85,7 +86,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { remapChecks, renameInChecks } from "./lib/rename";
   import { TOOLS, localNow, type Cleaner, type CleanSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
-  import type { ExportOptions, ImportNotes, ImportOptions, ImportStart, Opened, ReceiptAsk, SaveAsOptions } from "./lib/backend";
+  import type { ExportOptions, ImportNotes, ImportOptions, ImportStart, JsonBlanks, JsonChoice, Opened, ReceiptAsk, SaveAsOptions } from "./lib/backend";
   import SidePanel, { type PanelTab } from "./lib/SidePanel.svelte";
   import CommandSearch from "./lib/CommandSearch.svelte";
   import readme from "../../README.md?raw";
@@ -162,7 +163,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   let opDialog = $state<{ kind: OpKind; clip: string } | null>(null);
   let formRow = $state<number | null>(null);
   /** Save As options screen, waiting for the user's choice. */
-  let saveAsReq = $state<{ sample: string[][]; done: (o: SaveAsOptions | null, receipt?: ReceiptAsk | null) => void } | null>(null);
+  let saveAsReq = $state<{ sample: string[][]; done: (o: SaveAsOptions | null, receipt?: ReceiptAsk | null, json?: JsonChoice | null) => void } | null>(null);
+  /** C11: Save As offers delimited text only (JSON was just refused). */
+  let textOnlySave = $state(false);
+  /** C11: the blank-cell question of a JSON save. */
+  let jsonBlanksReq = $state<{ file: string; start: JsonBlanks; privateFile: boolean; done: (r: { blanks: JsonBlanks; remember: boolean } | null) => void } | null>(null);
   /** Tools > Verify a receipt is open. */
   let receiptOpen = $state(false);
   /** Combine with a column map: the picked files' heads, and the file-name column choice. */
@@ -1356,17 +1361,117 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   }
 
   /** Show the Save As options screen; null when cancelled. */
-  async function askSaveOptions(t: Tab): Promise<{ options: SaveAsOptions; receipt: ReceiptAsk | null } | null> {
+  async function askSaveOptions(t: Tab): Promise<{ options: SaveAsOptions | null; receipt: ReceiptAsk | null; json: JsonChoice | null } | null> {
     const sample = await sampleRows(t);
     return new Promise((resolve) => {
       saveAsReq = {
         sample,
-        done: (o, receipt) => {
+        done: (o, receipt, json) => {
           saveAsReq = null;
-          resolve(o ? { options: o, receipt: receipt ?? null } : null);
+          resolve(o || json ? { options: o, receipt: receipt ?? null, json: json ?? null } : null);
         },
       };
     });
+  }
+
+  function askJsonBlanks(file: string, start: JsonBlanks, privateFile: boolean): Promise<{ blanks: JsonBlanks; remember: boolean } | null> {
+    return new Promise((resolve) => {
+      jsonBlanksReq = {
+        file,
+        start,
+        privateFile,
+        done: (r) => {
+          jsonBlanksReq = null;
+          resolve(r);
+        },
+      };
+    });
+  }
+
+  const BLANK_WORDS: Record<JsonBlanks, string> = { leave_out: "with the key left out", empty_text: "as empty text", null: "as null" };
+
+  /** C11: save as JSON: back to the JSON file the tab came from (`choice` null), or Save As one. The
+   *  blank-cell question is asked only when a newly blank cell has no form of its own, once per file. */
+  async function saveJsonTab(t: Tab, choice: JsonChoice | null): Promise<boolean> {
+    if (grid?.isEditing() && !(await grid.commitEdit())) return false;
+    const check = await backend().jsonCheck(t.id);
+    if (check.refuse) {
+      const a = await ask(
+        "This cannot be saved as JSON",
+        `${check.refuse.charAt(0).toUpperCase()}${check.refuse.slice(1)}.`,
+        [
+          { id: "as", label: "Save As delimited text…", primary: true },
+          { id: "cancel", label: "Cancel" },
+        ],
+        "cancel",
+      );
+      return a === "as" ? save(true, true) : false;
+    }
+    const isPrivate = t.private.file || t.private.folder;
+    const file = choice ? "" : (t.info.json_file ?? "");
+    let blanks: JsonBlanks = "leave_out";
+    let blankNote = "";
+    if (check.ask_blanks) {
+      const remembered = file && !isPrivate ? await recallJsonBlanks(file) : null;
+      if (remembered) {
+        blanks = remembered;
+        blankNote = ` New blank cells were written ${BLANK_WORDS[blanks]}, as remembered for this file.`;
+      } else {
+        const picked = await askJsonBlanks(file || t.info.name, "leave_out", isPrivate);
+        grid?.focus();
+        if (!picked) return false;
+        blanks = picked.blanks;
+        if (picked.remember && file && !isPrivate) void rememberJsonBlanks(file, blanks);
+      }
+    }
+    let overwriteChanged = false;
+    t.busy = "Saving…";
+    try {
+      for (;;) {
+        try {
+          const r = await backend().saveJson(t.id, { saveAs: !!choice, choice: choice ?? { lines: t.info.json_format !== "json", pretty: true }, blanks, overwriteChanged });
+          if (!r) return false; // dialog cancelled
+          t.update(r.info, true);
+          if (r.own) void rememberTab(t, true);
+          const lines = choice ? choice.lines : r.info.json_format !== "json";
+          const n = r.report.records;
+          const asText = r.report.as_text
+            ? ` ${r.report.as_text.toLocaleString()} ${r.report.as_text === 1 ? "cell" : "cells"} in number, true/false or nested columns ${r.report.as_text === 1 ? "was" : "were"} not ${r.report.as_text === 1 ? "one" : "those"} any more and ${r.report.as_text === 1 ? "was" : "were"} written as text.`
+            : "";
+          const copy = r.own ? "" : " This tab keeps its own file; the JSON is a copy.";
+          say(`Saved ${n.toLocaleString()} ${n === 1 ? "record" : "records"} as ${lines ? "JSON Lines" : "JSON"}.${asText}${blankNote}${copy}`);
+          return true;
+        } catch (e) {
+          if (!isCmdError(e)) throw e;
+          if (e.kind === "changed_on_disk") {
+            const a = await ask(
+              "The file changed on disk",
+              "Another program changed this JSON file after you opened it. Saving now replaces their changes with yours.",
+              [
+                { id: "overwrite", label: "Replace their changes", danger: true },
+                { id: "as", label: "Save As a new file…", primary: true },
+                { id: "cancel", label: "Cancel" },
+              ],
+              "cancel",
+            );
+            if (a === "cancel") return false;
+            if (a === "as") {
+              t.busy = null;
+              return save(true);
+            }
+            overwriteChanged = true;
+          } else {
+            await ask("Could not save", e.message, [{ id: "ok", label: "OK", primary: true }], "ok");
+            return false;
+          }
+        }
+      }
+    } catch (e) {
+      say(errorText(e));
+      return false;
+    } finally {
+      t.busy = null;
+    }
   }
 
   let exportTabs = $state<{ id: number; name: string; why: string }[]>([]);
@@ -1478,7 +1583,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   }
 
   /** Save, answering the engine's questions with the user. */
-  async function save(saveAs: boolean): Promise<boolean> {
+  async function save(saveAs: boolean, textOnly = false): Promise<boolean> {
     const t = tab;
     if (!t) return false;
     if (saveAs && !(await privacyGate("Save As writes another copy of all of it."))) return false;
@@ -1523,6 +1628,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       if (a === "cancel") return false;
       if (a === "as") saveAs = true;
     }
+    // C11: a tab from a JSON file saves back to it (or, when it cannot, Save As says why).
+    if (t.info.json_format && !saveAs && !textOnly) {
+      if (!t.info.json_refuse) return saveJsonTab(t, null);
+      say(`This file can only be saved as another file: ${t.info.json_refuse}.`);
+      saveAs = true;
+    }
     let overwriteChanged = false;
     let allowLossy = false;
     let options: SaveAsOptions | null = null;
@@ -1536,8 +1647,13 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         try {
           if ((saveAs || !t.info.path) && !options) {
             t.busy = null;
-            const picked = await askSaveOptions(t);
+            textOnlySave = textOnly;
+            const picked = await askSaveOptions(t).finally(() => (textOnlySave = false));
             if (!picked) return false;
+            if (picked.json) {
+              t.busy = null;
+              return saveJsonTab(t, picked.json);
+            }
             options = picked.options;
             receipt = picked.receipt;
             t.busy = "Saving…";
@@ -9378,7 +9494,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
 {#if saveAsReq && tab}
   {@const req = saveAsReq}
-  <SaveAsDialog info={tab.info} sample={req.sample} privateFile={tab.private.file || tab.private.folder} onSave={(o, r) => req.done(o, r)} onClose={() => { req.done(null); grid?.focus(); }} />
+  <SaveAsDialog info={tab.info} sample={req.sample} privateFile={tab.private.file || tab.private.folder} onSave={(o, r) => req.done(o, r)} onSaveJson={textOnlySave ? undefined : (c) => req.done(null, null, c)} onClose={() => { req.done(null); grid?.focus(); }} />
+{/if}
+
+{#if jsonBlanksReq}
+  {@const req = jsonBlanksReq}
+  <JsonSaveDialog file={req.file} start={req.start} privateFile={req.privateFile} onSave={(b, r) => req.done({ blanks: b, remember: r })} onClose={() => req.done(null)} />
 {/if}
 
 {#if exportOpen && tab}

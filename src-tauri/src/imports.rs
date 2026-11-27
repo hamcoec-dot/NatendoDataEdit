@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use natendo_engine::dbf::{self, DbfInfo, Sidecars};
 use natendo_engine::import::{self, ImportFormat, ImportInfo, ImportOptions};
 use natendo_engine::sheet::SheetStats;
+use natendo_engine::source::FileStamp;
 use natendo_engine::Progress;
 use serde::Serialize;
 
@@ -36,6 +37,8 @@ struct Session {
     data: Vec<u8>,
     /// dBase: the files beside the table.
     beside: Option<Arc<Sidecars>>,
+    /// The file's size and time before it was read (C11: a JSON tab saves back only if it is unchanged).
+    stamp: Option<FileStamp>,
     progress: Mutex<Option<Arc<Progress>>>,
 }
 
@@ -277,6 +280,7 @@ impl Imports {
         path: Option<std::path::PathBuf>,
         data: Vec<u8>,
         beside: Option<Arc<Sidecars>>,
+        stamp: Option<FileStamp>,
     ) -> CmdResult<ImportStart> {
         let info = import::inspect(&data, ext.as_deref(), None)?;
         let mut map = self.map();
@@ -295,6 +299,7 @@ impl Imports {
                 path,
                 data,
                 beside,
+                stamp,
                 progress: Mutex::new(None),
             }),
         );
@@ -313,6 +318,7 @@ impl Imports {
             .map(|e| e.to_string_lossy().to_ascii_lowercase());
         let table = ext.as_deref() == Some("dbf");
         let before = table.then(|| stamps(path));
+        let stamp = FileStamp::of(path).ok();
         let f = std::fs::File::open(path).map_err(|e| CmdError::new("error", e.to_string()))?;
         let mut data = Vec::new();
         f.take(MAX_IMPORT_BYTES + 1)
@@ -338,7 +344,7 @@ impl Imports {
             }
             Arc::new(side)
         });
-        self.start(name, ext, Some(path.to_path_buf()), data, beside)
+        self.start(name, ext, Some(path.to_path_buf()), data, beside, stamp)
     }
 
     /// Clipboard text, sent by the UI (capped).
@@ -349,7 +355,14 @@ impl Imports {
                 "the clipboard holds too much text",
             ));
         }
-        self.start("Clipboard".into(), None, None, text.into_bytes(), None)
+        self.start(
+            "Clipboard".into(),
+            None,
+            None,
+            text.into_bytes(),
+            None,
+            None,
+        )
     }
 
     /// What the source holds with another format chosen.
@@ -447,6 +460,12 @@ impl Imports {
                 .unwrap_or_else(|| import::guess(s.ext.as_deref(), &s.data));
             let doc = if format == ImportFormat::Delimited {
                 import::delimited(&s.data, s.ext.as_deref())?
+            } else if format == ImportFormat::Json && s.path.is_some() {
+                // C11: a JSON file of records keeps its shape, to save back to it.
+                let (table, shape) = import::import_json_shaped(&s.data, &progress)?;
+                let mut d = table.into_document()?;
+                d.set_json_shape(Some(shape));
+                d
             } else {
                 import::import(&s.data, s.ext.as_deref(), &s.with(opts), None, &progress)?
                     .into_document()?
@@ -460,6 +479,9 @@ impl Imports {
         // A spreadsheet from a private file or folder makes a private tab.
         if let Some(p) = &s.path {
             docs.private_if_from(info.id, p);
+            if format_of(opts, &s) == ImportFormat::Json {
+                docs.set_json_target(info.id, p.clone(), s.stamp, None);
+            }
         }
         docs.info(info.id)
     }
@@ -496,6 +518,12 @@ impl Imports {
             }
         }
     }
+}
+
+/// The format an import reads its source as.
+fn format_of(opts: &ImportOptions, s: &Session) -> ImportFormat {
+    opts.format
+        .unwrap_or_else(|| import::guess(s.ext.as_deref(), &s.data))
 }
 
 #[cfg(test)]

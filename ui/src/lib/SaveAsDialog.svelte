@@ -4,7 +4,7 @@
   // shows the first rows as they will be written. The file itself is
   // chosen next, in the system's Save dialog.
   import { untrack } from "svelte";
-  import type { DocInfo, ReceiptAsk, SaveAsOptions } from "./backend";
+  import type { DocInfo, JsonChoice, ReceiptAsk, SaveAsOptions } from "./backend";
   import FormShell from "./FormShell.svelte";
   import ReceiptChoice from "./ReceiptChoice.svelte";
   import { ENCODINGS, QUOTINGS, SEPARATORS, keepsBytes, saveAsDefaults, writeRow } from "./transfer";
@@ -14,12 +14,17 @@
     /** The first rows, for the preview. */
     sample: string[][];
     onSave: (o: SaveAsOptions, receipt: ReceiptAsk | null) => void;
+    /** C11: save as JSON Lines or JSON instead. */
+    onSaveJson?: (c: JsonChoice) => void;
     onClose: () => void;
     /** The tab is private (its receipt keeps file names only). */
     privateFile?: boolean;
   }
-  let { info, sample, onSave, onClose, privateFile = false }: Props = $props();
+  let { info, sample, onSave, onSaveJson, onClose, privateFile = false }: Props = $props();
   let receipt = $state<ReceiptAsk | null>(null);
+  // C11: the file type; a tab from a JSON file starts on its own format.
+  let kind = $state<"text" | "jsonl" | "json" | "json_compact">(untrack(() => (info.json_format === "jsonl" ? "jsonl" : info.json_format === "json" ? "json" : "text")));
+  const jsonNo = $derived(info.json_refuse ? `This file can only be saved as delimited text: ${info.json_refuse}.` : "");
 
   const start = untrack(() => saveAsDefaults(info));
   let o = $state<SaveAsOptions>(start);
@@ -50,12 +55,32 @@
   const preview = $derived(sample.slice(0, 6).map((r) => writeRow(r, o).replace(/\t/g, "→")));
 
   function save(): void {
+    if (kind !== "text") {
+      if (!jsonNo) onSaveJson?.({ lines: kind === "jsonl", pretty: kind === "json" });
+      return;
+    }
     if (problem) return;
     onSave({ ...$state.snapshot(o), bom: unicode && o.bom }, receipt);
   }
 </script>
 
 <FormShell title="Save As options" {onClose} onEnter={save}>
+  {#if onSaveJson}
+    <label class="row">File type
+      <select bind:value={kind} aria-label="File type">
+        <option value="text">Delimited text (CSV, TSV, …)</option>
+        <option value="jsonl" disabled={!!jsonNo} title={jsonNo}>JSON Lines (one record a line)</option>
+        <option value="json" disabled={!!jsonNo} title={jsonNo}>JSON (one array, over several lines)</option>
+        <option value="json_compact" disabled={!!jsonNo} title={jsonNo}>JSON (one array, one line)</option>
+      </select>
+    </label>
+    {#if jsonNo}<p class="note json-no">JSON is greyed out. {jsonNo}</p>{/if}
+  {/if}
+  {#if kind !== "text"}
+    <p class="note json-about">Each row is written as one record, keyed by the column titles in row 1.
+      {#if info.json_format}Values keep the kind they had in the JSON file (numbers, true/false, nested values); a value that no longer fits is written as text.{:else}Every value is written as text.{/if}
+      Every row is written, hidden or filtered ones too.</p>
+  {:else}
   <div class="grid2">
     <label class="row">Separator
       <select bind:value={sepChoice}>
@@ -105,9 +130,10 @@
     <p class="note">Every row is written again in the new format. The saved file is read back and checked before it replaces anything.</p>
   {/if}
   <ReceiptChoice value={receipt} onChange={(v) => (receipt = v)} {privateFile} />
+  {/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#snippet buttons()}
-    <button type="button" class="primary" onclick={save} disabled={!!problem}>Choose file and save…</button>
+    <button type="button" class="primary" onclick={save} disabled={kind === "text" ? !!problem : !!jsonNo}>Choose file and save…</button>
     <button type="button" onclick={onClose}>Cancel</button>
   {/snippet}
 </FormShell>
