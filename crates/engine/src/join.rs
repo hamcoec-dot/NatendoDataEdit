@@ -897,6 +897,25 @@ pub struct JoinPlan {
     pub cells: u64,
 }
 
+impl JoinPlan {
+    /// An empty plan at this document's revision (cross-tab moves fill it in).
+    pub(crate) fn new(d: &Document) -> JoinPlan {
+        JoinPlan {
+            revision: d.revision(),
+            insert: None,
+            changes: Vec::new(),
+            remove: Vec::new(),
+            after: Vec::new(),
+            append: Vec::new(),
+            filled: Vec::new(),
+            src: None,
+            dest: Vec::new(),
+            not_found: String::new(),
+            cells: 0,
+        }
+    }
+}
+
 /// Most cells a join may fill from the other table's groups (made when
 /// applied, about 40 bytes each plus text): ten columns on 10M rows.
 const MAX_FILLED_CELLS: u64 = 100_000_000;
