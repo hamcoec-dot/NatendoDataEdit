@@ -284,7 +284,7 @@
           </div>
           <label class="fill" title={o.items.length > FILL_ONE_CELL_MAX ? `Only orders of up to ${FILL_ONE_CELL_MAX} values are followed from one cell` : "Dragging the fill handle from one cell holding a value on this order fills the next values"}>
             <input type="checkbox" checked={o.fill === true && o.items.length <= FILL_ONE_CELL_MAX} disabled={o.items.length > FILL_ONE_CELL_MAX} onchange={(e) => setFill(o.id, (e.currentTarget as HTMLInputElement).checked)} />
-            Fill handle follows this order from one cell{o.items.length > FILL_ONE_CELL_MAX ? ` (not for more than ${FILL_ONE_CELL_MAX} values)` : ""}
+            Fill handle follows this order{o.fromCells ? "" : " from one cell"}{o.items.length > FILL_ONE_CELL_MAX ? ` (not for more than ${FILL_ONE_CELL_MAX} values)` : ""}
           </label>
           {#if editing === o.id}
             <div class="edit">
@@ -293,7 +293,7 @@
             </div>
           {/if}
         {/each}
-        <p class="note">When a value is on more than one order, the fill handle uses the higher one. Two or more starting cells that step evenly along an order follow it whether ticked or not; Ctrl while dragging copies instead.</p>
+        <p class="note">When a value is on more than one order, the fill handle uses the higher one. Two or more starting cells that step evenly along a typed order follow it whether ticked or not; an order made from cells is followed only when ticked. Ctrl while dragging copies instead.</p>
         <p class="note">The built-in orders (Low, Medium, High; weekdays; months) cannot be changed. A recipe or saved view that sorts by a custom order keeps its values, so they go wherever you send it.</p>
       </fieldset>
     {/if}

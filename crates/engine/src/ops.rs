@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Edit, Progress, Step, MAX_EDIT_COL};
-use crate::fill::{format_number, FillMode, FillOrder, OrderMatch, Series};
+use crate::fill::{format_number, FillMode, FillOrder, OrderBook, OrderMatch, Series};
 use crate::value::{self, ReadOptions};
 use crate::Error;
 
@@ -913,10 +913,10 @@ impl Document {
     pub fn fill_orders_used(
         &self,
         spec: &FillSpec,
-        saved: &[FillOrder],
+        saved: &OrderBook,
         progress: &Progress,
     ) -> Result<Vec<usize>, Error> {
-        if saved.is_empty() || !matches!(spec.mode, FillMode::Auto) {
+        if saved.orders().is_empty() || !matches!(spec.mode, FillMode::Auto) {
             return Ok(Vec::new());
         }
         let rows_end = spec.row.checked_add(spec.rows).ok_or(Error::OutOfRange)?;
@@ -931,7 +931,7 @@ impl Document {
         if spec.rows.saturating_mul(spec.cols as u64) > MAX_BLOCK_CELLS {
             return Ok(Vec::new());
         }
-        let mut m = OrderMatch::new(saved);
+        let mut m = OrderMatch::with_book(saved);
         let mut used = Vec::new();
         for start in self.fill_starts(spec, progress)? {
             if let Some(j) = Series::new_with(&start, spec.mode, spec.read, &mut m)?.order() {

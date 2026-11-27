@@ -163,7 +163,7 @@ const KEY = "natendo.prefs.v1";
   await p.evaluate((k) => {
     const prefs = JSON.parse(localStorage.getItem(k) || "{}");
     prefs.sortLists = [
-      // Made from a column of names: never followed from one cell.
+      // Made from a column of names, not ticked: never followed, from one cell or two.
       { id: "names", name: "Names", items: ["Ada Quill", "Bo Frost", "Cy Marsh"], fromCells: true },
       // Typed, no tick saved yet: on to start with (up to 100 values).
       { id: "prio", name: "Priority", items: ["Urgent", "Normal", "Later"] },
@@ -176,7 +176,7 @@ const KEY = "natendo.prefs.v1";
   await p.waitForFunction(() => window.__nde, null, { timeout: 10000 });
   await settle(500);
   const sent = await p.evaluate(() => window.__nde.backend.calls.filter((c) => c.startsWith("setFillOrders")).pop());
-  ok(sent === "setFillOrders:4", `the app sends the orders (and the built-in Low, Medium, High) to the fill (${sent})`);
+  ok(sent === "setFillOrders:3", `the app sends the orders it may follow (and the built-in Low, Medium, High), not the unticked one made from cells (${sent})`);
   await table("pri\tname\tbig\r\nUrgent\tAda Quill\tAlpha\r\nx\tx\tx\r\nx\tx\tx\r\nx\tx\tx\r\n");
   const cellBox = (row, c) =>
     p.evaluate(([r, c]) => {
@@ -215,7 +215,7 @@ const KEY = "natendo.prefs.v1";
   await sel(1, 2);
   await dragDown(1, 2, 2);
   ok(JSON.stringify(await col(2, 4)) === JSON.stringify(["big", "Alpha", "Alpha", "Alpha"]), `one cell on a ticked order of over 100 values copies (${await col(2, 4)})`);
-  // Two names stepping evenly follow the order, ticked or not.
+  // Two neighbouring names on an unticked order made from cells copy: never the next names.
   await p.evaluate(() => window.__nde.reg.run("edit.undo"));
   await settle(500);
   await sel(2, 1);
@@ -224,7 +224,8 @@ const KEY = "natendo.prefs.v1";
   await settle(500);
   await sel(1, 1, 2, 1);
   await dragDown(2, 1, 2);
-  ok(JSON.stringify(await col(1, 5)) === JSON.stringify(["name", "Ada Quill", "Cy Marsh", "Bo Frost", "Ada Quill"]), `two names stepping evenly follow the order (${await col(1, 5)})`);
+  const two = await col(1, 5);
+  ok(!two.includes("Bo Frost") && two[3] === "Ada Quill" && two[4] === "Cy Marsh", `two names stepping evenly on an unticked order made from cells are copied, not followed (${two})`);
   // The tick off: one cell copies.
   await run("data.sort");
   await dialog().getByRole("button", { name: "Manage custom orders…" }).click();

@@ -583,8 +583,9 @@ everything is also in command search.
   The fill handle follows your custom orders too (Data > Custom sort >
   Manage custom orders): from one cell only an order ticked "Fill handle
   follows this order from one cell" (typed orders of up to 100 values are
-  ticked to start with; orders made from cells are not, so dragging one name
-  copies it); two or more cells that step evenly along any order follow it.
+  ticked to start with); two or more cells that step evenly along a typed
+  order follow it. An order made from cells is followed only when ticked
+  ("Fill handle follows this order"), so dragging names copies them.
   The status line names the order used; Ctrl while dragging copies instead.
 - **Type-ahead suggestions** from the column's own values, **pick lists**
   (Alt+Down) of the values already in a column, as Excel's "Pick from

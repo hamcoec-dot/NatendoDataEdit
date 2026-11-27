@@ -181,10 +181,6 @@ fn many_lookups_index_the_orders_with_the_same_answers() {
             (0..5).map(|i| b.at(i)).collect::<Vec<_>>()
         );
     }
-    assert!(
-        shared.index.is_some(),
-        "the orders were indexed after many lookups"
-    );
 }
 
 #[test]
@@ -291,11 +287,11 @@ mod in_a_document {
     #[test]
     fn only_the_orders_a_fill_uses_are_picked() {
         let d = doc("a,b\nLow,x\nHigh,Jones\n");
-        let saved = vec![
+        let saved = OrderBook::new(vec![
             order("Names", &["Smith", "Jones"], false),
             priority(),
             order("Other", &["x", "y"], true),
-        ];
+        ]);
         let p = Progress::new();
         assert_eq!(
             d.fill_orders_used(&down(1, 0, 1, 2), &saved, &p).unwrap(),
@@ -324,5 +320,69 @@ mod in_a_document {
         assert!(d.fill_orders_used(&copy, &saved, &p).unwrap().is_empty());
         // Out of range is an error, as for the fill itself.
         assert!(d.fill_orders_used(&down(9, 0, 1, 2), &saved, &p).is_err());
+    }
+
+    #[test]
+    fn one_cell_fills_never_touch_the_lookup() {
+        // Nothing ticked for one cell: a one-cell drag is answered at once,
+        // without building the lookup of every value.
+        let d = doc("a,b
+Low,Smith
+High,Jones
+");
+        let saved = OrderBook::new(vec![
+            order("Names", &["Smith", "Jones", "Brown"], false),
+            priority(),
+        ]);
+        let p = Progress::new();
+        assert!(d
+            .fill_orders_used(&down(1, 1, 1, 2), &saved, &p)
+            .unwrap()
+            .is_empty());
+        assert!(!saved.prepared());
+        // Two cells use it, and follow the order.
+        assert_eq!(
+            d.fill_orders_used(&down(1, 1, 2, 2), &saved, &p).unwrap(),
+            [0]
+        );
+        assert!(saved.prepared());
+    }
+
+    #[test]
+    fn the_lookup_finds_what_a_scan_finds() {
+        // Mixed case, spaces, accents and repeats; a value on two orders.
+        let saved = OrderBook::new(vec![
+            order("A", &[" Zoë ", "bob", "Ann", "bob", "Çelik"], false),
+            order("B", &["ann", "ZOE", "x"], false),
+        ]);
+        saved.prepare();
+        let mut m = OrderMatch::with_book(&saved);
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let mut plain = OrderMatch::new(saved.orders());
+        for start in [
+            s(&["zoe", "BOB"]),
+            s(&["ANN", "zoë"]),
+            s(&["bob", "ann"]),
+            s(&["celik", "zoe"]),
+            s(&["nobody", "ann"]),
+            s(&["x", "ann"]),
+        ] {
+            let a =
+                Series::new_with(&start, FillMode::Auto, ReadOptions::default(), &mut m).unwrap();
+            let b = Series::new_with(&start, FillMode::Auto, ReadOptions::default(), &mut plain)
+                .unwrap();
+            assert_eq!(a.order(), b.order(), "{start:?}");
+        }
+        let at = |v: &[&str], m: &mut OrderMatch| {
+            Series::new_with(&s(v), FillMode::Auto, ReadOptions::default(), m)
+                .unwrap()
+                .order()
+        };
+        assert_eq!(at(&["zoe", "bob"], &mut m), Some(0));
+        // On both: the first order wins.
+        assert_eq!(at(&["ann", "zoe"], &mut m), Some(0));
+        // "x" is only on B.
+        assert_eq!(at(&["x", "ann"], &mut m), Some(1));
+        assert_eq!(at(&["nobody", "ann"], &mut m), None);
     }
 }
