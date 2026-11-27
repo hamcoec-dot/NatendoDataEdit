@@ -80,6 +80,7 @@ const url = process.argv[3] || "http://localhost:5321";
   ok(!!(await card()), "Show the rule opens the card");
   await p.keyboard.press("Escape");
   await settle();
+  ok(!(await card()), "Escape closes it (the card takes the focus)");
   await p.evaluate(() => window.__nde.grid?.focus());
   await p.keyboard.press("Control+z");
   await settle();
