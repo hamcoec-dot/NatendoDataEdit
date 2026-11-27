@@ -95,7 +95,7 @@ fn the_preview_reads_only_the_first_rows() {
 #[test]
 fn odd_results_are_found() {
     // code = the part of id before "-". Three odd ones: a piece that comes out empty ("-77": not
-    // filled), another shape ("AB.12"), and another shape far longer than the examples.
+    // filled), another shape ("AB.12"), and the examples' shape far longer than they are.
     let d = doc("id,code
 A.B-1,A.B
 C.D-2,C.D
@@ -113,7 +113,11 @@ xy,
     assert_eq!((o.fills, o.missed), (3, 2), "{p:?} {o:?}");
     let rows: Vec<u64> = o.rows.iter().map(|x| x.row).collect();
     assert_eq!(rows, [5, 6]);
-    assert_eq!((o.odd_shape, o.odd_length), (2, 1));
+    assert_eq!(
+        (o.odd_shape, o.odd_length),
+        (1, 1),
+        "the long one has the examples' shape"
+    );
     let mut d = d;
     let (plan, rep) = d.plan_fill_example(&spec(1), &Progress::new()).unwrap();
     assert_eq!(rep.program, p);
@@ -415,4 +419,11 @@ fn the_formula_for_a_table() {
         .unwrap_err()
         .to_string();
     assert!(why.contains("numbers or dates"), "{why}");
+}
+
+#[test]
+fn shapes_count_runs_not_lengths() {
+    assert_eq!(result_shape("A.Lee"), result_shape("C.Hart"));
+    assert_ne!(result_shape("A.Lee"), result_shape("A.12"));
+    assert_ne!(result_shape("AB12"), result_shape("AB"));
 }

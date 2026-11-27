@@ -5,6 +5,8 @@
 import { shapeOf } from "./profile";
 
 type V = string | number | boolean;
+/** An argument of IFERROR that came out as an error. */
+const ERR = "\u0000#error";
 
 const FUNCS: Record<string, (a: V[]) => V> = {
   UPPER: (a) => String(a[0] ?? "").toUpperCase(),
@@ -33,6 +35,24 @@ const FUNCS: Record<string, (a: V[]) => V> = {
   MAX: (a) => Math.max(...a.filter((v) => v !== "").map(toNum)),
   COUNTA: (a) => a.filter((v) => v !== "").length,
   PADLEFT: (a) => String(a[0] ?? "").padStart(toNum(a[1] ?? 0), String(a[2] ?? "0")),
+  LEFT: (a) => Array.from(String(a[0] ?? ""))
+    .slice(0, toNum(a[1] ?? 1))
+    .join(""),
+  PROPER: (a) => String(a[0] ?? "").replace(/[\p{L}\p{N}]+/gu, (w) => w[0]!.toUpperCase() + w.slice(1).toLowerCase()),
+  REGEXEXTRACT: (a) => {
+    const src = String(a[1] ?? "");
+    let re: RegExp;
+    try {
+      re = new RegExp(src, "su");
+    } catch {
+      re = new RegExp(src, "s");
+    }
+    const m = re.exec(String(a[0] ?? ""));
+    const g = m?.[toNum(a[2] ?? 0)];
+    if (g === undefined) throw new Error("#N/A");
+    return g;
+  },
+  IFERROR: (a) => (a[0] === ERR ? (a[1] ?? "") : (a[0] ?? "")),
   TEXTBEFORE: (a) => {
     const s = String(a[0] ?? "");
     const i = s.indexOf(String(a[1] ?? ""));
@@ -122,7 +142,27 @@ export function mockEval(src: string, names: string[], cells: string[]): string 
     if (s[i] === ")") i++;
     else
       for (;;) {
-        args.push(cmp());
+        const start = i;
+        try {
+          args.push(cmp());
+        } catch (e) {
+          if (up !== "IFERROR" || args.length || e instanceof SyntaxError) throw e;
+          // Skip the rest of the argument that failed, quotes and brackets kept whole.
+          let depth = 0;
+          for (i = start; i < s.length; i++) {
+            const ch = s[i];
+            if (ch === '"') {
+              i++;
+              while (i < s.length && !(s[i] === '"' && s[i + 1] !== '"')) i += s[i] === '"' ? 2 : 1;
+            } else if (ch === "[") i = Math.max(i, s.indexOf("]", i));
+            else if (ch === "(") depth++;
+            else if (ch === ")") {
+              if (!depth) break;
+              depth--;
+            } else if (ch === "," && !depth) break;
+          }
+          args.push(ERR);
+        }
         ws();
         if (s[i] === ",") i++;
         else if (s[i] === ")") {

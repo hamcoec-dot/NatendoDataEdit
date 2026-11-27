@@ -1,5 +1,6 @@
 ## Not yet released
 
+- **Show me the rule (fill by example):** Data › Show me the rule (Ctrl+Shift+E) shows the rule fill by example learned, as a form you can change, with a preview of the first cells it fills, the count and the odd-looking results. When one example disagrees with the others it is named, with Leave it out and Go to row. Apply fills with that exact rule (recipes keep it); Save as formula makes a computed column. After Ctrl+E the status line now says how many results look odd, with Show the rule.
 - **Save JSON back to its file:** a JSON Lines or JSON file of records opened from Import now saves back to that file with Ctrl+S, in its own format: numbers exactly as written, `true`/`false`, `null`, missing keys and nested values as they were, and the file's line endings and indent. The first save with a newly blank cell asks whether to leave the key out (the default), write `""` or `null`, once per file. Save As offers JSON Lines and JSON. A record with the same key twice can only be saved as another file, and Save says why.
 - **Fixed: JSON import rounded nested numbers.** A big ID or `1.50` inside a nested object or array came in as `1.5` or rounded; it is now kept exactly as the file writes it.
 

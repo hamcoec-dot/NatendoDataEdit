@@ -289,6 +289,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "dates read in a layout": ["clean.tool.dates"],
   "address zip phone and e mail tidy": ["clean.tool.address", "clean.tool.zip", "clean.tool.phone", "clean.tool.email"],
   "fill by example": ["data.fillExample"],
+  "show me the rule": ["data.showRule"],
   "masking": ["clean.tool.mask", "clean.tool.date_band", "clean.tool.scramble"],
   // Repeating your work
   "cleaners": ["clean.tools"],

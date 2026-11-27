@@ -7,6 +7,7 @@ import type { RelationKind, RelationsReport, RelationsSpec } from "./relations";
 import type { SetsRun, SetsSpec } from "./sets";
 import type { CleanMatrix, MatrixPreview, NamedCleaner } from "./matrix";
 import type { ColumnType, ColumnTypes } from "./readers";
+import type { FillRule, LearnReport, Outliers, Program, RulePreview } from "./rule";
 import type { Cleaner, CleanPreview, CleanSpec, ExampleSpec, SplitName } from "./clean";
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, SubtotalSpec, Summary, View } from "./views";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
@@ -1652,6 +1653,8 @@ export interface OpReport {
   marked?: number;
   /** Explode cells: cells that did not parse, new and missing keys. */
   explode?: ExplodeReport | null;
+  /** C10 fill by example: the rule it used and its examples' row ids. */
+  fill_rule?: FillRule | null;
 }
 
 /** How values are put in quotes on Save As. */
@@ -1939,6 +1942,14 @@ export interface Backend {
   sameShape(doc: number, keepFirst: boolean, fields: number, groups: number[]): Promise<SameShape>;
   /** "Fix all like this": the rows changed and the document's facts. */
   fixAll(doc: number, keepFirst: boolean, revision: number, fields: number, groups: number[], skip: number[]): Promise<[number, DocInfo]>;
+  /** C10 rule card: the rule fill by example would use (spec.program when given), or the example that breaks it. */
+  exampleLearn(doc: number, spec: ExampleSpec): Promise<LearnReport>;
+  /** C10: the first empty cells a rule fills (the first 1,000 rows looked at). */
+  examplePreview(doc: number, spec: ExampleSpec, program: Program): Promise<RulePreview>;
+  /** C10: the cells a rule fills and the odd results (after: a fill's example ids, to look at what it filled). A job. */
+  exampleOutliers(doc: number, spec: ExampleSpec, program: Program, after: number[] | null): Promise<Outliers>;
+  /** C10: the rule as a formula for a computed column (an error says why it has none). */
+  exampleFormula(doc: number, spec: ExampleSpec, program: Program, read: ReadOptions): Promise<string>;
   /** Empty, untitled columns past the usual number (0: none), and the revision looked at. */
   emptyExtraColumns(doc: number, keepFirst: boolean): Promise<[number, number]>;
   removeEmptyExtraColumns(doc: number, keepFirst: boolean, revision: number): Promise<DocInfo>;
@@ -2572,6 +2583,18 @@ class TauriBackend implements Backend {
   }
   fixAll(doc: number, keepFirst: boolean, revision: number, fields: number, groups: number[], skip: number[]) {
     return call<[number, DocInfo]>("fix_all", { doc, keepFirst, revision, fields, groups, skip });
+  }
+  exampleLearn(doc: number, spec: ExampleSpec) {
+    return call<LearnReport>("example_learn", { doc, spec });
+  }
+  examplePreview(doc: number, spec: ExampleSpec, program: Program) {
+    return call<RulePreview>("example_preview", { doc, spec, program });
+  }
+  exampleOutliers(doc: number, spec: ExampleSpec, program: Program, after: number[] | null) {
+    return call<Outliers>("example_outliers", { doc, spec, program, after });
+  }
+  exampleFormula(doc: number, spec: ExampleSpec, program: Program, read: ReadOptions) {
+    return call<string>("example_formula", { doc, spec, program, read });
   }
   emptyExtraColumns(doc: number, keepFirst: boolean) {
     return call<[number, number]>("empty_extra_columns", { doc, keepFirst });
