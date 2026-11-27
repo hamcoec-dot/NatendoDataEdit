@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Edit, Progress, Step, MAX_EDIT_COL};
-use crate::fill::{format_number, FillMode, Series};
+use crate::fill::{format_number, FillMode, FillOrder, OrderMatch, Series};
 use crate::value::{self, ReadOptions};
 use crate::Error;
 
@@ -93,6 +93,8 @@ pub struct CellPlan {
     /// Rows a filter or hiding kept out between the first and last row
     /// written (left as they were).
     pub hidden_rows: u64,
+    /// Fill: the custom order it followed, by name.
+    pub order: Option<String>,
 }
 
 impl Document {
@@ -148,6 +150,7 @@ impl CellPlan {
             cells: 0,
             skipped: 0,
             hidden_rows: 0,
+            order: None,
             grow_to: None,
         }
     }
@@ -318,6 +321,14 @@ pub struct FillSpec {
     pub read: ReadOptions,
     /// Columns left as they are (hidden ones).
     pub skip_cols: Vec<u32>,
+    /// Custom orders an automatic fill may follow (only the ones it uses
+    /// travel with it, so a recipe holds their items).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub orders: Vec<FillOrder>,
+    /// The app puts the user's saved orders this fill follows into `orders`
+    /// before it runs ([`Document::fill_orders_used`]).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub saved_orders: bool,
 }
 
 /// How to split a column.
@@ -858,6 +869,80 @@ impl Document {
 
     // ---- fill ----
 
+    /// The starting cells of each line of a fill: a column of the block
+    /// going down or up, a row of it going across (without its hidden
+    /// columns: across, a series counts only the shown columns, as down
+    /// counts only the shown rows). The block must be in range.
+    fn fill_starts(&self, spec: &FillSpec, progress: &Progress) -> Result<Vec<Vec<String>>, Error> {
+        let vertical = matches!(spec.dir, Dir::Down | Dir::Up);
+        let cols: Vec<u32> = (spec.col..spec.col + spec.cols).collect();
+        let reader = Cols::new(self, &cols);
+        let block: Vec<Vec<String>> =
+            self.par_rows(spec.row..spec.row + spec.rows, progress, |_, id, buf| {
+                reader.read(self, id, buf);
+                Ok(Some(
+                    (0..cols.len())
+                        .map(|k| reader.get(buf, k).to_string())
+                        .collect(),
+                ))
+            })?;
+        let mut hid = spec.skip_cols.clone();
+        hid.sort_unstable();
+        hid.dedup();
+        let hidden = |c: u32| hid.binary_search(&c).is_ok();
+        let lines = if vertical { cols.len() } else { block.len() };
+        Ok((0..lines)
+            .map(|l| {
+                if vertical {
+                    block.iter().map(|r| r[l].clone()).collect()
+                } else {
+                    block[l]
+                        .iter()
+                        .zip(&cols)
+                        .filter(|(_, &c)| !hidden(c))
+                        .map(|(v, _)| v.clone())
+                        .collect()
+                }
+            })
+            .collect())
+    }
+
+    /// Which of `saved` (the user's custom orders) an automatic fill would
+    /// follow, first used first, so that only those go with it (and into a
+    /// recipe). Nothing for other fills.
+    pub fn fill_orders_used(
+        &self,
+        spec: &FillSpec,
+        saved: &[FillOrder],
+        progress: &Progress,
+    ) -> Result<Vec<usize>, Error> {
+        if saved.is_empty() || !matches!(spec.mode, FillMode::Auto) {
+            return Ok(Vec::new());
+        }
+        let rows_end = spec.row.checked_add(spec.rows).ok_or(Error::OutOfRange)?;
+        let cols_end = spec.col.checked_add(spec.cols).ok_or(Error::OutOfRange)?;
+        if spec.rows == 0
+            || spec.cols == 0
+            || rows_end > self.row_count()
+            || cols_end > self.col_count()
+        {
+            return Err(Error::OutOfRange);
+        }
+        if spec.rows.saturating_mul(spec.cols as u64) > MAX_BLOCK_CELLS {
+            return Ok(Vec::new());
+        }
+        let mut m = OrderMatch::new(saved);
+        let mut used = Vec::new();
+        for start in self.fill_starts(spec, progress)? {
+            if let Some(j) = Series::new_with(&start, spec.mode, spec.read, &mut m)?.order() {
+                if !used.contains(&j) {
+                    used.push(j);
+                }
+            }
+        }
+        Ok(used)
+    }
+
     /// Plan a fill from a starting block. Down/up go over shown rows and
     /// stop at the document's ends; right/left may add columns.
     pub fn plan_fill(&self, spec: &FillSpec, progress: &Progress) -> Result<CellPlan, Error> {
@@ -891,20 +976,7 @@ impl Document {
         if count == 0 {
             return Ok(plan);
         }
-        // The starting block, row by row.
         let cols: Vec<u32> = (spec.col..cols_end).collect();
-        let reader = Cols::new(self, &cols);
-        let block: Vec<Vec<String>> =
-            self.par_rows(spec.row..rows_end, progress, |_, id, buf| {
-                reader.read(self, id, buf);
-                Ok(Some(
-                    (0..cols.len())
-                        .map(|k| reader.get(buf, k).to_string())
-                        .collect(),
-                ))
-            })?;
-        // Across, a series counts only the shown columns (as down counts
-        // only the shown rows): hidden ones neither start nor take a number.
         let mut hid = spec.skip_cols.clone();
         hid.sort_unstable();
         hid.dedup();
@@ -912,21 +984,16 @@ impl Document {
         if !vertical && cols.iter().all(|&c| hidden(c)) {
             return Ok(plan);
         }
-        let series: Vec<Series> = (0..lines as usize)
-            .map(|l| {
-                let start: Vec<String> = if vertical {
-                    block.iter().map(|r| r[l].clone()).collect()
-                } else {
-                    block[l]
-                        .iter()
-                        .zip(&cols)
-                        .filter(|(_, &c)| !hidden(c))
-                        .map(|(v, _)| v.clone())
-                        .collect()
-                };
-                Series::new(&start, spec.mode, spec.read)
-            })
+        let mut orders = OrderMatch::new(&spec.orders);
+        let series: Vec<Series> = self
+            .fill_starts(spec, progress)?
+            .iter()
+            .map(|start| Series::new_with(start, spec.mode, spec.read, &mut orders))
             .collect::<Result<_, _>>()?;
+        plan.order = series
+            .iter()
+            .find_map(Series::order)
+            .map(|j| spec.orders[j].name.clone());
         let made = std::sync::atomic::AtomicUsize::new(0);
         let too_much = || Error::Invalid("this fill would create too much text at once".into());
         // Position k (0-based) beyond the block, as a series index.
@@ -2054,6 +2121,7 @@ a,5
             mode: crate::fill::FillMode::Copy,
             read: Default::default(),
             skip_cols: vec![1],
+            ..Default::default()
         };
         let plan = d.plan_fill(&spec, &p).unwrap();
         d.apply_cells(plan).unwrap();

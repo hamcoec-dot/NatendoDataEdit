@@ -126,7 +126,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import SuggestDialog from "./lib/SuggestDialog.svelte";
   import RecoveryDialog from "./lib/RecoveryDialog.svelte";
   import ToolsDialog, { type ToolsRun } from "./lib/ToolsDialog.svelte";
-  import { orderFromCells, unchangedTabs, type FromCells, type ScaleKind, type ToolKind } from "./lib/m10";
+  import { fillOrders, orderFromCells, unchangedTabs, type FromCells, type ScaleKind, type ToolKind } from "./lib/m10";
   import { autosaveDue, type RecoveryItem, type Suggestion, type Suggestions, type VersionItem } from "./lib/m9";
   import { BASIC_KEYS, cleanFormat, defaultFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat } from "./lib/m9";
   import { defaultPage, newCheck, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS } from "./lib/m8";
@@ -256,6 +256,13 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   let computeOpen = $state(false);
   /** The column whose profile is open. */
   let profileCol = $state<number | null>(null);
+
+  // The fill handle may follow the user's custom orders: the app keeps a copy,
+  // sent whenever they change (names, values, order or the fill tick).
+  $effect(() => {
+    const orders = fillOrders(prefs.data.sortLists);
+    void backend().setFillOrders(orders).catch(() => {});
+  });
 
   // The column insight strip (View › Column insights): a quick sample, then
   // a bigger one, whenever the tab's data or filter changes. Display only:
@@ -2724,6 +2731,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const spec: FillSpec = { row: r.row, col: r.col, rows: r.rows, cols: r.cols, dir, count, mode: { kind: swap ? "auto_swap" : "auto" } };
     const rep = await runOp({ op: "fill", spec }, "Filling");
     if (!rep) return;
+    // Say when the drag followed a custom order (Ctrl while dragging copies).
+    if (rep.order) say(`Filled following the custom order ${rep.order} (Ctrl+Z to undo; hold Ctrl while dragging to copy instead).`);
     const last = { row: r.row + r.rows - 1, col: r.col + r.cols - 1 };
     if (dir === "down") grid?.select({ row: r.row, col: r.col }, { row: last.row + count, col: last.col }, false);
     else if (dir === "up") grid?.select({ row: last.row, col: last.col }, { row: Math.max(t.firstRow, r.row - count), col: r.col }, false);
@@ -2826,6 +2835,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     // What can't be seen isn't touched: hidden columns are passed over.
     const hide = hiddenColsOf(t);
     if (hide.length && (op.op === "paste" || op.op === "fill" || op.op === "fill_rect")) op.spec.skip_cols = hide;
+    // An automatic fill may follow the user's custom orders (the app sent them).
+    if (op.op === "fill" && op.spec.mode.kind === "auto") op.spec.saved_orders = true;
     // Counted before the run: what is said afterwards is what the dialog said.
     const about = hiddenNoteFor(op);
     try {
@@ -2950,7 +2961,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         say(`Changed ${plural(rep.cells, "cell")}.${rep.skipped ? ` ${plural(rep.skipped, "cell")} left as they were (not numbers, or division by zero).` : ""}${hiddenNote(rep)}`);
         break;
       case "fill":
-        say(`Filled ${plural(rep.cells, "cell")}.${hiddenNote(rep)}`);
+        say(`Filled ${plural(rep.cells, "cell")}${rep.order ? ` following the custom order ${rep.order}` : ""}.${hiddenNote(rep)}${rep.order ? " Ctrl+Z undoes it." : ""}`);
         break;
       case "show_duplicates":
         t.filter = null;
