@@ -13,6 +13,10 @@ use crate::document::{Document, Progress};
 use crate::join::JoinPlan;
 use crate::Error;
 
+fn too_big() -> Error {
+    Error::Invalid("over 4 GB of text at once: copy fewer columns or rows".into())
+}
+
 /// Rows read between cancel checks.
 const STEP: u64 = 4096;
 
@@ -20,7 +24,7 @@ const STEP: u64 = 4096;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Packed {
     text: String,
-    ends: Vec<u64>,
+    ends: Vec<u32>,
 }
 
 impl Packed {
@@ -30,9 +34,16 @@ impl Packed {
             ends: Vec::with_capacity(cells),
         }
     }
-    fn push(&mut self, v: &str) {
+    /// False when the text would pass 4 GB (the offsets are 32-bit, to keep them small).
+    fn push(&mut self, v: &str) -> bool {
         self.text.push_str(v);
-        self.ends.push(self.text.len() as u64);
+        match u32::try_from(self.text.len()) {
+            Ok(e) => {
+                self.ends.push(e);
+                true
+            }
+            Err(_) => false,
+        }
     }
     pub fn len(&self) -> usize {
         self.ends.len()
@@ -46,7 +57,7 @@ impl Packed {
     }
     /// Bytes held (text and offsets).
     pub fn bytes(&self) -> usize {
-        self.text.capacity() + self.ends.capacity() * 8
+        self.text.capacity() + self.ends.capacity() * 4
     }
 }
 
@@ -166,7 +177,9 @@ impl Document {
             }
             self.read_cells(id, &phys, &mut buf);
             for (k, v) in buf.iter().enumerate() {
-                out.cols[k].push(v);
+                if !out.cols[k].push(v) {
+                    return Err(too_big());
+                }
             }
         }
         progress.step(0)?;
@@ -209,7 +222,9 @@ impl Document {
             let id = self.id_at(r).ok_or(Error::OutOfRange)?;
             self.read_cells(id, &phys, &mut buf);
             for v in &buf {
-                out.cells.push(v);
+                if !out.cells.push(v) {
+                    return Err(too_big());
+                }
             }
         }
         progress.step(0)?;

@@ -223,10 +223,68 @@ fn a_cancel_copies_out_nothing() {
 fn packed_cells_read_back() {
     let mut pk = Packed::default();
     for v in ["", "é", "", "abc"] {
-        pk.push(v);
+        assert!(pk.push(v));
     }
     assert_eq!(
         (pk.len(), pk.get(0), pk.get(1), pk.get(2), pk.get(3)),
         (4, "", "é", "", "abc")
     );
+}
+
+use proptest::prelude::*;
+
+fn table(rows: &[Vec<String>]) -> String {
+    rows.iter()
+        .map(|r| {
+            r.iter()
+                .map(|v| format!("\"{}\"", v.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect::<Vec<_>>()
+        .join("\r\n")
+        + "\r\n"
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+    /// Copying columns in gives what inserting them by hand and typing their values gives; a move's
+    /// source equals deleting them by hand.
+    #[test]
+    fn copy_and_move_equal_doing_it_by_hand(
+        src in prop::collection::vec(prop::collection::vec("[a-z\" ,é]{0,4}", 3), 1..8),
+        dst in prop::collection::vec(prop::collection::vec("[a-z0-9]{0,3}", 2), 1..8),
+        at in 0u32..3, count in 1u32..3, to in 0u32..3,
+    ) {
+        let count = count.min(3 - at);
+        let s = doc(&table(&src));
+        let mut d = doc(&table(&dst));
+        let mut by_hand = doc(&table(&dst));
+        let out = s.take_cols(&(at..at + count).collect::<Vec<_>>(), false, &p()).unwrap();
+        let (plan, _) = d.plan_insert_cols(to, &out, false, &p()).unwrap();
+        d.apply_join(plan).unwrap();
+        by_hand.insert_cols(to, count).unwrap();
+        let mine = by_hand.row_count();
+        if (src.len() as u64) > mine {
+            by_hand
+                .insert_rows(mine, vec![Vec::new(); src.len() - mine as usize])
+                .unwrap();
+        }
+        let mut cells = Vec::new();
+        for (r, row) in src.iter().enumerate() {
+            for k in 0..count {
+                cells.push((r as u64, to + k, row[(at + k) as usize].clone()));
+            }
+        }
+        by_hand.set_cells(cells).unwrap();
+        prop_assert_eq!(rows(&d), rows(&by_hand));
+        if count < 3 {
+            let mut moved = doc(&table(&src));
+            moved.delete_cols(at, count).unwrap();
+            let kept: Vec<String> = src.iter().map(|r| {
+                r.iter().enumerate().filter(|(c, _)| (*c as u32) < at || *c as u32 >= at + count).map(|(_, v)| v.clone()).collect::<Vec<_>>().join(",")
+            }).collect();
+            prop_assert_eq!(rows(&moved), kept);
+        }
+    }
 }
