@@ -234,12 +234,13 @@ export const BUILTIN_LISTS: SortList[] = [
   { name: "Months short (Jan to Dec)", items: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] },
 ];
 
-/** A typed list: one item per line or comma, blanks and repeats dropped,
- *  at most 10,000 items of 1,000 characters. */
-export function parseList(text: string): string[] {
+/** A typed list: one item per line or comma (per line only with
+ *  `commas` false, for values taken from cells), blanks and repeats
+ *  dropped, at most 10,000 items of 1,000 characters. */
+export function parseList(text: string, commas = true): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const raw of text.split(/\r\n|\r|\n|,/)) {
+  for (const raw of text.split(commas ? /\r\n|\r|\n|,/ : /\r\n|\r|\n/)) {
     const v = raw.trim().slice(0, 1000);
     if (!v || seen.has(v.toLowerCase())) continue;
     seen.add(v.toLowerCase());
@@ -247,6 +248,70 @@ export function parseList(text: string): string[] {
     if (out.length >= 10_000) break;
   }
   return out;
+}
+
+/** Most saved custom orders, values in one, characters in a value. */
+export const MAX_ORDERS = 60;
+export const MAX_ORDER_ITEMS = 10_000;
+
+/** A custom order the user saved. `id` stays the same through rename and
+ *  move, so a sort level keeps pointing at it. */
+export interface SavedOrder extends SortList {
+  id: string;
+  /** Made from selected cells (not typed). */
+  fromCells?: boolean;
+}
+
+/** Values from selected cells for a new order (Data > New custom order from
+ *  the selected cells). */
+export interface FromCells {
+  items: string[];
+  /** Hidden cells in the selection, left out. */
+  leftOut: number;
+  /** The tab is private or from an encrypted file. */
+  private: boolean;
+}
+
+/** A new id, unlike every one in `taken`. */
+export function newOrderId(taken: readonly { id: string }[]): string {
+  const used = new Set(taken.map((o) => o.id));
+  for (let n = taken.length + 1; ; n++) {
+    const id = `o${n.toString(36)}`;
+    if (!used.has(id)) return id;
+  }
+}
+
+/** Saved orders as read from the settings file: bad entries dropped, values
+ *  cut to the limits, and an id for each one that has none (orders saved
+ *  before ids, in their order). */
+export function readOrders(raw: unknown): SavedOrder[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SavedOrder[] = [];
+  for (const l of raw.slice(0, MAX_ORDERS) as Record<string, unknown>[]) {
+    if (!l || typeof l !== "object" || typeof l.name !== "string" || !Array.isArray(l.items)) continue;
+    const items = (l.items as unknown[]).filter((i): i is string => typeof i === "string").slice(0, MAX_ORDER_ITEMS).map((i) => i.slice(0, 1000));
+    const id = typeof l.id === "string" && l.id && !out.some((o) => o.id === l.id) ? l.id.slice(0, 40) : "";
+    out.push({ id, name: l.name.slice(0, 200), items, ...(l.fromCells === true ? { fromCells: true } : {}) });
+  }
+  for (const o of out) if (!o.id) o.id = newOrderId(out.filter((x) => x.id));
+  return out;
+}
+
+/** The values of selected cells for a new order, row by row, left to right:
+ *  trimmed, blanks and repeats (capitals aside) dropped. `tooMany` past
+ *  10,000 different values. */
+export function orderFromCells(rows: readonly (readonly string[])[]): { items: string[]; tooMany: boolean } {
+  const seen = new Set<string>();
+  const items: string[] = [];
+  for (const r of rows)
+    for (const raw of r) {
+      const v = raw.trim().slice(0, 1000);
+      if (!v || seen.has(v.toLowerCase())) continue;
+      if (items.length >= MAX_ORDER_ITEMS) return { items: [], tooMany: true };
+      seen.add(v.toLowerCase());
+      items.push(v);
+    }
+  return { items, tooMany: false };
 }
 
 // ---- file chores ------------------------------------------------------------------------
