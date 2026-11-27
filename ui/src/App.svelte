@@ -4858,6 +4858,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
     const src = tab;
     const dst = tabUnder(x, y);
+    if (src && !dst && document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-tab-index]")?.dataset.tabIndex === String(tabs.indexOf(src))) {
+      say("That is this file's tab: drop on another file's tab.");
+      return;
+    }
     if (!src || !dst) return;
     const run = kind === "cols" ? dropColsOnTab(src, from, dst, shift) : kind === "rows" ? dropRowsOnTab(src, from, dst, shift) : dropCellsOnTab(src, from, dst, shift);
     void run.finally(() => void tick().then(() => grid?.focus()));
