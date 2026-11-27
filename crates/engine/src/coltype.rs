@@ -566,7 +566,7 @@ mod tests {
             ("expr.rs", "date", 1, "converts a value an expression already holds"),
             ("expr.rs", "compare", 1, "converts a value an expression already holds"),
             ("expr.rs", "call", 7, "functions of the expression language convert the values they are given"),
-            ("fill.rs", "new", 1, "a fill series reads the starting cells the person selected, as typed"),
+            ("fill.rs", "new_with", 1, "a fill series reads the starting cells the person selected, as typed"),
             ("filter.rs", "facet_counts_cached", 2, "a facet card on a column that does not exist has no type"),
             ("join.rs", "from_list", 1, "a pasted list of keys has no column"),
             ("ops.rs", "combine", 2, "Paste Special arithmetic: the person chose the operation for these cells"),

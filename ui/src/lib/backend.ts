@@ -998,6 +998,15 @@ export interface FillSpec {
   read?: ReadOptions;
   /** Columns left as they are (hidden ones). */
   skip_cols?: number[];
+  /** An automatic fill may follow the user's saved custom orders (sent with setFillOrders). */
+  saved_orders?: boolean;
+}
+/** A custom order as the fill handle gets it (the engine's FillOrder): one
+ *  starting cell follows it only with `one_cell`. */
+export interface FillOrder {
+  name: string;
+  items: string[];
+  one_cell: boolean;
 }
 export type PasteOp = "none" | "add" | "subtract" | "multiply" | "divide";
 export interface PasteSpec {
@@ -1625,6 +1634,8 @@ export interface CountsSpec {
 export interface OpReport {
   /** Paste, fill, clear: hidden rows between the rows written, left alone. */
   hidden_rows?: number;
+  /** Fill: the custom order it followed, by name. */
+  order?: string | null;
   info: DocInfo | null;
   cells: number;
   rows: number;
@@ -2072,6 +2083,8 @@ export interface Backend {
   zipOpen(token: number, names: string[]): Promise<DocInfo[]>;
   /** Protect these columns from changes (and no others). */
   setProtected(doc: number, cols: number[]): Promise<DocInfo>;
+  /** The user's saved custom orders, for the fill handle (sent when they change). */
+  setFillOrders(orders: FillOrder[]): Promise<void>;
   /** Tidy column titles: what would change, [column, now, after]. */
   tidyTitlesPreview(doc: number, spec: TitleSpec): Promise<[number, string, string][]>;
   /** Tidy every column title (one undo step). */
@@ -2830,6 +2843,9 @@ class TauriBackend implements Backend {
   }
   setProtected(doc: number, cols: number[]) {
     return call<DocInfo>("set_protected", { doc, cols });
+  }
+  setFillOrders(orders: FillOrder[]) {
+    return call<void>("set_fill_orders", { orders });
   }
   tidyTitlesPreview(doc: number, spec: TitleSpec) {
     return call<[number, string, string][]>("tidy_titles_preview", { doc, spec });
