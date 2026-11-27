@@ -31,10 +31,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import Icon from "./lib/Icon.svelte";
   import Dialog, { type DialogRequest, type DialogButton } from "./lib/Dialog.svelte";
   import FilterMenu from "./lib/FilterMenu.svelte";
+  import FilterChipsBar from "./lib/FilterChips.svelte";
   import SortDialog from "./lib/SortDialog.svelte";
   import FindPanel from "./lib/FindPanel.svelte";
   import { FIND_DEFAULTS, describeRule, ruleFor, withRule, type FindOptions } from "./lib/filters";
-  import type { Pattern, Rule, SortKey, SortSpec, DataOp, Dir, FillSpec, OpReport, TableOp } from "./lib/backend";
+  import type { Pattern, Rule, SortKey, SortSpec, DataOp, Dir, FillSpec, OpReport, TableOp, ChipInfo } from "./lib/backend";
   import OpDialog, { type OpKind } from "./lib/OpDialog.svelte";
   import FormView from "./lib/FormView.svelte";
   import SymbolPicker from "./lib/SymbolPicker.svelte";
@@ -327,6 +328,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   /** Said with the next message (or alone a moment later): custom row heights
    *  were cleared because rows changed in a way they cannot follow. */
   let rowNote = "";
+  /** What to add to the next status line about a tool's rows joining the filter chips (C8). */
+  let chipNote = "";
   // A change on any path (a tool, a job, a recipe, a formula fill, a refresh) that
   // clears the row heights says so at once, not at the next unrelated message.
   // Undo, Redo and an applied view put the column types back in the engine.
@@ -395,6 +398,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (rowNote) {
       text = text ? `${text} ${rowNote}` : rowNote;
       rowNote = "";
+    }
+    if (chipNote) {
+      text = text ? `${text} ${chipNote}` : chipNote;
+      chipNote = "";
     }
     if (protectNote) {
       const n = protectNote;
@@ -2829,6 +2836,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     try {
       t.whatNext = label.toLowerCase();
       t.wideNext = true;
+      const before = CHIP_OPS.has(op.op) && t.info.has_filter ? await backend().filterChips(t.id).catch(() => null) : null;
       const rep = await runJob(label, () => backend().dataOp(t.id, op));
       if (!rep) return null;
       hiddenAfter = about;
@@ -2836,6 +2844,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         t.update(rep.info, true);
         noteProtected(rep.info);
       }
+      if (CHIP_OPS.has(op.op)) await chipJoined(t, op, before?.chips.length ?? 0, rep.rows);
       return rep;
     } catch (e) {
       say(errorText(e));
@@ -2844,6 +2853,63 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       t.whatNext = null;
       t.wideNext = false;
     }
+  }
+
+  /** Tools whose rows join the filter as a chip (C8). */
+  const CHIP_OPS = new Set<string>(["show_duplicates", "show_problems", "show_shape", "show_relation_exceptions", "show_gap_rows", "show_ragged", "formula_filter", "compare_show", "show_explode_bad"]);
+  /** The last run of each tool that made a chip, per tab (for its chip's Run again). */
+  const chipRuns = new Map<number, Map<string, DataOp>>();
+
+  /** The filter's rules as the engine has them now (tool chips leave them as they were). */
+  async function syncFilter(t: Tab): Promise<void> {
+    t.filter = t.info.has_filter ? await backend().filterSpec(t.id).catch(() => t.filter) : null;
+    if (t.info.has_filter) t.filterButtons = true;
+  }
+
+  /** A tool showed rows: they are a filter chip now, beside the others. */
+  async function chipJoined(t: Tab, op: DataOp, had: number, rows: number): Promise<void> {
+    await syncFilter(t);
+    const c = await backend().filterChips(t.id).catch(() => null);
+    if (!c?.chips.length) return;
+    const last = c.chips[c.chips.length - 1]!;
+    let runs = chipRuns.get(t.id);
+    if (!runs) chipRuns.set(t.id, (runs = new Map()));
+    runs.set(last.kind, structuredClone($state.snapshot(op)) as DataOp);
+    const others = c.chips.length - 1;
+    chipNote = rows > 0 && c.chips.length > had && others > 0 ? `Added as a filter chip beside ${plural(others, "other")}.` : "";
+  }
+
+  /** A tool found no row: its chip goes again and the other chips stay (C8); alone, the filter goes. */
+  async function dropEmptyChip(): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const c = await backend().filterChips(t.id).catch(() => null);
+    const last = c ? c.chips.length - 1 : -1;
+    if (!c || last < 0 || c.chips[last]!.kind === "column") return;
+    if (last === 0) {
+      await clearFilter();
+      return;
+    }
+    if (await applyJob("Filtering", (x) => backend().filterChange(x.id, { op: "remove", index: last }))) await syncFilter(t);
+  }
+
+  /** A tool chip's Run again: its tool's last settings in this tab, after the chip is taken out. */
+  function chipRunAgain(c: ChipInfo): { run: () => void } | { why: string } {
+    const t = tab;
+    if (c.kind === "column") return { why: "A column rule is worked out again by itself after every edit" };
+    const op = t ? chipRuns.get(t.id)?.get(c.kind) : undefined;
+    if (!t || !op) return { why: "Its tool's settings were not kept (made in an earlier session or by undo): open the tool again" };
+    return {
+      run: () => {
+        void (async () => {
+          const chips = await backend().filterChips(t.id).catch(() => null);
+          const index = chips?.chips.findIndex((x) => x.kind === c.kind && x.made_at === c.made_at && x.label === c.label) ?? -1;
+          if (index >= 0 && !(await applyJob("Filtering", (x) => backend().filterChange(x.id, { op: "remove", index })))) return;
+          const rep = await runOp(structuredClone(op), "Filtering");
+          if (rep) say(`Ran it again: ${plural(rep.rows, "row")} picked. Undo (Ctrl+Z) twice puts the old chip back.`);
+        })();
+      },
+    };
   }
 
   /** The words about hidden rows for one operation ("" when none are hidden or it only acts on shown rows). */
@@ -2951,11 +3017,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         say(`Filled ${plural(rep.cells, "cell")}.${hiddenNote(rep)}`);
         break;
       case "show_duplicates":
-        t.filter = null;
         if (rep.rows) say(`${plural(rep.rows, "row")} in ${plural(rep.groups, "group")} have duplicates. Click “Filtered ✕” to show every row again.`);
         else {
           say("No duplicates found.");
-          void clearFilter();
+          void dropEmptyChip();
         }
         break;
       case "remove_duplicates":
@@ -7160,6 +7225,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "format.bakeDisplay", label: "Write the display format into the cells", run: () => void bakeFormats(), enabled: () => !!tab && !tab.busy && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
     { id: "format.clearDisplay", label: "Remove display format", multiArea: true, keys: ["Ctrl+\\"], run: () => { if (tab) setFormat(selectedCols(tab), null); }, enabled: () => !!tab && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
     { id: "view.banded", label: "Alternating row &colours", run: toggleBanded, enabled: hasTab, checked: () => !!tab?.banded },
+    { id: "view.filterChips", label: "Filter c&hips", run: () => { prefs.data.filterChips = !prefs.data.filterChips; prefs.save(); }, checked: () => prefs.data.filterChips },
     { id: "view.totalsRow", label: "Tota&ls row (under the shown rows)", run: () => { if (tab) { tab.totalsOn = !tab.totalsOn; tab.bump(); } }, enabled: hasTab, checked: () => !!tab?.totalsOn },
     { id: "view.total.sum", ...totalCommand("sum") },
     { id: "view.total.average", ...totalCommand("average") },
@@ -7313,7 +7379,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "view.panel", "view.panelSummary", "view.panelFilters", "view.panelSteps", "view.panelRecord", "view.panelNotes", "view.recordPrev", "view.recordNext", "view.panelChart", "view.panelFiles", "view.panelActivity", "-",
         "view.showEdits", "view.highlights", "view.scale3", "view.scale2", "view.bars", "view.clearHighlights", "-",
         "view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile", "-",
-        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.whichRows", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.totalsRow", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
+        "view.cellBar", "view.gridLines", "view.problemsFill", "view.problemsUnderline", "view.problemsBoth", "view.invisible", "view.xray", "view.xrayReport", "view.whichRows", "view.filterChips", "view.colLetters", "view.insights", "view.alignNumbers", "view.listArrows", "view.totalsRow", "view.banded", "view.valueTypes", "view.divider", "view.typeahead", "view.spellcheck", "view.fontBigger", "view.fontSmaller", "-", "view.themeSystem", "view.themeLight", "view.themeDark", "-",
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
@@ -7971,7 +8037,6 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const was = t.info.filtered;
     const rep = await runOp({ op: "show_shape", spec: { col, keep_first: t.header, shape, negate, include_blanks: includeBlanks, revision: t.insights?.revision } }, "Filtering");
     if (!rep) return;
-    t.filter = null;
     const share = before > 0 ? (rep.rows / before) * 100 : 0;
     const pct = before > 0 ? ` (${share > 0 && share < 0.1 ? "under 0.1" : Math.round(share * 10) / 10}%)` : "";
     const what = negate ? "that do not match" : "that match";
@@ -7979,7 +8044,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (rep.rows) say(`Showing the ${plural(rep.rows, "row")}${pct} ${what} ${shape}${includeBlanks ? " (and the blank ones)" : ""}${within}. Click “Filtered ✕” to show every row again.`);
     else {
       say(`No row ${negate ? "breaks" : "has"} the pattern ${shape}${within}.`);
-      void clearFilter();
+      void dropEmptyChip();
     }
     void tick().then(() => grid?.focus());
   }
@@ -7992,12 +8057,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (!passing && spec.checks.length === t.checks.length) keepChecks(spec.checks, true);
     const rep = await runOp({ op: "show_problems", spec, passing }, "Filtering");
     if (!rep) return;
-    t.filter = null;
     const what = passing ? "that pass" : "with problems";
     if (rep.rows) say(`Showing the ${plural(rep.rows, "row")} ${what}. Click “Filtered ✕” to show every row again.`);
     else {
       say(passing ? "No row passes every check." : "No problems found.");
-      void clearFilter();
+      void dropEmptyChip();
     }
     void tick().then(() => grid?.focus());
   }
@@ -8185,9 +8249,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (!t) return;
     const rep = await runOp({ op: "show_ragged", pick, keep_first: t.header }, "Filtering");
     if (!rep) return;
-    t.filter = null;
     say(raggedResult(pick, rep.rows, rep.groups ?? 0));
-    if (!rep.rows) void clearFilter();
+    if (!rep.rows) void dropEmptyChip();
     void tick().then(() => grid?.focus());
   }
 
@@ -9024,6 +9087,24 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     {/if}
   {/if}
 
+  {#if tab && prefs.data.filterChips && tab.info.has_filter}
+    {@const t = tab}
+    <FilterChipsBar
+      tab={t}
+      title={(c) => columnTitle(t, c)}
+      onDone={(info, what) => {
+        t.update(info, true);
+        void syncFilter(t).then(() => {
+          grid?.select({ row: t.firstRow, col: t.cell.col });
+          say(what);
+        });
+      }}
+      onEdit={(c) => openFilterMenu(c)}
+      runAgain={chipRunAgain}
+      onSay={say}
+    />
+  {/if}
+
   <main class="body" class:with-panel={!!prefs.data.panel}>
     {#if tab}
       {#key tab.id}
@@ -9755,7 +9836,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         .then((info) => {
           if (!info) return;
           t.update(info, true);
-          t.filter = null;
+          void syncFilter(t);
           say(`Showing the ${plural(Math.max(0, info.rows - (t.header ? 1 : 0)), "row")} with ${flag ? "that flag" : "a note or flag"}. Click “Filtered ✕” to show every row again.`);
         })
         .catch((e) => say(errorText(e)))

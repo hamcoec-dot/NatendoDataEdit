@@ -1,14 +1,24 @@
 // Helpers for filter rules, sort keys and searches as the UI builds them.
 // Pure functions, so they are easy to test.
 
-import type { CmpOp, Condition, FilterSpec, FindSpec, Pattern, PatternKind, Rule, Scope, TextOp } from "./backend";
+import type { CmpOp, ColumnFilter, Condition, FilterSpec, FindSpec, Pattern, PatternKind, Rule, Scope, TextOp } from "./backend";
 
-/** The spec with column `col`'s rule replaced (or removed with null). */
+/** The filter with this column's rule set (or taken out). A rule changed on a
+ *  chip keeps the chip's name and its "not"; Match any and Invert all stay. */
 export function withRule(spec: FilterSpec | null, col: number, rule: Rule | null, keepFirst: boolean): FilterSpec {
+  const old = spec?.columns.find((c) => c.col === col);
   const columns = (spec?.columns ?? []).filter((c) => c.col !== col);
-  if (rule) columns.push({ col, rule });
+  if (rule) {
+    const f: ColumnFilter = { col, rule };
+    if (old?.negate) f.negate = true;
+    if (old?.name) f.name = old.name;
+    columns.push(f);
+  }
   columns.sort((a, b) => a.col - b.col);
-  return { columns, keep_first: keepFirst };
+  const out: FilterSpec = { columns, keep_first: keepFirst };
+  if (spec?.combine === "or") out.combine = "or";
+  if (spec?.invert) out.invert = true;
+  return out;
 }
 
 export function ruleFor(spec: FilterSpec | null, col: number): Rule | null {

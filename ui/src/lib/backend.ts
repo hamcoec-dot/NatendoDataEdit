@@ -759,12 +759,55 @@ export type Rule =
 export interface ColumnFilter {
   col: number;
   rule: Rule;
+  /** Filter chips (C8): switched off (rows pass it), inverted, a name. */
+  enabled?: boolean;
+  negate?: boolean;
+  name?: string | null;
 }
+export type ChipCombine = "and" | "or";
 export interface FilterSpec {
   columns: ColumnFilter[];
   keep_first: boolean;
   read?: ReadOptions;
+  /** How the chips join (Match all: "and", the default) and Invert all. */
+  combine?: ChipCombine;
+  invert?: boolean;
 }
+/** One filter chip as the chip bar shows it (column rules first, then tools). */
+export interface ChipInfo {
+  /** "column" for a column rule, else the tool that made it. */
+  kind: string;
+  col: number | null;
+  label: string;
+  name: string | null;
+  enabled: boolean;
+  negate: boolean;
+  /** Rows it lets through on its own (null: not known yet). */
+  rows: number | null;
+  looked: number | null;
+  not_looked: number | null;
+  errors: number;
+  /** Made before the last edit (a tool chip is not worked out again). */
+  stale: boolean;
+  made_at: number;
+}
+export interface FilterChips {
+  chips: ChipInfo[];
+  combine: ChipCombine;
+  invert: boolean;
+  shown: number;
+  total: number;
+  all_off: boolean;
+  sets_full: boolean;
+}
+export type ChipChange =
+  | { op: "toggle"; index: number }
+  | { op: "negate"; index: number }
+  | { op: "remove"; index: number }
+  | { op: "rename"; index: number; name: string | null }
+  | { op: "combine"; combine: ChipCombine }
+  | { op: "invert"; on: boolean }
+  | { op: "show_errors"; index: number };
 /** One card of the filter panel. */
 export interface FacetCard {
   col: number;
@@ -1885,6 +1928,10 @@ export interface Backend {
   setFilter(doc: number, spec: FilterSpec): Promise<DocInfo>;
   clearFilter(doc: number): Promise<DocInfo>;
   filterSpec(doc: number): Promise<FilterSpec | null>;
+  /** The filter chips (C8). */
+  filterChips(doc: number): Promise<FilterChips>;
+  /** Switch, invert, rename or remove a chip, Match all/any, Invert all (one undo step). */
+  filterChange(doc: number, change: ChipChange): Promise<DocInfo>;
   filterValues(doc: number, col: number, spec: FilterSpec, search: string | null): Promise<ValueList>;
   findNext(doc: number, spec: FindSpec, from: [number, number] | null, backward: boolean): Promise<Found | null>;
   findAll(doc: number, spec: FindSpec): Promise<FindAll>;
@@ -2545,6 +2592,12 @@ class TauriBackend implements Backend {
   }
   filterSpec(doc: number) {
     return call<FilterSpec | null>("filter_spec", { doc });
+  }
+  filterChips(doc: number) {
+    return call<FilterChips>("filter_chips", { doc });
+  }
+  filterChange(doc: number, change: ChipChange) {
+    return call<DocInfo>("filter_change", { doc, change });
   }
   filterValues(doc: number, col: number, spec: FilterSpec, search: string | null) {
     return call<ValueList>("filter_values", { doc, col, spec, search });
@@ -3288,6 +3341,7 @@ export const WRITE_METHODS: readonly string[] = [
   "sortRows",
   "setFilter",
   "clearFilter",
+  "filterChange",
   "replaceConfirm",
   "findRows",
   "replaceCell",

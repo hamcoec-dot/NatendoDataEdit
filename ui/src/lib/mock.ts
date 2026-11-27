@@ -13,7 +13,7 @@ import { joinPreview } from "./repair";
 import { mockDrill, mockItems, mockPivot, type ItemList, type PivotField, type PivotGrid, type PivotSpec } from "./pivot";
 import { isIsoDate, shapeRegex } from "./lint";
 import { shapeOf } from "./insights";
-import type { Explode, ExplodeDetect, ExplodePreview, ExplodeReport, ExplodeScan } from "./backend";
+import type { ChipChange, ChipInfo, Explode, ExplodeDetect, ExplodePreview, ExplodeReport, ExplodeScan, FilterChips } from "./backend";
 import { EXPLODE_BASE } from "./explode";
 import type {
   JumpResult,
@@ -149,6 +149,8 @@ interface MockDoc {
   /** Filter: ids of shown rows (new rows always show), and its rules. */
   shown: Set<number> | null;
   filter: FilterSpec | null;
+  /** Filter chips made by tools (C8), beside the column rules. */
+  sets?: MockSet[];
   /** Positions of shown rows, rebuilt when `null`. */
   visible: number[] | null;
   /** Ids of rows the user hid. */
@@ -156,6 +158,31 @@ interface MockDoc {
   /** Report notes (C4): set-aside rows (ids and their text), lines from the file, the save switch. */
   notes?: { head: { ids: number[]; text: string[] }[]; foot: { ids: number[]; text: string[] }[]; fileAbove: string[]; keep: boolean };
 }
+
+/** A filter chip a tool made: the rows it picked and the rows it looked at. */
+interface MockSet {
+  kind: string;
+  label: string;
+  name: string | null;
+  enabled: boolean;
+  negate: boolean;
+  set: Set<number>;
+  looked: Set<number>;
+}
+
+/** Tool kinds and words of the chips they make (as the app names them); true: it looked at every row. */
+const MOCK_CHIPS: Record<string, [string, string, boolean]> = {
+  show_duplicates: ["duplicates", "Duplicates", false],
+  show_problems: ["problems", "Rows with problems", false],
+  show_passing: ["problems", "Rows without problems", false],
+  show_shape: ["shape", "Pattern", false],
+  show_relation_exceptions: ["relations", "Relation exceptions", false],
+  show_gap_rows: ["gaps", "Gaps", false],
+  show_ragged: ["ragged", "Ragged rows", true],
+  formula_filter: ["formula", "Formula", false],
+  compare_show: ["compare", "Compared rows", false],
+  show_explode_bad: ["explode", "Cells that could not be split", true],
+};
 
 interface MockPatch {
   keys: number[];
@@ -1289,17 +1316,83 @@ export class MockBackend implements Backend {
     return { ...d.info };
   }
 
-  /** Turn a filter on, change it or clear it: one undo step (as the engine). */
-  private setView(d: MockDoc, shown: Set<number> | null, filter: FilterSpec | null): DocInfo {
+  /** The tool running now (its chip's kind and words). */
+  private chipOp = "";
+
+  /** Rows the chips show (C8, as the engine): a column chip passes or fails a
+   *  row; a tool chip passes the rows it picked, fails the rows it looked at
+   *  and did not pick, and says nothing of the others. */
+  private chipShown(d: MockDoc, spec: FilterSpec | null, sets: MockSet[]): Set<number> | null {
+    if (!spec && !sets.length) return null;
+    const cols = (spec?.columns ?? []).filter((c) => c.enabled !== false);
+    const on = sets.filter((x) => x.enabled);
+    const any = spec?.combine === "or";
+    const out = new Set<number>();
+    const n = this.totalRows(d);
+    for (let p = 0; p < n; p++) {
+      const id = d.order ? d.order[p]! : p;
+      if ((p === 0 && spec?.keep_first) || (!cols.length && !on.length)) {
+        out.add(id);
+        continue;
+      }
+      let pass = !any;
+      let fail = any;
+      const join = (cp: boolean, cf: boolean, negate: boolean) => {
+        if (negate) [cp, cf] = [cf, cp];
+        if (any) {
+          pass ||= cp;
+          fail &&= cf;
+        } else {
+          pass &&= cp;
+          fail ||= cf;
+        }
+      };
+      for (const c of cols) {
+        const t = testRule(c.rule, this.valueAt(d, p, c.col));
+        join(t, !t, !!c.negate);
+      }
+      for (const x of on) join(x.set.has(id) && x.looked.has(id), x.looked.has(id) && !x.set.has(id), x.negate);
+      if (spec?.invert ? fail : pass) out.add(id);
+    }
+    return out;
+  }
+
+  /** Turn a filter on, change it or clear it: one undo step (as the engine).
+   *  A tool's rows (no column rules) join as a filter chip beside the others. */
+  private setView(d: MockDoc, shown: Set<number> | null, filter: FilterSpec | null, sets: MockSet[] | null = null): DocInfo {
     if (shown === null && d.shown === null) return this.refresh(d);
+    let nextSets = sets ?? (filter ? (d.sets ?? []) : []);
+    if (sets === null && filter && filter.columns.length === 0 && shown) {
+      const [kind, label, all] = MOCK_CHIPS[this.chipOp] ?? ["rows", "Rows a tool picked", false];
+      const had = d.shown ? (d.sets ?? []) : [];
+      if (had.length >= 20) throw err("invalid", "a filter holds at most 20 chips made by tools: remove one first");
+      const title = filter.keep_first && this.totalRows(d) > 0 ? this.rowId(d, 0) : null;
+      const set = new Set([...shown].filter((id) => id !== title));
+      const looked = new Set<number>(set);
+      const vis = this.visible(d);
+      const seen = vis ? new Set(vis) : null;
+      const n = this.totalRows(d);
+      for (let p = 0; p < n; p++) {
+        const id = d.order ? d.order[p]! : p;
+        if (id === title) continue;
+        if (all || !seen || seen.has(p)) looked.add(id);
+      }
+      nextSets = [...had, { kind, label, name: null, enabled: true, negate: false, set, looked }];
+      const cur = d.shown ? d.filter : null;
+      filter = cur ? { ...cur, keep_first: cur.keep_first || filter.keep_first } : filter;
+      shown = this.chipShown(d, filter, nextSets);
+    }
     const apply = (): (() => void) => {
       const was = d.shown;
       const wasFilter = d.filter;
+      const wasSets = d.sets;
       d.shown = shown;
       d.filter = filter;
+      d.sets = nextSets;
       return () => {
         d.shown = was;
         d.filter = wasFilter;
+        d.sets = wasSets;
       };
     };
     VIEW_STEPS.add(apply);
@@ -1829,14 +1922,72 @@ export class MockBackend implements Backend {
 
   async setFilter(doc: number, spec: FilterSpec): Promise<DocInfo> {
     const d = this.get(doc);
-    if (spec.columns.length === 0) return this.clearFilter(doc);
+    const sets = d.shown ? (d.sets ?? []) : [];
+    if (spec.columns.length === 0 && !sets.length) return this.clearFilter(doc);
+    return this.setView(d, this.chipShown(d, spec, sets), spec, sets);
+  }
+
+  async filterChips(doc: number): Promise<FilterChips> {
+    const d = this.get(doc);
+    const spec = d.shown ? d.filter : null;
+    const sets = d.shown ? (d.sets ?? []) : [];
     const n = this.totalRows(d);
-    const shown = new Set<number>();
-    for (let p = 0; p < n; p++) {
-      const id = d.order ? d.order[p]! : p;
-      if ((p === 0 && spec.keep_first) || spec.columns.every((c) => testRule(c.rule, this.valueAt(d, p, c.col)))) shown.add(id);
+    const first = spec?.keep_first && n > 0 ? 1 : 0;
+    const data = n - first;
+    const chips: ChipInfo[] = [];
+    for (const c of spec?.columns ?? []) {
+      let rows = 0;
+      for (let p = first; p < n; p++) if (testRule(c.rule, this.valueAt(d, p, c.col)) !== !!c.negate) rows++;
+      chips.push({ kind: "column", col: c.col, label: "", name: c.name ?? null, enabled: c.enabled !== false, negate: !!c.negate, rows, looked: null, not_looked: null, errors: 0, stale: false, made_at: 0 });
     }
-    return this.setView(d, shown, spec);
+    for (const x of sets) {
+      const rows = x.negate ? x.looked.size - x.set.size : x.set.size;
+      chips.push({ kind: x.kind, col: null, label: x.label, name: x.name, enabled: x.enabled, negate: x.negate, rows, looked: x.looked.size, not_looked: data - x.looked.size, errors: 0, stale: false, made_at: 0 });
+    }
+    const shown = d.shown ? this.rowCount(d) - first : data;
+    return { chips, combine: spec?.combine ?? "and", invert: !!spec?.invert, shown: Math.max(0, shown), total: data, all_off: chips.length > 0 && chips.every((c) => !c.enabled), sets_full: sets.length >= 20 };
+  }
+
+  async filterChange(doc: number, change: ChipChange): Promise<DocInfo> {
+    const d = this.get(doc);
+    if (!d.shown || !d.filter) throw err("invalid", "no filter is on");
+    const spec: FilterSpec = { ...d.filter, columns: d.filter.columns.map((c) => ({ ...c })) };
+    const sets = (d.sets ?? []).map((x) => ({ ...x }));
+    const n = spec.columns.length;
+    const i = "index" in change ? change.index : -1;
+    if (i >= n + sets.length) throw err("invalid", "that chip is gone");
+    const col = i >= 0 && i < n ? spec.columns[i]! : null;
+    const set = i >= n ? sets[i - n]! : null;
+    switch (change.op) {
+      case "toggle":
+        if (col) col.enabled = col.enabled === false;
+        else if (set) set.enabled = !set.enabled;
+        break;
+      case "negate":
+        if (col) col.negate = !col.negate;
+        else if (set) set.negate = !set.negate;
+        break;
+      case "remove":
+        if (col) spec.columns.splice(i, 1);
+        else sets.splice(i - n, 1);
+        break;
+      case "rename": {
+        const name = change.name?.trim().slice(0, 80) || null;
+        if (col) col.name = name;
+        else if (set) set.name = name;
+        break;
+      }
+      case "combine":
+        spec.combine = change.combine;
+        break;
+      case "invert":
+        spec.invert = change.on;
+        break;
+      case "show_errors":
+        throw err("invalid", "that chip has no error rows");
+    }
+    if (!spec.columns.length && !sets.length) return this.clearFilter(doc);
+    return this.setView(d, this.chipShown(d, spec, sets), spec, sets);
   }
 
   async clearFilter(doc: number): Promise<DocInfo> {
@@ -3308,6 +3459,7 @@ export class MockBackend implements Backend {
 
   async dataOp(doc: number, op: DataOp): Promise<OpReport> {
     const d = this.get(doc);
+    this.chipOp = op.op === "show_problems" && op.passing ? "show_passing" : op.op;
     const rows = this.rowCount(d);
     const allCols = Array.from({ length: this.colCount(d) }, (_, i) => i);
     switch (op.op) {

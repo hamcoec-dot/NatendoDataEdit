@@ -4,7 +4,12 @@ use crate::OpenOptions;
 use proptest::prelude::*;
 
 fn doc(text: &str) -> Document {
-    Document::from_bytes(text.as_bytes().to_vec(), OpenOptions::default(), Some("csv")).unwrap()
+    Document::from_bytes(
+        text.as_bytes().to_vec(),
+        OpenOptions::default(),
+        Some("csv"),
+    )
+    .unwrap()
 }
 
 fn values(col: u32, v: &[&str]) -> ColumnFilter {
@@ -52,14 +57,19 @@ fn old_json_in_same_json_out() {
     t.columns[0].negate = true;
     t.columns[0].name = Some("Dems".into());
     let j = serde_json::to_string(&t).unwrap();
-    assert!(j.contains(r#""enabled":false"#) && j.contains(r#""combine":"or""#) && j.contains(r#""invert":true"#));
+    assert!(
+        j.contains(r#""enabled":false"#)
+            && j.contains(r#""combine":"or""#)
+            && j.contains(r#""invert":true"#)
+    );
     assert_eq!(serde_json::from_str::<FilterSpec>(&j).unwrap(), t);
 }
 
 #[test]
 fn toggle_negate_match_any_and_invert_all() {
     let mut d = doc(TABLE);
-    d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])])).unwrap();
+    d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])]))
+        .unwrap();
     assert_eq!(shown(&d), ["1"]);
     change(&mut d, ChipChange::Toggle { index: 1 });
     assert_eq!(shown(&d), ["1", "3", "6"]);
@@ -67,12 +77,20 @@ fn toggle_negate_match_any_and_invert_all() {
     change(&mut d, ChipChange::Negate { index: 0 });
     assert_eq!(shown(&d), ["4", "5"], "not DEM, and town A");
     change(&mut d, ChipChange::Negate { index: 0 });
-    change(&mut d, ChipChange::Combine { combine: Combine::Or });
+    change(
+        &mut d,
+        ChipChange::Combine {
+            combine: Combine::Or,
+        },
+    );
     assert_eq!(shown(&d), ["1", "3", "4", "5", "6"]);
     change(&mut d, ChipChange::Invert { on: true });
     assert_eq!(shown(&d), ["2"], "the rows that failed both");
     let c = d.filter_chips();
-    assert_eq!((c.shown, c.total, c.combine, c.invert), (1, 6, Combine::Or, true));
+    assert_eq!(
+        (c.shown, c.total, c.combine, c.invert),
+        (1, 6, Combine::Or, true)
+    );
     // All chips off: every row shows, and the bar says so.
     change(&mut d, ChipChange::Invert { on: false });
     change(&mut d, ChipChange::Toggle { index: 0 });
@@ -81,14 +99,67 @@ fn toggle_negate_match_any_and_invert_all() {
     assert!(d.filter_chips().all_off);
     // Each change is one undo step, and undo puts back what showed.
     assert!(d.undo());
-    assert_eq!(shown(&d), ["1", "4", "5"], "town A (the party chip still off)");
+    assert_eq!(
+        shown(&d),
+        ["1", "4", "5"],
+        "town A (the party chip still off)"
+    );
     assert!(!d.filter_chips().all_off);
+}
+
+#[test]
+fn switches_after_undo_match_a_fresh_filter() {
+    let rules = || {
+        vec![
+            values(1, &["DEM"]),
+            values(2, &["A"]),
+            values(1, &["DEM", "REP"]),
+        ]
+    };
+    let mut d = doc(TABLE);
+    d.set_filter(&spec(rules())).unwrap();
+    change(&mut d, ChipChange::Toggle { index: 0 });
+    change(&mut d, ChipChange::Negate { index: 2 });
+    assert!(d.undo());
+    assert!(d.undo());
+    change(&mut d, ChipChange::Toggle { index: 1 });
+    change(
+        &mut d,
+        ChipChange::Combine {
+            combine: Combine::Or,
+        },
+    );
+    let got = shown(&d);
+    let mut want = rules();
+    want[1].enabled = false;
+    let mut fresh = doc(TABLE);
+    fresh
+        .set_filter(&FilterSpec {
+            combine: Combine::Or,
+            ..spec(want)
+        })
+        .unwrap();
+    assert_eq!(got, shown(&fresh));
+}
+
+#[test]
+fn a_plain_filter_counts_each_chip() {
+    let mut d = doc(TABLE);
+    d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])]))
+        .unwrap();
+    let c = d.filter_chips();
+    assert!(
+        c.chips.iter().all(|x| x.rows.is_some()),
+        "each rule's own count"
+    );
+    assert_eq!(d.rule_cache_len(), 2, "and kept for switching");
 }
 
 #[test]
 fn no_row_matches_keeps_the_chips() {
     let mut d = doc(TABLE);
-    d.set_filter(&spec(vec![values(1, &["DEM"]), values(1, &["REP"])])).unwrap();
+    d.set_filter(&spec(vec![values(1, &["DEM"]), values(1, &["REP"])]))
+        .unwrap();
     assert!(shown(&d).is_empty());
     let c = d.filter_chips();
     assert_eq!((c.shown, c.chips.len()), (0, 2));
@@ -97,13 +168,20 @@ fn no_row_matches_keeps_the_chips() {
 #[test]
 fn rename_keeps_the_cache_an_edit_reads_again() {
     let mut d = doc(TABLE);
-    d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])])).unwrap();
+    d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])]))
+        .unwrap();
     change(&mut d, ChipChange::Toggle { index: 1 });
     // The first build reads every rule at once; the switch reads the rule
     // still on by itself, and keeps it.
     let n = d.rule_cache_len();
     assert_eq!(n, 1);
-    change(&mut d, ChipChange::Rename { index: 0, name: Some("Dems".into()) });
+    change(
+        &mut d,
+        ChipChange::Rename {
+            index: 0,
+            name: Some("Dems".into()),
+        },
+    );
     assert_eq!(d.rule_cache_len(), n);
     assert_eq!(d.filter_chips().chips[0].name.as_deref(), Some("Dems"));
     assert_eq!(d.filter_chips().chips[0].rows, Some(3));
@@ -113,7 +191,8 @@ fn rename_keeps_the_cache_an_edit_reads_again() {
     d.clear_filter();
     d.set_cell(2, 1, "DEM".into()).unwrap();
     assert_eq!(d.rule_cache_len(), before, "kept until asked");
-    d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])])).unwrap();
+    d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])]))
+        .unwrap();
     change(&mut d, ChipChange::Toggle { index: 1 });
     assert_eq!(shown(&d), ["1", "2", "3", "6"]);
 }
@@ -121,14 +200,19 @@ fn rename_keeps_the_cache_an_edit_reads_again() {
 #[test]
 fn edit_then_toggle_reads_the_rule_again() {
     let mut d = doc(TABLE);
-    d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])])).unwrap();
+    d.set_filter(&spec(vec![values(1, &["DEM"]), values(2, &["A"])]))
+        .unwrap();
     change(&mut d, ChipChange::Toggle { index: 1 });
     assert_eq!(shown(&d), ["1", "3", "6"]);
     // Shown row 1 is id 1 ("1, DEM, A"): it stops being DEM.
     d.set_cell(1, 1, "REP".into()).unwrap();
     change(&mut d, ChipChange::Toggle { index: 1 });
     change(&mut d, ChipChange::Toggle { index: 1 });
-    assert_eq!(shown(&d), ["3", "6"], "the cached result from before the edit was not used");
+    assert_eq!(
+        shown(&d),
+        ["3", "6"],
+        "the cached result from before the edit was not used"
+    );
 }
 
 #[test]
@@ -147,7 +231,11 @@ fn the_cache_is_capped_by_bytes() {
     c.put("huge".into(), bits(1000), 2000);
     assert!(c.get("huge").is_none(), "too big to keep");
     c.at(2);
-    assert_eq!((c.len(), c.bytes()), (0, 0), "a new data revision empties it");
+    assert_eq!(
+        (c.len(), c.bytes()),
+        (0, 0),
+        "a new data revision empties it"
+    );
 }
 
 #[test]
@@ -176,7 +264,12 @@ fn tool_chips_never_show_rows_they_did_not_look_at() {
     // A new value chip after it (OR) adds its rows; unlooked rows stay out
     // of the tool chip.
     change(&mut d, ChipChange::Invert { on: false });
-    change(&mut d, ChipChange::Combine { combine: Combine::Or });
+    change(
+        &mut d,
+        ChipChange::Combine {
+            combine: Combine::Or,
+        },
+    );
     change(&mut d, ChipChange::Toggle { index: 0 });
     assert_eq!(shown(&d), ["1", "3", "6"]);
     // After an edit the tool chip says it was made before it.
@@ -200,9 +293,16 @@ fn formula_errors_are_neither_pass_nor_fail() {
     d.apply_rows(plan).unwrap();
     assert_eq!(shown(&d), ["2", "4"], "alone: as today");
     let c = d.filter_chips();
-    assert_eq!((c.chips[0].errors, c.chips[0].kind.as_str()), (1, "formula"));
+    assert_eq!(
+        (c.chips[0].errors, c.chips[0].kind.as_str()),
+        (1, "formula")
+    );
     change(&mut d, ChipChange::Negate { index: 0 });
-    assert_eq!(shown(&d), ["1"], "inverted: the FALSE row, not the error row");
+    assert_eq!(
+        shown(&d),
+        ["1"],
+        "inverted: the FALSE row, not the error row"
+    );
     change(&mut d, ChipChange::Negate { index: 0 });
     change(&mut d, ChipChange::Invert { on: true });
     assert_eq!(shown(&d), ["1"], "Invert all: the same");
@@ -210,7 +310,12 @@ fn formula_errors_are_neither_pass_nor_fail() {
     // Beside a value chip with Match any: the error row shows only through
     // the other chip.
     d.set_filter(&spec(vec![values(0, &["3"])])).unwrap();
-    change(&mut d, ChipChange::Combine { combine: Combine::Or });
+    change(
+        &mut d,
+        ChipChange::Combine {
+            combine: Combine::Or,
+        },
+    );
     assert_eq!(shown(&d), ["2", "3", "4"]);
     change(&mut d, ChipChange::Toggle { index: 0 });
     assert_eq!(shown(&d), ["2", "4"]);
@@ -448,10 +553,10 @@ fn reference(model: &Model, rows: &[(u32, Vec<String>)]) -> Vec<u32> {
         let (pass, fail) = match model.combine {
             Combine::And => (
                 says.iter().all(|s| *s == Some(true)),
-                says.iter().any(|s| *s == Some(false)),
+                says.contains(&Some(false)),
             ),
             Combine::Or => (
-                says.iter().any(|s| *s == Some(true)),
+                says.contains(&Some(true)),
                 says.iter().all(|s| *s == Some(false)),
             ),
         };
@@ -557,4 +662,3 @@ proptest! {
         }
     }
 }
-

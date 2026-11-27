@@ -38,7 +38,7 @@
     const t = tab;
     void t.version;
     const cards = t.facetCards.map((c) => ({ col: c.col, kind: c.kind, range: c.range, search: searches[c.col]?.trim() || null }));
-    const spec = { columns: $state.snapshot(t.filter?.columns ?? []), keep_first: t.header, read: $state.snapshot(read) as ReadOptions };
+    const spec = { columns: $state.snapshot(t.filter?.columns ?? []), keep_first: t.header, read: $state.snapshot(read) as ReadOptions, combine: t.filter?.combine ?? "and", invert: !!t.filter?.invert };
     const data = t.info.data_revision;
     if (!cards.length || !t.info.indexed) {
       clearTimeout(timer);
@@ -101,6 +101,10 @@
 
   const facetOf = (col: number): Facet | undefined => facets?.cards.find((c) => c.col === col);
   const ruleOf = (col: number): Rule | null => ruleFor(tab.filter, col);
+  /** The column's chip (C8): switched off, or inverted ("not"). */
+  const chipOf = (col: number) => tab.filter?.columns.find((c) => c.col === col);
+  /** Match any or Invert all: a card counts every row with each value (what a pick there would add). */
+  const anyCounts = $derived(tab.filter?.combine === "or" || !!tab.filter?.invert);
   const title = (col: number): string => titles[col] || `Column ${col + 1}`;
 
   function applyRange(col: number, kind: "numbers" | "dates"): void {
@@ -129,7 +133,7 @@
 </script>
 
 <div class="fp">
-  <p class="note">{facets ? `${facets.shown.toLocaleString()} rows show.` : ""} Each card counts what the other cards leave.</p>
+  <p class="note" data-testid="panel-counts-note">{facets ? `${facets.shown.toLocaleString()} rows show.` : ""} {anyCounts ? (tab.filter?.invert ? "Invert all is on: each card counts every row with that value, before the chips are inverted." : "Match any is on: each card counts every row with that value (a pick adds those rows).") : "Each card counts what the other cards leave."}</p>
   <label class="row add">Add a column
     <select bind:value={adding} onchange={() => { void addCard(adding); adding = ""; }}>
       <option value="">Choose…</option>
@@ -137,15 +141,17 @@
     </select>
   </label>
   {#if tab.info.filtered && !(tab.info.filter_cols?.length)}
-    <p class="note formula" role="status">Rows are picked by a formula (Filter by formula, or Show these rows) that the panel does not count; a pick here replaces it.</p>
+    <p class="note formula" role="status">Rows are picked by a tool (a filter chip such as Filter by formula or Show these rows); the cards count the rows it lets through, and a pick here joins it as a chip of its own.</p>
   {/if}
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#each tab.facetCards as card (card.col)}
     {@const f = facetOf(card.col)}
     {@const rule = ruleOf(card.col)}
+    {@const chip = chipOf(card.col)}
     <section class="card" aria-label={`Filter card for ${title(card.col)}`}>
       <header>
-        <strong>{title(card.col)}</strong>
+        <strong>{chip?.negate ? "not " : ""}{title(card.col)}</strong>
+        {#if chip && chip.enabled === false}<span class="off" title="Its chip is switched off: it lets every row through until it is switched on in the chips bar">(switched off)</span>{/if}
         {#if rule}<button type="button" class="link" onclick={() => void onSetRule(card.col, null)}>Clear</button>{/if}
         <span class="spacer"></span>
         <button type="button" class="tiny" title={card.kind === "values" ? "Show as a range" : "Show as a list of values"} onclick={() => switchKind(card.col)}>{card.kind === "values" ? "Range" : "List"}</button>
@@ -217,6 +223,11 @@
 </div>
 
 <style>
+  .off {
+    color: var(--muted, #666);
+    font-size: 11px;
+    margin-left: 4px;
+  }
   .fp {
     display: flex;
     flex-direction: column;

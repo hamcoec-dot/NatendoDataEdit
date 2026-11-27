@@ -73,7 +73,9 @@ const url = process.argv[3] || "http://localhost:5218";
   await p.waitForTimeout(800);
   const narrowFigures = await p.evaluate(() => window.__nde.tab.insights?.byCol.get(5)?.top_shape ?? null);
   if (narrowFigures) {
-    await p.mouse.click(restX, stripY);
+    // The filter chips bar above the grid moves it down: measure it again.
+    const c2 = await (await p.$("canvas")).boundingBox();
+    await p.mouse.click(restX, c2.y + 25 + 11);
     await p.waitForTimeout(700);
     const n = await p.evaluate(() => window.__nde.tab.info.rows);
     const m2 = await status();

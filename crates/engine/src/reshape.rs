@@ -201,6 +201,19 @@ pub struct RowPlan {
 pub const MAX_FILL_MARKS: usize = 100_000;
 
 impl RowPlan {
+    /// Name the filter chip this plan makes (C8), unless the tool named it.
+    pub fn name_chip(&mut self, kind: &str, label: &str) {
+        if self.view.is_none() {
+            return;
+        }
+        if self.chip.kind.is_empty() {
+            self.chip.kind = kind.into();
+        }
+        if self.chip.label.is_empty() {
+            self.chip.label = label.into();
+        }
+    }
+
     pub(crate) fn new(d: &Document) -> RowPlan {
         RowPlan {
             revision: d.revision(),

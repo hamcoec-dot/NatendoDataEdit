@@ -787,6 +787,21 @@ everything is also in command search.
 
 ![The filter panel with cards for party and precinct](docs/screenshots/filter-panel.png)
 *Picking D on the party card: the precinct card's counts follow.*
+- **Filter chips** (View > Filter chips, on at first): while a filter is on,
+  a bar above the grid shows one chip per column rule, and one chip per tool
+  that showed rows (Show duplicates, Show only rows with problems, Filter by
+  formula, a pattern, gaps, ragged rows and the others). Click a chip to
+  switch it off and on, × to take it out. Its right-click menu (or Shift+F10)
+  can invert it ("not"), edit its rule, rename it (F2), show a formula's
+  error rows, or run its tool again. Match all or Match any says how the
+  chips join; Invert all shows the rows they hide. The bar counts the rows
+  shown and says when every chip is off or no row matches. A tool's chip
+  keeps the rows it picked: it never shows a row that was hidden when it was
+  made, and after an edit it is marked as made before your last edit (Run
+  again reads the table again). Each change is one undo step and changes no
+  data. Switching a chip reads only that rule, so it stays quick on big files.
+
+  ![The filter chips bar: a party rule, a town rule and the duplicates a tool found, with Match all and the row count](docs/screenshots/filter-chips.png)
 - **Column insights** (View > Column insights, off at first): a thin strip
   under each heading with how full the column is, how many different values
   it holds and a tiny chart (the spread of its numbers, or its most common
