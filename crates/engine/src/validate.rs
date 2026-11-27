@@ -108,6 +108,10 @@ pub enum CheckKind {
     },
 }
 
+/// A "settled by" rule's result: the ids of the rows that break it (one bit each), and
+/// for each such id the id of the row whose value won its group.
+type Settled = (Vec<u64>, HashMap<u32, u32>);
+
 fn yes() -> bool {
     true
 }
@@ -848,7 +852,6 @@ impl Document {
     /// same code as Find relationships: the ids of the rows that break it (one bit each)
     /// and, for each, the row whose value won its group. `None` when the two columns hold
     /// more text of different values than a scan holds (512 MB).
-    #[allow(clippy::type_complexity)]
     pub(crate) fn settled_rows(
         &self,
         rows: std::ops::Range<u64>,
@@ -856,7 +859,7 @@ impl Document {
         by: u32,
         match_case: bool,
         progress: &Progress,
-    ) -> Result<Option<(Vec<u64>, HashMap<u32, u32>)>, Error> {
+    ) -> Result<Option<Settled>, Error> {
         let at: Vec<u64> = rows.collect();
         progress.start(at.len() as u64);
         let Some(odd) = self.settled_odd(col, by, match_case, &at, progress)? else {
