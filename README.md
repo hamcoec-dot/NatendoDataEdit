@@ -1693,7 +1693,10 @@ The installer lands in `target/release/bundle/nsis/`.
 Installed next to the app, for scripts and scheduled jobs. Add `--json` to any
 command to get one JSON value on standard output; a failure is then
 `{"error": "..."}`. `validate` exits with 1 when it finds problems; every
-command exits with 2 on failure.
+command exits with 2 on failure. Output cut short (piped into `head`, say) ends
+quietly, with no error message: a file the command writes is still written whole,
+and the exit code is still the command's result. Any other failure to write the
+output (a full disk) is reported and exits with 2.
 
 ```
 natendo-cli info data.csv --json

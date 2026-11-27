@@ -145,14 +145,14 @@ pub fn verify_cmd(args: &[&str], json_out: bool) -> Result<bool, String> {
         }));
     } else {
         for l in &r.lines {
-            println!(
+            let _ = crate::outln!(
                 "{} {}: {}",
                 if l.ok { "ok  " } else { "FAIL" },
                 l.what,
                 l.why
             );
         }
-        println!("{}", r.verdict);
+        let _ = crate::outln!("{}", r.verdict);
     }
     Ok(r.ok)
 }

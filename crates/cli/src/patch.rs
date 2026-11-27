@@ -178,7 +178,7 @@ pub fn create(args: &[&str], json_out: bool) -> Result<(), String> {
             "protected": phrase.is_some(),
         }));
     } else {
-        println!("{msg}");
+        let _ = crate::outln!("{msg}");
     }
     Ok(())
 }
@@ -258,7 +258,7 @@ pub fn apply(args: &[&str], json_out: bool) -> Result<bool, String> {
     if json_out {
         print_json(&json!({ "message": msg, "report": report }));
     } else {
-        println!("{msg}");
+        let _ = crate::outln!("{msg}");
     }
     Ok(report.unapplied() == 0)
 }

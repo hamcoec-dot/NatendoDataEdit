@@ -270,7 +270,7 @@ pub fn join(args: &[&str], json: bool) -> Result<(), String> {
     if json {
         more::print_json(&serde_json::json!({ "report": rep, "result": msg }));
     } else {
-        println!(
+        let _ = crate::outln!(
             "{} matched, {} found no match, {} blank keys; {} columns added, {} cells written, {} rows taken out, {} extra rows, {} rows added",
             rep.matched,
             rep.unmatched,
@@ -281,7 +281,7 @@ pub fn join(args: &[&str], json: bool) -> Result<(), String> {
             rep.extra_rows,
             rep.added
         );
-        println!("{msg}");
+        let _ = crate::outln!("{msg}");
     }
     Ok(())
 }

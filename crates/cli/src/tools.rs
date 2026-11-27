@@ -171,7 +171,7 @@ pub(crate) fn done(o: &Opts, msg: String, extra: Value) {
         v["message"] = json!(msg);
         print_json(&v);
     } else {
-        println!("{msg}");
+        let _ = crate::outln!("{msg}");
     }
 }
 
@@ -189,7 +189,7 @@ pub fn headers(args: &[&str]) -> Result<(), String> {
             .collect::<Vec<_>>()));
     } else {
         for (i, t) in titles.iter().enumerate() {
-            println!("{:>4}  {t}", i + 1);
+            let _ = crate::outln!("{:>4}  {t}", i + 1);
         }
     }
     Ok(())
@@ -240,7 +240,7 @@ pub fn filter(args: &[&str]) -> Result<(), String> {
     d.apply_rows(keep).map_err(|e| e.to_string())?;
     let msg = write_out(&mut d, input, &out_of(&o)?)?;
     if errors > 0 && !o.has("--json") {
-        println!("{errors} rows gave an error and were left out");
+        let _ = crate::outln!("{errors} rows gave an error and were left out");
     }
     done(&o, msg, json!({"kept": kept, "errors": errors}));
     Ok(())
@@ -306,7 +306,7 @@ pub fn dedupe(args: &[&str]) -> Result<(), String> {
     let removed = before - d.row_count();
     let msg = write_out(&mut d, input, &out_of(&o)?)?;
     if !o.has("--json") {
-        println!("{removed} repeated rows removed");
+        let _ = crate::outln!("{removed} repeated rows removed");
     }
     done(&o, msg, json!({"removed": removed}));
     Ok(())
@@ -340,8 +340,8 @@ pub fn stats(args: &[&str]) -> Result<(), String> {
             continue;
         }
         let filled = p.rows - p.blanks;
-        println!("{} ({})", title, c + 1);
-        println!("  {} rows, {} filled, {} blank", p.rows, filled, p.blanks);
+        let _ = crate::outln!("{} ({})", title, c + 1);
+        let _ = crate::outln!("  {} rows, {} filled, {} blank", p.rows, filled, p.blanks);
         let shapes: Vec<String> = p
             .shapes
             .iter()
@@ -355,10 +355,10 @@ pub fn stats(args: &[&str]) -> Result<(), String> {
             })
             .collect();
         if !shapes.is_empty() {
-            println!("  shapes: {}", shapes.join(", "));
+            let _ = crate::outln!("  shapes: {}", shapes.join(", "));
         }
         if let (Some(m), Some(sd)) = (p.mean, p.sd) {
-            println!(
+            let _ = crate::outln!(
                 "  numbers: mean {m:.4}, standard deviation {sd:.4}, {} far out",
                 p.outliers
             );
@@ -371,7 +371,7 @@ pub fn stats(args: &[&str]) -> Result<(), String> {
                     s.to_string()
                 }
             };
-            println!(
+            let _ = crate::outln!(
                 "  shortest \"{}\" ({}), longest \"{}\" ({})",
                 cut(a),
                 p.min_len,
@@ -421,10 +421,10 @@ pub fn count(args: &[&str]) -> Result<(), String> {
             .map(|v| if v.is_empty() { "(blank)" } else { v.as_str() })
             .collect::<Vec<_>>()
             .join(" | ");
-        println!("{:>10}  {pct:5.1}%  {v}", l.count);
+        let _ = crate::outln!("{:>10}  {pct:5.1}%  {v}", l.count);
     }
     if c.lines.len() > MAX_PRINTED {
-        println!(
+        let _ = crate::outln!(
             "… {} more (write them all with -o)",
             c.lines.len() - MAX_PRINTED
         );
@@ -513,15 +513,21 @@ pub fn gaps(args: &[&str], json_out: bool) -> Result<bool, String> {
         print_json(&serde_json::to_value(&r).map_err(|e| e.to_string())?);
     } else {
         if let Some(p) = &r.pattern {
-            println!("shape {}", p.label());
+            let _ = crate::outln!("shape {}", p.label());
         }
-        println!(
+        let _ = crate::outln!(
             "{} rows, {} different numbers, {} missing in {} ranges",
-            r.rows, r.distinct, r.missing, r.range_total
+            r.rows,
+            r.distinct,
+            r.missing,
+            r.range_total
         );
-        println!(
+        let _ = crate::outln!(
             "{} repeated numbers, {} drops in file order, {} of another shape, {} blank",
-            r.duplicate_values, r.drops, r.other_shape, r.blank
+            r.duplicate_values,
+            r.drops,
+            r.other_shape,
+            r.blank
         );
         if let Some(d) = &r.dates {
             for (n, what) in [
@@ -534,14 +540,14 @@ pub fn gaps(args: &[&str], json_out: bool) -> Result<bool, String> {
                 (d.off_step, "off the step"),
             ] {
                 if n > 0 {
-                    println!("{n} {what}");
+                    let _ = crate::outln!("{n} {what}");
                 }
             }
         }
         if r.looks_like_amounts {
-            println!("note: this column looks like amounts, not IDs");
+            let _ = crate::outln!("note: this column looks like amounts, not IDs");
         }
-        print!("{}", r.copy_text());
+        let _ = crate::out!("{}", r.copy_text());
     }
     Ok(!(o.has("--fail-on-gap") && r.range_total > 0))
 }
@@ -729,7 +735,7 @@ pub fn sets(args: &[&str]) -> Result<(), String> {
     }
     for s in r.report.slices.iter().filter(|s| s.keys > 0) {
         let rows: Vec<String> = s.rows.iter().map(u64::to_string).collect();
-        println!(
+        let _ = crate::outln!(
             "{:>10} keys  {}  (rows: {})",
             s.keys,
             slice_name(s.mask, &names),
@@ -737,9 +743,11 @@ pub fn sets(args: &[&str]) -> Result<(), String> {
         );
     }
     for (l, name) in r.report.lists.iter().zip(&names) {
-        println!(
+        let _ = crate::outln!(
             "{name}: {} rows, {} different keys, {} blank",
-            l.rows, l.keys, l.blank
+            l.rows,
+            l.keys,
+            l.blank
         );
     }
     Ok(())
@@ -1085,9 +1093,9 @@ pub fn split(args: &[&str]) -> Result<(), String> {
             .collect::<Vec<_>>()));
     } else {
         for (n, r) in &written {
-            println!("{r:>10}  {n}");
+            let _ = crate::outln!("{r:>10}  {n}");
         }
-        println!("{} files written to {}", written.len(), dir.display());
+        let _ = crate::outln!("{} files written to {}", written.len(), dir.display());
     }
     Ok(())
 }
@@ -1254,7 +1262,7 @@ fn cat_holding(args: &[&str], most_held: u64, between: &dyn Fn()) -> Result<(), 
         }
         if !o.has("--json") {
             for line in missing.iter().chain(&extras) {
-                eprintln!("note: {line}");
+                crate::errln!("note: {line}");
             }
         }
         fit_report = json!({ "missing": missing, "extras": extras });

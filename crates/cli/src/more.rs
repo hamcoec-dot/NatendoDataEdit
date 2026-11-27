@@ -18,7 +18,7 @@ use crate::{delimiter_name, quote_name, USAGE};
 const MAX_CHECKS_FILE: u64 = 4 << 20;
 
 pub fn print_json(v: &Value) {
-    println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
+    let _ = crate::outln!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
 }
 
 pub fn sniff_json(d: &Document) -> Value {
@@ -113,7 +113,7 @@ pub(crate) fn load(path: &str, sheet: u32) -> Result<Document, String> {
         .map_err(|e| format!("{path}: {e}"))?;
     // Standard error, so the output (and --json) stays clean.
     for w in st.warnings {
-        eprintln!("{path}: {w}");
+        crate::errln!("{path}: {w}");
     }
     t.into_document().map_err(|e| format!("{path}: {e}"))
 }
@@ -417,9 +417,9 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
     });
     if !json_out {
         for (ask, answer) in &questions {
-            println!("{ask}: {answer}");
+            let _ = crate::outln!("{ask}: {answer}");
         }
-        println!(
+        let _ = crate::outln!(
             "Recipe{}: {} step(s)",
             if recipe.name.is_empty() {
                 String::new()
@@ -429,10 +429,10 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
             recipe.steps.len()
         );
         for (i, s) in steps.iter().enumerate() {
-            println!("  {}. {s}", i + 1);
+            let _ = crate::outln!("  {}. {s}", i + 1);
         }
         for l in &recipe.left_out {
-            println!("  (not in the recipe: {l})");
+            let _ = crate::outln!("  (not in the recipe: {l})");
         }
     }
     if ask.on && a.dry_run {
@@ -454,7 +454,7 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
         if json_out {
             report["columns_differ"] = json!(problems);
         } else {
-            println!("Columns differ ({text}); running anyway (--force).");
+            let _ = crate::outln!("Columns differ ({text}); running anyway (--force).");
         }
     }
     if a.dry_run {
@@ -484,9 +484,9 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
                             if text.is_empty() {
                                 continue;
                             }
-                            println!("Lines it would set aside {what} the table:");
+                            let _ = crate::outln!("Lines it would set aside {what} the table:");
                             for l in text.lines() {
-                                println!("  | {l}");
+                                let _ = crate::outln!("  | {l}");
                             }
                         }
                     }
@@ -495,7 +495,7 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
                     if json_out {
                         report["would_stop"] = json!(e.to_string());
                     } else {
-                        println!("The recipe would stop: {e}");
+                        let _ = crate::outln!("The recipe would stop: {e}");
                     }
                 }
             }
@@ -514,7 +514,7 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
                 report["explode"] = json!(said);
             } else {
                 for l in &said {
-                    println!("{l}");
+                    let _ = crate::outln!("{l}");
                 }
             }
         }
@@ -523,7 +523,7 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
             report["message"] = json!(msg);
             print_json(&report);
         } else {
-            println!("{msg}");
+            let _ = crate::outln!("{msg}");
         }
         return Ok(());
     }
@@ -573,9 +573,9 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
         }
         print_json(&report);
     } else {
-        println!("{msg}");
+        let _ = crate::outln!("{msg}");
         if let Some(r) = &receipt {
-            println!("Receipt written: {}", r.display());
+            let _ = crate::outln!("Receipt written: {}", r.display());
         }
     }
     Ok(())
@@ -641,7 +641,7 @@ fn report_written(json_out: bool, msg: String, rows: u64, file: &str, mut extra:
         extra["file"] = json!(file);
         print_json(&extra);
     } else {
-        println!("{msg}");
+        let _ = crate::outln!("{msg}");
     }
 }
 
@@ -686,7 +686,7 @@ pub fn convert(args: &[&str], json_out: bool) -> Result<(), String> {
         Some(m) => {
             let r = m.finish(out, d.row_count(), d.col_count(), None)?;
             if !json_out {
-                eprintln!("Receipt written: {}", r.display());
+                crate::errln!("Receipt written: {}", r.display());
             }
             json!({ "receipt": r.to_string_lossy() })
         }
@@ -738,7 +738,7 @@ pub fn compute(args: &[&str], json_out: bool) -> Result<(), String> {
         },
     )?;
     if rep.errors > 0 && !json_out {
-        println!("{} cells came out as errors (like #VALUE!)", rep.errors);
+        let _ = crate::outln!("{} cells came out as errors (like #VALUE!)", rep.errors);
     }
     report_written(
         json_out,
@@ -1139,19 +1139,21 @@ pub fn validate(args: &[&str], json_out: bool) -> Result<bool, String> {
             "table_checks": table,
         }));
     } else {
-        println!(
+        let _ = crate::outln!(
             "{} rows checked, {} with problems ({} problems)",
-            r.checked, r.rows, r.problems
+            r.checked,
+            r.rows,
+            r.problems
         );
         for (i, n) in r.per_check.iter().enumerate() {
-            println!("  check {}: {n}", i + 1);
+            let _ = crate::outln!("  check {}: {n}", i + 1);
         }
         for p in r.listed.iter().take(20) {
             let col = p
                 .col
                 .map(|c| names.get(c as usize).cloned().unwrap_or_default())
                 .unwrap_or_else(|| "(row)".into());
-            println!(
+            let _ = crate::outln!(
                 "  row {}, {col}: check {} ({})",
                 p.row + 1,
                 p.check + 1,
@@ -1159,7 +1161,7 @@ pub fn validate(args: &[&str], json_out: bool) -> Result<bool, String> {
             );
         }
         for t in &r.table {
-            println!(
+            let _ = crate::outln!(
                 "  table check {} {}: {}: {} (wanted {})",
                 t.check + 1,
                 if t.ok == Some(true) {

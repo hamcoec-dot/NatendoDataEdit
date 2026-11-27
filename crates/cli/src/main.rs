@@ -16,6 +16,7 @@ mod compare;
 mod inspect;
 mod join;
 mod more;
+mod out;
 mod patch;
 mod receipt;
 mod safe;
@@ -127,6 +128,40 @@ The command line gives no private data warnings: check what you write before sha
 const PROBLEMS: u8 = 1;
 
 fn main() -> ExitCode {
+    // A print the `out` module did not make (a missed one, or a library's) that fails
+    // because the reader went away is not a crash: no message, no backtrace. Any other
+    // panic is reported as usual.
+    let usual = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if !out::is_pipe_panic(&panic_text(info.payload())) {
+            usual(info);
+        }
+    }));
+    let code = match std::panic::catch_unwind(run) {
+        Ok(code) => code,
+        Err(p) if out::is_pipe_panic(&panic_text(&*p)) => ExitCode::SUCCESS,
+        Err(p) => std::panic::resume_unwind(p),
+    };
+    // The output is flushed last; a write that failed for another reason than a reader
+    // going away fails the run.
+    match out::finish() {
+        Some(e) => {
+            crate::errln!("{e}");
+            ExitCode::from(2)
+        }
+        None => code,
+    }
+}
+
+fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+
+/// The command line, run: its exit code (0 done, 1 problems found, 2 failed).
+fn run() -> ExitCode {
     // First, while main is the only thread (P3): take the secrets out of
     // the environment.
     secret::take_env();
@@ -155,7 +190,7 @@ fn main() -> ExitCode {
     let result = match argv.as_slice() {
         _ if read_as.is_err() => read_as,
         ["--version"] | ["-V"] => {
-            println!("natendo-cli {}", natendo_engine::version());
+            let _ = crate::outln!("natendo-cli {}", natendo_engine::version());
             Ok(())
         }
         ["sniff", path] if json => open(path).map(|d| more::print_json(&more::sniff_json(&d))),
@@ -247,7 +282,7 @@ fn main() -> ExitCode {
             if json {
                 more::print_json(&serde_json::json!({ "error": e }));
             } else {
-                eprintln!("{e}");
+                crate::errln!("{e}");
             }
             ExitCode::from(2)
         }
@@ -304,11 +339,11 @@ fn quote_name(d: &Dialect) -> String {
 
 /// The separator, then what detection weighed.
 fn sniff(d: &Document) {
-    println!("{}", delimiter_name(&d.format().dialect));
+    let _ = crate::outln!("{}", delimiter_name(&d.format().dialect));
     if let Some(found) = d.detection() {
-        println!("confidence: {:.2}", found.confidence);
+        let _ = crate::outln!("confidence: {:.2}", found.confidence);
         for (i, c) in found.choices.iter().enumerate() {
-            println!(
+            let _ = crate::outln!(
                 "  {}. separator {:<18} quote {:<14} columns {:<4} lines above {:<3} score {:.3}",
                 i + 1,
                 delimiter_name(&c.dialect),
@@ -324,17 +359,17 @@ fn sniff(d: &Document) {
 fn info(d: &Document) {
     let f = d.format();
     let s = d.index().stats();
-    println!(
+    let _ = crate::outln!(
         "encoding:    {}{}",
         f.encoding,
         if f.bom { " (with BOM)" } else { "" }
     );
-    println!("delimiter:   {}", delimiter_name(&f.dialect));
-    println!("quote:       {}", quote_name(&f.dialect));
+    let _ = crate::outln!("delimiter:   {}", delimiter_name(&f.dialect));
+    let _ = crate::outln!("quote:       {}", quote_name(&f.dialect));
     if d.preamble_lines() > 0 {
-        println!("above table: {} lines kept as they are", d.preamble_lines());
+        let _ = crate::outln!("above table: {} lines kept as they are", d.preamble_lines());
     }
-    println!(
+    let _ = crate::outln!(
         "line breaks: {:?}{}",
         f.line_break,
         if s.mixed_line_breaks() {
@@ -343,21 +378,21 @@ fn info(d: &Document) {
             ""
         }
     );
-    println!("rows:        {}", d.row_count());
-    println!(
+    let _ = crate::outln!("rows:        {}", d.row_count());
+    let _ = crate::outln!(
         "columns:     {} (usual {})",
         d.col_count(),
         s.usual_fields()
     );
-    println!("repaired:    {} rows", s.repair_count);
+    let _ = crate::outln!("repaired:    {} rows", s.repair_count);
     if let Some(r) = d.index().line_bound_from() {
-        println!(
+        let _ = crate::outln!(
             "note:        unterminated quote; rows from {} read line by line",
             r + 1
         );
     }
     if d.is_lossy() {
-        println!(
+        let _ = crate::outln!(
             "note:        some bytes were not valid {} and were replaced",
             f.encoding
         );
@@ -374,11 +409,15 @@ fn view(d: &Document, first: u64, count: u64) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     for r in 0..v.rows {
         let cells: Vec<&str> = (0..v.cols).map(|c| v.cell(r, c).unwrap_or("")).collect();
-        println!(
+        let shown = crate::outln!(
             "{}\t{}",
             v.first_row + r as u64 + 1,
             cells.join(" | ").escape_debug()
         );
+        // Nobody reads the rest.
+        if shown.is_err() {
+            break;
+        }
     }
     Ok(())
 }
@@ -510,7 +549,7 @@ fn clean(args: &[&str], json: bool) -> Result<(), String> {
             "file": report.path.display().to_string(),
         }));
     } else {
-        println!("{msg}");
+        let _ = crate::outln!("{msg}");
     }
     Ok(())
 }

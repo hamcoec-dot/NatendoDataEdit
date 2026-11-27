@@ -111,7 +111,7 @@ fn read_file_line(path: &str, word: &str) -> Result<String, String> {
         use std::os::unix::fs::PermissionsExt;
         if let Ok(m) = std::fs::metadata(path) {
             if m.permissions().mode() & 0o077 != 0 {
-                eprintln!(
+                crate::errln!(
                     "warning: other users can read the {word} file; keep it in a private folder (chmod 600)"
                 );
             }
