@@ -70,6 +70,14 @@ fn main() {
     if rewrite {
         d.undo();
     }
+    // A watcher reads the memory in use while each mark line waits.
+    let mark = |what: &str| {
+        use std::io::Write;
+        println!("{what}");
+        let _ = std::io::stdout().flush();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    };
+    mark("before");
     let t = Instant::now();
     d.save(SaveOptions {
         rewrite,
@@ -77,6 +85,7 @@ fn main() {
     })
     .expect("save");
     let save_ms = t.elapsed().as_secs_f64() * 1000.0;
+    mark("after");
     let t = Instant::now();
     let mut undone = 0;
     while d.undo() {
