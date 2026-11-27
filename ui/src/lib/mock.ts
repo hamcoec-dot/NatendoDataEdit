@@ -1231,12 +1231,23 @@ export class MockBackend implements Backend {
     if (!ex.data.length) throw err("invalid", "type a few results in the column first, then fill by example");
     const p = mockLearn(ex.data, ex.sources);
     if (p) return { program: p, words: ruleWords(p, names), examples: ex.data.length, conflict: null, revision };
+    // Named only when exactly one example is the odd one (as the engine does).
+    let found: { i: number; q: Program } | null = null;
     for (let i = ex.data.length - 1; i >= 0; i--) {
       const q = mockLearn(
         ex.data.filter((_, k) => k !== i),
         ex.sources,
       );
-      if (q) return { program: q, words: ruleWords(q, names), examples: ex.data.length - 1, conflict: { row: ex.ids[i]!, id: ex.ids[i]!, value: ex.data[i]!.out }, revision };
+      if (!q) continue;
+      if (found) {
+        found = null;
+        break;
+      }
+      found = { i, q };
+    }
+    if (found) {
+      const { i, q } = found;
+      return { program: q, words: ruleWords(q, names), examples: ex.data.length - 1, conflict: { row: ex.ids[i]!, id: ex.ids[i]!, value: ex.data[i]!.out }, revision };
     }
     return { program: null, words: "", examples: ex.data.length, conflict: null, revision };
   }
