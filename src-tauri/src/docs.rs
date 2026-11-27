@@ -11357,6 +11357,7 @@ mod tests {
                     spec: ExampleSpec {
                         col: 1,
                         skip_first: true,
+                        ..Default::default()
                     },
                 },
             )

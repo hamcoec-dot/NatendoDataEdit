@@ -75,6 +75,7 @@ pub mod recipe;
 pub mod relations;
 pub mod reshape;
 pub mod rows;
+pub mod rulecard;
 pub mod save;
 pub mod scan;
 pub mod sets;

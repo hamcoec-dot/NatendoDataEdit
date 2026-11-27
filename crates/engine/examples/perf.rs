@@ -1326,6 +1326,7 @@ fn main() {
             &ExampleSpec {
                 col: 2,
                 skip_first: true,
+                ..Default::default()
             },
             &p,
         )
