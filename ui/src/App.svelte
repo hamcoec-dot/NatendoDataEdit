@@ -126,7 +126,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import SuggestDialog from "./lib/SuggestDialog.svelte";
   import RecoveryDialog from "./lib/RecoveryDialog.svelte";
   import ToolsDialog, { type ToolsRun } from "./lib/ToolsDialog.svelte";
-  import { unchangedTabs, type ScaleKind, type ToolKind } from "./lib/m10";
+  import { orderFromCells, unchangedTabs, type FromCells, type ScaleKind, type ToolKind } from "./lib/m10";
   import { autosaveDue, type RecoveryItem, type Suggestion, type Suggestions, type VersionItem } from "./lib/m9";
   import { BASIC_KEYS, cleanFormat, defaultFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat } from "./lib/m9";
   import { defaultPage, newCheck, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS } from "./lib/m8";
@@ -159,6 +159,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   let cellBarInput = $state<HTMLTextAreaElement>();
   let filterMenu = $state<{ col: number; x: number; y: number } | null>(null);
   let sortDialog = $state<SortKey[] | null>(null);
+  /** The Sort dialog opens with a new order from these cells. */
+  let sortFromCells = $state<FromCells | null>(null);
   let opDialog = $state<{ kind: OpKind; clip: string } | null>(null);
   let formRow = $state<number | null>(null);
   /** Save As options screen, waiting for the user's choice. */
@@ -6540,7 +6542,53 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   function openSortDialog(): void {
     const t = tab;
     if (!t) return;
+    sortFromCells = null;
     sortDialog = [{ col: t.cell.col, descending: false, kind: "auto", match_case: false }];
+  }
+
+  /** Data > New custom order from the selected cells: the Sort dialog's new
+   *  order box, filled in with the selection's different values (shown
+   *  cells only), to check, name and add. Nothing is saved before that. */
+  async function newOrderFromCells(): Promise<void> {
+    const t = tab;
+    if (!t) return;
+    const r = oneBlock(t);
+    if (!r) return;
+    const first = Math.max(r.row, t.firstRow);
+    const rows = Math.max(0, r.row + r.rows - first);
+    const cols = Array.from({ length: r.cols }, (_, k) => r.col + k).filter((c) => !t.columns.isHidden(c));
+    if (!rows || !cols.length) {
+      say("Select the cells that hold the order's values first.");
+      return;
+    }
+    if (rows * cols.length > 200_000) {
+      say("That is more cells than an order is made from (200,000 at most): select fewer.");
+      return;
+    }
+    let cells: string[][];
+    try {
+      cells = await fetchRows(t, first, rows, cols);
+    } catch (e) {
+      say(errorText(e));
+      return;
+    }
+    const got = orderFromCells(cells);
+    if (got.tooMany) {
+      say("Too many different values for an order (10,000 at most).");
+      return;
+    }
+    if (!got.items.length) {
+      say("The selected cells are empty.");
+      return;
+    }
+    const hiddenRowsIn = await backend().hiddenBetween(t.id, first, rows).catch(() => 0);
+    const enc = await backend().encryptedOrigin(t.id).catch(() => null);
+    sortFromCells = {
+      items: got.items,
+      leftOut: hiddenRowsIn * r.cols + (r.cols - cols.length) * rows,
+      private: !!enc || t.private.file || t.private.folder,
+    };
+    sortDialog = [{ col: r.col, descending: false, kind: "auto", match_case: false }];
   }
 
   async function setRule(col: number, rule: Rule | null): Promise<void> {
@@ -7122,6 +7170,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.sortAsc", label: "Sort &A → Z", run: () => sortByColumn(false), enabled: ready, repeatable: true },
     { id: "data.sortDesc", label: "Sort &Z → A", run: () => sortByColumn(true), enabled: ready, repeatable: true },
     { id: "data.sort", label: "&Custom sort…", run: openSortDialog, enabled: ready },
+    { id: "data.orderFromCells", label: "New custom &order from the selected cells…", run: () => void newOrderFromCells(), enabled: ready },
     { id: "data.filter", label: "&Filter", keys: ["Ctrl+Shift+L"], run: toggleFilterButtons, enabled: ready, checked: () => !!tab && (tab.filterButtons || tab.info.has_filter) },
     { id: "data.filterMenu", label: "Filter &menu for this column", run: () => openFilterMenu(), enabled: ready },
     { id: "edit.pickList", label: "Pick from a list of the column's values", keys: ["Alt+ArrowDown"], run: () => void altDown(), enabled: ready },
@@ -7322,7 +7371,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     {
       label: "&Data",
       items: [
-        "data.sortAsc", "data.sortDesc", "data.sort", "data.sortColsAsc", "data.sortColsDesc", "data.shuffle", "-",
+        "data.sortAsc", "data.sortDesc", "data.sort", "data.orderFromCells", "data.sortColsAsc", "data.sortColsDesc", "data.shuffle", "-",
         "data.filter", "data.filterMenu", "data.filterBySel", "data.filterFormula", "view.panelFilters", "data.clearFilter", "data.reapply", "-",
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "data.repairRow", "data.ragged", "data.raggedShort", "data.raggedLong", "-",
         "data.headersStartHere", "data.setAsideFoot", "data.findTotalRow", "data.putBackNotes", "file.keepNotes", "view.panelNotes", "-",
@@ -7365,7 +7414,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   const contextItems: Record<string, string[]> = {
     totals: [...TOTAL_CHOICES.map(([c]) => `view.total.${c}`), "view.total.auto", "-", "view.copyTotal", "view.copyTotals", "-", "view.totalsRow"],
     tab: ["file.save", "file.saveAs", "-", "data.compareLists", "data.patchSave", "data.patchApply", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.orderFromCells", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "data.headersStartHere", "data.setAsideFoot", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "data.explode", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
@@ -9357,6 +9406,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     titles={Array.from({ length: Math.min(tab.info.cols, 5000) }, (_, c) => columnTitle(tab!, c))}
     header={tab.header}
     start={sortDialog}
+    fromCells={sortFromCells}
     onSort={(spec, header) => {
       sortDialog = null;
       if (tab && header !== tab.header) { tab.header = header; tab.headerTouched = true; }

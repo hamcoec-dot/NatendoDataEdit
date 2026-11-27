@@ -184,7 +184,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "preserve case hidden rows and search by columns": ["find.find", "find.replace"],
   "copy the list and saved searches": ["find.find"],
   "search a whole folder": ["tools.searchFolder"],
-  "sort by several columns numbers": ["data.sort", "data.sortAsc", "data.sortDesc", "tools.flip", "data.shuffle", "data.sortColsAsc", "data.sortColsDesc"],
+  "sort by several columns numbers": ["data.sort", "data.orderFromCells", "data.sortAsc", "data.sortDesc", "tools.flip", "data.shuffle", "data.sortColsAsc", "data.sortColsDesc"],
   "quick filter a filter builder": ["data.filter", "data.filterMenu", "data.filterBySel", "data.clearFilter"],
   "saved views": ["view.saveView", "view.applyView", "view.saveViewFile", "view.openViewFile"],
   "find duplicate rows and remove": ["data.removeDuplicates", "data.showDuplicates"],

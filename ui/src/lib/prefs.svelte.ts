@@ -3,6 +3,7 @@
 
 import { MAX_VIEWS, safeFont, type Shortcuts, type View } from "./views";
 import { SECOND_WINDOW } from "./windowRole";
+import { readOrders, type SavedOrder } from "./m10";
 
 export type Theme = "system" | "light" | "dark";
 
@@ -56,7 +57,7 @@ export interface PrefsData {
   /** Suggest the rest of a value from the column while typing. */
   typeahead: boolean;
   /** Custom sort orders the user added. */
-  sortLists: { name: string; items: string[] }[];
+  sortLists: SavedOrder[];
   /** Keep a recovery copy of unsaved changes, every `autosaveMinutes`. */
   autosave: boolean;
   autosaveMinutes: number;
@@ -215,7 +216,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       totalsShown: shownTotals(p.totalsShown),
       banded: p.banded === true,
       typeahead: p.typeahead !== false,
-      sortLists: Array.isArray(p.sortLists) ? p.sortLists.filter((l) => l && typeof l.name === "string" && Array.isArray(l.items)).slice(0, 60).map((l) => ({ name: String(l.name).slice(0, 200), items: l.items.filter((i): i is string => typeof i === "string").slice(0, 10_000).map((i) => i.slice(0, 1000)) })) : [],
+      sortLists: readOrders(p.sortLists),
       autosave: p.autosave !== false,
       keepEarlierSaves: p.keepEarlierSaves === true,
       reopenLast: p.reopenLast === "always" || p.reopenLast === "never" ? p.reopenLast : "ask",

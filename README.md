@@ -736,7 +736,14 @@ everything is also in command search.
   JSON files and subfolders; click a hit to open that file at that cell.
 - Sort by several columns, numbers and dates in the right order, natural text
   order, by length, by last word, or in your own custom order. Flip or shuffle
-  rows. Sort the columns themselves by their titles.
+  rows. Sort the columns themselves by their titles. Custom orders: Low,
+  Medium, High, weekdays and months are built in; add your own in the Sort
+  dialog (Compare as > New custom order…), or make one from a column's values
+  with Data > New custom order from the selected cells (shown cells only, row
+  by row, each value once; from a private file it warns that the values are
+  kept in the app's settings). Manage custom orders… renames, edits, reorders
+  and deletes them (up to 60); a sort level keeps its order through a rename or
+  move. A recipe or saved view that sorts by a custom order holds its values.
 - Quick filter, a filter builder for more complex rules, and largest or
   smallest N (rows or percent).
 - **Saved views:** filters, column layout, highlight rules and checks saved
