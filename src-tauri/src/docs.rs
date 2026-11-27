@@ -757,6 +757,18 @@ pub enum DataOp {
     SplitRows {
         spec: SplitRows,
     },
+    /// Explode cells to columns (keys, item positions or flags): every row.
+    ExplodeColumns {
+        spec: natendo_engine::explode::Explode,
+    },
+    /// Unnest list items to rows: shown rows.
+    ExplodeRows {
+        spec: natendo_engine::explode::Explode,
+    },
+    /// Show only the rows whose cell did not parse (a view).
+    ShowExplodeBad {
+        spec: natendo_engine::explode::Explode,
+    },
     MergeRows {
         spec: MergeRows,
     },
@@ -1237,6 +1249,7 @@ fn auto_label_op(op: &RecipeOp) -> Option<&'static str> {
         RecipeOp::RemoveBlankRows { .. } => Some("Remove blank rows"),
         RecipeOp::RemoveBlankCols { .. } => Some("Remove blank columns"),
         RecipeOp::SplitRows { .. } => Some("Split into rows"),
+        RecipeOp::ExplodeRows { .. } => Some("Unnest to rows"),
         RecipeOp::MergeRows { .. } => Some("Merge rows"),
         RecipeOp::Clean { .. } | RecipeOp::CleanMatrix { .. } => Some("Clean-up"),
         RecipeOp::DeleteHidden => Some("Delete hidden rows"),
@@ -1251,6 +1264,7 @@ fn auto_label_op(op: &RecipeOp) -> Option<&'static str> {
         | RecipeOp::DeleteCols { .. }
         | RecipeOp::MoveCols { .. }
         | RecipeOp::SplitColumn { .. }
+        | RecipeOp::ExplodeColumns { .. }
         | RecipeOp::MergeColumns { .. }
         | RecipeOp::SortColumns { .. }
         | RecipeOp::SplitName { .. }
@@ -1398,6 +1412,13 @@ fn recipe_step(op: &DataOp) -> Logged {
         DataOp::SplitColumn { spec } => RecipeOp::SplitColumn { spec: spec.clone() },
         DataOp::MergeColumns { spec } => RecipeOp::MergeColumns { spec: spec.clone() },
         DataOp::SplitRows { spec } => RecipeOp::SplitRows { spec: spec.clone() },
+        DataOp::ExplodeColumns { spec } => RecipeOp::ExplodeColumns { spec: spec.clone() },
+        DataOp::ExplodeRows { spec } => RecipeOp::ExplodeRows { spec: spec.clone() },
+        DataOp::ShowExplodeBad { .. } => {
+            return Logged::LeftOut(
+                "showing the cells that did not parse (a view, not a change)".into(),
+            )
+        }
         DataOp::MergeRows { spec } => RecipeOp::MergeRows { spec: spec.clone() },
         DataOp::SortColumns {
             col,
@@ -1512,6 +1533,8 @@ fn recipe_data_op(s: RecipeOp, now: f64) -> DataOp {
         RecipeOp::SplitColumn { spec } => DataOp::SplitColumn { spec },
         RecipeOp::MergeColumns { spec } => DataOp::MergeColumns { spec },
         RecipeOp::SplitRows { spec } => DataOp::SplitRows { spec },
+        RecipeOp::ExplodeColumns { spec } => DataOp::ExplodeColumns { spec },
+        RecipeOp::ExplodeRows { spec } => DataOp::ExplodeRows { spec },
         RecipeOp::MergeRows { spec } => DataOp::MergeRows { spec },
         RecipeOp::SortColumns {
             col,
@@ -1740,6 +1763,8 @@ pub struct OpReport {
     /// Fill blank cells with stops: cells marked amber (at most 100,000 of
     /// `skipped`).
     pub marked: u64,
+    /// Explode cells: cells that did not parse, new and missing keys.
+    pub explode: Option<natendo_engine::explode::ExplodeReport>,
 }
 
 /// Changes listed, and rows looked at, by a cleaner preview.
@@ -6638,6 +6663,27 @@ impl Docs {
                     .ambiguous_left;
                 return Ok(left_note(&what, left));
             }
+            RecipeOp::ExplodeColumns { spec } | RecipeOp::ExplodeRows { spec } => {
+                // New and missing keys, and cells that did not parse, are named.
+                let title = self
+                    .get(id)?
+                    .read()
+                    .titles(&[spec.col], spec.keep_first)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default();
+                let rows = spec.how == natendo_engine::explode::ExplodeHow::Rows;
+                let op = if rows {
+                    DataOp::ExplodeRows { spec }
+                } else {
+                    DataOp::ExplodeColumns { spec }
+                };
+                let r = self.data_op(id, op)?;
+                return Ok(r
+                    .explode
+                    .map(|e| e.note(&format!("\u{201c}{title}\u{201d}")))
+                    .unwrap_or_default());
+            }
             other => self.data_op(id, recipe_data_op(other, now)).map(|_| ()),
         };
         done.map(|()| String::new())
@@ -6677,6 +6723,8 @@ impl Docs {
             }
             DataOp::RemoveBlankRows { .. } | DataOp::RemoveBlankCols { .. } => "Looking for blanks",
             DataOp::SplitColumn { .. } | DataOp::SplitRows { .. } => "Splitting",
+            DataOp::ExplodeColumns { .. } | DataOp::ExplodeRows { .. } => "Exploding cells",
+            DataOp::ShowExplodeBad { .. } => "Filtering",
             DataOp::MergeColumns { .. } | DataOp::MergeRows { .. } => "Merging",
             DataOp::SortColumns { .. } => "Sorting columns",
             DataOp::Join { .. } => "Joining",
@@ -6807,6 +6855,7 @@ impl Docs {
             _ => None,
         };
         let join_report = std::cell::RefCell::new(None);
+        let explode_report = std::cell::RefCell::new(None);
         // Fill blank cells: the cells its stops left blank, to mark.
         let fill_marks = std::cell::RefCell::new(None::<Vec<(u32, u32)>>);
         // Cleaners and fill by example: (left or missed, pattern, examples).
@@ -6835,6 +6884,17 @@ impl Docs {
                 DataOp::SplitColumn { spec } => Planned::Cols(d.plan_split_column(spec, p)?),
                 DataOp::MergeColumns { spec } => Planned::Cols(d.plan_merge_columns(spec, p)?),
                 DataOp::SplitRows { spec } => Planned::Rows(d.plan_split_rows(spec, p)?),
+                DataOp::ExplodeColumns { spec } => {
+                    let (plan, rep) = d.plan_explode_columns(spec, p)?;
+                    *explode_report.borrow_mut() = Some(rep);
+                    Planned::Cols(plan)
+                }
+                DataOp::ExplodeRows { spec } => {
+                    let (plan, rep) = d.plan_explode_rows(spec, p)?;
+                    *explode_report.borrow_mut() = Some(rep);
+                    Planned::Rows(plan)
+                }
+                DataOp::ShowExplodeBad { spec } => Planned::Rows(d.plan_explode_bad(spec, p)?),
                 DataOp::MergeRows { spec } => Planned::Rows(d.plan_merge_rows(spec, p)?),
                 DataOp::SortColumns {
                     col,
@@ -7078,6 +7138,10 @@ impl Docs {
             r.rows = j.added + j.extra_rows + j.removed;
             r.cols = j.cols;
             r.join = Some(j);
+        }
+        if let Some(e) = explode_report.into_inner() {
+            r.cols = r.cols.max(e.cols);
+            r.explode = Some(e);
         }
         if let Some(marks) = fill_marks.into_inner() {
             r.marked = marks.len() as u64;
@@ -7351,6 +7415,41 @@ impl Docs {
             values: all.into_iter().take(5_000).collect(),
             complete: tally.complete,
         })
+    }
+
+    /// Explode cells: what the column looks like, from a sample (quick).
+    pub fn explode_detect(
+        &self,
+        id: u32,
+        col: u32,
+        keep_first: bool,
+    ) -> CmdResult<natendo_engine::explode::ExplodeDetect> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.explode_detect(col, keep_first)?)
+    }
+
+    /// Explode cells: read the whole column (a job with Cancel).
+    pub fn explode_scan(
+        &self,
+        id: u32,
+        spec: &natendo_engine::explode::Explode,
+    ) -> CmdResult<natendo_engine::explode::ExplodeScan> {
+        let entry = self.get(id)?;
+        let job = entry.start("Reading the cells")?;
+        let d = entry.read();
+        Ok(d.explode_scan(spec, &job.progress)?)
+    }
+
+    /// Explode cells: before and after for the first 20 shown rows.
+    pub fn explode_preview(
+        &self,
+        id: u32,
+        spec: &natendo_engine::explode::Explode,
+    ) -> CmdResult<natendo_engine::explode::ExplodePreview> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.explode_preview(spec)?)
     }
 
     pub fn value_tally(&self, id: u32, spec: &TallySpec) -> CmdResult<ValueTally> {

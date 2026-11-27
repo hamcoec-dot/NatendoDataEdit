@@ -190,6 +190,9 @@ pub struct RowPlan {
     pub skipped: u64,
     /// Those cells (row id, logical column), at most [`MAX_FILL_MARKS`].
     pub(crate) marks: Vec<(u32, u32)>,
+    /// One new column put at this logical position first (unnest with the
+    /// original kept): `changes` and `after` use the columns after it.
+    pub(crate) insert_col: Option<u32>,
 }
 
 /// Most cells left blank by the fill's stops that are listed for marking.
@@ -208,6 +211,7 @@ impl RowPlan {
             unreadable: 0,
             skipped: 0,
             marks: Vec::new(),
+            insert_col: None,
         }
     }
 
@@ -222,6 +226,7 @@ impl RowPlan {
             && self.remove.is_empty()
             && self.after.is_empty()
             && self.view.is_none()
+            && self.insert_col.is_none()
     }
 }
 
@@ -975,16 +980,36 @@ impl Document {
             self.set_view(Some(v));
             return Ok(());
         }
+        // A new column first: its id, and the column map with it in place.
+        let ins = match plan.insert_col {
+            Some(at) if at <= self.col_count() => Some((at, self.new_col_ids(1)?)),
+            Some(_) => return Err(Error::OutOfRange),
+            None => None,
+        };
+        let map_after: Option<Vec<u32>> = ins.as_ref().map(|(at, ids)| {
+            let mut m = self.map_list();
+            m.truncate(self.col_count() as usize);
+            m.insert(*at as usize, ids[0]);
+            m
+        });
+        let phys = |d: &Document, c: u32| -> Result<u32, Error> {
+            match &map_after {
+                Some(m) => m.get(c as usize).copied().ok_or(Error::OutOfRange),
+                None => d.phys(c).ok_or(Error::OutOfRange),
+            }
+        };
         let mut changes = Vec::with_capacity(plan.changes.len());
         for (id, cells) in plan.changes {
             let mut out = Vec::with_capacity(cells.len());
             for (c, v) in cells {
-                out.push((self.phys(c).ok_or(Error::OutOfRange)?, v));
+                out.push((phys(self, c)?, v));
             }
             changes.push((id, out));
         }
         let mut states = self.patch_states(changes)?;
-        self.only_protected(states.is_empty() && plan.remove.is_empty() && plan.after.is_empty())?;
+        self.only_protected(
+            states.is_empty() && plan.remove.is_empty() && plan.after.is_empty() && ins.is_none(),
+        )?;
         let base = self.next_row_id() as usize;
         let mut gone = vec![0u64; base.div_ceil(64)];
         for &id in &plan.remove {
@@ -1003,7 +1028,20 @@ impl Document {
             let n = rows.len() as u32;
             after.insert(id, (next, n));
             for r in rows {
-                states.push((next, Some(Edit::Full(self.to_physical(r, None)))));
+                let full = match &map_after {
+                    None => self.to_physical(r, None),
+                    Some(m) => {
+                        let width = m.iter().map(|&p| p + 1).max().unwrap_or(0);
+                        let mut out = vec![String::new(); width as usize];
+                        for (c, v) in r.into_iter().enumerate() {
+                            if let Some(&p) = m.get(c) {
+                                out[p as usize] = v;
+                            }
+                        }
+                        out
+                    }
+                };
+                states.push((next, Some(Edit::Full(full))));
                 next += 1;
             }
         }
@@ -1023,6 +1061,7 @@ impl Document {
             Some(o)
         };
         self.push_step(Step {
+            col_insert: ins,
             states,
             order,
             ..Default::default()

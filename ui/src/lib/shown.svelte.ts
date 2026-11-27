@@ -44,7 +44,7 @@ const n = (v: number) => v.toLocaleString();
 const rows = (v: number) => (v === 1 ? "row" : "rows");
 
 /** Operations that change every row, hidden ones too, because the column they read is changed too. */
-const ALL = new Set(["split_column", "merge_columns", "split_name", "extract"]);
+const ALL = new Set(["split_column", "merge_columns", "split_name", "extract", "explode_columns"]);
 /** Operations whose new column stays empty in hidden rows. */
 const EMPTY = new Set(["count_repeats", "group_calc", "check_column", "compare_column"]);
 

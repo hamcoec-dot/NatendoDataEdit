@@ -282,6 +282,63 @@ fn parse<'a>(args: &[&'a str], allowed: &[&str]) -> Result<Args<'a>, String> {
     Ok(a)
 }
 
+/// What each explode step of a recipe would do on `input`: the steps run
+/// in memory, in order; nothing is written.
+fn explode_dry_run(
+    recipe: &natendo_engine::recipe::Recipe,
+    input: &str,
+    sheet: u32,
+) -> Vec<String> {
+    use natendo_engine::recipe::RecipeOp;
+    let mut out = Vec::new();
+    let Ok(mut d) = load(input, sheet) else {
+        return out;
+    };
+    let Ok(recipe) = recipe.answered(&[]) else {
+        return out;
+    };
+    let now = natendo_engine::clean::now_utc();
+    for (i, s) in recipe.steps.iter().enumerate() {
+        let p = Progress::new();
+        let done = match s {
+            RecipeOp::ExplodeColumns { spec } | RecipeOp::ExplodeRows { spec } => {
+                let title = d
+                    .titles(&[spec.col], spec.keep_first)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default();
+                let title = format!("\u{201c}{title}\u{201d}");
+                let planned = if matches!(s, RecipeOp::ExplodeRows { .. }) {
+                    d.plan_explode_rows(spec, &p)
+                        .and_then(|(plan, r)| d.apply_rows(plan).map(|()| r))
+                } else {
+                    d.plan_explode_columns(spec, &p)
+                        .and_then(|(plan, r)| d.apply_cols(plan).map(|()| r))
+                };
+                planned.map(|r| {
+                    let mut l = format!(
+                        "Step {} would add {} column(s) and {} row(s)",
+                        i + 1,
+                        r.cols,
+                        r.rows
+                    );
+                    let note = r.note(&title);
+                    if !note.is_empty() {
+                        l.push_str(&format!(": {note}"));
+                    }
+                    out.push(l);
+                })
+            }
+            s => d.run_recipe_step(s, now, 1, &p),
+        };
+        if let Err(e) = done {
+            out.push(format!("The recipe would stop at step {}: {e}", i + 1));
+            break;
+        }
+    }
+    out
+}
+
 /// Run a recipe saved in the app on a file: the steps are listed first,
 /// the file's columns are checked against the recipe's (`--force` runs it
 /// anyway), and the result is written to `-o` (`--dry-run` only lists).
@@ -440,6 +497,24 @@ pub fn run(args: &[&str], json_out: bool) -> Result<(), String> {
                     } else {
                         println!("The recipe would stop: {e}");
                     }
+                }
+            }
+        }
+        // Explode steps say what they would add, and the keys new or
+        // missing since the recipe was made (worked out in memory).
+        if recipe.steps.iter().any(|s| {
+            matches!(
+                s,
+                natendo_engine::recipe::RecipeOp::ExplodeColumns { .. }
+                    | natendo_engine::recipe::RecipeOp::ExplodeRows { .. }
+            )
+        }) {
+            let said = explode_dry_run(&recipe, input, a.sheet);
+            if json_out {
+                report["explode"] = json!(said);
+            } else {
+                for l in &said {
+                    println!("{l}");
                 }
             }
         }

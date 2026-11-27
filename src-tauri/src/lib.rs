@@ -4186,6 +4186,42 @@ async fn lookalike_groups(
     blocking(move || docs.lookalike_groups(doc, &spec)).await
 }
 
+// ---- explode cells (C7) ----
+
+/// What a column's cells look like (JSON, lists, key=value), from a sample.
+#[tauri::command]
+async fn explode_detect(
+    docs: DocsState<'_>,
+    doc: u32,
+    col: u32,
+    keep_first: bool,
+) -> CmdResult<natendo_engine::explode::ExplodeDetect> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.explode_detect(doc, col, keep_first)).await
+}
+
+/// Read the whole column: keys or tags with counts, cells that did not parse.
+#[tauri::command]
+async fn explode_scan(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::explode::Explode,
+) -> CmdResult<natendo_engine::explode::ExplodeScan> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.explode_scan(doc, &spec)).await
+}
+
+/// Before and after for the first 20 shown rows.
+#[tauri::command]
+async fn explode_preview(
+    docs: DocsState<'_>,
+    doc: u32,
+    spec: natendo_engine::explode::Explode,
+) -> CmdResult<natendo_engine::explode::ExplodePreview> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.explode_preview(doc, &spec)).await
+}
+
 // ---- value dictionaries (C6) ----
 
 /// The Dictionaries folder in the app's data folder (made when missing).
@@ -5328,6 +5364,9 @@ pub fn run() {
             join_preview,
             value_tally,
             lookalike_groups,
+            explode_detect,
+            explode_scan,
+            explode_preview,
             join_list,
             join_close,
             lookup_close,

@@ -42,6 +42,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import ImportDialog from "./lib/ImportDialog.svelte";
   import JoinDialog from "./lib/JoinDialog.svelte";
   import ValueEditor from "./lib/ValueEditor.svelte";
+  import ExplodeDialog from "./lib/ExplodeDialog.svelte";
   import DatePicker from "./lib/DatePicker.svelte";
   import PrivacyDialog from "./lib/PrivacyDialog.svelte";
   import MailDialog from "./lib/MailDialog.svelte";
@@ -74,7 +75,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import CleanMatrixDialog from "./lib/CleanMatrixDialog.svelte";
   import type { CleanMatrix, MatrixPreview } from "./lib/matrix";
   import type { GapReport, GapsSpec } from "./lib/gaps";
-  import type { CompareCols } from "./lib/backend";
+  import type { CompareCols, Explode } from "./lib/backend";
   import { typedCell } from "./lib/cellformula";
   import type { TitleSpec } from "./lib/backend";
   import type { ZipList } from "./lib/backend";
@@ -3497,6 +3498,41 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   // ---- compare two columns ----
   let compareAsk = $state<{ titles: string[]; first: number; second: number } | null>(null);
+
+  // ---- explode cells (C7) ----
+  let explodeAsk = $state<{ titles: string[]; col: number } | null>(null);
+  function openExplode(): void {
+    const t = tab;
+    if (!t) return;
+    if (t.info.rows <= (t.header ? 1 : 0)) {
+      say("Exploding cells needs rows to read.");
+      return;
+    }
+    const titles = Array.from({ length: Math.min(t.info.cols, 5_000) }, (_, c) => columnTitle(t, c));
+    explodeAsk = { titles, col: Math.min(t.cell.col, titles.length - 1) };
+  }
+  async function runExplode(spec: Explode): Promise<void> {
+    explodeAsk = null;
+    const t = tab;
+    if (!t) return;
+    const name = `\u201c${columnTitle(t, spec.col)}\u201d`;
+    const rows = spec.how === "rows";
+    const rep = await runOp({ op: rows ? "explode_rows" : "explode_columns", spec }, "Exploding cells");
+    if (!rep) return;
+    const e = rep.explode;
+    const bad = e?.bad ? ` ${plural(e.bad, "cell")} did not parse and stayed as ${e.bad === 1 ? "it was" : "they were"}.` : "";
+    const more = e?.new_count ? ` ${plural(e.new_count, "key")} not ticked ${e.new_count === 1 ? "was" : "were"} left out.` : "";
+    say(
+      rows
+        ? `Unnested ${name}: added ${plural(rep.rows, "row")}${rep.cols ? " and a column holding the whole original" : ""}.${bad} Ctrl+Z undoes it.`
+        : `Exploded ${name}: added ${plural(rep.cols, "column")}.${bad}${more} Ctrl+Z undoes it.`,
+    );
+  }
+  async function showExplodeBad(spec: Explode): Promise<void> {
+    explodeAsk = null;
+    const rep = await runOp({ op: "show_explode_bad", spec }, "Filtering");
+    if (rep) say(`Showing the ${plural(rep.rows, "row")} whose cell did not parse. Data › Clear filter shows every row.`);
+  }
 
   function openCompareCols(): void {
     const t = tab;
@@ -7167,6 +7203,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "data.splitColumn", label: "Split column (t&ext to columns)…", run: () => openOp("split_column"), enabled: ready },
     { id: "data.mergeColumns", label: "Mer&ge columns…", run: () => openOp("merge_columns"), enabled: ready },
     { id: "data.splitRows", label: "Split into ro&ws…", run: () => openOp("split_rows"), enabled: ready },
+    { id: "data.explode", label: "Explode cells (JSON, lists, key=value)…", run: openExplode, enabled: ready, why: () => (!tab ? "open a file first" : !tab.info.indexed ? "the file is still loading" : tab.busy ? "another operation is running" : "") },
     { id: "data.mergeRows", label: "Merge r&ows…", run: () => openOp("merge_rows"), enabled: ready },
     { id: "data.sortColsAsc", label: "Sort columns by title A → Z", run: () => sortColumns(false), enabled: ready, repeatable: true },
     { id: "data.sortColsDesc", label: "Sort columns by title Z → A", run: () => sortColumns(true), enabled: ready, repeatable: true },
@@ -7262,7 +7299,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         "data.filter", "data.filterMenu", "data.filterBySel", "data.filterFormula", "view.panelFilters", "data.clearFilter", "data.reapply", "-",
         "data.removeDuplicates", "data.showDuplicates", "data.removeBlankRows", "data.removeBlankCols", "data.repairRow", "data.ragged", "data.raggedShort", "data.raggedLong", "-",
         "data.headersStartHere", "data.setAsideFoot", "data.findTotalRow", "data.putBackNotes", "file.keepNotes", "view.panelNotes", "-",
-        "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "-",
+        "data.splitColumn", "data.mergeColumns", "data.splitRows", "data.mergeRows", "data.explode", "-",
         "data.pivot", "data.pivotRefresh", "data.unpivot", "data.subtotals", "data.form", "-",
         "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.nextDate", "data.prevDate", "data.dateMarksOff", "data.compute", "data.changeFormula", "data.checks", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "data.typeRule", "data.fieldCheck", "data.diffNext", "data.diffPrev", "data.diffClear", "data.nextProblem", "data.prevProblem", "data.checkNow", "data.unmarkChecks", "data.clearChecks", "-",
         "data.fillExample", "data.splitName", "-",
@@ -7304,7 +7341,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "data.headersStartHere", "data.setAsideFoot", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "data.explode", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -9949,6 +9986,20 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   />
 {/if}
 
+{#if explodeAsk && tab}
+  {@const x = explodeAsk}
+  <ExplodeDialog
+    doc={tab.id}
+    titles={x.titles}
+    hidden={hiddenColsOf(tab)}
+    col={x.col}
+    header={tab.header && tab.info.rows > 0}
+    readOnly={!!tab.info.read_only}
+    onRun={(spec) => void runExplode(spec).then(() => grid?.focus())}
+    onShowBad={(spec) => void showExplodeBad(spec).then(() => grid?.focus())}
+    onClose={() => { explodeAsk = null; grid?.focus(); }}
+  />
+{/if}
 {#if compareAsk && tab}
   {@const c = compareAsk}
   <CompareColsDialog

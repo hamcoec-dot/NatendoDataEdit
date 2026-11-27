@@ -1095,6 +1095,63 @@ export interface SplitRows {
   skip_empty: boolean;
   keep_first: boolean;
 }
+/** Explode cells (C7): what the cells hold. */
+export type ExplodeKind = "object" | "json_list" | "list" | "key_value";
+/** What is made: columns (keys or item positions), rows (unnest), flags. */
+export type ExplodeHow = "columns" | "rows" | "flags";
+export interface Explode {
+  col: number;
+  keep_first: boolean;
+  kind: ExplodeKind;
+  how: ExplodeHow;
+  separator: string;
+  kv: string;
+  depth: number;
+  /** The keys or tags made into columns (null: every one found). */
+  keys: string[] | null;
+  add_new_keys: boolean;
+  keep_original: boolean;
+  trim: boolean;
+  mark: string;
+  null_blank: boolean;
+  original_col: boolean;
+  match_case: boolean;
+  skip_empty: boolean;
+}
+export interface ExplodeDetect {
+  kind: ExplodeKind;
+  separator: string;
+  kv: string;
+  matched: number;
+  sampled: number;
+  words: string;
+}
+export interface ExplodeScan {
+  keys: { key: string; count: number }[];
+  distinct: number;
+  capped: boolean;
+  filled: number;
+  bad: number;
+  most_items: number;
+  new_rows: number;
+  rows: number;
+  all_rows: boolean;
+}
+export type ExplodeShown = "value" | "empty" | "null" | "missing";
+export interface ExplodePreview {
+  titles: string[];
+  rows: { row: number; before: string; bad: boolean; lines: { text: string; shown: ExplodeShown }[][] }[];
+}
+export interface ExplodeReport {
+  bad: number;
+  new_keys: string[];
+  new_count: number;
+  new_added: boolean;
+  missing_keys: string[];
+  missing_count: number;
+  cols: number;
+  rows: number;
+}
 export interface MergeRows {
   keys: number[];
   separator: string;
@@ -1130,6 +1187,9 @@ export type DataOp =
   | { op: "sort_problems"; spec: CheckSpec; scope?: "all" | "shown" }
   | { op: "check_column"; spec: CheckSpec; title?: string }
   | { op: "fill_blanks"; spec: FillBlanks }
+  | { op: "explode_columns"; spec: Explode }
+  | { op: "explode_rows"; spec: Explode }
+  | { op: "show_explode_bad"; spec: Explode }
   | { op: "count_repeats"; spec: Repeats }
   | { op: "blank_repeats"; spec: Duplicates }
   | { op: "breaks"; spec: Breaks }
@@ -1518,6 +1578,8 @@ export interface OpReport {
   errors?: number;
   /** Fill blank cells with stops: cells marked amber (at most 100,000 of `skipped`). */
   marked?: number;
+  /** Explode cells: cells that did not parse, new and missing keys. */
+  explode?: ExplodeReport | null;
 }
 
 /** How values are put in quotes on Save As. */
@@ -2034,6 +2096,12 @@ export interface Backend {
   /** Group a column's values that sound or are spelled alike (a job:
    *  jobProgress and cancelJob apply). */
   lookalikeGroups(doc: number, spec: LookAlikeSpec): Promise<LookAlikes>;
+  /** Explode cells: what a column looks like, from a sample. */
+  explodeDetect(doc: number, col: number, keepFirst: boolean): Promise<ExplodeDetect>;
+  /** Explode cells: read the whole column (a job: jobProgress and cancelJob apply). */
+  explodeScan(doc: number, spec: Explode): Promise<ExplodeScan>;
+  /** Explode cells: before and after for the first 20 shown rows. */
+  explodePreview(doc: number, spec: Explode): Promise<ExplodePreview>;
   /** The Dictionaries folder and the dictionaries in it. */
   dictionaryList(): Promise<[string, DictionaryItem[]]>;
   /** Pick a dictionary file to load (null: cancelled). */
@@ -2853,6 +2921,15 @@ class TauriBackend implements Backend {
   }
   lookalikeGroups(doc: number, spec: LookAlikeSpec) {
     return call<LookAlikes>("lookalike_groups", { doc, spec });
+  }
+  explodeDetect(doc: number, col: number, keepFirst: boolean) {
+    return call<ExplodeDetect>("explode_detect", { doc, col, keepFirst });
+  }
+  explodeScan(doc: number, spec: Explode) {
+    return call<ExplodeScan>("explode_scan", { doc, spec });
+  }
+  explodePreview(doc: number, spec: Explode) {
+    return call<ExplodePreview>("explode_preview", { doc, spec });
   }
   valueTally(doc: number, spec: TallySpec) {
     return call<ValueTally>("value_tally", { doc, spec });

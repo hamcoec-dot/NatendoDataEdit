@@ -168,6 +168,17 @@ pub enum RecipeOp {
     SplitRows {
         spec: SplitRows,
     },
+    /// Explode cells to columns (one per key, item position or tag). It
+    /// holds key names and options, never cell text; with `keys` listed,
+    /// a key new since then is left out (or added, with `add_new_keys`)
+    /// and named in the run report.
+    ExplodeColumns {
+        spec: crate::explode::Explode,
+    },
+    /// Unnest list items to rows (shown rows).
+    ExplodeRows {
+        spec: crate::explode::Explode,
+    },
     MergeRows {
         spec: MergeRows,
     },
@@ -324,6 +335,7 @@ impl RecipeOp {
             RecipeOp::SplitColumn { .. } => "Split a column".into(),
             RecipeOp::MergeColumns { .. } => "Merge columns".into(),
             RecipeOp::SplitRows { .. } => "Split cells into rows".into(),
+            RecipeOp::ExplodeColumns { spec } | RecipeOp::ExplodeRows { spec } => spec.describe(),
             RecipeOp::MergeRows { .. } => "Merge rows".into(),
             RecipeOp::SortColumns { .. } => "Sort columns".into(),
             RecipeOp::Clean { spec } => {
@@ -489,6 +501,7 @@ impl RecipeOp {
                 | RecipeOp::CleanMatrix { .. }
                 | RecipeOp::Extract { .. }
                 | RecipeOp::MergeRows { .. }
+                | RecipeOp::ExplodeColumns { .. }
                 | RecipeOp::GroupCalc { .. }
                 | RecipeOp::SortProblems { .. }
                 | RecipeOp::CheckColumn { .. }
@@ -838,6 +851,14 @@ impl Document {
             }
             RecipeOp::SplitRows { spec } => {
                 let p = self.plan_split_rows(spec, progress)?;
+                self.apply_rows(p)
+            }
+            RecipeOp::ExplodeColumns { spec } => {
+                let (p, _) = self.plan_explode_columns(spec, progress)?;
+                self.apply_cols(p)
+            }
+            RecipeOp::ExplodeRows { spec } => {
+                let (p, _) = self.plan_explode_rows(spec, progress)?;
                 self.apply_rows(p)
             }
             RecipeOp::MergeRows { spec } => {

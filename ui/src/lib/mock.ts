@@ -13,6 +13,8 @@ import { joinPreview } from "./repair";
 import { mockDrill, mockItems, mockPivot, type ItemList, type PivotField, type PivotGrid, type PivotSpec } from "./pivot";
 import { isIsoDate, shapeRegex } from "./lint";
 import { shapeOf } from "./insights";
+import type { Explode, ExplodeDetect, ExplodePreview, ExplodeReport, ExplodeScan } from "./backend";
+import { EXPLODE_BASE } from "./explode";
 import type {
   JumpResult,
   RuleSuggestion,
@@ -455,6 +457,58 @@ function mockImport(text: string, format: ImportFormat, part: number): string[][
 
 /** Undo steps that only change which rows show. */
 const VIEW_STEPS = new WeakSet<() => () => void>();
+
+/** Explode cells, the stand-in reading of one cell (JSON numbers come back as
+ *  JavaScript writes them; the engine keeps their text). null: JSON null. */
+type XRead = "empty" | "bad" | { pairs: [string, string | null][] } | { items: (string | null)[] };
+function xKey(k: string): string {
+  const s = k.replace(/[\u0000-\u001f\u007f]/g, " ");
+  return s === "" ? "(empty)" : s;
+}
+function xText(v: unknown, trim: boolean): string | null {
+  if (v === null) return null;
+  const t = typeof v === "string" ? v : JSON.stringify(v);
+  return trim && typeof v === "string" ? t.trim() : t;
+}
+export function explodeRead(v: string, s: Explode): XRead {
+  const t = v.trim();
+  if (!t) return "empty";
+  if (s.kind === "object" || s.kind === "json_list") {
+    if (!t.startsWith(s.kind === "object" ? "{" : "[")) return "bad";
+    let j: unknown;
+    try {
+      j = JSON.parse(t);
+    } catch {
+      return "bad";
+    }
+    if (s.kind === "json_list") return Array.isArray(j) ? { items: j.map((x) => xText(x, s.trim)) } : "bad";
+    if (!j || typeof j !== "object" || Array.isArray(j)) return "bad";
+    const pairs: [string, string | null][] = [];
+    const walk = (o: Record<string, unknown>, prefix: string, level: number) => {
+      for (const [k, x] of Object.entries(o)) {
+        const key = prefix ? `${prefix}.${xKey(k)}` : xKey(k);
+        if (level < s.depth && x && typeof x === "object" && !Array.isArray(x) && Object.keys(x).length) walk(x as Record<string, unknown>, key, level + 1);
+        else pairs.push([key, xText(x, s.trim)]);
+      }
+    };
+    walk(j as Record<string, unknown>, "", 1);
+    return { pairs };
+  }
+  if (s.kind === "list") {
+    const items = v.split(s.separator).map((p) => (s.trim ? p.trim() : p)).filter((p) => !s.skip_empty || p !== "");
+    return { items };
+  }
+  const pairs: [string, string | null][] = [];
+  for (const p of v.split(s.separator)) {
+    if (!p.trim()) continue;
+    const at = p.indexOf(s.kv);
+    if (at < 0) return "bad";
+    const key = xKey(s.trim ? p.slice(0, at).trim() : p.slice(0, at));
+    if (pairs.some(([k]) => k === key)) return "bad";
+    pairs.push([key, s.trim ? p.slice(at + s.kv.length).trim() : p.slice(at + s.kv.length)]);
+  }
+  return { pairs };
+}
 
 export class MockBackend implements Backend {
   private docs = new Map<number, MockDoc>();
@@ -2231,6 +2285,212 @@ export class MockBackend implements Backend {
 
   // ---- Milestone 4b (simple versions of the engine's operations) ----
 
+  /** Steps from `from` on as one undo step (as the engine's one step). */
+  private asOne(d: MockDoc, from: number): void {
+    const steps = d.undo.splice(from);
+    const apply = () => {
+      const inv = steps.map((s) => s.apply());
+      return () => {
+        for (let i = inv.length - 1; i >= 0; i--) inv[i]!();
+      };
+    };
+    d.undo.push({
+      apply,
+      inverse: () => {
+        for (let i = steps.length - 1; i >= 0; i--) steps[i]!.inverse();
+      },
+    });
+    markOf.set(apply, ++markSeq);
+  }
+
+  async explodeDetect(doc: number, col: number, keepFirst: boolean): Promise<ExplodeDetect> {
+    const d = this.get(doc);
+    const cells: string[] = [];
+    for (let r = keepFirst ? 1 : 0; r < this.rowCount(d) && cells.length < 2000; r++) {
+      const v = this.value(d, r, col);
+      if (v.trim()) cells.push(v);
+    }
+    const base: Explode = { ...EXPLODE_BASE, col, keep_first: keepFirst };
+    const count = (s: Explode) => cells.filter((c) => typeof explodeRead(c, s) === "object").length;
+    const cands: [Explode, number, string][] = [
+      [{ ...base, kind: "object" }, count({ ...base, kind: "object" }), "JSON objects"],
+      [{ ...base, kind: "json_list" }, count({ ...base, kind: "json_list" }), "JSON lists"],
+    ];
+    for (const sep of [";", "&", ",", "|"]) {
+      const s: Explode = { ...base, kind: "key_value", separator: sep };
+      const m = cells.filter((c) => !/^\s*[[{]/.test(c) && c.includes("=") && typeof explodeRead(c, s) === "object").length;
+      if (m && !cands.some(([x]) => x.kind === "key_value")) cands.push([s, m, `key=value pairs separated by ${sep}`]);
+    }
+    for (const sep of ["|", ";", ",", "\t", "/"]) {
+      const m = cells.filter((c) => !/^\s*[[{]/.test(c) && c.includes(sep)).length;
+      if (m && !cands.some(([x]) => x.kind === "list")) cands.push([{ ...base, kind: "list", separator: sep }, m, `lists separated by ${sep === "\t" ? "tabs" : sep}`]);
+    }
+    let best = cands[0]!;
+    for (const c of cands) if (c[1] > best[1]) best = c;
+    const [s, matched, what] = best;
+    const n = cells.length;
+    const words = !n ? "the column is empty" : matched >= 0.8 * n ? `${what} (${matched} of ${n} sampled)` : `mixed: ${matched} of ${n} look like ${what}`;
+    return { kind: s.kind, separator: s.separator, kv: s.kv, matched, sampled: n, words };
+  }
+
+  async explodeScan(doc: number, spec: Explode): Promise<ExplodeScan> {
+    this.callLog.push(`explodeScan:${JSON.stringify(spec)}`);
+    return this.oneJob(doc, "Reading the cells", `explode:${spec.col}`, async () => {
+      const d = this.get(doc);
+      const counts = new Map<string, [string, number]>();
+      const out: ExplodeScan = { keys: [], distinct: 0, capped: false, filled: 0, bad: 0, most_items: 0, new_rows: 0, rows: 0, all_rows: spec.how !== "rows" };
+      const norm = (k: string) => (spec.how === "flags" && !spec.match_case ? k.toLowerCase() : k);
+      for (let r = spec.keep_first ? 1 : 0; r < this.rowCount(d); r++) {
+        out.rows++;
+        const x = explodeRead(this.value(d, r, spec.col), spec);
+        if (x === "empty") continue;
+        out.filled++;
+        if (x === "bad") {
+          out.bad++;
+          continue;
+        }
+        const names = "pairs" in x ? x.pairs.map(([k]) => k) : spec.how === "flags" ? [...new Set(x.items.filter((i): i is string => !!i))] : [];
+        if ("items" in x) {
+          out.most_items = Math.max(out.most_items, x.items.length);
+          if (x.items.length > 1) out.new_rows += x.items.length - 1;
+        }
+        const seen = new Set<string>();
+        for (const k of names) {
+          if (seen.has(norm(k))) continue;
+          seen.add(norm(k));
+          const had = counts.get(norm(k));
+          counts.set(norm(k), [had?.[0] ?? k, (had?.[1] ?? 0) + 1]);
+        }
+      }
+      const all = [...counts.values()];
+      out.distinct = all.length;
+      const top = all.length > 1000 ? new Set([...all].sort((a, b) => b[1] - a[1]).slice(0, 1000)) : null;
+      out.keys = all.filter((k) => !top || top.has(k)).map(([key, count]) => ({ key, count }));
+      return out;
+    });
+  }
+
+  async explodePreview(doc: number, spec: Explode): Promise<ExplodePreview> {
+    const d = this.get(doc);
+    const first = spec.keep_first ? 1 : 0;
+    const rows: { r: number; v: string; x: XRead }[] = [];
+    for (let r = first; r < Math.min(this.rowCount(d), first + 20); r++) {
+      const v = this.value(d, r, spec.col);
+      rows.push({ r, v, x: explodeRead(v, spec) });
+    }
+    const norm = (k: string) => (spec.how === "flags" && !spec.match_case ? k.toLowerCase() : k);
+    let names: string[] = [];
+    if (spec.how === "columns" && (spec.kind === "list" || spec.kind === "json_list")) {
+      const most = Math.max(0, ...rows.map(({ x }) => (typeof x === "object" && "items" in x ? x.items.length : 0)));
+      names = Array.from({ length: most }, (_, i) => String(i + 1));
+    } else if (spec.how !== "rows") {
+      names = [...(spec.keys ?? [])];
+      if (!spec.keys || spec.add_new_keys)
+        for (const { x } of rows) {
+          if (typeof x !== "object") continue;
+          const ks = "pairs" in x ? x.pairs.map(([k]) => k) : x.items.filter((i): i is string => !!i);
+          for (const k of ks) if (!names.some((n) => norm(n) === norm(k))) names.push(k);
+        }
+    }
+    const base = (spec.keep_first ? this.value(d, 0, spec.col) : "") || `Column ${spec.col + 1}`;
+    const titles = spec.how === "rows" ? [`${base} (original)`] : names.map((n) => (spec.how === "flags" ? `${base}: ${n}` : spec.kind === "object" || spec.kind === "key_value" ? `${base}.${n}` : `${base} ${n}`));
+    const cell = (v: string | null) => (v === null ? { text: spec.null_blank ? "" : "null", shown: "null" as const } : v === "" ? { text: "", shown: "empty" as const } : { text: v, shown: "value" as const });
+    const missing = { text: "", shown: "missing" as const };
+    return {
+      titles,
+      rows: rows.map(({ r, v, x }) => {
+        const lines: { text: string; shown: "value" | "empty" | "null" | "missing" }[][] = [];
+        if (typeof x === "object" && "pairs" in x) lines.push(names.map((n) => { const p = x.pairs.find(([k]) => k === n); return p ? cell(p[1]) : missing; }));
+        else if (typeof x === "object" && spec.how === "flags") lines.push(names.map((n) => (x.items.some((i) => i !== null && norm(i) === norm(n)) ? { text: spec.mark, shown: "value" as const } : missing)));
+        else if (typeof x === "object" && spec.how === "columns") lines.push(names.map((_, k) => (k < x.items.length ? cell(x.items[k]!) : missing)));
+        else if (typeof x === "object") {
+          const left = spec.kind === "list" && x.items.length < 2;
+          const items = left ? [v] : x.items.length ? x.items : [""];
+          for (const it of items) lines.push(spec.original_col ? [cell(it), { text: v, shown: "value" }] : [cell(it)]);
+        }
+        return { row: r, before: v.slice(0, 200), bad: x === "bad", lines };
+      }),
+    };
+  }
+
+  /** Explode cells in the stand-in (shown rows only). */
+  private async explodeNow(doc: number, s: Explode): Promise<OpReport> {
+    const d = this.get(doc);
+    const rows = this.rowCount(d);
+    const first = s.keep_first ? 1 : 0;
+    const reads = Array.from({ length: rows }, (_, r) => (r < first ? "empty" : explodeRead(this.value(d, r, s.col), s)) as XRead);
+    const bad = reads.filter((x) => x === "bad").length;
+    const rep: ExplodeReport = { bad, new_keys: [], new_count: 0, new_added: s.add_new_keys, missing_keys: [], missing_count: 0, cols: 0, rows: 0 };
+    const base = (s.keep_first ? this.value(d, 0, s.col) : "") || `Column ${s.col + 1}`;
+    if (s.how === "rows") {
+      if (s.original_col) {
+        await this.change(doc, { op: "insert_cols", at: s.col + 1, count: 1 });
+        const cells: [number, number, string][] = [];
+        if (s.keep_first) cells.push([0, s.col + 1, `${base} (original)`]);
+        for (let r = first; r < rows; r++) if (reads[r] !== "empty") cells.push([r, s.col + 1, this.value(d, r, s.col)]);
+        if (cells.length) await this.setCells(doc, cells);
+        rep.cols = 1;
+      }
+      const width = this.colCount(d);
+      for (let r = rows - 1; r >= first; r--) {
+        const x = reads[r]!;
+        if (typeof x !== "object" || !("items" in x)) continue;
+        if (s.kind === "list" && x.items.length < 2) continue;
+        const items = x.items.map((i) => (i === null ? (s.null_blank ? "" : "null") : i));
+        const line = Array.from({ length: width }, (_, c) => this.value(d, r, c));
+        if (items.length > 1) await this.change(doc, { op: "insert_rows", at: r + 1, count: items.length - 1 });
+        const cells: [number, number, string][] = [[r, s.col, items[0] ?? ""]];
+        items.slice(1).forEach((p, i) => line.forEach((v, c) => cells.push([r + 1 + i, c, c === s.col ? p : v])));
+        await this.setCells(doc, cells);
+        rep.rows += Math.max(0, items.length - 1);
+      }
+      return this.report(this.refresh(d), { rows: rep.rows, explode: rep });
+    }
+    if (bad && !s.keep_original) throw err("invalid", `${bad} ${bad === 1 ? "cell" : "cells"} did not parse; keep the original column so they stay as they are (or fix them first: Show those rows)`);
+    const fan = s.how === "columns" && (s.kind === "list" || s.kind === "json_list");
+    const norm = (k: string) => (s.how === "flags" && !s.match_case ? k.toLowerCase() : k);
+    const found: string[] = [];
+    const vals = reads.map((x) => {
+      const m = new Map<string, string>();
+      if (typeof x !== "object") return m;
+      if ("pairs" in x) for (const [k, v] of x.pairs) m.set(k, v === null ? (s.null_blank ? "" : "null") : v);
+      else if (fan) x.items.forEach((v, k) => m.set(String(k + 1), v === null ? (s.null_blank ? "" : "null") : v));
+      else for (const i of x.items) if (i) m.set(norm(i), s.mark);
+      for (const k of m.keys()) if (!found.includes(k)) found.push(k);
+      return m;
+    });
+    let names: string[];
+    if (fan) names = found.sort((a, b) => Number(a) - Number(b));
+    else if (s.keys) {
+      names = [...s.keys];
+      const listed = new Set(s.keys.map(norm));
+      const fresh = found.filter((k) => !listed.has(k));
+      rep.new_count = fresh.length;
+      rep.new_keys = fresh.slice(0, 50);
+      rep.missing_keys = s.keys.filter((k) => !found.includes(norm(k)));
+      rep.missing_count = rep.missing_keys.length;
+      if (s.add_new_keys) names.push(...fresh);
+    } else names = found;
+    if (names.length > 1000) throw err("invalid", `this would add ${names.length} columns; at most 1000 can be added: untick some keys`);
+    if (!names.length) throw err("invalid", "nothing to add: no keys were found, or none are ticked");
+    const add = s.keep_original ? names.length : names.length - 1;
+    if (add) await this.change(doc, { op: "insert_cols", at: s.col + 1, count: add });
+    const slot = (k: number) => (s.keep_original ? s.col + 1 + k : k === 0 ? s.col : s.col + k);
+    const cells: [number, number, string][] = [];
+    const kind = s.how === "flags" ? ": " : fan ? " " : ".";
+    if (s.keep_first) names.forEach((n, k) => cells.push([0, slot(k), `${base}${kind}${n}`]));
+    vals.forEach((m, r) => {
+      if (r < first || reads[r] === "empty" || reads[r] === "bad") return;
+      names.forEach((n, k) => {
+        const v = m.get(norm(n)) ?? "";
+        if (v !== "" || (k === 0 && !s.keep_original)) cells.push([r, slot(k), v]);
+      });
+    });
+    if (cells.length) await this.setCells(doc, cells);
+    rep.cols = add;
+    return this.report(this.refresh(d), { cols: add, cells: cells.length, explode: rep });
+  }
+
   private report(info: DocInfo, x: Partial<OpReport> = {}): OpReport {
     return { info, cells: 0, rows: 0, groups: 0, cols: 0, skipped: 0, ...x };
   }
@@ -3571,6 +3831,23 @@ export class MockBackend implements Backend {
         await this.setCells(doc, cells);
         const info = await this.change(doc, { op: "delete_cols", at: s.col + 1, count: s.count - 1 });
         return this.report(info, { cols: s.count - 1, cells: cells.length });
+      }
+      case "explode_columns":
+      case "explode_rows": {
+        const s = op.spec;
+        const from = d.undo.length;
+        const rep = await this.explodeNow(doc, s);
+        if (d.undo.length - from > 1) this.asOne(d, from);
+        return { ...rep, info: this.refresh(d) };
+      }
+      case "show_explode_bad": {
+        const s = op.spec;
+        const keep = new Set<number>();
+        for (let r = s.keep_first ? 1 : 0; r < rows; r++) if (explodeRead(this.value(d, r, s.col), s) === "bad") keep.add(this.rowId(d, r));
+        const n = keep.size;
+        if (!n) throw err("invalid", "every filled cell could be read");
+        if (s.keep_first && rows > 0) keep.add(this.rowId(d, 0));
+        return this.report(this.setView(d, keep, { columns: [], keep_first: s.keep_first }), { rows: n });
       }
       case "split_rows": {
         const s = op.spec;

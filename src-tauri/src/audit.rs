@@ -29,6 +29,9 @@ fn name_of(op: &DataOp) -> &'static str {
         DataOp::SplitColumn { .. } => "split_column",
         DataOp::MergeColumns { .. } => "merge_columns",
         DataOp::SplitRows { .. } => "split_rows",
+        DataOp::ExplodeColumns { .. } => "explode_columns",
+        DataOp::ExplodeRows { .. } => "explode_rows",
+        DataOp::ShowExplodeBad { .. } => "show_explode_bad",
         DataOp::MergeRows { .. } => "merge_rows",
         DataOp::SortColumns { .. } => "sort_columns",
         DataOp::Join { .. } => "join",
@@ -547,6 +550,26 @@ fn data_ops() -> Vec<DataOp> {
                 shift: Shift::Up,
             },
         },
+        // The note column holds "x;y" in every other row.
+        DataOp::ExplodeColumns {
+            spec: natendo_engine::explode::Explode {
+                col: 4,
+                kind: natendo_engine::explode::ExplodeKind::List,
+                how: natendo_engine::explode::ExplodeHow::Flags,
+                separator: ";".into(),
+                ..Default::default()
+            },
+        },
+        DataOp::ExplodeRows {
+            spec: natendo_engine::explode::Explode {
+                col: 4,
+                kind: natendo_engine::explode::ExplodeKind::List,
+                how: natendo_engine::explode::ExplodeHow::Rows,
+                separator: ";".into(),
+                original_col: true,
+                ..Default::default()
+            },
+        },
     ]
 }
 
@@ -741,6 +764,7 @@ fn what_each_writing_operation_does_to_hidden_rows() {
         ("split_name#10", "filled in a new column"),
         ("compute#12", "filled in a new column"),
         ("extract#22", "filled in a new column"),
+        ("explode_columns#30", "filled in a new column"),
         // Says what it does: it deletes the hidden rows.
         ("delete_hidden#18", "removed"),
         // Sorts move hidden rows among all the rows.

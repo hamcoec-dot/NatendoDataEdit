@@ -923,6 +923,28 @@ everything is also in command search.
   pairs in itself, so it never needs the dictionary file.
 
   ![Edit values with a dictionary loaded: one value being dragged onto another, and the values not in the dictionary](docs/screenshots/value-dictionary.png)
+- **Explode cells:** Data > Explode cells (also in the column heading's
+  right-click menu) takes a column whose cells pack several fields and
+  spreads them out: a JSON object such as `{"plan":"gold","seats":3}`
+  becomes one column per key (`details.plan`, `details.seats`), with nested
+  objects flattened with dots down to the depth you choose; key=value pairs
+  such as `a=1;b=2` work the same way. A list (a JSON list, or items with a
+  separator such as `vip|beta`) becomes one row per item (the other cells
+  repeated, optionally with the whole cell kept in an added column), one
+  column per position, or one flag column per distinct item marked where
+  present. The dialog says what the column looks like ("JSON objects (97 of
+  100 sampled)", or "mixed" when it is not sure), lists the keys with how
+  often each is used (the 1,000 most common when there are more), shows the
+  first 20 rows before and after (a missing key, a JSON null and an empty
+  text are told apart), and says how many columns or rows it adds. Text is
+  never changed on the way: `1.50` stays `1.50`. Cells that do not parse
+  stay exactly as they are, are counted, and Show those rows filters to
+  them. Columns are made for every row, hidden ones too; one row per item
+  acts on shown rows only. One undo step. A recipe keeps the keys you ticked,
+  so next month's file gets the same columns; a key that is new then is
+  named in the run report (or added, if you ticked that).
+
+  ![Explode cells with JSON objects: the keys with counts, the preview of the first rows before and after, and the cells that did not parse](docs/screenshots/explode-cells.png)
 - **Group look-alikes by sound or spelling:** Data > Group look-alike values
   by sound or spelling (also in the column heading's right-click menu, or
   the Look-alikes choice in the value editor) finds names that sound alike

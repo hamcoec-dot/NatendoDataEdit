@@ -39,6 +39,7 @@ pub mod editing;
 pub mod encoding;
 pub mod encscan;
 pub mod example;
+pub mod explode;
 pub mod export;
 pub mod expr;
 pub mod fill;
