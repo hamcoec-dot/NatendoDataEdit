@@ -390,3 +390,29 @@ fn learning_is_unchanged_for_the_old_tests() {
         "first letter of c0 + \".\" + c1"
     );
 }
+
+#[test]
+fn the_formula_for_a_table() {
+    let mut d = doc("first,last,num,short\r\nAnn,Lee,1,A.Lee\r\nBo,Kim,2,B.Kim\r\nCy,Hart,3,\r\n");
+    let p = d.example_learn(&spec(3)).unwrap().program.unwrap();
+    let read = crate::value::ReadOptions::default();
+    let f = d.example_formula(&spec(3), &p, read).unwrap();
+    assert!(f.contains("[first]") && f.contains("[last]"), "{f}");
+    // Same titles: refused with the reason.
+    let same = doc("x,x,num,short\r\nAnn,Lee,1,A.Lee\r\nBo,Kim,2,B.Kim\r\n");
+    let q = same.example_learn(&spec(3)).unwrap().program.unwrap();
+    let why = same
+        .example_formula(&spec(3), &q, read)
+        .unwrap_err()
+        .to_string();
+    assert!(why.contains("same title"), "{why}");
+    // A column read as numbers: refused.
+    d.set_column_types(crate::coltype::ColumnTypes::from_list(vec![
+        crate::coltype::ColumnType::Number,
+    ]));
+    let why = d
+        .example_formula(&spec(3), &p, read)
+        .unwrap_err()
+        .to_string();
+    assert!(why.contains("numbers or dates"), "{why}");
+}

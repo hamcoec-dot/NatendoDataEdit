@@ -32,7 +32,7 @@ use natendo_engine::document::report::{NoteCounts, Place, ReportNotes};
 use natendo_engine::editing::{
     Arrange, Extract, GroupCalc, MapValues, TallySpec, ValueTally, MAX_PAIRS,
 };
-use natendo_engine::example::ExampleSpec;
+use natendo_engine::example::{ExampleSpec, Program};
 use natendo_engine::export::{ExportFormat, ExportOptions, ExportReport};
 use natendo_engine::expr::Lookups;
 use natendo_engine::expr::{ComputePreview, ComputeSpec};
@@ -52,6 +52,7 @@ use natendo_engine::reshape::{
     Blanks, Duplicates, MergeRows, Pivot, RowPlan, SplitRows, Table, Unpivot,
 };
 use natendo_engine::rows::{ShowRows, Totals};
+use natendo_engine::rulecard::{LearnReport, Outliers, Preview};
 use natendo_engine::sort::SortSpec;
 use natendo_engine::stats::{ChartData, ChartSpec, ColType, SubtotalSpec, Summary};
 use natendo_engine::tools::{
@@ -1781,6 +1782,16 @@ pub struct OpReport {
     pub marked: u64,
     /// Explode cells: cells that did not parse, new and missing keys.
     pub explode: Option<natendo_engine::explode::ExplodeReport>,
+    /// Fill by example: the rule it filled with and its examples' row ids (counting the odd
+    /// results afterwards needs them).
+    pub fill_rule: Option<FillRule>,
+}
+
+/// The rule a fill by example used.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct FillRule {
+    pub program: Program,
+    pub example_ids: Vec<u32>,
 }
 
 /// Changes listed, and rows looked at, by a cleaner preview.
@@ -3245,6 +3256,56 @@ impl Docs {
             })
         })?;
         Ok(rows)
+    }
+
+    /// The rule card (Data › Show me the rule): the rule fill by example would use for
+    /// `spec.col` (`spec.program` when given, checked), or the one example that breaks it.
+    pub fn example_learn(&self, id: u32, spec: &ExampleSpec) -> CmdResult<LearnReport> {
+        let entry = self.get(id)?;
+        let _job = entry.start("Working out the rule")?;
+        let d = entry.read();
+        Ok(d.example_learn(spec)?)
+    }
+
+    /// The first empty cells a rule would fill, with what it reads and writes (the first
+    /// 1,000 rows looked at, at most 20 listed).
+    pub fn example_preview(
+        &self,
+        id: u32,
+        spec: &ExampleSpec,
+        program: &Program,
+    ) -> CmdResult<Preview> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.example_preview(spec, program)?)
+    }
+
+    /// The cells a rule fills and the odd results among them (`after`: the examples' row ids
+    /// of a fill that has run, to look at what it filled). A job: Cancel stops it.
+    pub fn example_outliers(
+        &self,
+        id: u32,
+        spec: &ExampleSpec,
+        program: &Program,
+        after: Option<Vec<u32>>,
+    ) -> CmdResult<Outliers> {
+        let entry = self.get(id)?;
+        let job = entry.start("Looking for odd results")?;
+        let d = entry.read();
+        Ok(d.example_outliers(spec, program, after.as_deref(), &job.progress)?)
+    }
+
+    /// The rule as a formula for a computed column, or why it has none.
+    pub fn example_formula(
+        &self,
+        id: u32,
+        spec: &ExampleSpec,
+        program: &Program,
+        read: natendo_engine::value::ReadOptions,
+    ) -> CmdResult<String> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.example_formula(spec, program, read)?)
     }
 
     /// How many empty, untitled columns past the usual number could be
@@ -7181,6 +7242,7 @@ impl Docs {
         let fill_marks = std::cell::RefCell::new(None::<Vec<(u32, u32)>>);
         // Cleaners and fill by example: (left or missed, pattern, examples).
         let extra = std::cell::RefCell::new((0u64, None::<String>, 0u64));
+        let fill_rule = std::cell::RefCell::new(None::<FillRule>);
         let errors = std::cell::Cell::new(0u64);
         let groups = std::cell::Cell::new(0u64);
         let other_order = std::cell::Cell::new(0u64);
@@ -7265,6 +7327,10 @@ impl Docs {
                 DataOp::FillExample { spec } => {
                     let (plan, rep) = d.plan_fill_example(spec, p)?;
                     *extra.borrow_mut() = (rep.missed, Some(rep.pattern), rep.examples);
+                    *fill_rule.borrow_mut() = Some(FillRule {
+                        program: rep.program,
+                        example_ids: rep.example_ids,
+                    });
                     Planned::Cells(plan)
                 }
                 DataOp::Compute { spec } => {
@@ -7487,6 +7553,7 @@ impl Docs {
         r.ambiguous_left = ambiguous.get();
         r.pattern = pattern;
         r.examples = examples;
+        r.fill_rule = fill_rule.into_inner();
         r.errors = errors.get();
         if groups.get() > 0 {
             r.groups = groups.get();
@@ -11365,6 +11432,27 @@ mod tests {
         assert_eq!((r.cells, r.examples), (1, 1));
         assert!(r.pattern.is_some());
         assert_eq!(cell(1, 1), "AL");
+        // The rule card: the fill's rule, its odd results counted after, and the card's calls.
+        let rule = r.fill_rule.clone().expect("the rule it used");
+        let ex = ExampleSpec {
+            col: 1,
+            skip_first: true,
+            ..Default::default()
+        };
+        let o = docs
+            .example_outliers(id, &ex, &rule.program, Some(rule.example_ids.clone()))
+            .unwrap();
+        assert_eq!((o.fills, o.odd_rows), (1, 0));
+        let learned = docs.example_learn(id, &ex).unwrap();
+        assert_eq!(learned.program.as_ref(), Some(&rule.program));
+        assert!(docs
+            .example_preview(id, &ex, &rule.program)
+            .unwrap()
+            .rows
+            .is_empty());
+        assert!(docs
+            .example_formula(id, &ex, &rule.program, Default::default())
+            .is_ok());
         // Split name adds columns.
         let r = docs
             .data_op(
