@@ -68,7 +68,7 @@ import type {
 } from "./backend";
 import { encodeViewport, decodeViewport, type ViewportData } from "./binary";
 import { parseTsv, toTsv } from "./tsv";
-import { runCleaner, type Cleaner, type CleanPreview, type CleanSpec } from "./clean";
+import { runCleaner, type Cleaner, type CleanPreview, type CleanSpec, type ExampleSpec } from "./clean";
 import type { ChartData, ChartSpec, ColType, Highlight, Listing, Mark, RecentItem, Summary, View } from "./views";
 import type { Finding, PrivateKind, PrivateState, SafeCopy, SafeCopyReport, SplitReport, Written, TableReport, RaggedList, RowText, RowRepair, SameShape, DateScan, Totals } from "./backend";
 import type { Autosaved, RecoveryItem, Suggestions, VersionItem } from "./m9";
@@ -84,6 +84,7 @@ import { mockEval } from "./mockexpr";
 import { rewriteA1 } from "./cellformula";
 import { stubProfile } from "./profile";
 import { shapeMatches, stubInsights } from "./insights";
+import { describe as ruleWords, mockFormula, mockLearn, PREVIEW_LOOK, PREVIEW_ROWS, MAX_OUTLIERS, programCols, ruleProblem, runParts, shape as ruleShape, type LearnReport, type OddKind, type Outliers, type Program, type RulePreview } from "./rule";
 import { stubFacets } from "./facets";
 import { previewOf, simulateJoin } from "./joins";
 import * as cm from "./contractMock";
@@ -1202,6 +1203,116 @@ export class MockBackend implements Backend {
     const left = skip.length ? [`${skip.length} ${skip.length === 1 ? "row you unticked is" : "rows you unticked are"} not in the recipe; running it fixes every row of ${fields} fields`] : [];
     return [fixed.size, { ...info, run_notes: left }];
   }
+  /** C10: the column's examples (row positions stand in for row ids here). */
+  private ruleExamples(d: MockDoc, spec: ExampleSpec): { ids: number[]; data: { row: string[]; out: string }[]; sources: number[] } {
+    const ncols = d.info.cols;
+    const sources = Array.from({ length: ncols }, (_, c) => c).filter((c) => c !== spec.col);
+    const ids: number[] = [];
+    const data: { row: string[]; out: string }[] = [];
+    const lim = Math.min(this.rowCount(d), 100_000);
+    for (let r = spec.skip_first ? 1 : 0; r < lim && data.length < 50; r++) {
+      const out = this.value(d, r, spec.col);
+      if (!out || spec.leave_out?.includes(r)) continue;
+      ids.push(r);
+      data.push({ row: Array.from({ length: ncols }, (_, c) => (c === spec.col ? "" : this.value(d, r, c))), out });
+    }
+    return { ids, data, sources };
+  }
+  private ruleNames(d: MockDoc, skipFirst: boolean): (c: number) => string {
+    return (c) => (skipFirst ? this.value(d, 0, c) : "") || `column ${c + 1}`;
+  }
+  private ruleCheck(d: MockDoc, spec: ExampleSpec, program: Program): void {
+    if (spec.revision !== undefined && spec.revision !== null && spec.revision !== (d.info.data_revision ?? 0)) throw err("invalid", "the table changed: the preview was worked out again");
+    const why = ruleProblem(program, d.info.cols, spec.col);
+    if (why) throw err("invalid", why);
+  }
+  async exampleLearn(doc: number, spec: ExampleSpec): Promise<LearnReport> {
+    this.calls.push("exampleLearn");
+    const d = this.get(doc);
+    const ex = this.ruleExamples(d, spec);
+    const names = this.ruleNames(d, spec.skip_first);
+    const revision = d.info.data_revision ?? 0;
+    if (spec.program) {
+      this.ruleCheck(d, { ...spec, revision: null }, spec.program);
+      return { program: spec.program, words: ruleWords(spec.program, names), examples: ex.data.length, conflict: null, revision };
+    }
+    if (!ex.data.length) throw err("invalid", "type a few results in the column first, then fill by example");
+    const p = mockLearn(ex.data, ex.sources);
+    if (p) return { program: p, words: ruleWords(p, names), examples: ex.data.length, conflict: null, revision };
+    for (let i = ex.data.length - 1; i >= 0; i--) {
+      const q = mockLearn(
+        ex.data.filter((_, k) => k !== i),
+        ex.sources,
+      );
+      if (q) return { program: q, words: ruleWords(q, names), examples: ex.data.length - 1, conflict: { row: ex.ids[i]!, id: ex.ids[i]!, value: ex.data[i]!.out }, revision };
+    }
+    return { program: null, words: "", examples: ex.data.length, conflict: null, revision };
+  }
+  async examplePreview(doc: number, spec: ExampleSpec, program: Program): Promise<RulePreview> {
+    const d = this.get(doc);
+    this.ruleCheck(d, { ...spec, revision: null }, program);
+    const reads = programCols(program);
+    const start = spec.skip_first ? 1 : 0;
+    const end = Math.min(this.rowCount(d), start + PREVIEW_LOOK);
+    const rows: RulePreview["rows"] = [];
+    for (let r = start; r < end && rows.length < PREVIEW_ROWS; r++) {
+      if (this.value(d, r, spec.col)) continue;
+      const vals = reads.map((c) => [c, this.value(d, r, c)] as [number, string]);
+      if (vals.every(([, v]) => !v)) continue;
+      const res = runParts(program, (c) => this.value(d, r, c));
+      rows.push({ row: r, reads: vals, result: res && res[0] ? res[0] : null });
+    }
+    return { rows, looked: Math.max(0, end - start) };
+  }
+  async exampleOutliers(doc: number, spec: ExampleSpec, program: Program, after: number[] | null): Promise<Outliers> {
+    this.calls.push("exampleOutliers");
+    const d = this.get(doc);
+    this.ruleCheck(d, { ...spec, revision: null }, program);
+    const ids = after ?? this.ruleExamples(d, spec).ids;
+    const values = ids.map((r) => this.value(d, r, spec.col)).filter((v) => v);
+    const shapes = new Set(values.map(ruleShape));
+    const lens = values.map((v) => [...v].length);
+    const short = lens.length ? Math.min(...lens) : 0;
+    const long = lens.length ? Math.max(...lens) : Infinity;
+    const reads = programCols(program);
+    const o: Outliers = { fills: 0, missed: 0, empty_piece: 0, odd_shape: 0, odd_length: 0, rows: [], odd_rows: 0 };
+    const lim = Math.min(this.rowCount(d), 100_000);
+    for (let r = spec.skip_first ? 1 : 0; r < lim; r++) {
+      const have = this.value(d, r, spec.col);
+      if (after ? !have || ids.includes(r) : have) continue;
+      if (reads.every((c) => !this.value(d, r, c))) continue;
+      const res = runParts(program, (c) => this.value(d, r, c));
+      if (!res || !res[0]) {
+        if (!after) o.missed++;
+        continue;
+      }
+      if (after && res[0] !== have) continue;
+      o.fills++;
+      const kinds: OddKind[] = [];
+      if (res[1]) kinds.push("empty_piece");
+      if (shapes.size && !shapes.has(ruleShape(res[0]))) kinds.push("shape");
+      const n = [...res[0]].length;
+      if (lens.length && (n * 2 < short || n > long * 2)) kinds.push("length");
+      if (!kinds.length) continue;
+      o.empty_piece += +kinds.includes("empty_piece");
+      o.odd_shape += +kinds.includes("shape");
+      o.odd_length += +kinds.includes("length");
+      o.odd_rows++;
+      if (o.rows.length < MAX_OUTLIERS) o.rows.push({ row: r, kinds, value: res[0] });
+    }
+    return o;
+  }
+  async exampleFormula(doc: number, spec: ExampleSpec, program: Program): Promise<string> {
+    const d = this.get(doc);
+    this.ruleCheck(d, { ...spec, revision: null }, program);
+    const types = d.info.column_types.types;
+    const f = mockFormula(program, this.ruleNames(d, spec.skip_first), (c) => {
+      const t = types[c] ?? "auto";
+      return t !== "auto" && t !== "text" && t !== "id";
+    });
+    if ("why" in f) throw err("invalid", f.why);
+    return f.formula;
+  }
   async emptyExtraColumns(doc: number): Promise<[number, number]> {
     const m = this.fakeRagged.get(doc);
     return [m && !m.long.length ? 1 : 0, this.get(doc).undo.length];
@@ -1763,6 +1874,10 @@ export class MockBackend implements Backend {
     d.clean = 0;
     d.json = { lines: o.lines ?? true, refuse: o.refuse ?? null, file: `C:\\Data\\${name}`, mixedBlanks: o.mixedBlanks ?? true, changed: o.changed ?? false, written: "" };
     return this.refresh(d);
+  }
+  /** Test hook: a tab of these rows (made-up data for a screen test). */
+  mockRowsTab(name: string, rows: string[][]): DocInfo {
+    return this.refresh(this.get(this.fromRows(name, rows).id));
   }
   /** Test hook: the JSON file as the last save wrote it. */
   mockJsonWritten(doc: number): string {
@@ -3840,6 +3955,28 @@ export class MockBackend implements Backend {
         const info = changes.length ? await this.setCells(doc, changes) : this.refresh(d);
         return this.report(info, { cells: changes.length, left: p.left });
       }
+      case "fill_example": {
+        const s = op.spec;
+        const ex = this.ruleExamples(d, s);
+        let program = s.program ?? null;
+        if (program) this.ruleCheck(d, s, program);
+        else {
+          if (!ex.data.length) throw err("invalid", "type a few results in the column first, then fill by example");
+          program = mockLearn(ex.data, ex.sources);
+          if (!program) throw err("invalid", "no single pattern fits every example; check them, or type one more");
+        }
+        const cells: [number, number, string][] = [];
+        let missed = 0;
+        const reads = programCols(program);
+        for (let r = s.skip_first ? 1 : 0; r < Math.min(rows, 100_000); r++) {
+          if (this.value(d, r, s.col) || reads.every((c) => !this.value(d, r, c))) continue;
+          const res = runParts(program, (c) => this.value(d, r, c));
+          if (res && res[0]) cells.push([r, s.col, res[0]]);
+          else missed++;
+        }
+        const info = cells.length ? await this.setCells(doc, cells) : this.refresh(d);
+        return this.report(info, { cells: cells.length, left: missed, examples: ex.data.length, pattern: ruleWords(program, this.ruleNames(d, s.skip_first)), fill_rule: { program, example_ids: ex.ids } });
+      }
       case "compute": {
         const names = allCols.map((c) => (op.spec.keep_first ? this.value(d, 0, c) : "") || `Column ${c + 1}`);
         const first = op.spec.keep_first ? 1 : 0;
@@ -3917,7 +4054,6 @@ export class MockBackend implements Backend {
       case "sort_problems":
       case "check_column":
       case "split_name":
-      case "fill_example":
       case "count_repeats":
       case "blank_repeats":
       case "breaks":
