@@ -281,10 +281,13 @@ pub(crate) fn learn_or_conflict(
             hi = mid;
         }
     }
-    // The example at `hi - 1` breaks the rule of those before it; it, or one before it, is the odd one.
+    // The example at `hi - 1` breaks the rule of those before it; it, or one before it, is the odd
+    // one. Named only when exactly one of them works (with two examples that disagree, either
+    // could be the odd one), so every candidate is tried, within the budget.
+    let mut found: Option<(usize, Program)> = None;
     for c in (0..hi).rev() {
         if Instant::now() > deadline {
-            break;
+            return Ok(none);
         }
         let others: Vec<Example> = examples[..n]
             .iter()
@@ -302,14 +305,20 @@ pub(crate) fn learn_or_conflict(
                     == Some(e.out)
             });
             if all_fit {
-                return Ok(Learned {
-                    program: Some(p),
-                    conflict: Some(c),
-                });
+                if found.is_some() {
+                    return Ok(none);
+                }
+                found = Some((c, p));
             }
         }
     }
-    Ok(none)
+    Ok(match found {
+        Some((c, p)) => Learned {
+            program: Some(p),
+            conflict: Some(c),
+        },
+        None => none,
+    })
 }
 
 /// A result's shape for the odd-results count: each run of letters one `A`, each run of digits

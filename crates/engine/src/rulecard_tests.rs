@@ -427,3 +427,19 @@ fn shapes_count_runs_not_lengths() {
     assert_ne!(result_shape("A.Lee"), result_shape("A.12"));
     assert_ne!(result_shape("AB12"), result_shape("AB"));
 }
+
+#[test]
+fn two_examples_that_disagree_name_neither() {
+    // "A.Lee" and "Kim": either could be the odd one, so the card names no row.
+    let d = doc("first,last,short\r\nAnn,Lee,A.Lee\r\nBo,Kim,Kim\r\nCy,Hart,\r\n");
+    let rep = d.example_learn(&spec(2)).unwrap();
+    assert_eq!(
+        (rep.program.is_none(), rep.conflict.is_none()),
+        (true, true),
+        "{rep:?}"
+    );
+    // A third example that agrees with one of them settles it.
+    let d = doc("first,last,short\r\nAnn,Lee,A.Lee\r\nBo,Kim,Kim\r\nCy,Hart,C.Hart\r\n");
+    let rep = d.example_learn(&spec(2)).unwrap();
+    assert_eq!(rep.conflict.map(|c| c.value), Some("Kim".to_string()));
+}

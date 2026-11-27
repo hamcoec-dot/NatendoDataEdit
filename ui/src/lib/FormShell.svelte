@@ -3,6 +3,7 @@
   // screens: a modal box with a title, the screen's own content and its
   // buttons. Escape closes; keys never reach the grid behind it.
   import type { Snippet } from "svelte";
+  import { focusPick } from "./focusPick";
 
   interface Props {
     title: string;
@@ -48,9 +49,11 @@
   }
 
   $effect(() => {
-    // The first box or button that can take the focus; else the dialog itself, so Escape and
-    // Enter still reach it (a screen still working has only greyed buttons).
-    (box.querySelector<HTMLElement>("select:not([disabled]), input:not([disabled]), textarea:not([disabled]), button:not([disabled])") ?? box).focus();
+    // The first box that can take the focus, else the main button, else the dialog itself, so
+    // Escape and Enter still reach it (see focusPick).
+    const els = [...box.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>("select, input, textarea, button")];
+    const i = focusPick(els.map((e) => ({ tag: e.tagName.toLowerCase(), disabled: e.disabled, enter: e.hasAttribute("data-enter") })));
+    (els[i] ?? box).focus();
   });
 </script>
 
