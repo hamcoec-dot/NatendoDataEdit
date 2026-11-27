@@ -1442,6 +1442,8 @@ export interface PageSetup {
   margin_mm: number;
   font_size: number;
   fit_width: boolean;
+  /** Shrink so everything fits one page (not below 4 pt); missing in setups saved before it. */
+  fit_page?: boolean;
   grid: boolean;
   repeat_header: boolean;
   title: string;

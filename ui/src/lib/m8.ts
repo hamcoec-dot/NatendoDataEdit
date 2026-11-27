@@ -393,6 +393,7 @@ export function defaultPage(title: string): PageSetup {
     margin_mm: 12.7,
     font_size: 9,
     fit_width: true,
+    fit_page: false,
     grid: true,
     repeat_header: true,
     title,
@@ -420,14 +421,188 @@ export function escapeHtml(s: string): string {
 
 const isNumber = (v: string): boolean => /^\s*[-+(]?[$€£¥]?\s*\d[\d,]*(\.\d+)?\)?%?\s*$/.test(v);
 
+/** What would print: all shown rows, or the selected block. */
+export interface PrintView {
+  /** Column titles printed (null: the file has no header row). */
+  titles: string[] | null;
+  /** The first rows, for the preview. */
+  sample: string[][];
+  /** Rows and columns that would print. */
+  rows: number;
+  cols: number;
+  /** `measureWidths` of the first `FIT_SAMPLE_ROWS` rows. */
+  widths: number[];
+  /** By printed column: typed Text or Id (never set as numbers). */
+  textCols: boolean[];
+}
+
+/** The block of a selection that prints: its shown columns (all shown ones
+ *  for whole rows) and its rows from the first data row; null for several
+ *  blocks. `shown`: the shown columns in order. */
+export function printBlock(
+  r: { row: number; rows: number; col: number; cols: number } | null,
+  shown: readonly number[],
+  firstRow: number,
+  totalRows: number,
+  totalCols: number,
+): { first: number; rows: number; cols: number[] } | null {
+  if (!r) return null;
+  const whole = r.col === 0 && r.cols >= totalCols;
+  const cols = whole ? [...shown] : shown.filter((c) => c >= r.col && c < r.col + r.cols);
+  const first = Math.max(firstRow, r.row);
+  const rows = cols.length ? Math.max(0, Math.min(totalRows, r.row + r.rows) - first) : 0;
+  return { first, rows, cols };
+}
+
+/** Smallest text size either fit may use, in points (pdf.rs `MIN_FONT`). */
+export const MIN_FONT = 4;
+/** Rows the widths are taken from, like the PDF (pdf.rs `SAMPLE_ROWS`). */
+export const FIT_SAMPLE_ROWS = 2_000;
+/** Text line height in printed rows (as a multiple of the text size). */
+const LINE = 1.25;
+/** Grid line width in points. */
+const RULE = 0.5;
+/** Characters of a value that count toward its width (as the PDF). */
+const WIDTH_CHARS = 200;
+
+/** The widest line of each printed column, titles (bold) included, for
+ *  text 1 pt high, in points: any size is then a multiply. `measure` gives
+ *  a line's width for text 1 unit high. A line too short to beat its
+ *  column's widest so far is not measured. */
+export function measureWidths(titles: string[] | null, rows: string[][], measure: (s: string, bold: boolean) => number): number[] {
+  const n = titles?.length ?? rows[0]?.length ?? 0;
+  const out = new Array<number>(n).fill(0);
+  const widest = (v: string, bold: boolean, k: number): void => {
+    if (!v) return;
+    const text = v.length > WIDTH_CHARS ? Array.from(v).slice(0, WIDTH_CHARS).join("") : v;
+    for (const line of text.split("\n")) {
+      // No character is wider than 1.5 em: shorter lines cannot win.
+      if (line.length * 1.5 <= out[k]!) continue;
+      out[k] = Math.max(out[k]!, measure(line, bold));
+    }
+  };
+  if (titles) titles.forEach((t, k) => widest(t, true, k));
+  for (const r of rows) for (let k = 0; k < n; k++) widest(r[k] ?? "", false, k);
+  return out;
+}
+
+/** The size that shrinks `natural` to `content` (both at `size`), not
+ *  below `MIN_FONT`; `fits` is false when even that is too wide. */
+export function fitScale(natural: number, content: number, size: number): { size: number; fits: boolean } {
+  if (natural <= content) return { size, fits: true };
+  const s = (size * content) / natural;
+  return s < MIN_FONT ? { size: MIN_FONT, fits: false } : { size: s, fits: true };
+}
+
+export interface PrintFit {
+  /** Text size it prints at, in points. */
+  size: number;
+  /** The setup's own size (a fit only ever shrinks). */
+  asked: number;
+  /** Column widths in points when shrunk (a fixed layout); null: as laid out. */
+  widths: number[] | null;
+  /** All columns fit across the page. */
+  fitsWidth: boolean;
+  /** Pages it prints on (Print cuts columns that do not fit; the PDF puts them on pages across). */
+  pages: number;
+}
+
+/** The page's size and margin in points. */
+function pagePt(p: PageSetup): { pw: number; ph: number; margin: number } {
+  const paper = PAPERS.find((x) => x.value === p.paper) ?? PAPERS[0]!;
+  const [w, h] = p.landscape ? [paper.size[1], paper.size[0]] : paper.size;
+  const pt = 72 / 25.4;
+  const margin = Math.max(0, Math.min(p.margin_mm, Math.min(w, h) / 4)) * pt;
+  return { pw: w * pt, ph: h * pt, margin };
+}
+
+/** How a table prints with this setup, by the PDF's rule (pdf.rs
+ *  `pdf_layout`): each column as wide as its widest sampled text plus
+ *  padding, held to 2.5 em .. 40% of the page; fit to width shrinks the
+ *  text by the page width over the total, fit on one page also by the
+ *  page height over the rows; never below 4 pt. `w1`: `measureWidths`.
+ *  `pdf`: the PDF's row, title and page-number heights; else Print's
+ *  (there titles and page numbers sit in the margin, and grid lines take room). */
+export function printFit(w1: number[], p: PageSetup, rows: number, header: boolean, pdf = false): PrintFit {
+  const { pw, ph, margin } = pagePt(p);
+  const fs = Math.max(MIN_FONT, Math.min(72, Number.isFinite(p.font_size) ? p.font_size : 9));
+  const width = pw - 2 * margin - (pdf ? 0 : RULE * (w1.length + 1));
+  const height = ph - 2 * margin;
+  const pad = 0.35 * fs;
+  const minW = Math.max(fs * 2.5, 12);
+  const maxW = Math.max(width * 0.4, minW);
+  // Print: 2% spare so the browser's rounding never wraps a line that
+  // measured just fitting (the grid line is added to each column below).
+  const spare = pdf ? 1 : 1.02;
+  const nat = w1.map((w) => Math.min(maxW, Math.max(minW, (w * fs + 2 * pad) * spare)));
+  const total = nat.reduce((a, b) => a + b, 0);
+  const fitW = p.fit_width || !!p.fit_page;
+  // Not held to 4 pt yet: fit on one page may shrink it further.
+  let want = fitW && total > width ? (fs * width) / total : fs;
+  const lines = Math.max(1, rows + (header ? 1 : 0));
+  const title = p.title.trim() !== "";
+  if (p.fit_page) {
+    let h: number;
+    if (pdf) {
+      const foot = p.page_numbers ? 2.4 : 0;
+      h = title ? Math.min((height - 5.4) / (lines * 1.4 + 1.8 + foot), (height - 28.8) / (lines * 1.4 + foot)) : height / (lines * 1.4 + foot);
+      h *= 0.9999;
+    } else {
+      // A row: the line, 0.15 em padding above and below, one grid line;
+      // 3% spare for the browser rounding row heights to pixels.
+      h = ((height - lines * RULE) / (lines * (LINE + 0.3))) * 0.97;
+    }
+    want = Math.min(want, h);
+  }
+  const size = want < fs ? Math.max(MIN_FONT, want) : fs;
+  const k = size / fs;
+  const widths = size < fs ? nat.map((w) => Math.min(w * k, width) + (pdf ? 0 : RULE)) : null;
+  const sum = (widths ?? nat).reduce((a, b) => a + b, 0);
+  const fitsWidth = sum <= width + (pdf ? 0 : RULE * w1.length) + 0.01;
+  let across = 1;
+  if (pdf) {
+    let acc = 0;
+    (widths ?? nat).forEach((w, i) => {
+      if (i > 0 && acc + w > width + 0.01) {
+        across++;
+        acc = 0;
+      }
+      acc += w;
+    });
+  }
+  const printRowH = pdf ? size * 1.4 : size * (LINE + 0.3) + RULE;
+  const avail = pdf ? height - (title ? Math.min(size + 3, 16) * 1.8 : 0) - (p.page_numbers ? size * 2.4 : 0) : height;
+  const per = (h: number): number => Math.max(1, Math.floor(h / printRowH));
+  const first = per(avail - (header ? printRowH : 0));
+  const next = per(avail - (header && p.repeat_header ? printRowH : 0));
+  const down = rows <= first ? 1 : 1 + Math.ceil((rows - first) / next);
+  return { size, asked: fs, widths, fitsWidth, pages: down * across };
+}
+
+/** The content policy at the top of every print and preview page: no
+ *  scripts, images, fonts, links or connections, only its own style. */
+export const PRINT_CSP = "default-src 'none'; style-src 'unsafe-inline'";
+
 /** A whole printable page (for a print frame): the table with its titles
- *  repeated on each page, sized by the page setup. */
-/** `textCols`: by printed column, true for a column typed Text or Id (its values are never set as numbers). */
-export function printHtml(titles: string[] | null, rows: string[][], p: PageSetup, fontFamily: string, preview = false, textCols: readonly boolean[] = []): string {
+ *  repeated on each page, sized by the page setup, or by `fit`
+ *  (`printFit`: the shrunk size and fixed column widths). Nothing in it can
+ *  fetch anything: the content policy comes first, and every value is escaped.
+ *  `textCols`: by printed column, true for a column typed Text or Id (its values are never set as numbers). */
+export function printHtml(
+  titles: string[] | null,
+  rows: string[][],
+  p: PageSetup,
+  fontFamily: string,
+  preview = false,
+  textCols: readonly boolean[] = [],
+  fit: PrintFit | null = null,
+): string {
   const paper = PAPERS.find((x) => x.value === p.paper) ?? PAPERS[0]!;
   const [w, h] = p.landscape ? [paper.size[1], paper.size[0]] : paper.size;
   const margin = Math.max(0, Math.min(p.margin_mm, Math.min(w, h) / 4));
-  const size = Math.max(4, Math.min(72, p.font_size));
+  const size = +(fit ? fit.size : Math.max(MIN_FONT, Math.min(72, p.font_size))).toFixed(3);
+  const fixed = fit?.widths ?? null;
+  const cols = fixed ? `<colgroup>${fixed.map((x) => `<col style="width:${x.toFixed(2)}pt">`).join("")}</colgroup>` : "";
   const head = titles
     ? `<thead><tr>${titles.map((t) => `<th>${escapeHtml(t)}</th>`).join("")}</tr></thead>`
     : "";
@@ -436,19 +611,53 @@ export function printHtml(titles: string[] | null, rows: string[][], p: PageSetu
     .join("\n");
   const pageNo = p.page_numbers ? `@bottom-center { content: "Page " counter(page) " of " counter(pages); font: ${size}pt ${fontFamily}; }` : "";
   const title = p.title.trim() ? `@top-left { content: "${cssString(p.title)}"; font: ${size + 3}pt ${fontFamily}; }` : "";
-  const border = p.grid ? "0.5pt solid #999" : "none";
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(p.title)}</title><style>
+  const border = p.grid ? `${RULE}pt solid #999` : "none";
+  const layout = fixed
+    ? `table-layout: fixed; width: ${fixed.reduce((a, b) => a + b, 0).toFixed(2)}pt;`
+    : p.fit_width || p.fit_page
+      ? "width: 100%; table-layout: auto;"
+      : "";
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${PRINT_CSP}"><meta charset="utf-8"><title>${escapeHtml(p.title)}</title><style>
 @page { size: ${w}mm ${h}mm; margin: ${margin}mm; ${title} ${pageNo} }
 html, body { margin: 0; background: #fff; color: #000; }
-body { font: ${size}pt ${fontFamily}; }
-table { border-collapse: collapse; ${p.fit_width ? "width: 100%; table-layout: auto;" : ""} }
+body { font: ${size}pt/${LINE} ${fontFamily}; }
+table { border-collapse: collapse; ${layout} }
 thead { display: ${p.repeat_header ? "table-header-group" : "table-row-group"}; }
 th { background: #ebebeb; text-align: left; font-weight: 600; }
 th, td { border: ${border}; padding: 0.15em 0.35em; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
 td.n { text-align: right; }
 tr { break-inside: avoid; }
 ${preview ? `body { padding: ${margin}mm; width: ${w}mm; height: ${h}mm; box-sizing: border-box; overflow: hidden; } .title { font-size: ${size + 3}pt; margin: 0 0 0.6em; }` : ""}
-</style></head><body>${preview && p.title.trim() ? `<p class="title">${escapeHtml(p.title)}</p>` : ""}<table>${head}<tbody>
+</style></head><body>${preview && p.title.trim() ? `<p class="title">${escapeHtml(p.title)}</p>` : ""}<table>${cols}${head}<tbody>
 ${body}
 </tbody></table></body></html>`;
+}
+
+/** What the print dialog says about the fit; "" when nothing shrinks. */
+export function fitNote(f: PrintFit, p: PageSetup, pdf: boolean): string {
+  const parts: string[] = [];
+  if (f.size < f.asked - 0.001) {
+    const pt = f.size.toFixed(1).replace(/\.0$/, "");
+    parts.push(`Text will print at ${pt} pt${f.size < 6 ? (p.landscape ? " (small)" : " (small: try landscape)") : ""}.`);
+  }
+  if ((p.fit_width || p.fit_page) && !f.fitsWidth)
+    parts.push(
+      pdf
+        ? "Too many columns for one page width even at 4 pt: the PDF puts the rest on further pages across."
+        : "Too many columns for one page width even at 4 pt: use landscape, a bigger paper, Save as PDF (it goes across pages), or print fewer columns.",
+    );
+  if (p.fit_page && f.pages > 1) parts.push(`This needs ${f.pages.toLocaleString()} pages even at 4 pt; it will print on ${f.pages.toLocaleString()} pages.`);
+  return parts.join(" ");
+}
+
+/** Text widths with a canvas in the print font, for `measureWidths`. */
+export function canvasMeasure(fontFamily: string): (s: string, bold: boolean) => number {
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (!ctx) return (s) => s.length * 0.55;
+  let font = "";
+  return (s, bold) => {
+    const f = `${bold ? 600 : 400} 100px ${fontFamily}`;
+    if (f !== font) ctx.font = font = f;
+    return ctx.measureText(s).width / 100;
+  };
 }

@@ -130,7 +130,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { unchangedTabs, type ScaleKind, type ToolKind } from "./lib/m10";
   import { autosaveDue, type RecoveryItem, type Suggestion, type Suggestions, type VersionItem } from "./lib/m9";
   import { BASIC_KEYS, cleanFormat, defaultFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat } from "./lib/m9";
-  import { defaultPage, newCheck, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS } from "./lib/m8";
+  import { canvasMeasure, defaultPage, FIT_SAMPLE_ROWS, measureWidths, newCheck, printBlock, printFit, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS, type PrintView } from "./lib/m8";
   import type { Check, CheckReport, CheckSpec, ComputeSpec, PageSetup, TableCheck } from "./lib/backend";
   import { exportDefaults } from "./lib/transfer";
   import { cleanShortcuts, matchColumns, safeFont, MAX_VIEWS, sessionView, type RecentItem, type Shortcuts, type View } from "./lib/views";
@@ -314,7 +314,17 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   let recipeFilesOpen = $state(false);
   let optionsOpen = $state(false);
   /** The print screen: what would print, and whether PDF is the main button. */
-  let printReq = $state<{ pdf: boolean; titles: string[] | null; sample: string[][]; cols: number[]; allRows: number; selRows: number; selFirst: number } | null>(null);
+  let printReq = $state<{
+    pdf: boolean;
+    all: PrintView;
+    allCols: number[];
+    sel: PrintView | null;
+    block: { first: number; rows: number; cols: number[] } | null;
+    selNote: string;
+    startSel: boolean;
+    /** Settles once the widths of the first 2,000 rows are in. */
+    ready: Promise<void>;
+  } | null>(null);
   /** Page setup used last (kept while the app runs). */
   let pageSetup = $state<PageSetup | null>(null);
   const READ = { decimal_comma: false, date_order: "mdy" as const };
@@ -6929,6 +6939,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "tools.findPrivate", label: "Find &private data…", run: () => void openPrivacy(), enabled: ready },
     { id: "file.print", label: "&Print…", keys: ["Ctrl+P"], run: () => void openPrint(false), enabled: ready },
     { id: "file.pdf", label: "Save as P&DF…", run: () => void openPrint(true), enabled: ready },
+    { id: "file.printSel", label: "Print the se&lection…", run: () => void openPrint(false, true), enabled: ready },
     { id: "file.mail", label: "&Mailing labels and letters…", run: () => void openMail(), enabled: ready },
     { id: "edit.note", label: "&Note and flag on this row…", keys: ["Shift+F2"], run: () => { const t = tab; if (t) notesRow = t.cell.row; }, enabled: ready },
     { id: "edit.changes", label: "List of &my changes…", run: () => void openChanges(), enabled: ready },
@@ -7371,7 +7382,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   reg.setOverrides(cleanShortcuts(prefs.data.shortcuts, (id) => !!reg.get(id)));
 
   const menus: Menu[] = [
-    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.importNotes", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "file.checkDisk", "-", "file.recover", "file.versions", "-", "window.moveToNew", "window.moveToMain", "-", "file.options", "-", "file.close", "file.closeOthers", "file.closeUnchanged", "file.reopenClosed", "file.quit"] },
+    { label: "&File", items: ["file.new", "file.open", "file.recent", "-", "file.save", "file.saveAs", "file.saveAll", "-", "file.import", "file.importClipboard", "file.importNotes", "file.export", "file.safeCopy", "-", "file.openEncrypted", "file.saveEncrypted", "file.openSqlite", "file.saveSqlite", "-", "file.print", "file.printSel", "file.pdf", "file.mail", "-", "file.layout", "file.reopenLines", "file.readOnly", "file.private", "file.privateFolder", "file.revert", "-", "file.rename", "file.showFolder", "file.copyPath", "file.checkDisk", "-", "file.recover", "file.versions", "-", "window.moveToNew", "window.moveToMain", "-", "file.options", "-", "file.close", "file.closeOthers", "file.closeUnchanged", "file.reopenClosed", "file.quit"] },
     {
       label: "&Edit",
       items: [
@@ -7440,7 +7451,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   const contextItems: Record<string, string[]> = {
     totals: [...TOTAL_CHOICES.map(([c]) => `view.total.${c}`), "view.total.auto", "-", "view.copyTotal", "view.copyTotals", "-", "view.totalsRow"],
     tab: ["file.save", "file.saveAs", "-", "data.compareLists", "data.patchSave", "data.patchApply", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear", "-", "file.printSel"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "data.headersStartHere", "data.setAsideFoot", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
     col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "data.explode", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
@@ -8460,27 +8471,63 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
   }
 
-  async function openPrint(pdf: boolean): Promise<void> {
+  /** The font pages print in (the app's own). */
+  function printFont(): string {
+    return getComputedStyle(document.body).fontFamily || "sans-serif";
+  }
+
+  /** Openings of Print, so late widths go only to their own. */
+  let printOpens = 0;
+
+  /** Open Print (or Save as PDF): what all shown rows and the selected
+   *  block would print, with the text widths both fits work from. */
+  async function openPrint(pdf: boolean, selection = false): Promise<void> {
     const t = tab;
     if (!t) return;
     if (!(await privacyGate(pdf ? "A PDF is a copy that is easy to send on." : "Printed pages can be read by anyone who picks them up."))) return;
     const cols = shownCols(t);
-    const all = shownTitles(t);
-    const titles = t.header ? cols.map((c) => all[c] ?? "") : null;
+    const names = shownTitles(t);
     const first = t.firstRow;
-    const r = oneBlock(t);
-    if (!r) return;
-    const selFirst = Math.max(first, r.row);
-    const selRows = Math.max(0, Math.min(t.info.rows, r.row + r.rows) - selFirst);
-    let sample: string[][] = [];
+    const r = t.singleRect();
+    const block = printBlock(r, cols, first, t.info.rows, t.info.cols);
+    const measure = canvasMeasure(printFont());
+    const opened = ++printOpens;
+    // The dialog opens on the first 60 rows; the widths of the rest of the
+    // first 2,000 (as the PDF takes them) are measured just after.
+    const more: (() => Promise<void>)[] = [];
+    const view = async (which: "all" | "sel", from: number, count: number, cs: number[]): Promise<PrintView> => {
+      const titles = t.header ? cs.map((c) => names[c] ?? "") : null;
+      const sample = await fetchRows(t, from, Math.min(60, count), cs);
+      const v: PrintView = { titles, sample, rows: count, cols: cs.length, widths: measureWidths(titles, sample, measure), textCols: printTextCols(t, cs) };
+      const rest = Math.min(FIT_SAMPLE_ROWS, count) - sample.length;
+      if (rest > 0)
+        more.push(async () => {
+          const w = measureWidths(null, await fetchRows(t, from + sample.length, rest, cs), measure);
+          // Not into a later opening's dialog.
+          if (opened !== printOpens) return;
+          const target = which === "all" ? printReq?.all : printReq?.sel;
+          if (target) target.widths = target.widths.map((x, k) => Math.max(x, w[k] ?? 0));
+        });
+      return v;
+    };
+    let all: PrintView;
+    let sel: PrintView | null = null;
     try {
-      sample = await fetchRows(t, first, Math.min(60, t.info.rows - first), cols);
+      all = await view("all", first, Math.max(0, t.info.rows - first), cols);
+      if (block && block.rows > 0) sel = await view("sel", block.first, block.rows, block.cols);
     } catch (e) {
       say(errorText(e));
       return;
     }
     pageSetup ??= defaultPage(t.info.name);
-    printReq = { pdf, titles, sample, cols, allRows: Math.max(0, t.info.rows - first), selRows, selFirst };
+    const selNote = r ? "" : "Several blocks are selected: select one block to print it.";
+    printReq = { pdf, all, allCols: cols, sel, block, selNote, startSel: selection, ready: Promise.resolve() };
+    const req = printReq;
+    req.ready = (async () => {
+      await tick();
+      await new Promise((ok) => setTimeout(ok, 0));
+      for (const m of more) await m().catch(() => {});
+    })();
   }
 
   /** Which printed columns are typed Text or Id (never set as numbers). */
@@ -8495,21 +8542,28 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     printReq = null;
     if (!req || !t) return;
     pageSetup = setup;
-    const first = selection ? req.selFirst : t.firstRow;
-    const count = selection ? req.selRows : req.allRows;
-    if (count > PRINT_MAX_ROWS || count * req.cols.length > PRINT_MAX_CELLS) {
+    const block = selection ? req.block : null;
+    if (selection && !(block && req.sel)) return;
+    const view = block ? req.sel! : req.all;
+    const first = block ? block.first : t.firstRow;
+    const cols = block ? block.cols : req.allCols;
+    const count = view.rows;
+    if (count > PRINT_MAX_ROWS || count * cols.length > PRINT_MAX_CELLS) {
       say("That is too much to print at once; use Save as PDF instead.");
       return;
     }
     say("Getting the pages ready…");
     let rows: string[][];
     try {
-      rows = await fetchRows(t, first, count, req.cols);
+      await req.ready;
+      rows = await fetchRows(t, first, count, cols);
     } catch (e) {
       say(errorText(e));
       return;
     }
-    const html = printHtml(req.titles, rows, setup, getComputedStyle(document.body).fontFamily || "sans-serif", false, printTextCols(t, req.cols));
+    // The widths were measured when the dialog opened (the first rows, as the PDF does).
+    const fit = printFit(view.widths, setup, count, !!view.titles);
+    const html = printHtml(view.titles, rows, setup, printFont(), false, view.textCols, fit);
     const frame = document.createElement("iframe");
     frame.setAttribute("aria-hidden", "true");
     frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
@@ -8532,16 +8586,19 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     printReq = null;
     if (!req || !t) return;
     pageSetup = setup;
-    const hidden = req.cols.length < t.info.cols;
+    const block = selection ? req.block : null;
+    if (selection && !(block && req.sel)) return;
+    const cols = block ? block.cols : req.allCols;
     const page: PageSetup = {
       ...setup,
-      rows: selection ? [req.selFirst, req.selRows] : null,
-      cols: hidden ? req.cols : null,
+      fit_page: !!setup.fit_page,
+      rows: block ? [block.first, block.rows] : null,
+      cols: block || cols.length < t.info.cols ? cols : null,
     };
     const o = { ...exportDefaults(t.header), format: "pdf" as const, page };
     try {
       const r = await runJob("Writing the PDF", () => backend().exportFile(t.id, o));
-      if (r) say(`Saved a PDF of ${plural(r.sheets, "page")} (${plural(r.rows, "row")}).`);
+      if (r) say(`Saved a PDF of ${plural(r.sheets, "page")} (${plural(r.rows, "row")}${block ? ` × ${plural(cols.length, "column")}` : ""}).`);
     } catch (e) {
       say(errorText(e));
     } finally {
@@ -9985,13 +10042,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 {#if printReq && tab}
   <PrintDialog
     setup={pageSetup ?? defaultPage(tab.info.name)}
-    titles={printReq.titles}
-    sample={printReq.sample}
-    allRows={printReq.allRows}
-    selRows={printReq.selRows}
-    cols={printReq.cols.length}
-    textCols={printTextCols(tab, printReq.cols)}
-    fontFamily={getComputedStyle(document.body).fontFamily || "sans-serif"}
+    all={printReq.all}
+    sel={printReq.sel}
+    selNote={printReq.selNote}
+    startSelection={printReq.startSel}
+    fontFamily={printFont()}
     pdfFirst={printReq.pdf}
     onPrint={(s, sel) => void doPrint(s, sel)}
     onPdf={(s, sel) => void doPdf(s, sel)}

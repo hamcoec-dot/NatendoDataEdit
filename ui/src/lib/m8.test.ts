@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { columnRef, defaultPage, describeCheck, expandTabs, guessStarts, newCheck, placeCheck, printHtml, shiftChecks, splitFixed, toggleStart, toJsPattern, LOG_PRESETS } from "./m8";
+import { columnRef, defaultPage, fitNote, fitScale, measureWidths, MIN_FONT, PRINT_CSP, printBlock, printFit, describeCheck, expandTabs, guessStarts, newCheck, placeCheck, printHtml, shiftChecks, splitFixed, toggleStart, toJsPattern, LOG_PRESETS } from "./m8";
 import { mockEval } from "./mockexpr";
 
 describe("fixed width", () => {
@@ -68,6 +68,97 @@ describe("printing", () => {
     const evil = printHtml(null, [], { ...p, title: '"; } </style><script>x</script>' }, "Arial");
     expect(evil).not.toContain("</style><script>");
     expect(printHtml(null, [], { ...p, page_numbers: false, title: "" }, "Arial")).not.toContain("<thead>");
+  });
+
+  it("locks the page: the content policy first, and values can never load anything", () => {
+    const p = defaultPage("t");
+    const html = printHtml(["a"], [["<img src=https://x>"], ["</style><link rel=stylesheet href=//x>"]], p, "Arial");
+    expect(PRINT_CSP).toBe("default-src 'none'; style-src 'unsafe-inline'");
+    expect(html.startsWith(`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${PRINT_CSP}">`)).toBe(true);
+    expect(html).not.toMatch(/<img|<link|<\/style><link/);
+    expect(html).toContain("&lt;img src=https://x&gt;");
+    expect(html).toContain("&lt;/style&gt;&lt;link rel=stylesheet href=//x&gt;");
+    // The preview too.
+    expect(printHtml(["a"], [], p, "Arial", true).startsWith('<!doctype html><html><head><meta http-equiv="Content-Security-Policy"')).toBe(true);
+  });
+
+  it("prints the selected block: its shown columns and its rows", () => {
+    const shown = [0, 1, 3, 4, 5];
+    // A block over columns 1-4 with column 2 hidden, rows 3-40.
+    expect(printBlock({ row: 3, rows: 38, col: 1, cols: 4 }, shown, 1, 100, 6)).toEqual({ first: 3, rows: 38, cols: [1, 3, 4] });
+    // Whole rows: every shown column.
+    expect(printBlock({ row: 5, rows: 2, col: 0, cols: 6 }, shown, 1, 100, 6)).toEqual({ first: 5, rows: 2, cols: shown });
+    // A block that starts on the title row prints from the first data row.
+    expect(printBlock({ row: 0, rows: 4, col: 0, cols: 1 }, shown, 1, 100, 6)).toEqual({ first: 1, rows: 3, cols: [0] });
+    // Only hidden columns: nothing to print.
+    expect(printBlock({ row: 3, rows: 2, col: 2, cols: 1 }, shown, 1, 100, 6)?.rows).toBe(0);
+    // Several blocks.
+    expect(printBlock(null, shown, 1, 100, 6)).toBeNull();
+  });
+
+  it("fitScale shrinks to the content and stops at 4 pt", () => {
+    expect(fitScale(500, 540, 9)).toEqual({ size: 9, fits: true });
+    expect(fitScale(1080, 540, 9)).toEqual({ size: 4.5, fits: true });
+    expect(fitScale(2000, 540, 9)).toEqual({ size: MIN_FONT, fits: false });
+  });
+
+  it("measures each column's widest line, titles bold, without measuring short ones", () => {
+    const seen: string[] = [];
+    const m = (s: string, bold: boolean): number => {
+      seen.push(s);
+      return s.length * (bold ? 0.6 : 0.5);
+    };
+    const w = measureWidths(["Name", "N"], [["Avery Ashdown", "1"], ["Al", "22"], ["x\nlonger line here", "3"]], m);
+    expect(w).toEqual([16 * 0.5, 2 * 0.5]);
+    expect(seen).not.toContain("Al");
+    expect(measureWidths(null, [["a", "bb"]], m)).toEqual([0.5, 1]);
+  });
+
+  it("fits like the PDF: to the width, then on one page", () => {
+    const p = { ...defaultPage(""), page_numbers: false };
+    // 30 columns of 10 em at 9 pt: far wider than Letter portrait.
+    const wide = new Array(30).fill(10);
+    const f = printFit(wide, p, 10, true, true);
+    expect(f.size).toBe(MIN_FONT);
+    expect(f.fitsWidth).toBe(false);
+    expect(f.pages).toBeGreaterThan(1);
+    expect(fitNote(f, p, false)).toContain("Too many columns for one page width even at 4 pt");
+    // Six columns fit at the size asked: nothing changes.
+    const narrow = new Array(6).fill(5);
+    const n = printFit(narrow, p, 10, true);
+    expect(n).toMatchObject({ size: 9, widths: null, fitsWidth: true, pages: 1 });
+    expect(fitNote(n, p, false)).toBe("");
+    // Twelve columns shrink a little and fit.
+    const mid = printFit(new Array(12).fill(6), p, 10, true, true);
+    expect(mid.size).toBeLessThan(9);
+    expect(mid.size).toBeGreaterThan(5);
+    expect(mid.widths!.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(540 + 0.01);
+    expect(fitNote(mid, p, true)).toMatch(/^Text will print at \d+(\.\d)? pt\.$/);
+    // Off: no shrinking.
+    expect(printFit(new Array(12).fill(6), { ...p, fit_width: false }, 10, true).size).toBe(9);
+    // One page: 40 rows at 24 pt shrink onto one page; 2,000 rows cannot.
+    const big = { ...p, font_size: 24, fit_page: true };
+    const one = printFit(narrow, big, 40, true);
+    expect(one.size).toBeLessThan(24);
+    expect(one.pages).toBe(1);
+    for (const pdf of [false, true]) {
+      const many = printFit(narrow, { ...big, title: "List" }, 2000, true, pdf);
+      expect(many.size).toBe(MIN_FONT);
+      expect(many.pages).toBeGreaterThan(1);
+      expect(fitNote(many, big, pdf)).toContain(`This needs ${many.pages.toLocaleString()} pages even at 4 pt`);
+    }
+    // Small text says so.
+    expect(fitNote({ size: 5.5, asked: 9, widths: [], fitsWidth: true, pages: 1 }, p, false)).toBe("Text will print at 5.5 pt (small: try landscape).");
+    expect(fitNote({ size: 5.5, asked: 9, widths: [], fitsWidth: true, pages: 1 }, { ...p, landscape: true }, false)).toBe("Text will print at 5.5 pt (small).");
+  });
+
+  it("prints shrunk text with fixed column widths", () => {
+    const p = defaultPage("");
+    const fit = printFit(new Array(12).fill(6), p, 3, true);
+    const html = printHtml(new Array(12).fill("t"), [], p, "Arial", false, [], fit);
+    expect(html).toContain("table-layout: fixed");
+    expect(html).toContain(`font: ${+fit.size.toFixed(3)}pt/1.25 Arial`);
+    expect((html.match(/<col style="width:/g) ?? []).length).toBe(12);
   });
 });
 
