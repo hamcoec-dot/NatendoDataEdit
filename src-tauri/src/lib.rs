@@ -3693,6 +3693,11 @@ async fn filter_chip_counts(
 }
 
 #[tauri::command]
+fn filter_chip_counts_stop(docs: DocsState<'_>, doc: u32) -> CmdResult<()> {
+    docs.filter_chip_counts_stop(doc)
+}
+
+#[tauri::command]
 async fn filter_change(
     docs: DocsState<'_>,
     doc: u32,
@@ -5277,6 +5282,7 @@ pub fn run() {
             filter_spec,
             filter_chips,
             filter_chip_counts,
+            filter_chip_counts_stop,
             filter_change,
             filter_values,
             find_next,

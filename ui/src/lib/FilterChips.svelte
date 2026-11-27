@@ -106,15 +106,38 @@
   const negate = (c: ChipInfo, i: number) =>
     change({ op: "negate", index: i }, c.negate ? `The chip ${quote(c, i)} shows its own rows again.` : `The chip ${quote(c, i)} now shows the rows it does not match.`);
 
-  // Each column chip's own count reads the table, so it is asked for only when the person points at
-  // the bar or opens a chip's menu, once per state of the table (never after every edit: C8 review M1).
+  // Each column chip's own count reads the table, so it is asked for only when a chip's menu opens or
+  // the pointer rests on the bar for half a second, once per state of the table (never after every
+  // edit: C8 review M1; a quick pass over the bar asks for nothing: R1). Leaving the bar stops it.
   let counted = "";
+  let asking = false;
+  let rest: ReturnType<typeof setTimeout> | null = null;
+  function restOnBar(): void {
+    if (rest) clearTimeout(rest);
+    rest = setTimeout(() => {
+      rest = null;
+      wantCounts();
+    }, 500);
+  }
+  function leaveBar(): void {
+    if (rest) clearTimeout(rest);
+    rest = null;
+    if (asking && !menu) {
+      counted = "";
+      void backend().filterChipCountsStop(tab.id).catch(() => {});
+    }
+  }
+  $effect(() => () => {
+    if (rest) clearTimeout(rest);
+  });
   function wantCounts(): void {
     if (!chips || counted === key || !chips.chips.some((c) => c.kind === "column" && c.rows === null)) return;
     counted = key;
     const n = seq;
+    asking = true;
     void backend()
       .filterChipCounts(tab.id)
+      .finally(() => (asking = false))
       .then((c) => {
         // The counts go into the chips shown (nothing else is drawn again, so a click under way lands).
         const cur = chips;
@@ -200,7 +223,7 @@
 />
 
 {#if chips && chips.chips.length}
-  <div class="chips" role="toolbar" aria-label="Filter chips" bind:this={bar} data-testid="filter-chips" tabindex="-1" onpointerenter={wantCounts}>
+  <div class="chips" role="toolbar" aria-label="Filter chips" bind:this={bar} data-testid="filter-chips" tabindex="-1" onpointerenter={restOnBar} onpointerleave={leaveBar}>
     <span class="lead">Filter</span>
     <div class="list">
       {#each chips.chips as c, i (i)}

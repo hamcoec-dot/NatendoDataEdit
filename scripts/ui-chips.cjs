@@ -79,10 +79,17 @@ const city = (r) => CITY[(r * 3) % CITY.length];
   const bare = words((await p.locator(chip(0)).textContent()) || "");
   ok(/first_name/.test(bare) && !bare.includes(String(rowsWhere(isName).toLocaleString())), `the chip names its column and rule, with no count yet (${bare})`);
   ok(!(await p.evaluate(() => window.__nde.backend.calls.includes("filterChipCounts"))), "the bar asked for no count on its own");
+  // A quick pass over the bar asks for nothing (R1).
   await p.hover(chip(0));
-  await p.waitForTimeout(400);
+  await p.waitForTimeout(150);
+  await p.mouse.move(5, 700);
+  await p.waitForTimeout(700);
+  ok(!(await p.evaluate(() => window.__nde.backend.calls.includes("filterChipCounts"))), "a quick pass over the bar asks for no count");
+  // Resting on it does.
+  await p.hover(chip(0));
+  await p.waitForTimeout(900);
   const t0 = words((await p.locator(chip(0)).textContent()) || "");
-  ok(/first_name/.test(t0) && t0.includes(String(rowsWhere(isName).toLocaleString())), `pointing at the bar brings each chip's own count (${t0})`);
+  ok(/first_name/.test(t0) && t0.includes(String(rowsWhere(isName).toLocaleString())), `resting on the bar brings each chip's own count (${t0})`);
   ok((await countLine()) === `${both.toLocaleString()} of ${total.toLocaleString()} rows show.`, `the bar counts the rows shown (${await countLine()})`);
   if (out) await p.screenshot({ path: path.join(out, "chips-bar.png"), clip: { x: 0, y: 0, width: 1280, height: 260 } });
 

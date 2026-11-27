@@ -411,6 +411,9 @@ pub struct Entry {
     /// The Fill blank cells dialog's count being worked out, if any: a newer
     /// count, closing the dialog or any change stops it.
     fill_count: Mutex<Option<Arc<Progress>>>,
+    /// The chip bar's counts being worked out, if any: a newer ask or any change (an edit, a filter
+    /// change) stops it (C8 review R1).
+    chip_count: Mutex<Option<Arc<Progress>>>,
     cancel: AtomicBool,
     /// Opened with quoted cells never spanning lines (cleared once a save
     /// has reloaded the file normally).
@@ -617,6 +620,14 @@ impl Entry {
 
     fn cancel_totals(&self) {
         if let Some(p) = self.totals.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            p.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(p) = self
+            .chip_count
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             p.cancel.store(true, Ordering::Relaxed);
         }
         if let Some(p) = self
@@ -2094,6 +2105,7 @@ impl Docs {
             changed_rows: Mutex::new((0, Vec::new())),
             fill_marks: Mutex::new(HashMap::new()),
             fill_count: Mutex::new(None),
+            chip_count: Mutex::new(None),
             cancel: AtomicBool::new(false),
             line_by_line: AtomicBool::new(line_by_line),
             error: Mutex::new(None),
@@ -4584,11 +4596,49 @@ impl Docs {
     }
 
     /// The chips with every column chip's own count (reads the rules not known since the last edit):
-    /// only when the bar's menu or tooltip asks (one pass over the table at most).
+    /// only when the bar's menu opens or the pointer rests on the bar (one pass over the table at
+    /// most). A newer ask, an edit or a filter change stops it; it never waits for a change.
     pub fn filter_chip_counts(&self, id: u32) -> CmdResult<natendo_engine::chips::FilterChips> {
         let entry = self.get(id)?;
-        let d = entry.read();
-        Ok(d.filter_chip_counts(&Progress::new())?)
+        let progress = Arc::new(Progress::new());
+        {
+            let mut slot = entry.chip_count.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(old) = slot.replace(progress.clone()) {
+                old.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        let d = match entry.doc.try_read() {
+            Ok(d) => d,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(CmdError::new("busy", "the file is being changed"))
+            }
+        };
+        if entry.change_waiting() {
+            drop(d);
+            return Err(CmdError::new("busy", "the file is being changed"));
+        }
+        let r = d.filter_chip_counts(&progress);
+        drop(d);
+        let mut slot = entry.chip_count.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.as_ref().is_some_and(|p| Arc::ptr_eq(p, &progress)) {
+            *slot = None;
+        }
+        Ok(r?)
+    }
+
+    /// Stop the chip bar's counts (the pointer left the bar before they came).
+    pub fn filter_chip_counts_stop(&self, id: u32) -> CmdResult<()> {
+        let entry = self.get(id)?;
+        if let Some(p) = entry
+            .chip_count
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            p.cancel.store(true, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     /// Switch, invert, rename or remove a chip, or change Match all/any or
@@ -12710,6 +12760,35 @@ ca,California
         let i2 = wait(&docs, id2);
         assert!(i2.line_by_line);
         assert_eq!(i2.rows, 4);
+    }
+
+    /// C8 review R1: the chip bar's counts are stopped by an edit, a filter change or a newer ask.
+    #[test]
+    fn chip_counts_stop_on_a_change() {
+        let p = tmp(
+            "chipstop.csv",
+            b"a,b
+1,x
+2,y
+",
+        );
+        let docs = Docs::default();
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        let entry = docs.get(id).unwrap();
+        let running = Arc::new(Progress::new());
+        *entry.chip_count.lock().unwrap() = Some(running.clone());
+        docs.set_cells(id, vec![(1, 1, "z".into())]).unwrap();
+        assert!(running.cancel.load(Ordering::Relaxed), "an edit stops it");
+        let running = Arc::new(Progress::new());
+        *entry.chip_count.lock().unwrap() = Some(running.clone());
+        docs.filter_chip_counts_stop(id).unwrap();
+        assert!(
+            running.cancel.load(Ordering::Relaxed),
+            "the stop command stops it"
+        );
+        // A count after that works (no filter: no chips).
+        assert!(docs.filter_chip_counts(id).unwrap().chips.is_empty());
     }
 
     /// Review finding 6: after a save, a line-by-line document is a normal one.

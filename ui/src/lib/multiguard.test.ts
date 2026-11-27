@@ -84,6 +84,7 @@ const NOT_WRITES = [
   "filterSpec",
   "filterChips",
   "filterChipCounts",
+  "filterChipCountsStop",
   "filterValues",
   "findNext",
   "findAll",

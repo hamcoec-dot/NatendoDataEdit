@@ -1952,6 +1952,10 @@ export class MockBackend implements Backend {
     return { chips, combine: spec?.combine ?? "and", invert: !!spec?.invert, shown: Math.max(0, shown), total: data, all_off: chips.length > 0 && chips.every((c) => !c.enabled), sets_full: sets.length >= 20 };
   }
 
+  async filterChipCountsStop(): Promise<void> {
+    this.calls.push("filterChipCountsStop");
+  }
+
   async filterChipCounts(doc: number): Promise<FilterChips> {
     this.calls.push("filterChipCounts");
     return this.filterChips(doc, true);
