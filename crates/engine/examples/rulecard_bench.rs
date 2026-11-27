@@ -41,7 +41,9 @@ fn main() {
         preview.push(ms(t));
         assert_eq!(pv.rows.len(), 20);
         let t = Instant::now();
-        let o = d.example_outliers(&spec, &p, None, &Progress::new()).unwrap();
+        let o = d
+            .example_outliers(&spec, &p, None, &Progress::new())
+            .unwrap();
         odd.push(ms(t));
         let t = Instant::now();
         let (plan, r) = d.plan_fill_example(&spec, &Progress::new()).unwrap();
@@ -53,7 +55,10 @@ fn main() {
     let (l, pv, o, f) = (median(learn), median(preview), median(odd), median(fill));
     println!("learn {l:.1} ms (gate 2000)");
     println!("preview {pv:.2} ms (gate 50)");
-    println!("outliers {o:.1} ms vs fill {f:.1} ms: {:.2}x (gate 1.2)", o / f);
+    println!(
+        "outliers {o:.1} ms vs fill {f:.1} ms: {:.2}x (gate 1.2)",
+        o / f
+    );
     // After a fill: the status line's count.
     let p = program.unwrap();
     let (plan, rep) = d.plan_fill_example(&spec, &Progress::new()).unwrap();
