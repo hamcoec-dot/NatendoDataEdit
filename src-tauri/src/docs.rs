@@ -2001,7 +2001,7 @@ pub struct Docs {
     contracts: Mutex<Option<contracts::Store>>,
     /// The user's saved custom orders the fill handle may follow (set by
     /// the window when they change; never logged).
-    fill_orders: Mutex<Arc<Vec<natendo_engine::fill::FillOrder>>>,
+    fill_orders: Mutex<Arc<natendo_engine::fill::OrderBook>>,
 }
 
 /// See [`Docs::set_private_check`].
@@ -5601,8 +5601,14 @@ impl Docs {
 
     /// The user's saved custom orders, for fills (the window sends them when
     /// they change).
+    /// Their lookup is built in the background, so fills find their
+    /// starting values at once.
     pub fn set_fill_orders(&self, orders: Vec<natendo_engine::fill::FillOrder>) {
-        *self.fill_orders.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(orders);
+        let book = Arc::new(natendo_engine::fill::OrderBook::new(orders));
+        *self.fill_orders.lock().unwrap_or_else(|p| p.into_inner()) = book.clone();
+        if !book.orders().is_empty() {
+            std::thread::spawn(move || book.prepare());
+        }
     }
 
     /// Run a data operation as one undo step (or, for "show duplicates", a
@@ -5618,12 +5624,15 @@ impl Docs {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone();
-                if !saved.is_empty() {
+                if !saved.orders().is_empty() {
                     let used =
                         self.get(id)?
                             .read()
                             .fill_orders_used(&spec, &saved, &Progress::new())?;
-                    spec.orders = used.into_iter().map(|j| saved[j].clone()).collect();
+                    spec.orders = used
+                        .into_iter()
+                        .map(|j| saved.orders()[j].clone())
+                        .collect();
                 }
                 DataOp::Fill { spec }
             }

@@ -74,11 +74,22 @@ describe("the fill handle and custom orders", () => {
     const long = { ...got[3]!, fill: true };
     expect(fillOrders([...got.slice(0, 3), long]).map((o) => [o.name, o.one_cell])).toEqual([
       ["Typed", true],
-      ["Names", false],
       ["Hundred", true],
       ["Long", false],
       ["Low, Medium, High", false],
     ]);
+  });
+
+  it("never follows an unticked order made from cells, even from two cells", () => {
+    const got = readOrders([
+      { name: "Surnames", items: ["Smith", "Jones"], fromCells: true },
+      { name: "Typed off", items: ["a", "b"], fill: false },
+    ]);
+    // Unticked from cells: absent. Unticked typed: present for two or more cells.
+    expect(fillOrders(got).map((o) => o.name)).toEqual(["Typed off", "Low, Medium, High"]);
+    // Ticked from cells: present, from one cell too.
+    const on = fillOrders([{ ...got[0]!, fill: true }]);
+    expect(on.map((o) => [o.name, o.one_cell])).toEqual([["Surnames", true], ["Low, Medium, High", false]]);
   });
 
   it("keeps the Manage panel's order, the built-in Low, Medium, High last", () => {
