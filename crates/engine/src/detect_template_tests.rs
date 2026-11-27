@@ -125,6 +125,34 @@ fn mixed_comma_and_tab_empty_rows_are_not_confident() {
     }
 }
 
+#[test]
+fn a_run_the_single_byte_reads_the_same_way_is_not_confident() {
+    // F1: no title row, every row `1,,,W2`: `,,,` or a comma with two empty
+    // columns read the same values; the guess is kept but asks to be checked.
+    let mut t = String::new();
+    for i in 1..=20 {
+        t += &format!("{i},,,W{}\n", i % 4 + 1);
+    }
+    for e in ["csv", "txt"] {
+        assert!(!with_ext(t.as_bytes(), e).is_confident(), "{e}");
+    }
+    let p = t.replace(",,,", "|||");
+    for e in ["csv", "txt"] {
+        assert!(!with_ext(p.as_bytes(), e).is_confident(), "{e}");
+    }
+}
+
+#[test]
+fn a_double_comma_file_with_a_comma_in_a_value_stays_confident() {
+    let t = b"id,,name,,ward\n1,,Lee, Ann,,W1\n2,,Bo Imbert,,W2\n3,,Cy Gallow,,W3\n4,,Di Brasko,,W4\n5,,Ed Ruvin,,W1\n";
+    for e in ["csv", "txt"] {
+        let d = with_ext(t, e);
+        assert_eq!(d.best().dialect.delimiter(), b",,", "{e}");
+        assert_eq!(d.best().columns, 3, "{e}");
+        assert!(d.is_confident(), "{e}");
+    }
+}
+
 /// A cell value with no separator, quote or line break in it.
 fn cell() -> impl Strategy<Value = String> {
     prop_oneof![

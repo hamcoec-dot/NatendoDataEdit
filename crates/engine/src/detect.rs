@@ -823,6 +823,21 @@ fn judge_split(
         }
     };
     let whole = rows.iter().filter(|r| one_value(r)).count() as f32 / n;
+    // A run of one byte (`,,,`) that the single byte reads the same way, with
+    // only empty columns between the values, on every row (`1,,,W2`): the two
+    // readings cannot be told apart, so the guess asks to be checked.
+    if sep.len() >= 2 && sep.iter().all(|&b| b == sep[0]) {
+        let (b, k) = (sep[0], sep.len());
+        let same = rows.iter().all(|r| {
+            head[r.content.0..r.content.1]
+                .chunk_by(|x, y| x == y)
+                .filter(|g| g[0] == b)
+                .all(|g| g.len() % k == 0)
+        });
+        if same {
+            doubt = true;
+        }
+    }
     if whole >= 1.0 && !part_of_values {
         doubt = true; // every line could be one number with a decimal comma
     }
