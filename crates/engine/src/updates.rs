@@ -116,7 +116,7 @@ fn every_row(d: &Document, keep_first: bool) -> std::ops::Range<u64> {
 }
 
 /// Normalized title for pairing columns.
-fn title_key(t: &str) -> String {
+pub(crate) fn title_key(t: &str) -> String {
     t.trim().to_lowercase()
 }
 

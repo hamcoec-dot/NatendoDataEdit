@@ -1796,7 +1796,7 @@ impl Document {
         self.ready()
     }
 
-    fn ready(&self) -> Result<(), Error> {
+    pub(crate) fn ready(&self) -> Result<(), Error> {
         if self.index.is_complete() {
             Ok(())
         } else {
