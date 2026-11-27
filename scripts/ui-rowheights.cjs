@@ -163,15 +163,17 @@ const url = process.argv[3] || "http://localhost:5215";
   await p.keyboard.press("Control+z");
   await p.waitForTimeout(400);
 
-  // ---- rows hidden: the heights are kept but not shown; a change while hidden clears them with a note ----
+  // ---- rows hidden: each shown row keeps its own height, and a row change while hidden keeps them on their rows (gap #4) ----
   await p.mouse.click(canvas.x + 300, (await cellPt(8)).y - 8);
   await p.keyboard.press("Control+9");
   await p.waitForTimeout(500);
-  ok(/Custom row heights hidden while filtered/.test(await status()), "with rows hidden the status bar says the custom heights are hidden");
-  ok((await cellPt(6)).y - (await cellPt(5)).y === BASE, "and the rows draw at the plain height");
+  ok(!/Custom row heights hidden while filtered/.test(await status()), "with rows hidden the status bar no longer says the custom heights are hidden");
+  const tall = async () => (await cellPt(5)).y - (await cellPt(4)).y;
+  for (let i = 0; i < 20 && (await tall()) !== 60; i++) await p.waitForTimeout(100);
+  ok((await tall()) === 60, `and the tall row still draws at its height (${await tall()} px; ${JSON.stringify(await p.evaluate(() => [window.__nde.tab.info.rows, window.__nde.tab.heightsInForce()?.toView()]))})`);
   await p.mouse.click(canvas.x + 300, (await cellPt(2)).y - 8);
   await cmd("Insert row above");
-  ok((await heights()).length === 0 && /custom row heights were cleared/i.test(await status()), `a row change while some rows are hidden clears the heights and says so (${(await status()).slice(0, 120)})`);
+  ok(JSON.stringify(await heights()) === "[[6,60]]" && !/custom row heights were cleared/i.test(await status()), `a row inserted above while some rows are hidden moves the height down with its row (${JSON.stringify(await heights())})`);
   await p.keyboard.press("Control+z");
   await p.waitForTimeout(400);
   ok((await custom(5)) === 60, "Ctrl+Z brings the heights back");
