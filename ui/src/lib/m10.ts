@@ -280,7 +280,12 @@ export function fillByDefault(items: readonly string[], fromCells: boolean): boo
  *  more stepping evenly along an order follow any of them. Months and
  *  weekdays are the fill's own. */
 export function fillOrders(saved: readonly SavedOrder[]): FillOrder[] {
-  const own = saved.map((o) => ({ name: o.name, items: o.items, one_cell: o.fill === true && o.items.length <= FILL_ONE_CELL_MAX }));
+  // An order made from cells is followed only when ticked (two neighbouring
+  // names from the column it was made from must not write the next names);
+  // a typed one is also followed by two or more evenly stepped cells.
+  const own = saved
+    .filter((o) => !o.fromCells || o.fill === true)
+    .map((o) => ({ name: o.name, items: o.items, one_cell: o.fill === true && o.items.length <= FILL_ONE_CELL_MAX }));
   return [...own, { name: BUILTIN_LISTS[0]!.name, items: BUILTIN_LISTS[0]!.items, one_cell: false }];
 }
 

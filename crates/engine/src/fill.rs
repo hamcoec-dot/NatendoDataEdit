@@ -14,7 +14,7 @@
 //! - anything else repeats the starting cells.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -505,9 +505,6 @@ pub struct FillOrder {
     pub one_cell: bool,
 }
 
-/// Distinct values looked up by scanning before every order is indexed.
-const SCANS_BEFORE_INDEX: usize = 32;
-
 /// A value as orders match it: trimmed, case and accents folded (as sort
 /// matches a custom order).
 fn order_key(s: &str) -> String {
@@ -529,17 +526,92 @@ fn same_key(item: &str, key: &str) -> bool {
     }
 }
 
-/// Finds starting cells on the custom orders of one fill. Lookups scan the
-/// orders (no map is built for a fill that matches nothing); a fill with
-/// many different starting values indexes them once.
+/// FNV-1a over bytes, lower-cased (keys are lower case already).
+fn hash_bytes(b: impl Iterator<Item = u8>) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for c in b {
+        h ^= u64::from(c.to_ascii_lowercase());
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// The hash of `key` (an [`order_key`]).
+fn key_hash(key: &str) -> u64 {
+    hash_bytes(key.bytes())
+}
+
+/// The hash of an order's item: the hash of its [`order_key`], without
+/// building the key for plain ASCII.
+fn item_hash(item: &str) -> u64 {
+    let t = item.trim();
+    if t.is_ascii() {
+        hash_bytes(t.bytes())
+    } else {
+        key_hash(&order_key(t))
+    }
+}
+
+/// Every item of some orders by hash: (hash, order, position), sorted.
+type Lookup = Vec<(u64, u32, u32)>;
+
+/// The [`Lookup`] of `orders`.
+fn build_index(orders: &[FillOrder]) -> Lookup {
+    let mut ix: Lookup = Vec::with_capacity(orders.iter().map(|o| o.items.len()).sum());
+    for (j, o) in orders.iter().enumerate() {
+        for (p, item) in o.items.iter().enumerate() {
+            ix.push((item_hash(item), j as u32, p as u32));
+        }
+    }
+    ix.sort_unstable();
+    ix
+}
+
+/// The user's saved orders with their lookup, built once per saved set
+/// (the app builds it in the background when the orders change), so a fill
+/// finds its starting values without scanning every order.
+#[derive(Debug, Default)]
+pub struct OrderBook {
+    orders: Vec<FillOrder>,
+    index: OnceLock<Lookup>,
+}
+
+impl OrderBook {
+    pub fn new(orders: Vec<FillOrder>) -> OrderBook {
+        OrderBook {
+            orders,
+            index: OnceLock::new(),
+        }
+    }
+
+    pub fn orders(&self) -> &[FillOrder] {
+        &self.orders
+    }
+
+    /// Build the lookup now (else the first fill of two or more cells does).
+    pub fn prepare(&self) {
+        self.index.get_or_init(|| build_index(&self.orders));
+    }
+
+    /// The lookup has been built.
+    pub fn prepared(&self) -> bool {
+        self.index.get().is_some()
+    }
+}
+
+/// Finds starting cells on the custom orders of one fill.
+/// - One starting cell looks only at the orders ticked for it (`one_cell`,
+///   at most 100 values each), so a fill with none ticked costs nothing.
+/// - Two or more look `key` up by hash in the book's lookup (or, for the
+///   few orders a fill step carries, one built for this fill).
 pub struct OrderMatch<'a> {
     orders: &'a [FillOrder],
     shared: Vec<Option<Arc<[String]>>>,
-    /// Key to (order, first position), per order once looked at.
-    maps: HashMap<usize, HashMap<String, u32>>,
-    /// Key to the orders holding it (order, first position), in order.
-    found: HashMap<String, Vec<(usize, u32)>>,
-    index: Option<HashMap<String, Vec<(usize, u32)>>>,
+    book: Option<&'a OnceLock<Lookup>>,
+    own: OnceLock<Lookup>,
+    /// Key to the one-cell orders holding it, by scan.
+    one: HashMap<String, Vec<(usize, u32)>>,
+    any_one_cell: bool,
 }
 
 impl<'a> OrderMatch<'a> {
@@ -547,38 +619,59 @@ impl<'a> OrderMatch<'a> {
         OrderMatch {
             orders,
             shared: vec![None; orders.len()],
-            maps: HashMap::new(),
-            found: HashMap::new(),
-            index: None,
+            book: None,
+            own: OnceLock::new(),
+            one: HashMap::new(),
+            any_one_cell: orders.iter().any(|o| o.one_cell),
         }
     }
 
-    /// The orders holding `key`, first ones first, with the first position.
-    fn holding(&mut self, key: &str) -> Vec<(usize, u32)> {
-        if let Some(ix) = &self.index {
-            return ix.get(key).cloned().unwrap_or_default();
+    /// Lookups through `book`'s lookup (built now if it was not yet).
+    pub fn with_book(book: &'a OrderBook) -> OrderMatch<'a> {
+        OrderMatch {
+            book: Some(&book.index),
+            ..OrderMatch::new(&book.orders)
         }
-        if let Some(v) = self.found.get(key) {
-            return v.clone();
-        }
-        if self.found.len() >= SCANS_BEFORE_INDEX {
-            let mut ix: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
-            for (j, o) in self.orders.iter().enumerate() {
-                for (p, item) in o.items.iter().enumerate() {
-                    let v = ix.entry(order_key(item)).or_default();
-                    if v.last().is_none_or(|x| x.0 != j) {
-                        v.push((j, p as u32));
-                    }
-                }
+    }
+
+    fn index(&self) -> &[(u64, u32, u32)] {
+        self.book
+            .unwrap_or(&self.own)
+            .get_or_init(|| build_index(self.orders))
+    }
+
+    /// The orders holding `key` (first position on each), first ones first.
+    fn holding(&self, key: &str) -> Vec<(usize, u32)> {
+        let h = key_hash(key);
+        let ix = self.index();
+        let at = ix.partition_point(|e| e.0 < h);
+        let mut out: Vec<(usize, u32)> = Vec::new();
+        for &(eh, j, p) in &ix[at..] {
+            if eh != h {
+                break;
             }
-            let out = ix.get(key).cloned().unwrap_or_default();
-            self.index = Some(ix);
-            return out;
+            let j = j as usize;
+            // Sorted by order then position: the first match per order.
+            if out.last().is_some_and(|x| x.0 == j) {
+                continue;
+            }
+            if same_key(&self.orders[j].items[p as usize], key) {
+                out.push((j, p));
+            }
+        }
+        out
+    }
+
+    /// The one-cell orders holding `key`, first ones first.
+    fn holding_one(&mut self, key: &str) -> Vec<(usize, u32)> {
+        if let Some(v) = self.one.get(key) {
+            return v.clone();
         }
         let out: Vec<(usize, u32)> = self
             .orders
             .iter()
             .enumerate()
+            .filter(|(_, o)| o.one_cell)
             .filter_map(|(j, o)| {
                 o.items
                     .iter()
@@ -586,21 +679,16 @@ impl<'a> OrderMatch<'a> {
                     .map(|p| (j, p as u32))
             })
             .collect();
-        self.found.insert(key.to_string(), out.clone());
+        self.one.insert(key.to_string(), out.clone());
         out
     }
 
     /// Where `key` first is on order `j`.
-    fn pos_in(&mut self, j: usize, key: &str) -> Option<u32> {
-        let items = &self.orders[j].items;
-        let map = self.maps.entry(j).or_insert_with(|| {
-            let mut m = HashMap::with_capacity(items.len());
-            for (p, item) in items.iter().enumerate() {
-                m.entry(order_key(item)).or_insert(p as u32);
-            }
-            m
-        });
-        map.get(key).copied()
+    fn pos_in(&self, j: usize, key: &str) -> Option<u32> {
+        self.holding(key)
+            .into_iter()
+            .find(|x| x.0 == j)
+            .map(|x| x.1)
     }
 
     /// The series along the first order the starting cells are on: one cell
@@ -610,15 +698,23 @@ impl<'a> OrderMatch<'a> {
             return None;
         }
         let n = start.len();
+        if n == 1 && !self.any_one_cell {
+            return None;
+        }
         let k0 = order_key(&start[0]);
         if k0.is_empty() {
             return None;
         }
+        let first = if n == 1 {
+            self.holding_one(&k0)
+        } else {
+            self.holding(&k0)
+        };
+        if first.is_empty() {
+            return None;
+        }
         let keys: Vec<String> = start[1..].iter().map(|s| order_key(s)).collect();
-        for (j, p0) in self.holding(&k0) {
-            if n == 1 && !self.orders[j].one_cell {
-                continue;
-            }
+        for (j, p0) in first {
             let len = self.orders[j].items.len() as i64;
             let mut pos = vec![p0 as i64];
             for k in &keys {
