@@ -145,6 +145,9 @@ pub struct ColShape {
 impl ColShape {
     /// The kind record `r` had.
     fn kind_at(&self, r: u32) -> Kind {
+        if self.odd.is_empty() {
+            return self.usual;
+        }
         for (k, s) in &self.odd {
             if s.has(r) {
                 return *k;
@@ -413,12 +416,29 @@ pub fn is_json_number(s: &str) -> bool {
 /// A JSON object or list as one line (spaces outside strings taken out), or `None` when the text is not
 /// one. Numbers keep their own text.
 pub fn compact_json(s: &str) -> Option<String> {
-    let t = s.trim();
-    if !(t.starts_with('{') || t.starts_with('[')) {
+    if !is_json_container(s) {
         return None;
     }
-    serde_json::from_str::<serde::de::IgnoredAny>(t).ok()?;
-    let mut out = String::with_capacity(t.len());
+    let mut out = String::with_capacity(s.len());
+    push_compact(s, &mut out);
+    Some(out)
+}
+
+/// Whether the text is one JSON object or list (spaces around it allowed).
+fn is_json_container(s: &str) -> bool {
+    let t = s.trim();
+    (t.starts_with('{') || t.starts_with('['))
+        && serde_json::from_str::<serde::de::IgnoredAny>(t).is_ok()
+}
+
+/// Append a JSON object or list already checked with [`is_json_container`] as one line.
+fn push_compact(s: &str, out: &mut String) {
+    let t = s.trim();
+    // Most nested values are already one line (as read): copied whole.
+    if !t.bytes().any(|b| b.is_ascii_whitespace()) {
+        out.push_str(t);
+        return;
+    }
     let mut in_str = false;
     let mut esc = false;
     for ch in t.chars() {
@@ -438,7 +458,6 @@ pub fn compact_json(s: &str) -> Option<String> {
             out.push(ch);
         }
     }
-    Some(out)
 }
 
 /// How a newly blank cell is written (D-C11: leave the key out unless the person picks otherwise).
@@ -575,16 +594,40 @@ impl Document {
         let reader = crate::ops::Cols::new(self, &cols);
         let mut buf = Vec::new();
         let total = self.total_rows();
-        let new_blank = |c: Option<&ColShape>| -> Option<Kind> { c.and_then(ColShape::one_blank) };
+        // Per column, worked out once: its shape, the form of a new blank, the kind of a new value.
+        struct Per<'a> {
+            col: Option<&'a ColShape>,
+            new_blank: Option<Kind>,
+            value: Kind,
+        }
+        let per: Vec<Per> = phys
+            .iter()
+            .map(|p| {
+                let col = shape.and_then(|s| p.and_then(|p| s.cols.get(p as usize)));
+                Per {
+                    col,
+                    new_blank: col.and_then(ColShape::one_blank),
+                    value: col
+                        .filter(|c| c.has_values())
+                        .map_or(Kind::Text, |c| c.value),
+                }
+            })
+            .collect();
+        // One list of members for every record (its memory reused; it borrows each row's text in turn).
+        let mut spare: Vec<(usize, Kind, &'static str)> = Vec::with_capacity(n as usize);
         for pos in 1..total {
             let id = self.doc_id_at(pos).ok_or(Error::OutOfRange)?;
             reader.read(self, id, &mut buf);
             // The record this row was in the file (row ids follow the file's records; new rows come after).
             let orig = shape.and_then(|s| (id >= 1 && id - 1 < s.rows).then_some(id - 1));
-            let mut members: Vec<(usize, Kind, &str)> = Vec::with_capacity(n as usize);
+            let mut members: Vec<(usize, Kind, &str)> = std::mem::take(&mut spare)
+                .into_iter()
+                .map(|_| unreachable!())
+                .collect();
             for k in 0..n as usize {
                 let text: &str = reader.get(&buf, k);
-                let col = shape.and_then(|s| phys[k].and_then(|p| s.cols.get(p as usize)));
+                let pc = &per[k];
+                let col = pc.col;
                 let was = match (col, orig) {
                     (Some(c), Some(r)) => Some(c.kind_at(r)),
                     _ => None,
@@ -593,7 +636,7 @@ impl Document {
                     match was {
                         // Unchanged blanks keep their own form.
                         Some(k) if k.blank() => k,
-                        _ => match new_blank(col) {
+                        _ => match pc.new_blank {
                             Some(k) => k,
                             None => {
                                 *ask = true;
@@ -606,15 +649,14 @@ impl Document {
                         },
                     }
                 } else {
-                    let want = match (was, col) {
-                        (Some(k), _) if !k.blank() => k,
-                        (_, Some(c)) if c.has_values() => c.value,
-                        _ => Kind::Text,
+                    let want = match was {
+                        Some(k) if !k.blank() => k,
+                        _ => pc.value,
                     };
                     let fits = match want {
                         Kind::Number => is_json_number(text),
                         Kind::Bool => text == "true" || text == "false",
-                        Kind::Nested => compact_json(text).is_some(),
+                        Kind::Nested => is_json_container(text),
                         _ => true,
                     };
                     if fits {
@@ -627,6 +669,8 @@ impl Document {
                 members.push((k, kind, text));
             }
             each(pos as usize - 1, &members);
+            members.clear();
+            spare = members.into_iter().map(|_| unreachable!()).collect();
         }
         Ok(())
     }
@@ -746,10 +790,8 @@ impl Document {
                         out.push_str(colon);
                         match kind {
                             Kind::Number | Kind::Bool => out.push_str(text),
-                            Kind::Nested => match compact_json(text) {
-                                Some(j) => out.push_str(&j),
-                                None => json_string(text, &mut out),
-                            },
+                            // Checked in the walk: a nested value that no longer parses is text.
+                            Kind::Nested => push_compact(text, &mut out),
                             Kind::Null => out.push_str("null"),
                             Kind::Empty => out.push_str("\"\""),
                             Kind::Text | Kind::Missing => json_string(text, &mut out),
@@ -823,6 +865,13 @@ impl Document {
 
 /// `s` as a JSON string (quotes included).
 fn json_string(s: &str, out: &mut String) {
+    // Most text needs no escapes: copied between quotes (as serde_json writes it).
+    if !s.bytes().any(|b| b == b'"' || b == b'\\' || b < 0x20) {
+        out.push('"');
+        out.push_str(s);
+        out.push('"');
+        return;
+    }
     out.push_str(&serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into()));
 }
 
