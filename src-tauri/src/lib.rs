@@ -4173,6 +4173,24 @@ async fn pivot_open(
     .await
 }
 
+/// For each document position, its shown row (custom row heights while filtered).
+#[tauri::command]
+async fn shown_rows_at(
+    docs: DocsState<'_>,
+    doc: u32,
+    places: Vec<u64>,
+) -> CmdResult<Vec<Option<u64>>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.shown_rows_at(doc, &places)).await
+}
+
+/// Document positions of shown rows (custom row heights while filtered).
+#[tauri::command]
+async fn doc_rows(docs: DocsState<'_>, doc: u32, first: u64, count: u64) -> CmdResult<Vec<u64>> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.doc_rows(doc, first, count)).await
+}
+
 /// The shown row for a row number of the whole file.
 #[tauri::command]
 async fn shown_row_of(
@@ -5628,6 +5646,8 @@ pub fn run() {
             data_edge,
             current_region,
             shown_row_of,
+            shown_rows_at,
+            doc_rows,
             import_file,
             import_text,
             import_inspect,

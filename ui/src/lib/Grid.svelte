@@ -153,11 +153,11 @@
   // old constant). With no custom height in force, each answer is the plain
   // `row * height` arithmetic of a grid whose rows are all alike.
   const uniformRowH = $derived(lineH + (Math.max(1, Math.min(MAX_ROW_LINES, tab.rowLines)) - 1) * textLineH);
-  /** The custom heights in force, or null: none set, or a filter / hidden rows
-   *  change which rows are shown (they come back when the rows do). */
+  /** The custom heights in force, or null: none set (with rows hidden, by
+   *  shown row once the engine has said where they are; see `heightsInForce`). */
   const customHeights = $derived.by(() => {
     void tab.version;
-    return tab.rowHeights.empty || tab.info.filtered ? null : tab.rowHeights;
+    return tab.heightsInForce();
   });
   const geom = {
     /** The row has a height of its own in force. */
@@ -2047,9 +2047,10 @@
     }
     if (px < rowHeaderW && row >= 0) {
       // Near the bottom edge of a row number: the row's height can be dragged
-      // (not while a filter is on, and the freeze line has the place it is on).
+      // (with rows hidden too, but a seam over hidden rows keeps its place, and
+      // so does the freeze line).
       let edge: number | undefined;
-      if (!tab.info.filtered && !onFreezeEdge(px, py)) {
+      if (!onFreezeEdge(px, py) && !seamAt(py, row)) {
         const y0 = rowY(row, rows);
         if (py >= y0 + geom.h(row) - 4) edge = row;
         else if (py < y0 + 3 && row > tab.firstRow) edge = row - 1;
@@ -2638,7 +2639,8 @@
     }
     if (drag?.kind === "rowresize" && drag.row !== undefined) {
       // The dragged row follows the pointer (the other selected rows join when it is let go).
-      tab.rowHeights.set([drag.row], (drag.startH ?? 0) + (y - (drag.startY ?? y)));
+      const doc = tab.docRowsNow([drag.row]);
+      if (doc) tab.applyHeights([drag.row], doc, (drag.startH ?? 0) + (y - (drag.startY ?? y)));
       cursor = "row-resize";
       tab.bump();
       redraw();
@@ -2743,13 +2745,15 @@
     return out;
   }
 
-  /** Give rows a height (Format › Row height…, the drag). False: refused (said). */
-  export function setRowsHeight(rows: number[], px: number): boolean {
-    if (tab.info.filtered) {
-      onMessage("Row heights can't be changed while a filter is on or rows are hidden (the heights you set are kept and come back with the rows). Clear the filter first.");
+  /** Give shown rows a height (Format › Row height…, the drag), on the
+   *  document rows behind them. False: refused (said). */
+  export async function setRowsHeight(rows: number[], px: number): Promise<boolean> {
+    const doc = await tab.docRowsOf(rows);
+    if (!doc) {
+      onMessage("The rows could not be read: try again.");
       return false;
     }
-    if (!tab.rowHeights.set(rows, px)) {
+    if (!tab.applyHeights(rows, doc, px)) {
       onMessage(`Only ${MAX_CUSTOM_ROWS.toLocaleString()} rows can have a height of their own.`);
       return false;
     }
@@ -2758,19 +2762,17 @@
     return true;
   }
 
-  /** Back to the plain height for these rows. */
-  export function resetRowsHeight(rows: number[]): void {
-    tab.rowHeights.reset(rows);
+  /** Back to the plain height for these shown rows. */
+  export async function resetRowsHeight(rows: number[]): Promise<void> {
+    const doc = await tab.docRowsOf(rows);
+    if (!doc) return;
+    tab.applyHeights(rows, doc, null);
     tab.bump();
     redraw();
   }
 
   /** Fit rows to their wrapped text (the rows on screen: only they have been read). */
   export function fitRowHeights(rows: number[]): void {
-    if (tab.info.filtered) {
-      onMessage("Row heights can't be changed while a filter is on or rows are hidden. Clear the filter first.");
-      return;
-    }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.font = font;
@@ -2803,9 +2805,11 @@
     // One height per distinct value keeps the set short.
     const byPx = new Map<number, number[]>();
     for (const [r, px] of heights) (byPx.get(px) ?? byPx.set(px, []).get(px)!).push(r);
+    // The rows fitted were read, so their document rows are known.
     for (const [px, list] of byPx) {
-      if (px === geom.step) tab.rowHeights.reset(list);
-      else if (!tab.rowHeights.set(list, px)) break;
+      const doc = tab.docRowsNow(list);
+      if (!doc) continue;
+      if (!tab.applyHeights(list, doc, px === geom.step ? null : px)) break;
     }
     tab.bump();
     redraw();
@@ -2841,14 +2845,11 @@
     if (drag?.kind === "rowresize" && drag.row !== undefined) {
       const row = drag.row;
       const rows = selectedRowsWith(row);
-      const px = tab.rowHeights.custom(row);
+      const px = tab.heightsInForce()?.custom(row) ?? null;
       drag = null;
-      // Dragging one selected row's edge sets all of them.
-      if (rows && px !== null) {
-        const list = rowList(rows);
-        if (!tab.rowHeights.set(list, px)) onMessage(`Only ${MAX_CUSTOM_ROWS.toLocaleString()} rows can have a height of their own.`);
-      }
       cursor = "default";
+      // Dragging one selected row's edge sets all of them.
+      if (rows && px !== null) void setRowsHeight(rowList(rows), px);
       tab.bump();
       redraw();
       return;

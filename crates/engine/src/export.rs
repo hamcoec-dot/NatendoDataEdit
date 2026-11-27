@@ -1246,6 +1246,44 @@ mod tests {
         assert!(!sheet.contains("customHeight"));
     }
 
+    /// While filtered, the export writes only the shown rows, so the heights
+    /// it is given are by shown row (what the app projects): each lands on
+    /// the row holding the same data as in the app.
+    #[test]
+    fn xlsx_heights_while_filtered_are_by_shown_row() {
+        let mut d = doc("a,b\n1,keep\n2,drop\n3,keep\n4,drop\n5,keep\n");
+        let spec: crate::filter::FilterSpec = serde_json::from_str(
+            r#"{"columns":[{"col":1,"rule":{"type":"values","values":["keep"],"blanks":false}}],"keep_first":true}"#,
+        )
+        .unwrap();
+        d.set_filter(&spec).unwrap();
+        // Document row 5 ("5,keep") has a height; it is shown row 3.
+        let shown = d.shown_rows_at(&[5])[0].unwrap();
+        assert_eq!(shown, 3);
+        let mut out = Vec::new();
+        d.export(
+            &mut out,
+            &ExportOptions {
+                format: ExportFormat::Xlsx,
+                row_heights: vec![(shown, 40)],
+                ..Default::default()
+            },
+            None,
+            &Progress::new(),
+        )
+        .unwrap();
+        let z = crate::zipread::Zip::open(&out).unwrap();
+        let sheet = z.read_string("xl/worksheets/sheet1.xml", 1 << 20).unwrap();
+        // Only shown rows are written: 4 rows (titles and the three "keep").
+        assert_eq!(sheet.matches("<row ").count(), 4, "{sheet}");
+        // Excel row 4 is shown row 3, and holds the 5.
+        let row4 = &sheet[sheet.find("<row r=\"4\"").unwrap()..];
+        let row4 = &row4[..row4.find("</row>").unwrap()];
+        assert!(row4.contains("ht=\"30\" customHeight=\"1\""), "{row4}");
+        assert!(row4.contains(">5<"), "{row4}");
+        assert_eq!(sheet.matches("customHeight").count(), 1);
+    }
+
     /// Excel never runs a cell of ours as a formula: anything that is not a
     /// number or a date is an inline string, and no formula element exists.
     #[test]

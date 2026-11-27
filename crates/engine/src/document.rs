@@ -1070,6 +1070,43 @@ impl Document {
         }
     }
 
+    /// For each document position (0-based), its shown row, or `None` when
+    /// it is hidden or past the end. With every row shown, the position itself.
+    pub fn shown_rows_at(&self, places: &[u64]) -> Vec<Option<u64>> {
+        match &self.view {
+            Some(v) => {
+                let vis = self.visible(v);
+                places
+                    .iter()
+                    .map(|&p| {
+                        let p = u32::try_from(p).ok()?;
+                        vis.binary_search(&p).ok().map(|i| i as u64)
+                    })
+                    .collect()
+            }
+            None => {
+                let total = self.total_rows();
+                places.iter().map(|&p| (p < total).then_some(p)).collect()
+            }
+        }
+    }
+
+    /// Document positions (0-based) of shown rows `first..first + count`,
+    /// cut at the last shown row.
+    pub fn doc_rows(&self, first: u64, count: u64) -> Vec<u64> {
+        let end = first.saturating_add(count).min(self.row_count());
+        if first >= end {
+            return Vec::new();
+        }
+        match &self.view {
+            Some(v) => self.visible(v)[first as usize..end as usize]
+                .iter()
+                .map(|&p| u64::from(p))
+                .collect(),
+            None => (first..end).collect(),
+        }
+    }
+
     /// The shown row with document row number `number` (0-based), or, when
     /// that row is hidden by a filter, the next shown one (the last shown
     /// row when none follows). `None` when no row is shown.
@@ -2071,6 +2108,12 @@ impl Document {
 
     /// Insert rows before position `at` (`at == row_count()` appends).
     pub fn insert_rows(&mut self, at: u64, rows: Vec<Vec<String>>) -> Result<(), Error> {
+        self.insert_rows_at(at, rows).map(drop)
+    }
+
+    /// [`Document::insert_rows`], returning the document position the new
+    /// rows start at (with a filter on, it is not `at`).
+    pub fn insert_rows_at(&mut self, at: u64, rows: Vec<Vec<String>>) -> Result<u64, Error> {
         self.ready()?;
         if at > self.row_count() || rows.iter().any(|r| r.len() > MAX_EDIT_COL as usize + 1) {
             return Err(Error::OutOfRange);
@@ -2115,7 +2158,7 @@ impl Document {
             ])),
             None => self.push(insert),
         }
-        Ok(())
+        Ok(pos)
     }
 
     /// Logical values of a new row placed at their physical columns.
@@ -2144,20 +2187,27 @@ impl Document {
 
     /// Delete `count` rows starting at position `at`.
     pub fn delete_rows(&mut self, at: u64, count: u64) -> Result<(), Error> {
+        self.delete_rows_at(at, count).map(drop)
+    }
+
+    /// [`Document::delete_rows`], returning the document positions removed as
+    /// runs `(first, count)`, first run first, as they were before the removal
+    /// (with a filter on, the shown rows need not be neighbours).
+    pub fn delete_rows_at(&mut self, at: u64, count: u64) -> Result<Vec<(u64, u64)>, Error> {
         self.ready()?;
         let end = at.checked_add(count).ok_or(Error::OutOfRange)?;
         if end > self.row_count() {
             return Err(Error::OutOfRange);
         }
         if count == 0 {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let Some(v) = &self.view else {
             self.push(Op::Remove {
                 at: at as usize,
                 count: count as usize,
             });
-            return Ok(());
+            return Ok(vec![(at, count)]);
         };
         // With a filter on, only the shown rows go: one removal per run of
         // neighbouring rows, last run first so positions stay valid.
@@ -2168,6 +2218,7 @@ impl Document {
                 _ => runs.push((p as usize, 1)),
             }
         }
+        let out: Vec<(u64, u64)> = runs.iter().map(|&(a, n)| (a as u64, n as u64)).collect();
         let mut ops: Vec<Op> = runs
             .into_iter()
             .rev()
@@ -2178,7 +2229,7 @@ impl Document {
         } else {
             Op::Batch(ops)
         });
-        Ok(())
+        Ok(out)
     }
 
     /// Undo the last change. Returns `false` when there is nothing to undo.

@@ -21,6 +21,9 @@ export interface AppInfo {
   engine_version: string;
 }
 
+/** Rows inserted or deleted, by document position. */
+export type RowsChange = { kind: "insert"; at: number; count: number } | { kind: "delete"; runs: [number, number][] };
+
 export interface DocInfo {
   id: number;
   name: string;
@@ -102,6 +105,10 @@ export interface DocInfo {
   json_refuse?: string | null;
   /** C11: the JSON file (tooltips, and hashed to remember the blank-cell answer). */
   json_file?: string | null;
+  /** Only on the answer to inserting or deleting rows: the document positions
+   *  changed (custom row heights follow them while a filter is on); missing
+   *  past 100,000 deleted rows. */
+  rows_change?: RowsChange;
 }
 
 /** How many lines of report notes a tab has: lines that are not rows of the
@@ -2301,6 +2308,10 @@ export interface Backend {
    *  that row itself is shown (otherwise the next shown one); null when
    *  no row is shown. */
   shownRowOf(doc: number, number: number): Promise<[number, boolean] | null>;
+  /** For each document position, its shown row (null: hidden); at most 100,000. */
+  shownRowsAt(doc: number, places: number[]): Promise<(number | null)[]>;
+  /** Document positions of shown rows first..first+count (at most 100,001). */
+  docRows(doc: number, first: number, count: number): Promise<number[]>;
   /** Unsaved files (either window), files held, long jobs: for the quit question. */
   modifiedDocs(): Promise<ModifiedReport>;
   /** Quit, with the list the question showed (file and generation): "ask_again"
@@ -3160,6 +3171,12 @@ class TauriBackend implements Backend {
   }
   shownRowOf(doc: number, number: number) {
     return call<[number, boolean] | null>("shown_row_of", { doc, number });
+  }
+  shownRowsAt(doc: number, places: number[]) {
+    return call<(number | null)[]>("shown_rows_at", { doc, places });
+  }
+  docRows(doc: number, first: number, count: number) {
+    return call<number[]>("doc_rows", { doc, first, count });
   }
   modifiedDocs() {
     return call<ModifiedReport>("modified_docs");

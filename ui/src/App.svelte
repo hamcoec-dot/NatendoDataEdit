@@ -3609,11 +3609,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   /** How custom row heights must follow a change to the rows (null: not
    *  needed). Shown rows are the file's rows unless some are hidden or filtered
-   *  out; then the heights cannot be followed exactly, so they are cleared. */
+   *  out; then an insert or delete follows the document positions the engine
+   *  reports with its answer (moving rows is refused there). */
   function rowMapFor(t: Tab, c: Change): RowMap | null {
     if (t.rowHeights.empty) return null;
     if (c.op !== "insert_rows" && c.op !== "delete_rows" && c.op !== "move_rows") return null;
-    if (t.info.filtered || t.info.rows !== t.info.total_rows) return { kind: "reset" };
+    if (t.info.filtered || t.info.rows !== t.info.total_rows) return c.op === "move_rows" ? { kind: "reset" } : { kind: "report" };
     if (c.op === "insert_rows") return { kind: "insert", at: c.at, count: c.count };
     if (c.op === "delete_rows") return { kind: "delete", at: c.at, count: c.count };
     return { kind: "move", at: c.at, count: c.count, to: c.to };
@@ -5878,11 +5879,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     prompt = {
       title: "Height of the selected rows",
       label: "Height in pixels",
-      value: String(t.rowHeights.custom(rows[0]!) ?? ""),
+      value: String(t.heightsInForce()?.custom(rows[0]!) ?? ""),
       note: `${MIN_ROW_PX} to ${MAX_ROW_PX}. Only the ${plural(rows.length, "selected row")} change; drag the line under a row number to do the same with the mouse. Reset puts them back to the height every row has.`,
       check: (v) => (/^\d+$/.test(v.trim()) && Number(v) >= MIN_ROW_PX && Number(v) <= MAX_ROW_PX ? "" : `Type a whole number from ${MIN_ROW_PX} to ${MAX_ROW_PX}.`),
       done: (v) => {
-        if (grid?.setRowsHeight(rows, Number(v))) say(`${plural(rows.length, "row")} now ${v} pixels tall. Ctrl+Z undoes it.`);
+        void grid?.setRowsHeight(rows, Number(v)).then((ok) => ok && say(`${plural(rows.length, "row")} now ${v} pixels tall. Ctrl+Z undoes it.`));
       },
     };
   }
@@ -5899,7 +5900,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (!t) return;
     const rows = selectedRowList(t);
     if (!rows) return;
-    grid?.resetRowsHeight(rows);
+    void grid?.resetRowsHeight(rows);
     say(`${plural(rows.length, "row")} back to the height every row has. Ctrl+Z undoes it.`);
   }
 
@@ -9302,7 +9303,6 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         ? `${Math.max(0, d.rows - t.firstRow).toLocaleString()} of ${Math.max(0, d.total_rows - t.firstRow).toLocaleString()} rows shown × ${d.cols.toLocaleString()} columns`
         : `${Math.max(0, d.rows - t.firstRow).toLocaleString()} ${d.rows - t.firstRow === 1 ? "row" : "rows"} × ${d.cols.toLocaleString()} ${d.cols === 1 ? "column" : "columns"}`,
       hidden: d.hidden_rows,
-      heightsHidden: d.filtered && !t.rowHeights.empty,
       filter: d.has_filter || d.filter_on_deleted
         ? [
             ...(t.filter?.columns ?? []).map((c) => `${columnTitle(t, c.col)} ${describeRule(c.rule)}`),
@@ -9894,7 +9894,6 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       {#if prefs.data.xray}<button type="button" class="small" data-testid="xray-status" title="X-ray: what looks right but is not, on this screen. Click for a report of the selected columns or the whole file." onclick={() => (xrayOpen = true)}>X-ray: {xrayNow ? `${plural(xrayNow.cells, "cell")}, ${plural(xrayNow.cols, "column")}` : "nothing on this screen"}</button>{/if}
       {#if tab}<QuickTotals {tab} />{/if}
       {#if status.sel}<span>{status.sel}</span>{/if}
-      {#if status.heightsHidden}<span title="The rows you gave a height keep it and get it back when the filter or the hidden rows are cleared.">Custom row heights hidden while filtered</span>{/if}
       {#if tab && hiddenRows.hidden}
         <span class="acting" class:including={hiddenRows.including > 0} data-testid="acting-pill">{actingWords(hiddenRows.hidden, hiddenRows.total, hiddenRows.including > 0)}</span>
       {/if}
@@ -10057,7 +10056,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     rows={tab.info.rows}
     tabList={exportTabs}
     widths={Array.from({ length: Math.min(tab.info.cols, 16_384) }, (_, c) => tab!.columns.customWidth(c) ?? 0)}
-    rowHeights={tab.info.filtered ? [] : tab.rowHeights.toView()}
+    rowHeights={tab.heightsInForce()?.toView() ?? []}
     onExport={(o, to, ids) => void exportRun(o, to, ids)}
     onClose={() => { exportOpen = false; grid?.focus(); }}
   />

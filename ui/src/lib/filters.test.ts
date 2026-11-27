@@ -70,7 +70,13 @@ describe("browser stand-in", () => {
     const v = await b.viewport(id, 0, 3, 3, 1, 50);
     expect(v.cells.slice(1)).toEqual(["Osaka", "Osaka"]);
     expect(v.rowNumbers?.[0]).toBe(0);
-    await expect(b.change(id, { op: "delete_rows", at: 1, count: 1 })).rejects.toMatchObject({ kind: "filter_active" });
+    // Moving rows is refused while filtered; deleting a shown row reports the document row it took.
+    await expect(b.change(id, { op: "move_rows", at: 1, count: 1, to: 2 })).rejects.toMatchObject({ kind: "filter_active" });
+    const at = (await b.docRows(id, 1, 1))[0]!;
+    expect(at).toBeGreaterThan(1);
+    const del = await b.change(id, { op: "delete_rows", at: 1, count: 1 });
+    expect(del.rows_change).toEqual({ kind: "delete", runs: [[at, 1]] });
+    await b.change(id, { op: "undo" });
     const cleared = await b.clearFilter(id);
     expect(cleared.filtered).toBe(false);
     const found = await b.findNext(id, { pattern: { text: "Quito", kind: "plain", match_case: false, whole_cell: true }, scope: { kind: "all" }, skip_first: true }, [0, 0], false);

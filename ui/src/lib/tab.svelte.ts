@@ -77,7 +77,13 @@ function sameRows(a: RowHeightSnap, b: RowHeightSnap): boolean {
 /** A change to the rows that the heights must follow, set just before the
  *  change is made and used when the new state arrives (`update`). "reset":
  *  the rows cannot be followed exactly (some are hidden), so the heights go. */
-export type RowMap = { kind: "insert"; at: number; count: number } | { kind: "delete"; at: number; count: number } | { kind: "move"; at: number; count: number; to: number } | { kind: "reset" };
+export type RowMap =
+  | { kind: "insert"; at: number; count: number }
+  | { kind: "delete"; at: number; count: number }
+  | { kind: "move"; at: number; count: number; to: number }
+  | { kind: "reset" }
+  /** With rows hidden: follow the document positions the engine reports (`DocInfo.rows_change`). */
+  | { kind: "report" };
 
 /** Two looks hold the same values (parts shared or equal). */
 function sameTypes(a: ColumnTypes | undefined, b: ColumnTypes | undefined): boolean {
@@ -103,6 +109,18 @@ export class Tab {
   rowHeights = new RowHeights();
   /** How the heights must follow the row change about to be made (see `RowMap`). */
   pendingRows: RowMap | null = null;
+  /** With rows hidden: the custom heights in SHOWN positions, for this info
+   *  and this heights snapshot (see `heightsInForce`). */
+  private shown: { info: DocInfo; snap: RowHeightSnap; heights: RowHeights } | null = null;
+  /** A `shownRowsAt` call is out or waiting to go (one at a time). */
+  private shownAsking = false;
+  /** The info a waiting ask was set for: while the rows keep changing (a
+   *  filter typed key by key), the ask waits until they settle. */
+  private shownWaitFor: DocInfo | null = null;
+  /** How long the rows must stay the same before the engine is asked, in ms. */
+  static SHOWN_SETTLE_MS = 120;
+  /** Calls made to `shownRowsAt` (for tests). */
+  shownAsks = 0;
   /** Said with the next message: the heights were cleared (and why). */
   rowHeightsNote = "";
   /** Where a "heights were cleared" note goes the moment a change clears them, so
@@ -849,6 +867,108 @@ export class Tab {
     this.bump();
   }
 
+  /** The custom heights the grid draws: by document row while every row
+   *  shows; with some hidden, by SHOWN row once the engine has said where the
+   *  custom rows are (until then, and with none, null: every row plain). The
+   *  answer for an older set of rows is never used. */
+  heightsInForce(): RowHeights | null {
+    if (this.rowHeights.empty) return null;
+    if (!this.info.filtered) return this.rowHeights;
+    const s = this.shown;
+    if (s && s.info === this.info && this.rowHeights.sameAs(s.snap)) return s.heights;
+    this.askShown();
+    return null;
+  }
+
+  /** Ask where the custom rows are shown: one call at a time; when it comes
+   *  back and the rows or heights changed meanwhile, the next redraw asks again. */
+  private askShown(): void {
+    if (this.shownAsking) return;
+    this.shownAsking = true;
+    this.shownWaitFor = this.info;
+    setTimeout(() => this.askShownNow(), Tab.SHOWN_SETTLE_MS);
+  }
+
+  private askShownNow(): void {
+    // The rows changed while waiting: wait again (no call yet).
+    if (this.shownWaitFor !== this.info) {
+      this.shownWaitFor = this.info;
+      setTimeout(() => this.askShownNow(), Tab.SHOWN_SETTLE_MS);
+      return;
+    }
+    if (this.rowHeights.empty || !this.info.filtered) {
+      this.shownAsking = false;
+      return;
+    }
+    this.shownAsks++;
+    const info = this.info;
+    const snap = this.rowHeights.snapshot();
+    const places = this.rowHeights.places.slice();
+    void backend()
+      .shownRowsAt(this.id, places)
+      .then((map) => {
+        if (this.info === info && this.rowHeights.sameAs(snap)) this.shown = { info, snap, heights: this.rowHeights.project(map) };
+      })
+      .catch(() => {
+        // Plain rows for this set (no asking again until it changes).
+        if (this.info === info && this.rowHeights.sameAs(snap)) this.shown = { info, snap, heights: new RowHeights() };
+      })
+      .finally(() => {
+        this.shownAsking = false;
+        this.bump();
+      });
+  }
+
+  /** Document rows behind these shown rows: the same rows while every row
+   *  shows; else from the row numbers the grid has read (null: some not read yet). */
+  docRowsNow(shown: readonly number[]): number[] | null {
+    if (!this.info.filtered) return shown.slice();
+    const out: number[] = [];
+    for (const r of shown) {
+      const n = this.cache.rowNumber(r);
+      if (n === undefined) return null;
+      out.push(n);
+    }
+    return out;
+  }
+
+  /** `docRowsNow`, asking the engine for rows not read yet (null: it failed). */
+  async docRowsOf(shown: readonly number[]): Promise<number[] | null> {
+    const now = this.docRowsNow(shown);
+    if (now) return now;
+    if (!shown.length) return [];
+    const lo = Math.min(...shown);
+    const hi = Math.max(...shown);
+    try {
+      const got = await backend().docRows(this.id, lo, hi - lo + 1);
+      const out: number[] = [];
+      for (const r of shown) {
+        const n = got[r - lo];
+        if (n === undefined) return null;
+        out.push(n);
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Give shown rows `shown` (document rows `doc`, the same rows) a height
+   *  (px), or the plain one (null). With rows hidden the shown-row heights
+   *  follow at once, so a drag never waits for the engine. False: past the cap. */
+  applyHeights(shown: readonly number[], doc: readonly number[], px: number | null): boolean {
+    const s = this.shown;
+    const valid = !!s && this.info.filtered && s.info === this.info && this.rowHeights.sameAs(s.snap);
+    if (px === null) this.rowHeights.reset(doc);
+    else if (!this.rowHeights.set(doc, px)) return false;
+    if (valid && s) {
+      if (px === null) s.heights.reset(shown);
+      else s.heights.set(shown, px);
+      s.snap = this.rowHeights.snapshot();
+    }
+    return true;
+  }
+
   /** After an Undo or Redo that moved the history: when the look kept with the
    *  step was let go (the undo memory ran short), the heights could sit on other
    *  rows (a row count change or a row move), so they are cleared. True when they
@@ -870,13 +990,18 @@ export class Tab {
     if (after < before || this.redoing > 0) return;
     const added = info.total_rows !== this.info.total_rows;
     if (after === before && !added) return;
-    if (pend && pend.kind !== "reset" && after > before) {
+    if (pend && pend.kind === "report" && after > before) {
+      const c = info.rows_change;
+      if (c?.kind === "insert") return this.rowHeights.insertRows(c.at, c.count);
+      if (c?.kind === "delete") return this.rowHeights.deleteRuns(c.runs);
+    }
+    if (pend && pend.kind !== "reset" && pend.kind !== "report" && after > before) {
       if (pend.kind === "insert") this.rowHeights.insertRows(pend.at, pend.count);
       else if (pend.kind === "delete") this.rowHeights.deleteRows(pend.at, pend.count);
       else this.rowHeights.moveRows(pend.at, pend.count, pend.to);
       return;
     }
-    if (added || (pend && pend.kind === "reset" && after > before)) {
+    if (added || (pend && (pend.kind === "reset" || pend.kind === "report") && after > before)) {
       this.rowHeights.clear();
       const note = "The custom row heights were cleared because rows changed and the grid cannot tell which rows kept theirs (Ctrl+Z brings them back).";
       if (Tab.rowNoteSink) Tab.rowNoteSink(note);

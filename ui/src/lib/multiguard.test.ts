@@ -185,6 +185,8 @@ const NOT_WRITES = [
   "dataEdge",
   "currentRegion",
   "shownRowOf",
+  "shownRowsAt",
+  "docRows",
   "modifiedDocs",
   "quitApp",
   "windowMove",

@@ -306,3 +306,67 @@ describe("RowHeights from a view file", () => {
     expect(best).toBeLessThan(100);
   });
 });
+
+describe("heights while rows are hidden", () => {
+  it("project keeps the shown custom rows, by shown row, and leaves hidden ones out", () => {
+    const h = new RowHeights();
+    h.set([2], 40);
+    h.set([5], 50);
+    h.set([9], 90);
+    expect(h.places).toEqual([2, 5, 9]);
+    // Row 5 is hidden; 2 is shown row 1, 9 is shown row 3.
+    const p = h.project([1, null, 3]);
+    expect(p.toView()).toEqual([
+      [1, 40],
+      [3, 90],
+    ]);
+    expect(p.offsetOf(4, 20)).toBe(20 + 40 + 20 + 90);
+    // The document heights are untouched.
+    expect(h.toView()).toEqual([
+      [2, 40],
+      [5, 50],
+      [9, 90],
+    ]);
+  });
+
+  it("deleteRuns drops deleted rows and moves later ones up by what went before them", () => {
+    const h = new RowHeights();
+    h.set([1], 30);
+    h.set([4], 40);
+    h.set([6], 60);
+    h.set([12], 70);
+    // Runs over gaps: rows 3-4 and 8-10 go.
+    h.deleteRuns([
+      [3, 2],
+      [8, 3],
+    ]);
+    expect(h.toView()).toEqual([
+      [1, 30],
+      [4, 60],
+      [7, 70],
+    ]);
+  });
+
+  it("deleteRuns agrees with deleting each run by hand, last first", () => {
+    const r = rnd(4);
+    for (let t = 0; t < 200; t++) {
+      const a = new RowHeights();
+      const b = new RowHeights();
+      for (let i = 0; i < 12; i++) {
+        const row = Math.floor(r() * 60);
+        a.set([row], 20 + i);
+        b.set([row], 20 + i);
+      }
+      const runs: [number, number][] = [];
+      let at = Math.floor(r() * 5);
+      while (at < 60) {
+        const n = 1 + Math.floor(r() * 4);
+        runs.push([at, n]);
+        at += n + 1 + Math.floor(r() * 6);
+      }
+      a.deleteRuns(runs);
+      for (const [p, n] of [...runs].reverse()) b.deleteRows(p, n);
+      expect(a.toView()).toEqual(b.toView());
+    }
+  });
+});

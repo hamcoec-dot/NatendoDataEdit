@@ -246,6 +246,47 @@ export class RowHeights {
     );
   }
 
+  /** The document rows that have a custom height, in order. */
+  get places(): readonly number[] {
+    return this.rows;
+  }
+
+  /** The heights in SHOWN positions: `shown[i]` is the shown row of the i-th
+   *  custom row (`places`), null when it is hidden (left out). The shown rows
+   *  keep the document order, so the result stays sorted. */
+  project(shown: readonly (number | null)[]): RowHeights {
+    const out = new RowHeights();
+    const rows: number[] = [];
+    const px: number[] = [];
+    for (let i = 0; i < this.rows.length; i++) {
+      const s = shown[i];
+      if (s === null || s === undefined) continue;
+      rows.push(s);
+      px.push(this.px[i]!);
+    }
+    out.commit(rows, px);
+    return out;
+  }
+
+  /** These document rows were deleted, as runs `[first, count]` in order
+   *  (positions as before): their heights go, later rows move up by the
+   *  rows deleted before them. One pass. */
+  deleteRuns(runs: readonly (readonly [number, number])[]): void {
+    if (!this.rows.length || !runs.length) return;
+    const keep: number[] = [];
+    const pk: number[] = [];
+    let j = 0;
+    let gone = 0;
+    for (let i = 0; i < this.rows.length; i++) {
+      const r = this.rows[i]!;
+      while (j < runs.length && runs[j]![0] + runs[j]![1] <= r) gone += runs[j++]![1];
+      if (j < runs.length && r >= runs[j]![0]) continue;
+      keep.push(r - gone);
+      pk.push(this.px[i]!);
+    }
+    this.commit(keep, pk);
+  }
+
   snapshot(): RowHeightSnap {
     return this.rows.length ? { rows: this.rows, px: this.px, sum: this.sum } : NONE;
   }

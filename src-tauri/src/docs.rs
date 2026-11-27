@@ -1931,7 +1931,25 @@ pub struct DocInfo {
     /// C11: the JSON file it saves back to (shown in tooltips and used, hashed, to remember the blank-cell
     /// answer; never accepted back from the UI).
     pub json_file: Option<String>,
+    /// Only on the answer to inserting or deleting rows: the document
+    /// positions changed, so custom row heights can follow them while a
+    /// filter is on (`None` past `MAX_ROWS_CHANGE` deleted rows).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows_change: Option<RowsChange>,
 }
+
+/// Rows inserted or deleted, by document position (see `DocInfo::rows_change`).
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RowsChange {
+    /// `count` rows were inserted starting at document position `at`.
+    Insert { at: u64, count: u64 },
+    /// These runs `(first, count)` were deleted, positions as before.
+    Delete { runs: Vec<(u64, u64)> },
+}
+
+/// Most rows a delete reports by position (more: the heights are cleared).
+pub const MAX_ROWS_CHANGE: u64 = 100_000;
 
 /// The JSON file a tab came from (C11), and its size and time when last read or written.
 #[derive(Clone)]
@@ -3722,9 +3740,13 @@ impl Docs {
                 ),
             ));
         }
-        self.edit(id, |d| {
-            d.insert_rows(at, vec![vec![String::new()]; count as usize])
-        })
+        let mut pos = None;
+        let mut info = self.edit(id, |d| {
+            pos = Some(d.insert_rows_at(at, vec![vec![String::new()]; count as usize])?);
+            Ok(())
+        })?;
+        info.rows_change = pos.map(|at| RowsChange::Insert { at, count });
+        Ok(info)
     }
 
     pub fn delete_rows(&self, id: u32, at: u64, count: u64) -> CmdResult<DocInfo> {
@@ -3735,9 +3757,16 @@ impl Docs {
         if auto {
             natendo_engine::document::capture_mark_start(entry.read().uid());
         }
-        let info = self.edit(id, |d| d.delete_rows(at, count));
+        let mut runs = None;
+        let info = self.edit(id, |d| {
+            runs = Some(d.delete_rows_at(at, count)?);
+            Ok(())
+        });
         let mark = natendo_engine::document::capture_mark_take();
-        let info = info?;
+        let mut info = info?;
+        if count <= MAX_ROWS_CHANGE {
+            info.rows_change = runs.map(|runs| RowsChange::Delete { runs });
+        }
         if let (true, Some(m)) = (auto, mark) {
             self.auto_checkpoint(&entry, m, "deleting rows");
         }
@@ -9881,6 +9910,25 @@ impl Docs {
 
     /// The shown row for a row number of the whole file (Go To while a
     /// filter is on), and whether that exact row is shown.
+    /// For each document position, its shown row (`None`: hidden), so custom
+    /// row heights draw on the rows a filter shows. At most `MAX_ROWS_CHANGE`.
+    pub fn shown_rows_at(&self, id: u32, places: &[u64]) -> CmdResult<Vec<Option<u64>>> {
+        if places.len() as u64 > MAX_ROWS_CHANGE {
+            return Err(CmdError::new("too_large", "too many rows at once"));
+        }
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.shown_rows_at(places))
+    }
+
+    /// Document positions of shown rows `first..first + count` (at most
+    /// `MAX_ROWS_CHANGE` + 1 of them, so a caller can tell it passed the cap).
+    pub fn doc_rows(&self, id: u32, first: u64, count: u64) -> CmdResult<Vec<u64>> {
+        let entry = self.get(id)?;
+        let d = entry.read();
+        Ok(d.doc_rows(first, count.min(MAX_ROWS_CHANGE + 1)))
+    }
+
     pub fn shown_row_of(&self, id: u32, number: u64) -> CmdResult<Option<(u64, bool)>> {
         let entry = self.get(id)?;
         let d = entry.read();
@@ -10430,6 +10478,7 @@ fn describe(id: u32, d: &Document, line_by_line: bool, error: Option<String>) ->
         json_format: None,
         json_refuse: None,
         json_file: None,
+        rows_change: None,
     }
 }
 
@@ -10867,6 +10916,68 @@ mod tests {
     }
 
     /// A fill follows a saved custom order only when it should, and says which.
+    /// Gap #4: while filtered, an insert or delete answers with the document
+    /// positions it changed, and the two read-only lookups map shown rows and
+    /// document rows both ways (capped).
+    #[test]
+    fn filtered_row_changes_report_their_document_positions() {
+        let docs = Docs::default();
+        let p = tmp(
+            "heights-filtered.csv",
+            b"n,k
+r1,y
+r2,x
+r3,x
+r4,y
+r5,x
+r6,y
+r7,x
+",
+        );
+        let id = docs.open_path(&p, false).unwrap().id;
+        wait(&docs, id);
+        // Unfiltered: the positions asked for.
+        let ins = docs.insert_rows(id, 2, 1).unwrap();
+        assert_eq!(
+            ins.rows_change,
+            Some(RowsChange::Insert { at: 2, count: 1 })
+        );
+        docs.undo(id).unwrap();
+        let spec: FilterSpec = serde_json::from_str(
+            r#"{"columns":[{"col":1,"rule":{"type":"values","values":["x"],"blanks":false}}],"keep_first":true}"#,
+        )
+        .unwrap();
+        docs.filter(id, spec).unwrap();
+        // Shown: 0 (titles), 2, 3, 5, 7.
+        assert_eq!(docs.doc_rows(id, 0, 10).unwrap(), [0, 2, 3, 5, 7]);
+        assert_eq!(
+            docs.shown_rows_at(id, &[2, 4, 7]).unwrap(),
+            [Some(1), None, Some(4)]
+        );
+        assert!(docs
+            .shown_rows_at(id, &vec![0; MAX_ROWS_CHANGE as usize + 1])
+            .is_err());
+        let ins = docs.insert_rows(id, 3, 2).unwrap();
+        assert_eq!(
+            ins.rows_change,
+            Some(RowsChange::Insert { at: 5, count: 2 })
+        );
+        docs.undo(id).unwrap();
+        let del = docs.delete_rows(id, 2, 2).unwrap();
+        assert_eq!(
+            del.rows_change,
+            Some(RowsChange::Delete {
+                runs: vec![(3, 1), (5, 1)]
+            })
+        );
+        // Other answers carry no report.
+        assert_eq!(docs.undo(id).unwrap().rows_change, None);
+        // It reaches the window as JSON with a "kind".
+        let json = serde_json::to_value(&del).unwrap();
+        assert_eq!(json["rows_change"]["kind"], "delete");
+        assert!(serde_json::to_value(&ins).unwrap()["rows_change"]["at"] == 5);
+    }
+
     #[test]
     fn a_fill_takes_only_the_saved_orders_it_uses() {
         use natendo_engine::fill::{FillMode, FillOrder};

@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Tab, exportHandTab, importHandTab } from "./tab.svelte";
-import type { DocInfo } from "./backend";
+import { backend, type DocInfo } from "./backend";
 import { MAX_CUSTOM_ROWS, RowHeights } from "./rowheights";
 
 const info = (over: Partial<DocInfo> = {}): DocInfo => ({ id: 1, rows: 1000, cols: 6, total_rows: 1000, history_pos: 0, has_filter: false, filtered: false, hidden_rows: 0, can_undo: false, can_redo: false, ...over }) as unknown as DocInfo;
@@ -157,6 +157,143 @@ describe("heights move with a tab to another window", () => {
     expect(b.rowHeights.toView()).toEqual([
       [3, 70],
       [9, 70],
+    ]);
+  });
+});
+
+describe("heights while rows are hidden (filter on)", () => {
+  // Timers and promises settle; the ask waits SHOWN_SETTLE_MS (0 here) first.
+  const flush = async () => {
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  Tab.SHOWN_SETTLE_MS = 0;
+
+  it("draws plain until the engine says where the rows are, then by shown row", async () => {
+    const spy = vi.spyOn(backend(), "shownRowsAt").mockImplementation(async (_d, places) => places.map((p) => (p === 5 ? null : p / 2)));
+    const t = tabWith([4, 5, 8]);
+    t.update(info({ filtered: true, rows: 500, has_filter: true }), false);
+    expect(t.heightsInForce()).toBeNull();
+    await flush();
+    expect(t.heightsInForce()?.toView()).toEqual([
+      [2, 60],
+      [4, 60],
+    ]);
+    // Filter off: by document row again, no call.
+    t.update(info(), false);
+    expect(t.heightsInForce()?.toView()).toEqual([
+      [4, 60],
+      [5, 60],
+      [8, 60],
+    ]);
+    spy.mockRestore();
+  });
+
+  it("asks one at a time: typing a 10-character filter sends at most 3 calls", async () => {
+    let calls = 0;
+    let release: (() => void) | null = null;
+    const spy = vi.spyOn(backend(), "shownRowsAt").mockImplementation((_d, places) => {
+      calls++;
+      return new Promise((ok) => (release = () => ok(places.map(() => null))));
+    });
+    const t = tabWith([1, 2, 3]);
+    for (let k = 0; k < 10; k++) {
+      t.update(info({ filtered: true, rows: 900 - k, has_filter: true }), false);
+      t.heightsInForce(); // a redraw per key
+    }
+    // Nothing is asked while the rows keep changing; once they settle, one call.
+    expect(calls).toBe(0);
+    await flush();
+    expect(calls).toBe(1);
+    release!();
+    await flush();
+    // The answer is for the current rows: used, and no more calls.
+    expect(t.heightsInForce()).not.toBeNull();
+    await flush();
+    expect(calls).toBe(1);
+    // Keys typed while a call is out: one more call once it is back and the rows settle.
+    t.update(info({ filtered: true, rows: 10, has_filter: true }), false);
+    t.heightsInForce();
+    await flush();
+    t.update(info({ filtered: true, rows: 9, has_filter: true }), false);
+    t.heightsInForce();
+    release!();
+    await flush();
+    t.heightsInForce();
+    await flush();
+    expect(calls).toBeLessThanOrEqual(3);
+    spy.mockRestore();
+  });
+
+  it("an answer for older rows is never used", async () => {
+    let release: (() => void) | null = null;
+    const spy = vi.spyOn(backend(), "shownRowsAt").mockImplementation((_d, places) => new Promise((ok) => (release = () => ok(places.map((p) => p)))));
+    const t = tabWith([3]);
+    t.update(info({ filtered: true, rows: 800, has_filter: true }), false);
+    t.heightsInForce();
+    await flush();
+    t.update(info({ filtered: true, rows: 700, has_filter: true }), false);
+    release!();
+    await flush();
+    expect(t.heightsInForce()).toBeNull();
+    spy.mockRestore();
+  });
+
+  it("setting a shown row's height while filtered updates both, without a call", async () => {
+    const spy = vi.spyOn(backend(), "shownRowsAt").mockImplementation(async (_d, places) => places.map((p) => p - 10));
+    const t = tabWith([20]);
+    t.update(info({ filtered: true, rows: 500, has_filter: true }), false);
+    t.heightsInForce();
+    await flush();
+    const before = spy.mock.calls.length;
+    expect(t.applyHeights([3], [13], 80)).toBe(true);
+    expect(t.rowHeights.toView()).toEqual([
+      [13, 80],
+      [20, 60],
+    ]);
+    expect(t.heightsInForce()?.toView()).toEqual([
+      [3, 80],
+      [10, 60],
+    ]);
+    expect(t.applyHeights([10], [20], null)).toBe(true);
+    expect(t.heightsInForce()?.toView()).toEqual([[3, 80]]);
+    expect(spy.mock.calls.length).toBe(before);
+    spy.mockRestore();
+  });
+
+  it("an insert or delete while filtered follows the positions the engine reports", () => {
+    const t = tabWith([4, 9, 15]);
+    t.update(info({ filtered: true, rows: 500, has_filter: true }), false);
+    t.pendingRows = { kind: "report" };
+    t.update(info({ filtered: true, rows: 502, total_rows: 1002, history_pos: 1, has_filter: true, rows_change: { kind: "insert", at: 9, count: 2 } }), true);
+    expect(t.rowHeights.toView()).toEqual([
+      [4, 60],
+      [11, 60],
+      [17, 60],
+    ]);
+    t.pendingRows = { kind: "report" };
+    t.update(
+      info({ filtered: true, rows: 499, total_rows: 999, history_pos: 2, has_filter: true, rows_change: { kind: "delete", runs: [[2, 1], [11, 1], [13, 1]] } }),
+      true,
+    );
+    expect(t.rowHeights.toView()).toEqual([
+      [3, 60],
+      [14, 60],
+    ]);
+    expect(t.rowHeightsNote).toBe("");
+    // No report (past the cap): cleared with the note.
+    t.pendingRows = { kind: "report" };
+    t.update(info({ filtered: true, rows: 300, total_rows: 800, history_pos: 3, has_filter: true }), true);
+    expect(t.rowHeights.empty).toBe(true);
+    expect(t.rowHeightsNote).toMatch(/cleared/);
+  });
+
+  it("sorting while filtered leaves each height on its document row", () => {
+    const t = tabWith([4, 9]);
+    t.update(info({ filtered: true, rows: 500, has_filter: true }), false);
+    t.update(info({ filtered: true, rows: 500, has_filter: true, history_pos: 1 }), true);
+    expect(t.rowHeights.toView()).toEqual([
+      [4, 60],
+      [9, 60],
     ]);
   });
 });

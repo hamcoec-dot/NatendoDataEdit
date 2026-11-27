@@ -1651,8 +1651,7 @@ export class MockBackend implements Backend {
         };
       });
     }
-    if (d.shown && (c.op === "insert_rows" || c.op === "delete_rows" || c.op === "move_rows"))
-      throw err("filter_active", "turn the filter off to change rows (browser preview)");
+    if (d.shown && c.op === "move_rows") throw err("filter_active", "turn the filter off to move rows (browser preview)");
     switch (c.op) {
       case "undo": {
         const step = d.undo.pop();
@@ -1667,19 +1666,38 @@ export class MockBackend implements Backend {
         if (apply) d.undo.push({ apply, inverse: apply() });
         return this.refresh(d);
       }
-      case "insert_rows":
+      case "insert_rows": {
         if (c.at > rows) throw range();
-        return this.push(d, () => {
+        // With rows hidden: before the shown row `at` (as the engine; new rows show).
+        const vis = this.visible(d);
+        const at = vis ? (vis[c.at] ?? (vis.length ? vis[vis.length - 1]! + 1 : this.totalRows(d))) : c.at;
+        const info = await this.push(d, () => {
           const ids = Array.from({ length: c.count }, () => d.nextNew--);
-          this.orderOf(d).splice(c.at, 0, ...ids);
-          return () => void this.orderOf(d).splice(c.at, c.count);
+          this.orderOf(d).splice(at, 0, ...ids);
+          if (d.shown) for (const id of ids) d.shown.add(id);
+          return () => void this.orderOf(d).splice(at, c.count);
         });
-      case "delete_rows":
+        return { ...info, rows_change: { kind: "insert", at, count: c.count } };
+      }
+      case "delete_rows": {
         if (c.at + c.count > rows) throw range();
-        return this.push(d, () => {
-          const ids = this.orderOf(d).splice(c.at, c.count);
-          return () => void this.orderOf(d).splice(c.at, 0, ...ids);
+        const vis = this.visible(d);
+        const runs: [number, number][] = [];
+        for (let r = c.at; r < c.at + c.count; r++) {
+          const p = vis ? vis[r]! : r;
+          const last = runs[runs.length - 1];
+          if (last && last[0] + last[1] === p) last[1]++;
+          else runs.push([p, 1]);
+        }
+        const info = await this.push(d, () => {
+          const gone: [number, number[]][] = [];
+          for (const [p, n] of [...runs].reverse()) gone.push([p, this.orderOf(d).splice(p, n)]);
+          return () => {
+            for (const [p, ids] of [...gone].reverse()) this.orderOf(d).splice(p, 0, ...ids);
+          };
         });
+        return c.count <= 100_000 ? { ...info, rows_change: { kind: "delete", runs } } : info;
+      }
       case "move_rows":
         if (c.at + c.count > rows || c.to + c.count > rows) throw range();
         return this.push(d, () => {
@@ -4910,6 +4928,33 @@ export class MockBackend implements Backend {
     return ["by city", spec, now === "city" ? [] : [{ was: "city", col: 3, now }]];
   }
 
+  /** Calls to shownRowsAt (for the screen tests). */
+  shownRowsAtCalls = 0;
+  async shownRowsAt(doc: number, places: number[]): Promise<(number | null)[]> {
+    this.shownRowsAtCalls++;
+    if (places.length > 100_000) throw err("too_large", "too many rows at once");
+    const d = this.get(doc);
+    const vis = this.visible(d);
+    const total = this.totalRows(d);
+    return places.map((p) => {
+      if (!vis) return p < total ? p : null;
+      let lo = 0;
+      let hi = vis.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (vis[mid]! < p) lo = mid + 1;
+        else hi = mid;
+      }
+      return vis[lo] === p ? lo : null;
+    });
+  }
+  async docRows(doc: number, first: number, count: number): Promise<number[]> {
+    const d = this.get(doc);
+    const end = Math.min(first + Math.min(count, 100_001), this.rowCount(d));
+    const out: number[] = [];
+    for (let r = first; r < end; r++) out.push(this.pos(d, r));
+    return out;
+  }
   async shownRowOf(doc: number, number: number): Promise<[number, boolean] | null> {
     const d = this.get(doc);
     const vis = this.visible(d);
