@@ -3723,12 +3723,21 @@ fn drop_refuse(drops: State<'_, Arc<drops::Drops>>, id: u64, message: String) {
 /// window. Refused after the deadline.
 #[tauri::command]
 async fn drop_paste(
+    window: WebviewWindow,
     docs: DocsState<'_>,
     drops: State<'_, Arc<drops::Drops>>,
+    wins: State<'_, windows::Windows>,
     id: u64,
     dst: u32,
     spec: natendo_engine::ops::PasteSpec,
 ) -> CmdResult<OpReport> {
+    // Only the window that shows `dst` takes a drop into it.
+    if wins.owner_of(dst) != window.label() {
+        return Err(CmdError::new(
+            "invalid",
+            "that file is not open in this window",
+        ));
+    }
     let source = drops
         .take(id, dst, std::time::Instant::now())
         .map_err(|m| CmdError::new("too_late", m))?;

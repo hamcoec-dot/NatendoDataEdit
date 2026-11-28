@@ -15,7 +15,8 @@ const path = require("path");
 const out = process.argv[2] && !process.argv[2].startsWith("http") ? process.argv[2] : null;
 const url = process.argv.find((a) => a.startsWith("http")) || "http://localhost:5389";
 (async () => {
-  const br = await chromium.launch({ channel: "msedge" });
+  // Edge by default; NDE_BROWSER=chromium (NDE_CHROMIUM=path to its chrome.exe when the bundled one is missing).
+  const br = await chromium.launch(process.env.NDE_BROWSER === "chromium" ? { executablePath: process.env.NDE_CHROMIUM } : { channel: "msedge" });
   const ctx = await br.newContext({ viewport: { width: 1300, height: 800 }, permissions: ["clipboard-read", "clipboard-write"] });
   const A = await ctx.newPage();
   const B = await ctx.newPage();
@@ -121,7 +122,13 @@ const url = process.argv.find((a) => a.startsWith("http")) || "http://localhost:
     if (o.esc) await A.keyboard.press("Escape");
     await A.evaluate(([x, y, shift]) => window.dispatchEvent(new MouseEvent("mouseup", { clientX: x, clientY: y, shiftKey: shift })), [t.x, t.y, !!o.shift]);
     await A.mouse.up();
-    if (o.during) await o.during();
+    if (o.during) {
+      // Only once the drop has started (its source key taken): the edit is "meanwhile".
+      await A.waitForFunction(() => /Putting the cells in/.test(document.querySelector("footer.status")?.textContent ?? ""), null, { timeout: 5000, polling: 20 }).catch(async () => {
+        throw new Error(`the drop did not start; A says: ${(await status(A)).slice(0, 140)}`);
+      });
+      await o.during();
+    }
     await settle(A, o.wait ?? 800);
   };
   const bBlock = () => block(B, 5, 2, 1, 2);

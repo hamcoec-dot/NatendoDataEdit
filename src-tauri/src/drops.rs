@@ -144,6 +144,10 @@ impl Drops {
     /// Note a drop; its id.
     pub fn begin(&self, source: Source, now: Instant) -> u64 {
         let mut s = self.lock();
+        // Drops whose source never asked how they ended (its window closed or
+        // crashed): forgotten once long over. A paste still running is kept.
+        s.drops
+            .retain(|_, d| matches!(d.state, State::Taken) || now < d.deadline + TAKEN_GRACE);
         s.next += 1;
         let id = s.next;
         s.drops.insert(
@@ -404,6 +408,30 @@ mod tests {
             }
         );
         assert!(d.take(id, 2, now).is_err(), "forgotten");
+    }
+
+    #[test]
+    fn drops_nobody_waited_for_are_forgotten_but_a_running_paste_is_kept() {
+        let d = Drops::default();
+        let t0 = Instant::now();
+        let waiting = d.begin(src(), t0);
+        let ended = d.begin(src(), t0);
+        d.refuse(ended, "no".into());
+        let taken = d.begin(src(), t0);
+        assert!(d.take(taken, 2, t0).is_ok());
+        // Within the grace nothing goes.
+        d.begin(src(), t0 + DEADLINE);
+        assert_eq!(d.lock().drops.len(), 4);
+        // Long after: the unread ones go, the paste still running stays.
+        let later = t0 + DEADLINE + TAKEN_GRACE + Duration::from_millis(1);
+        let fresh = d.begin(src(), later);
+        let left: Vec<u64> = {
+            let mut v: Vec<u64> = d.lock().drops.keys().copied().collect();
+            v.sort();
+            v
+        };
+        assert!(!left.contains(&waiting) && !left.contains(&ended));
+        assert!(left.contains(&taken) && left.contains(&fresh));
     }
 
     #[test]
