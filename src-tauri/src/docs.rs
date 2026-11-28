@@ -13355,7 +13355,7 @@ ca,California
                 docs,
             )
             .unwrap();
-        (info.id, p)
+        (info.info.id, p)
     }
 
     /// C11: Ctrl+S on a JSON tab writes the file back in its own format and kinds; the tab is saved and

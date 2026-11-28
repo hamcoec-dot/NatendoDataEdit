@@ -324,7 +324,7 @@ everything is also in command search.
 - Tabs for each open file, frozen rows and columns, insert, delete, move,
   hide, resize and auto-fit columns, hide and show rows (Ctrl+9,
   Ctrl+Shift+9).
-- **Row heights:** drag the line under a row number to make that row taller or shorter (14 to 400 pixels); with several rows selected, dragging the line of one sets them all. Double-click the line to fit the row to its wrapped text (rows you can see; scroll to others and fit again). Format > Height of the selected rows… types an exact height, Fit the selected rows to their text and Reset the height of the selected rows do the other two, and the same three are in the row-number right-click menu. Wrapped text fills the row's own height. Ctrl+Z undoes each change in one step. A row you resize keeps its height as rows are inserted, deleted or moved around it (and Undo and Redo keep it on the same data row); inserting and deleting rows while a filter is on or rows are hidden keeps them on their rows too. If rows change in a way the grid cannot follow (a tool that adds or removes rows, or deleting or moving more than 100,000 rows at once while filtered) the heights are cleared with a message and Ctrl+Z brings them back; moving rows while filtered keeps them on their rows too. Sorting leaves each height where it is (the row position), as in Excel. While a filter is on or rows are hidden, each shown row keeps its own height (as in Excel), and the drag, Height of the selected rows, Fit and Reset work on the rows you see; a hidden row keeps its height for when it shows again. Views and "Pick up where you left off" keep row heights, and Excel export writes them (for the shown rows while filtered); PDF and print draw every row at the same height, and heights in an Excel file you open are not imported. "Row height of every row (lines)" is still there for the plain height; a row's own height wins over it, and Reset takes the row back to it.
+- **Row heights:** drag the line under a row number to make that row taller or shorter (14 to 400 pixels); with several rows selected, dragging the line of one sets them all. Double-click the line to fit the row to its wrapped text (rows you can see; scroll to others and fit again). Format > Height of the selected rows… types an exact height, Fit the selected rows to their text and Reset the height of the selected rows do the other two, and the same three are in the row-number right-click menu. Wrapped text fills the row's own height. Ctrl+Z undoes each change in one step. A row you resize keeps its height as rows are inserted, deleted or moved around it (and Undo and Redo keep it on the same data row); inserting and deleting rows while a filter is on or rows are hidden keeps them on their rows too. If rows change in a way the grid cannot follow (a tool that adds or removes rows, or deleting or moving more than 100,000 rows at once while filtered) the heights are cleared with a message and Ctrl+Z brings them back; moving rows while filtered keeps them on their rows too. Sorting leaves each height where it is (the row position), as in Excel. While a filter is on or rows are hidden, each shown row keeps its own height (as in Excel), and the drag, Height of the selected rows, Fit and Reset work on the rows you see; a hidden row keeps its height for when it shows again. Views and "Pick up where you left off" keep row heights, and Excel export writes them (for the shown rows while filtered); PDF and print draw every row at the same height. **Opening an Excel or OpenDocument workbook keeps its row heights:** each row the workbook gives a height of its own (a row set to a fixed height in Excel or LibreOffice) opens at that height, in pixels at 96 per inch (from 14 to 400), as part of opening: Ctrl+Z right after has nothing to undo, and the heights do not count as a change. The status line says for how many rows; at most 100,000 rows keep one. Heights Excel set by itself (fitting the text), the sheet's default height, a height on the title row while "First row is header" is on (turning it off later leaves that row at the plain height) and a height equal to the plain one are not taken, and rows hidden in the workbook open shown. "Row height of every row (lines)" is still there for the plain height; a row's own height wins over it, and Reset takes the row back to it.
 
 ![Rows of different heights: one fitted to its wrapped note, others dragged taller, the rest plain](docs/screenshots/row-heights.png)
 
@@ -1731,7 +1731,14 @@ selection, a column or the whole table:
   and the dialog says the size it will print at. A value too long for its
   column is cut with "…" in the PDF and on a one-page print, and wraps onto
   more lines in other prints.
-- **Save as PDF** at any size, written by the app itself.
+- **Save as PDF** at any size, written by the app itself. Chinese, Japanese and
+  Korean text prints with the Windows font for it (Microsoft YaHei, Yu Gothic,
+  Malgun Gothic and their stand-ins): a cell with kana uses the Japanese font,
+  one with Hangul the Korean font, and Chinese characters alone the font for
+  the Windows display language (Traditional for Taiwan, Hong Kong and Macau,
+  Simplified otherwise). Only the characters the PDF uses are put in it, so a
+  page of names stays small. A character no installed font has prints as an
+  empty box, and the message says how many there were (never which).
 - **Mailing labels** on six common sheet sizes, starting part-way through the
   first sheet, and **one letter per row**, from a template with
   `{Column title}` fields. Empty lines are left out and text shrinks to fit.
@@ -1996,7 +2003,8 @@ request must carry the key. Requests are one JSON object per line:
 - Formulas, cell colours and comments are not stored in the file, because a
   text table cannot hold them. Computed columns save their values as text;
   highlight rules and checks are kept in saved views.
-- PDF output does not include Chinese, Japanese or Korean characters yet.
+- PDF output prints Chinese, Japanese and Korean only with the fonts Windows
+  installs for them; a font whose licence does not allow a subset is not used.
 - Dragging or cutting and pasting a block of cells moves up to 50,000 cells
   at once (Ctrl+drag copies up to 100,000); whole rows and columns have no
   such limit.

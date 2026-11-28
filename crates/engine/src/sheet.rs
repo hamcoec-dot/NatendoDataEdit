@@ -68,6 +68,14 @@ pub struct SheetStats {
     /// dBase tables: what could not be read as stored (field names and counts).
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// Rows the workbook gives a height of their own (`customHeight` in
+    /// .xlsx, a fixed row height in .ods): (table row, hundredths of a point).
+    /// Numbers only.
+    #[serde(default)]
+    pub heights: Vec<(u64, u32)>,
+    /// Rows with a height of their own past the cap of [`crate::table::MAX_ROW_HEIGHTS`].
+    #[serde(default)]
+    pub heights_over: u64,
 }
 
 impl SheetStats {
@@ -293,6 +301,12 @@ impl<'a> Book<'a> {
             Kind::Xlsx => self.read_xlsx(index, opts, &mut sink, progress)?,
             Kind::Ods => self.read_ods(index, opts, &mut sink, progress)?,
         }
+        {
+            let (heights, over) = sink.heights();
+            let mut st = self.stats.borrow_mut();
+            st.heights = heights;
+            st.heights_over = over;
+        }
         Ok(sink.finish())
     }
 
@@ -427,6 +441,7 @@ impl<'a> Book<'a> {
         let mut row_bytes = 0usize;
         let mut depth = 0usize;
         let mut last_pos = 0u64;
+        let mut row_ht: Option<f32> = None;
         loop {
             let ev = r.read_event_into(&mut buf).map_err(xml_err)?;
             match ev {
@@ -452,10 +467,21 @@ impl<'a> Book<'a> {
                             row.clear();
                             row_bytes = 0;
                             next_col = 0;
+                            // A height equal to the grid's plain one is left out by the app
+                            // (the sheet's own default is not ours: 15 pt is 20 px, below ours).
+                            row_ht = custom_row_height(e);
                             if empty {
-                                // A row with no cells.
+                                // A row with no cells: written (as an empty row) only when a
+                                // later row has data. Its height is noted where it will land
+                                // when the file numbers it.
+                                if let Some(h) = row_ht.take() {
+                                    if this_row > next_row || attr_has(e, "r") {
+                                        sink.row_height_after(this_row - next_row, h, 1);
+                                    }
+                                }
                             }
                         }
+
                         "c" => {
                             let col = match attr(e, "r").and_then(|v| cell_col(&v)) {
                                 Some(c) => c,
@@ -493,6 +519,9 @@ impl<'a> Book<'a> {
                         "row" => {
                             if this_row > next_row {
                                 sink.empty_rows(this_row - next_row);
+                            }
+                            if let Some(h) = row_ht.take() {
+                                sink.row_height(h, 1);
                             }
                             emit(sink, &mut row)?;
                             next_row = this_row + 1;
@@ -628,8 +657,14 @@ impl<'a> Book<'a> {
                 formats.styles.read(self.zip.reader("styles.xml")?);
             }
             formats.styles.read(self.zip.reader("content.xml")?);
+        } else {
+            // Dates kept as numbers: no formats, but row heights still count.
+            let mut st = odsstyle::OdsStyles::default();
+            st.read(self.zip.reader("content.xml")?);
+            formats.styles.take_rows(st);
         }
         formats.pad_zeros = opts.pad_zeros;
+        let mut row_ht: Option<f32> = None;
         let mut next_column = 0u32;
         let mut last_pos = 0u64;
         loop {
@@ -688,6 +723,8 @@ impl<'a> Book<'a> {
                                 next_column += n;
                             }
                             "table-row" => {
+                                row_ht = attr(e, "style-name")
+                                    .and_then(|s| formats.styles.row_height(&s));
                                 formats.row = attr(e, "default-cell-style-name")
                                     .map(|s| formats.styles.pad_of(&s));
                                 formats.copies =
@@ -697,6 +734,9 @@ impl<'a> Book<'a> {
                                 col = 0;
                                 row_repeat = repeat(e, "number-rows-repeated");
                                 if empty {
+                                    if let Some(h) = row_ht.take() {
+                                        sink.row_height(h, row_repeat);
+                                    }
                                     sink.empty_rows(row_repeat);
                                     row_repeat = 0;
                                 }
@@ -755,6 +795,10 @@ impl<'a> Book<'a> {
                             // A row ends when its element closes; rows sit
                             // directly in the table or in row groups.
                             if let Some(first) = row_end(&mut row, &mut row_repeat) {
+                                // A repeat is one range, clipped to the rows written at the end.
+                                if let Some(h) = row_ht.take() {
+                                    sink.row_height(h, row_repeat);
+                                }
                                 if first.is_empty() {
                                     sink.empty_rows(row_repeat);
                                 } else {
@@ -795,6 +839,32 @@ impl<'a> Book<'a> {
         }
         Ok(())
     }
+}
+
+/// The height of an .xlsx `<row>` of its own: `ht` in points when
+/// `customHeight` is `1` or `true` (an `ht` without it is Excel's automatic
+/// fit). Read from the raw attributes: nothing is allocated per row.
+fn custom_row_height(e: &quick_xml::events::BytesStart) -> Option<f32> {
+    let mut ht: Option<f32> = None;
+    let mut custom = false;
+    let mut it = e.attributes();
+    it.with_checks(false);
+    for a in it.flatten() {
+        match a.key.local_name().as_ref() {
+            "ht" => ht = a.value.trim().parse::<f32>().ok(),
+            "customHeight" => custom = matches!(a.value.as_ref(), "1" | "true"),
+            _ => {}
+        }
+    }
+    // Excel allows 0 to 409 points; 0 is a hidden row's height, left alone.
+    ht.filter(|h| custom && h.is_finite() && *h > 0.0 && *h <= 409.5)
+}
+
+/// Whether a tag has attribute `name` (local name), without allocating.
+fn attr_has(e: &quick_xml::events::BytesStart, name: &str) -> bool {
+    let mut it = e.attributes();
+    it.with_checks(false);
+    it.flatten().any(|a| a.key.local_name().as_ref() == name)
 }
 
 /// Write a row's cells (column, value) as one table row.
@@ -2033,5 +2103,146 @@ pub(crate) mod tests {
         assert_eq!(cell_col("AB12"), Some(27));
         assert_eq!(cell_col("12"), None);
         assert_eq!(ods_time("PT1H5M3.5S"), "01:05:03.5");
+    }
+
+    // ---- row heights of their own (gap #7) ----
+
+    fn heights_of(data: &[u8], raw_dates: bool) -> (Vec<(u64, u32)>, u64, u64) {
+        let b = Book::open(data).unwrap();
+        let t = b
+            .read(
+                0,
+                SheetOptions {
+                    raw_dates,
+                    ..Default::default()
+                },
+                None,
+                &Progress::new(),
+            )
+            .unwrap();
+        let st = b.stats();
+        (st.heights, st.heights_over, t.rows)
+    }
+
+    #[test]
+    fn xlsx_row_heights_of_their_own_are_read_on_the_rows_they_belong_to() {
+        let sheet = r#"<worksheet><sheetFormatPr defaultRowHeight="15"/><sheetData>
+<row r="2" ht="30" customHeight="1"><c r="A2" t="inlineStr"><is><t>a</t></is></c></row>
+<row r="3" ht="45" customHeight="true"><c r="A3" t="inlineStr"><is><t>b</t></is></c></row>
+<row r="4" ht="60"><c r="A4" t="inlineStr"><is><t>auto fit: not ours</t></is></c></row>
+<row r="5" ht="NaN" customHeight="1"><c r="A5" t="inlineStr"><is><t>c</t></is></c></row>
+<row r="6" ht="-5" customHeight="1"><c r="A6" t="inlineStr"><is><t>d</t></is></c></row>
+<row r="7" ht="15" customHeight="0"><c r="A7" t="inlineStr"><is><t>e</t></is></c></row>
+<row r="9" ht="20" customHeight="1"/>
+<row r="10" ht="15" customHeight="1"><c r="A10" t="inlineStr"><is><t>f</t></is></c></row>
+<row r="12" ht="99" customHeight="1"/>
+<row r="20" ht="99" customHeight="1"/>
+</sheetData></worksheet>"#;
+        let (h, over, rows) = heights_of(&xlsx(sheet, "<sst/>", "<styleSheet/>"), false);
+        // Table rows count from 0 (sheet row 1 is table row 0, here empty).
+        assert_eq!(rows, 10);
+        assert_eq!(h, vec![(1, 3000), (2, 4500), (8, 2000), (9, 1500)]);
+        // Rows 12 and 20 are the empty tail: never written, so no height.
+        assert_eq!(over, 0);
+    }
+
+    #[test]
+    fn xlsx_row_heights_need_the_sheet_row_number_for_empty_rows_and_stop_at_the_cap() {
+        // An empty row without a number is dropped by the reader, so its height must not land on the next row.
+        let sheet = r#"<worksheet><sheetData><row ht="50" customHeight="1"/><row><c t="inlineStr"><is><t>x</t></is></c></row></sheetData></worksheet>"#;
+        let (h, _, rows) = heights_of(&xlsx(sheet, "<sst/>", "<styleSheet/>"), false);
+        assert_eq!((h, rows), (vec![], 1));
+        // The cap: 100,005 rows with a height keep the first 100,000.
+        let mut big = String::from("<worksheet><sheetData>");
+        for r in 1..=100_005u64 {
+            big.push_str(&format!(
+                r#"<row r="{r}" ht="{}" customHeight="1"><c><v>{r}</v></c></row>"#,
+                20 + r % 3
+            ));
+        }
+        big.push_str("</sheetData></worksheet>");
+        let (h, over, _) = heights_of(&xlsx(&big, "<sst/>", "<styleSheet/>"), false);
+        assert_eq!(h.len() as u64, crate::table::MAX_ROW_HEIGHTS);
+        assert_eq!(over, 5);
+        assert_eq!(h[0], (0, 2100));
+        assert_eq!(h[99_999], (99_999, 2100));
+    }
+
+    #[test]
+    fn ods_fixed_row_heights_are_read_and_repeats_are_clipped_ranges() {
+        let auto = r#"<style:style style:name="ro1" style:family="table-row"><style:table-row-properties style:row-height="0.4167in" style:use-optimal-row-height="false"/></style:style><style:style style:name="ro2" style:family="table-row"><style:table-row-properties style:row-height="0.178in" style:use-optimal-row-height="true"/></style:style><style:style style:name="ro3" style:family="table-row"><style:table-row-properties style:row-height="1.0583cm" style:use-optimal-row-height="false"/></style:style>"#;
+        let cell =
+            |v: &str| format!(r#"<table:table-cell><text:p>{v}</text:p></table:table-cell>"#);
+        let table = format!(
+            r#"<table:table-row table:style-name="ro2">{}</table:table-row><table:table-row table:style-name="ro1" table:number-rows-repeated="2">{}</table:table-row><table:table-row table:style-name="ro3"><table:table-cell/></table:table-row><table:table-row>{}</table:table-row><table:table-row table:style-name="ro1" table:number-rows-repeated="1048000"><table:table-cell table:number-columns-repeated="16384"/></table:table-row>"#,
+            cell("titles"),
+            cell("x"),
+            cell("y")
+        );
+        let data = ods_with("", auto, &table);
+        let t0 = std::time::Instant::now();
+        let (h, over, rows) = heights_of(&data, false);
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(2),
+            "the empty million-row repeat is one range, not a loop"
+        );
+        assert_eq!(rows, 5);
+        // 0.4167 in = 30 pt; 1.0583 cm = 30 pt; optimal heights are not ours; the empty tail is dropped.
+        assert_eq!(h, vec![(1, 3000), (2, 3000), (3, 3000)]);
+        assert_eq!(over, 0);
+        // Dates kept as numbers: the formats are not read, the heights still are.
+        assert_eq!(heights_of(&data, true).0, h);
+    }
+
+    #[test]
+    fn odf_lengths_in_points() {
+        use odsstyle::length_pt;
+        assert_eq!(length_pt("12pt"), Some(12.0));
+        assert!((length_pt("1in").unwrap() - 72.0).abs() < 1e-4);
+        assert!((length_pt("2.54cm").unwrap() - 72.0).abs() < 1e-3);
+        assert!((length_pt(" 25.4mm ").unwrap() - 72.0).abs() < 1e-3);
+        for bad in [
+            "",
+            "in",
+            "12",
+            "12furlongs",
+            "-1in",
+            "0pt",
+            "500pt",
+            "NaNpt",
+            "1e40in",
+        ] {
+            assert_eq!(length_pt(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn our_own_xlsx_heights_come_back_when_the_file_is_opened_again() {
+        let d = crate::reshape::Table {
+            bytes: b"a,b\r\n1,x\r\n2,y\r\n3,z\r\n".to_vec(),
+            rows: 4,
+            cols: 2,
+        }
+        .into_document()
+        .unwrap();
+        let mut out = Vec::new();
+        d.export(
+            &mut out,
+            &crate::export::ExportOptions {
+                format: crate::export::ExportFormat::Xlsx,
+                row_heights: vec![(1, 30), (2, 60), (3, 200)],
+                ..Default::default()
+            },
+            None,
+            &Progress::new(),
+        )
+        .unwrap();
+        let (h, _, _) = heights_of(&out, false);
+        // Pixels × 3/4 = points; back: points × 4/3 = the same pixels.
+        let px: Vec<(u64, u32)> = h
+            .iter()
+            .map(|&(r, c)| (r, (c as f64 / 100.0 * 4.0 / 3.0).round() as u32))
+            .collect();
+        assert_eq!(px, vec![(1, 30), (2, 60), (3, 200)]);
     }
 }

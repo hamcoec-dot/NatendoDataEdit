@@ -449,9 +449,10 @@ impl Imports {
     }
 
     /// Import into a new tab; the session stays open until closed.
-    pub fn finish(&self, id: u32, opts: &ImportOptions, docs: &Docs) -> CmdResult<DocInfo> {
+    pub fn finish(&self, id: u32, opts: &ImportOptions, docs: &Docs) -> CmdResult<Imported> {
         check(opts)?;
         let s = self.get(id)?;
+        let mut heights = RowHeightsPx::default();
         let progress = Arc::new(Progress::new());
         *s.progress.lock().unwrap_or_else(|p| p.into_inner()) = Some(progress.clone());
         let result = (|| {
@@ -466,6 +467,17 @@ impl Imports {
                 let mut d = table.into_document()?;
                 d.set_json_shape(Some(shape));
                 d
+            } else if format == ImportFormat::Spreadsheet {
+                // The workbook's own row heights come with the rows they belong to.
+                let (t, st) = import::import_report(
+                    &s.data,
+                    s.ext.as_deref(),
+                    &s.with(opts),
+                    None,
+                    &progress,
+                )?;
+                heights = row_heights_px(&st);
+                t.into_document()?
             } else {
                 import::import(&s.data, s.ext.as_deref(), &s.with(opts), None, &progress)?
                     .into_document()?
@@ -483,7 +495,11 @@ impl Imports {
                 docs.set_json_target(info.id, p.clone(), s.stamp, None);
             }
         }
-        docs.info(info.id)
+        Ok(Imported {
+            info: docs.info(info.id)?,
+            row_heights: heights.rows,
+            row_heights_over: heights.over,
+        })
     }
 
     /// Progress of a running import (0 to 1), if one runs.
@@ -517,6 +533,40 @@ impl Imports {
                 p.cancel.store(true, Ordering::Relaxed);
             }
         }
+    }
+}
+
+/// A new tab from an import, and the workbook's own row heights for it.
+#[derive(Debug, Serialize)]
+pub struct Imported {
+    #[serde(flatten)]
+    pub info: DocInfo,
+    /// (document row, pixels 14..400): set on the tab as it opens (not an
+    /// undo step, not a change). Empty for anything but a workbook.
+    pub row_heights: Vec<(u64, u32)>,
+    /// Rows with a height of their own past the cap, left out.
+    pub row_heights_over: u64,
+}
+
+#[derive(Default)]
+struct RowHeightsPx {
+    rows: Vec<(u64, u32)>,
+    over: u64,
+}
+
+/// A workbook's row heights in the grid's pixels: points × 4/3 (96 dpi),
+/// clamped to 14..400 as the grid allows.
+fn row_heights_px(st: &SheetStats) -> RowHeightsPx {
+    RowHeightsPx {
+        rows: st
+            .heights
+            .iter()
+            .map(|&(r, cpt)| {
+                let px = (f64::from(cpt) / 100.0 * 4.0 / 3.0).round() as u32;
+                (r, px.clamp(14, 400))
+            })
+            .collect(),
+        over: st.heights_over,
     }
 }
 
@@ -562,6 +612,8 @@ mod tests {
             padded_left: 1,
             kept_columns: vec![0, 1],
             warnings: Vec::new(),
+            heights: vec![(3, 3000)],
+            heights_over: 0,
         };
         let names: Vec<String> = ["Account", "ZIP", "Name"]
             .iter()
@@ -635,9 +687,11 @@ mod tests {
         assert_eq!(s.info.format, Some(ImportFormat::Json));
         let p = imports.preview(s.id, &ImportOptions::default()).unwrap();
         assert_eq!(p, vec![vec!["a"], vec!["1"], vec!["2"]]);
-        let info = imports
+        let done = imports
             .finish(s.id, &ImportOptions::default(), &docs)
             .unwrap();
+        assert!(done.row_heights.is_empty());
+        let info = done.info;
         assert_eq!(
             (info.name.as_str(), info.rows, info.modified),
             ("Clipboard", 3, true)
@@ -649,7 +703,7 @@ mod tests {
             format: Some(ImportFormat::Delimited),
             ..Default::default()
         };
-        let info = imports.finish(t.id, &opts, &docs).unwrap();
+        let info = imports.finish(t.id, &opts, &docs).unwrap().info;
         assert_eq!((info.cols, info.delimiter.as_str()), (2, ";"));
         // Sessions are capped and closable.
         for _ in 0..MAX_IMPORTS - 2 {
@@ -673,5 +727,62 @@ mod tests {
         imports.close(t.id);
         assert!(imports.open_path(&f).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Gap #7: a workbook's own row heights come back with the tab, in pixels on the document rows
+    /// (made by our own export: 30, 60 and 200 px on rows 1 to 3).
+    #[test]
+    fn a_workbook_import_brings_its_row_heights() {
+        use natendo_engine::export::{ExportFormat, ExportOptions};
+        let d = natendo_engine::reshape::Table {
+            bytes: b"a,b
+1,x
+2,y
+3,z
+"
+            .to_vec(),
+            rows: 4,
+            cols: 2,
+        }
+        .into_document()
+        .unwrap();
+        let mut out = Vec::new();
+        d.export(
+            &mut out,
+            &ExportOptions {
+                format: ExportFormat::Xlsx,
+                row_heights: vec![(1, 30), (2, 60), (3, 200)],
+                ..Default::default()
+            },
+            None,
+            &Progress::new(),
+        )
+        .unwrap();
+        let dir = crate::testdir::path("natendo-imp-heights");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("heights.xlsx");
+        std::fs::write(&f, &out).unwrap();
+        let imports = Imports::default();
+        let docs = Docs::default();
+        let s = imports.open_path(&f).unwrap();
+        let done = imports
+            .finish(s.id, &ImportOptions::default(), &docs)
+            .unwrap();
+        assert_eq!(done.row_heights, vec![(1, 30), (2, 60), (3, 200)]);
+        assert_eq!((done.row_heights_over, done.info.rows), (0, 4));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workbook_points_become_grid_pixels_within_its_bounds() {
+        let st = SheetStats {
+            heights: vec![(0, 100), (1, 2250), (2, 40950), (3, 1500)],
+            heights_over: 7,
+            ..Default::default()
+        };
+        let h = row_heights_px(&st);
+        // 1 pt -> 14 px (the least), 22.5 pt -> 30 px, 409.5 pt -> 400 px (the most), 15 pt -> 20 px.
+        assert_eq!(h.rows, vec![(0, 14), (1, 30), (2, 400), (3, 20)]);
+        assert_eq!(h.over, 7);
     }
 }

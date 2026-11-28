@@ -38,6 +38,8 @@ export interface MailReport {
   bytes: number;
   /** Lines cut short because they did not fit on a label. */
   cut: number;
+  missing_chars?: number;
+  missing_cjk?: boolean;
 }
 
 /** The engine's first sheet, for the browser preview and as a default. */

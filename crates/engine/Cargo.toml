@@ -33,7 +33,7 @@ siphasher = "1.0"
 
 [target.'cfg(windows)'.dependencies]
 memmap2 = "0.9"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
 
 [dev-dependencies]
 proptest = { version = "1", default-features = false, features = ["std"] }

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::{Document, Progress};
 use crate::ops::Cols;
-use crate::pdf::{finish, fit, load_face, num, Face, Out, Paper, MAX_PAGES};
+use crate::pdf::{finish, fit, num, Fonts, Out, Paper, Usage, FIRST_PAGE_OBJ, MAX_PAGES};
 use crate::Error;
 
 /// Longest template, in characters.
@@ -188,6 +188,12 @@ pub struct MailReport {
     pub bytes: u64,
     /// Lines cut short because they did not fit.
     pub cut: u64,
+    /// Characters no installed font has (drawn as an empty box), and whether
+    /// any are Chinese, Japanese or Korean. A count only.
+    #[serde(default)]
+    pub missing_chars: u64,
+    #[serde(default)]
+    pub missing_cjk: bool,
 }
 
 /// A template split into text and fields (column positions in `cols`).
@@ -344,7 +350,7 @@ impl Template {
 
 /// Words of `text` wrapped to `room` points; a word longer than the line is
 /// broken.
-fn wrap(face: &Face, text: &str, room: f64, size: f64) -> Vec<String> {
+fn wrap(fonts: &Fonts, text: &str, room: f64, size: f64) -> Vec<String> {
     let mut out = Vec::new();
     let mut line = String::new();
     for word in text.split(' ') {
@@ -353,7 +359,7 @@ fn wrap(face: &Face, text: &str, room: f64, size: f64) -> Vec<String> {
         } else {
             format!("{line} {word}")
         };
-        if face.width(&candidate, size) <= room || line.is_empty() && word.is_empty() {
+        if fonts.width(&candidate, size) <= room || line.is_empty() && word.is_empty() {
             line = candidate;
             continue;
         }
@@ -364,7 +370,7 @@ fn wrap(face: &Face, text: &str, room: f64, size: f64) -> Vec<String> {
         let mut part = String::new();
         for c in word.chars() {
             part.push(c);
-            if face.width(&part, size) > room && part.chars().count() > 1 {
+            if fonts.width(&part, size) > room && part.chars().count() > 1 {
                 let last = part.pop().expect("one char");
                 out.push(std::mem::take(&mut part));
                 part.push(last);
@@ -399,11 +405,12 @@ impl Document {
         if n == 0 {
             return Err(bad("there are no rows to print"));
         }
-        let face = load_face();
+        let fonts = Fonts::load();
         let reader = Cols::new(self, &tpl.cols);
-        let (mut o, mut used) = Out::start(out, &face)?;
+        let (mut o, used) = Out::start(out, &fonts.main)?;
+        let mut u = Usage::new(used);
         let mut kids = String::new();
-        let mut next = 9usize;
+        let mut next = FIRST_PAGE_OBJ;
         let mut pages = 0u64;
         let mut cut = 0u64;
         let mut buf = Vec::new();
@@ -412,7 +419,8 @@ impl Document {
                         c: &[u8],
                         pw: f64,
                         ph: f64,
-                        kids: &mut String|
+                        kids: &mut String,
+                        fonts: String|
          -> Result<(), Error> {
             pages += 1;
             if pages > MAX_PAGES {
@@ -424,7 +432,7 @@ impl Document {
             o.obj(
                 pid,
                 format!(
-                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 4 0 R >> >> /Contents {cid} 0 R >>",
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << {fonts} >> >> /Contents {cid} 0 R >>",
                     num(pw),
                     num(ph)
                 )
@@ -470,27 +478,26 @@ impl Document {
                             cut += 1;
                             break;
                         }
-                        let t = fit(&face, l, w - 2.0 * pad_x, size);
+                        let t = fit(&fonts, l, w - 2.0 * pad_x, size);
                         if t.len() < l.len() {
                             cut += 1;
                         }
                         if !t.is_empty() {
                             let _ = write!(c, "1 0 0 1 {} {} Tm ", num(x), num(y));
-                            face.encode(&t, &mut used, &mut c);
-                            c.extend_from_slice(b" Tj\n");
+                            fonts.show(&t, size, &mut u, &mut c);
                         }
                         y -= lh;
                     }
                     let _ = writeln!(c, "ET");
                     slot += 1;
                     if slot % per == 0 {
-                        page(&mut o, &c, pw, ph, &mut kids)?;
+                        page(&mut o, &c, pw, ph, &mut kids, u.page_fonts())?;
                         c.clear();
                     }
                     progress.step(1)?;
                 }
                 if slot % per != 0 {
-                    page(&mut o, &c, pw, ph, &mut kids)?;
+                    page(&mut o, &c, pw, ph, &mut kids, u.page_fonts())?;
                 }
             }
             MailKind::Letters => {
@@ -505,24 +512,23 @@ impl Document {
                     let mut y = ph - m - size;
                     let _ = writeln!(c, "BT /F1 {} Tf", num(size));
                     for l in &lines {
-                        for part in wrap(&face, l, room, size) {
+                        for part in wrap(&fonts, l, room, size) {
                             if y < m {
                                 let _ = writeln!(c, "ET");
-                                page(&mut o, &c, pw, ph, &mut kids)?;
+                                page(&mut o, &c, pw, ph, &mut kids, u.page_fonts())?;
                                 c.clear();
                                 y = ph - m - size;
                                 let _ = writeln!(c, "BT /F1 {} Tf", num(size));
                             }
                             if !part.is_empty() {
                                 let _ = write!(c, "1 0 0 1 {} {} Tm ", num(m), num(y));
-                                face.encode(&part, &mut used, &mut c);
-                                c.extend_from_slice(b" Tj\n");
+                                fonts.show(&part, size, &mut u, &mut c);
                             }
                             y -= lh;
                         }
                     }
                     let _ = writeln!(c, "ET");
-                    page(&mut o, &c, pw, ph, &mut kids)?;
+                    page(&mut o, &c, pw, ph, &mut kids, u.page_fonts())?;
                     progress.step(1)?;
                 }
             }
@@ -531,12 +537,14 @@ impl Document {
             MailKind::Labels => "Labels",
             MailKind::Letters => "Letters",
         };
-        finish(&mut o, &face, &used, &kids, pages, title)?;
+        finish(&mut o, &fonts, &mut u, &kids, pages, title)?;
         Ok(MailReport {
             rows: n,
             pages,
             bytes: o.len(),
             cut,
+            missing_chars: u.missing,
+            missing_cjk: u.missing_cjk > 0,
         })
     }
 
@@ -790,5 +798,56 @@ mod tests {
         for s in cases {
             assert!(d.write_mail(&mut out, &s, &p).is_err(), "{s:?}");
         }
+    }
+
+    /// Gap #7: labels with Chinese, Japanese and Korean names print with each script's own font,
+    /// listed on the pages that use it, and a 1,000-letter run reads each font once.
+    #[test]
+    fn cjk_names_print_with_their_fonts() {
+        let Some(root) = std::env::var_os("SystemRoot") else {
+            return;
+        };
+        let dir = std::path::Path::new(&root).join("Fonts");
+        if !["msyh.ttc", "YuGothM.ttc", "malgun.ttf"]
+            .iter()
+            .all(|f| dir.join(f).is_file())
+        {
+            return;
+        }
+        crate::pdf::tests::FONTS
+            .with(|f| *f.borrow_mut() = Some((crate::pdf::HanFont::Simplified, Some(dir.clone()))));
+        let mut text = String::from(
+            "first,last,street,street2,city,state,zip
+",
+        );
+        for i in 0..1000 {
+            let (f, l) = [("小明", "王"), ("たろう", "山田"), ("민수", "김")][i % 3];
+            text.push_str(&format!(
+                "{f},{l},{i} 街,,城,,{i}
+"
+            ));
+        }
+        let d = from_text(&text);
+        let spec = MailSpec {
+            kind: MailKind::Letters,
+            template: "{last} {first}
+{street}"
+                .into(),
+            ..MailSpec::default()
+        };
+        let t0 = std::time::Instant::now();
+        let (b, r) = pdf(&d, &spec);
+        println!(
+            "1,000 CJK letters: {:.0} ms, {} bytes",
+            t0.elapsed().as_secs_f64() * 1e3,
+            b.len()
+        );
+        assert_eq!((r.pages, r.missing_chars, r.missing_cjk), (1000, 0, false));
+        let s = String::from_utf8_lossy(&b);
+        for f in ["/F2 9 0 R", "/F3 14 0 R", "/F4 19 0 R"] {
+            assert!(s.contains(f), "{f}");
+        }
+        // Each subset holds the run's glyphs only once: the file stays small.
+        assert!(b.len() < 4_000_000, "{} bytes", b.len());
     }
 }

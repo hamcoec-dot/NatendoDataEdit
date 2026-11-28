@@ -1344,7 +1344,7 @@ async fn import_finish(
     imports: ImportsState<'_>,
     id: u32,
     options: ImportOptions,
-) -> CmdResult<DocInfo> {
+) -> CmdResult<imports::Imported> {
     let docs = docs.inner().clone();
     let imports = imports.inner().clone();
     blocking(move || imports.finish(id, &options, &docs)).await

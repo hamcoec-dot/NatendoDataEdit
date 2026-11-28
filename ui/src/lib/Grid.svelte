@@ -237,6 +237,11 @@
     return Math.max(0, height - SCROLLBAR);
   }
   /** The totals row's height (0 when off): two lines, the label and the numbers. */
+  /** The plain height of a row of a new tab (one line), in pixels. */
+  export function plainRowPx(): number {
+    return lineH;
+  }
+
   export function totalsHeight(): number {
     return tab.totalsOn && tab.info.cols > 0 ? Math.round(lineH * 1.7) : 0;
   }

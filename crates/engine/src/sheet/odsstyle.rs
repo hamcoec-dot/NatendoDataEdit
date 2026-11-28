@@ -33,6 +33,9 @@ pub(super) struct OdsStyles {
     /// Data style name → pattern, for the padding formats only.
     numbers: HashMap<String, u16>,
     cells: HashMap<String, CellStyle>,
+    /// Row style name → its fixed height in points (`style:row-height` with
+    /// `style:use-optimal-row-height="false"`).
+    rows: HashMap<String, f32>,
     default_data: Option<String>,
     found: RefCell<HashMap<String, Option<u16>>>,
 }
@@ -107,6 +110,8 @@ impl OdsStyles {
         let mut number: Option<(usize, NumberStyle)> = None;
         // Inside number:text / number:embedded-text: where the text goes.
         let mut text_at: Option<(usize, Option<usize>)> = None;
+        // Inside a row style: (its depth, its name).
+        let mut row_style: Option<(usize, String)> = None;
         loop {
             let Ok(ev) = r.read_event_into(&mut buf) else {
                 return;
@@ -160,6 +165,23 @@ impl OdsStyles {
                     } else {
                         match name.as_str() {
                             "body" => return,
+                            "style" if attr(e, "family").as_deref() == Some("table-row") => {
+                                if let (false, Some(n)) = (empty, attr(e, "name")) {
+                                    row_style = Some((depth, n));
+                                }
+                            }
+                            "table-row-properties" => {
+                                if let Some((_, n)) = &row_style {
+                                    let fixed = attr(e, "use-optimal-row-height").as_deref()
+                                        == Some("false");
+                                    let pt = attr(e, "row-height").and_then(|v| length_pt(&v));
+                                    if let (true, Some(pt)) = (fixed, pt) {
+                                        if n.len() <= MAX_NAME && self.rows.len() < MAX_STYLES {
+                                            self.rows.insert(n.clone(), pt);
+                                        }
+                                    }
+                                }
+                            }
                             "number-style" if !empty => {
                                 let n = NumberStyle {
                                     name: attr(e, "name").unwrap_or_default(),
@@ -201,6 +223,9 @@ impl OdsStyles {
                     }
                 }
                 Event::End(_) => {
+                    if row_style.as_ref().is_some_and(|(d, _)| *d == depth) {
+                        row_style = None;
+                    }
                     if text_at.is_some_and(|(d, _)| d == depth) {
                         text_at = None;
                     }
@@ -221,6 +246,16 @@ impl OdsStyles {
             }
             buf.clear();
         }
+    }
+
+    /// Take only the row heights another reading found.
+    pub fn take_rows(&mut self, other: OdsStyles) {
+        self.rows = other.rows;
+    }
+
+    /// The fixed height of row style `name`, in points.
+    pub fn row_height(&self, name: &str) -> Option<f32> {
+        self.rows.get(name).copied()
     }
 
     /// The padding pattern of cell style `name`, through its parents.
@@ -258,4 +293,23 @@ impl OdsStyles {
             .as_deref()
             .and_then(|d| self.numbers.get(d).copied())
     }
+}
+
+/// An ODF length (`0.1783in`, `0.452cm`, `4.5mm`, `12.8pt`, `1pc`) in
+/// points, when it is a height a row can have (above 0, at most 409.5 pt).
+pub(super) fn length_pt(v: &str) -> Option<f32> {
+    let v = v.trim();
+    let split = v.find(|c: char| c.is_ascii_alphabetic())?;
+    let (num, unit) = v.split_at(split);
+    let n: f32 = num.trim().parse().ok()?;
+    let pt = n * match unit {
+        "pt" => 1.0,
+        "in" => 72.0,
+        "cm" => 72.0 / 2.54,
+        "mm" => 72.0 / 25.4,
+        "pc" => 12.0,
+        "px" => 0.75,
+        _ => return None,
+    };
+    (pt.is_finite() && pt > 0.0 && pt <= 409.5).then_some(pt)
 }

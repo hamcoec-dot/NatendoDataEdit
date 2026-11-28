@@ -1,5 +1,7 @@
 ## Not yet released
 
+- **Chinese, Japanese and Korean in PDFs:** Save as PDF (and the print screen's PDF), labels and letters now print these characters with the Windows font for each, embedding only the characters used.
+- **Row heights from workbooks:** opening an Excel or OpenDocument file keeps the row heights it set (not an undo step, not a change).
 - **Drag cells to the other window, and several blocks:** drag a block out onto a tab of the other window to copy it there (Shift moves it); blocks that line up can be dragged together onto another file's tab in either window. The keyboard way (Edit > Copy selection to another file) lists the other window's files too.
 - **Move rows while filtered:** with a filter on or rows hidden, Alt+Shift+Up/Down and dragging row numbers move the shown rows; hidden rows stay where they are, and the status line says so when the move passed them. Row heights go with the moved rows.
 - **Drag whole columns or rows onto another file's tab:** columns go in to the right of its selected column (every row, hidden ones too, lined up by position; refused while a filter is on there), rows below its selected row (under matching titles when both files have the same titles). Copy by default, Shift moves; the status bar says what will happen as you drag. Edit › Copy/Move selection to another file does the same from the keyboard.

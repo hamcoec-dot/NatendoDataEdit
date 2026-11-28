@@ -8,9 +8,10 @@ import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type 
   import { namesFromText } from "./lib/columnNames";
   import { onMount, tick, untrack } from "svelte";
   import { fade } from "svelte/transition";
-  import { backend, writeGuard, errorText, isCmdError, type DropNotice, type OtherTab, type TabRect, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout, type Checkpoint, type EncodingChoice, type DateScan } from "./lib/backend";
+  import { backend, writeGuard, errorText, isCmdError, missingNote, type DropNotice, type OtherTab, type TabRect, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout, type Checkpoint, type EncodingChoice, type DateScan } from "./lib/backend";
   import { Tab, exportHandTab, importHandTab, type HandTab, type RowMap } from "./lib/tab.svelte";
 import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowheights";
+import { applyWorkbookHeights } from "./lib/workbookheights";
   import { SECOND_WINDOW } from "./lib/windowRole";
   import { invisibleNote, xrayNote } from "./lib/invisible";
   import { GUARD_LABEL, guardNote } from "./lib/csvguard";
@@ -90,7 +91,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { remapChecks, renameInChecks } from "./lib/rename";
   import { TOOLS, localNow, type Cleaner, type CleanSpec, type ExampleSpec, type ToolId } from "./lib/clean";
   import { joinSummary, type OtherTable } from "./lib/transfer";
-  import type { ExportOptions, ImportNotes, ImportOptions, ImportStart, JsonBlanks, JsonChoice, Opened, ReceiptAsk, SaveAsOptions } from "./lib/backend";
+  import type { ExportOptions, Imported, ImportNotes, ImportOptions, ImportStart, JsonBlanks, JsonChoice, Opened, ReceiptAsk, SaveAsOptions } from "./lib/backend";
   import SidePanel, { type PanelTab } from "./lib/SidePanel.svelte";
   import CommandSearch from "./lib/CommandSearch.svelte";
   import readme from "../../README.md?raw";
@@ -1368,18 +1369,24 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       lastImportNote = notes?.summary ?? "";
       addTab(d, false);
       const nt = tabs[tabs.length - 1];
+      let heightsNote = "";
       if (nt) {
         nt.header = header;
         nt.headerTouched = true;
+        heightsNote = workbookHeights(nt, d, header);
         nt.bump();
       }
-      say(`Imported ${plural(Math.max(0, d.rows - (header ? 1 : 0)), "row")} and ${plural(d.cols, "column")}.${d.json_format ? (d.json_refuse ? ` It can only be saved as another file: ${d.json_refuse}.` : ` Ctrl+S saves it back to ${(d.json_file ?? "").split(/[\\/]/).pop()} as ${d.json_format === "jsonl" ? "JSON Lines" : "JSON"}.`) : " It is not saved yet: Save As (F12) writes it as delimited text."}${notes?.summary ? ` ${notes.summary}` : ""}`);
+      say(`Imported ${plural(Math.max(0, d.rows - (header ? 1 : 0)), "row")} and ${plural(d.cols, "column")}.${heightsNote}${d.json_format ? (d.json_refuse ? ` It can only be saved as another file: ${d.json_refuse}.` : ` Ctrl+S saves it back to ${(d.json_file ?? "").split(/[\\/]/).pop()} as ${d.json_format === "jsonl" ? "JSON Lines" : "JSON"}.`) : " It is not saved yet: Save As (F12) writes it as delimited text."}${notes?.summary ? ` ${notes.summary}` : ""}`);
     } catch (e) {
       say(errorText(e));
     } finally {
       clearInterval(poll);
       void backend().importClose(start.id).catch(() => {});
     }
+  }
+
+  function workbookHeights(t: Tab, d: Imported, header: boolean): string {
+    return applyWorkbookHeights(t, d, header, grid?.plainRowPx() ?? -1);
   }
 
   function closeImport(): void {
@@ -1552,7 +1559,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
         const r = await runJob("Exporting", () => (tabIds ? backend().exportBook(tabIds, o, tabIds.map(widthsOf)) : backend().exportFile(t.id, o)));
         if (!r) return;
         if (r.files?.length) say(`Exported ${plural(r.rows, "row")} to ${plural(r.files.length, "file")}: ${r.files[0]} to ${r.files[r.files.length - 1]}, each with the title row.`);
-        else say(`Exported ${plural(r.rows, "row")}${r.sheets > 1 ? ` on ${plural(r.sheets, "sheet")}` : ""}.${noteLines(t) > 0 ? " The report notes (lines above and below the table) are not in the export: only Save writes them." : ""}`);
+        else say(`Exported ${plural(r.rows, "row")}${r.sheets > 1 ? ` on ${plural(r.sheets, "sheet")}` : ""}.${missingNote(r)}${noteLines(t) > 0 ? " The report notes (lines above and below the table) are not in the export: only Save writes them." : ""}`);
       }
     } catch (e) {
       say(errorText(e));
@@ -1591,9 +1598,12 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     try {
       const o = await backend().openFile();
       let d: DocInfo | null = o?.doc ?? null;
+      let imported: Imported | null = null;
       if (!d && o?.import) {
         const s = o.import;
-        d = await backend().importFinish(s.id, { format: s.info.format, part: Math.max(0, s.info.hidden.indexOf(false)), raw_dates: false, record: "" });
+        const done = await backend().importFinish(s.id, { format: s.info.format, part: Math.max(0, s.info.hidden.indexOf(false)), raw_dates: false, record: "" });
+        d = done;
+        imported = done;
         void backend().importClose(s.id).catch(() => {});
       }
       if (!d && o?.zip) say(`${o.zip.name} holds ${o.zip.entries.length} tables: open the one you want with File › Open first, then pick it here.`);
@@ -1601,6 +1611,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       if (!d) return null;
       addTab(d);
       const nt = tabs[tabs.length - 1]!;
+      if (imported) workbookHeights(nt, imported, nt.header);
       // Wait for the file to load, so its columns are known.
       for (let i = 0; i < 600 && !nt.info.indexed; i++) {
         await new Promise((r) => setTimeout(r, 100));
@@ -9364,7 +9375,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       mailSheets = null;
       say(
         `Saved ${plural(rep.rows, spec.kind === "labels" ? "label" : "letter")} on ${plural(rep.pages, "page")} as a PDF.` +
-          (rep.cut ? ` ${plural(rep.cut, "line")} did not fit and were cut short; try a smaller text size or fewer lines.` : ""),
+          (rep.cut ? ` ${plural(rep.cut, "line")} did not fit and were cut short; try a smaller text size or fewer lines.` : "") +
+          missingNote(rep),
       );
     } catch (e) {
       mailProblem = errorText(e);
@@ -9498,7 +9510,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const o = { ...exportDefaults(t.header), format: "pdf" as const, page };
     try {
       const r = await runJob("Writing the PDF", () => backend().exportFile(t.id, o));
-      if (r) say(`Saved a PDF of ${plural(r.sheets, "page")} (${plural(r.rows, "row")}${block ? ` × ${plural(cols.length, "column")}` : ""}).`);
+      if (r) say(`Saved a PDF of ${plural(r.sheets, "page")} (${plural(r.rows, "row")}${block ? ` × ${plural(cols.length, "column")}` : ""}).${missingNote(r)}`);
     } catch (e) {
       say(errorText(e));
     } finally {
