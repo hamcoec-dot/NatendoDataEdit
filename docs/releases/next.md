@@ -1,7 +1,7 @@
 ## Not yet released
 
 - **Chinese, Japanese and Korean in PDFs:** Save as PDF (and the print screen's PDF), labels and letters now print these characters with the Windows font for each, embedding only the characters used.
-- **Row heights from workbooks:** opening an Excel or OpenDocument file keeps the row heights it set (not an undo step, not a change).
+- **Row heights from workbooks:** opening an Excel or OpenDocument file keeps the row heights it set (as part of opening, not an undo step).
 - **Drag cells to the other window, and several blocks:** drag a block out onto a tab of the other window to copy it there (Shift moves it); blocks that line up can be dragged together onto another file's tab in either window. The keyboard way (Edit > Copy selection to another file) lists the other window's files too.
 - **Move rows while filtered:** with a filter on or rows hidden, Alt+Shift+Up/Down and dragging row numbers move the shown rows; hidden rows stay where they are, and the status line says so when the move passed them. Row heights go with the moved rows.
 - **Row heights while filtered:** with a filter on or rows hidden, each shown row now keeps its own height, and you can drag, set, fit and reset the heights of the rows you see. Inserting and deleting rows while filtered keeps the heights on their rows instead of clearing them, and Excel export of a filtered table writes the shown rows' heights.
