@@ -14,6 +14,7 @@ const RESPECTS_THE_VIEW: Record<string, string> = {
   findRows: "by code: row actions act on shown matches",
   replaceConfirm: "audit: replace_all",
   replaceCell: "audit: replace_all (one cell of the shown rows)",
+  dropPaste: "a paste of another file's cells into the shown rows (the same paste as Paste; hidden rows are passed over)",
   replaceAll: "audit: replace_all",
   batchConfirm: "audit: batch_replace",
   tidyTitles: "audit: title_operations_change_no_data_row",

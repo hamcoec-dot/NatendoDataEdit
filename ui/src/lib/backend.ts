@@ -281,6 +281,40 @@ export function errorText(e: unknown): string {
   return String(e);
 }
 
+/** A block of cells (gap #6 drops), in shown positions. */
+export interface DropArea {
+  row: number;
+  rows: number;
+  col: number;
+  cols: number;
+}
+/** A tab's place in this window's viewport, for drags from the other window. */
+export interface TabRect {
+  doc: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+/** A file open in the other window. */
+export interface OtherTab {
+  doc: number;
+  name: string;
+}
+/** A drop from the other window, as the window that gets it is told (no cell values). */
+export interface DropNotice {
+  id: number;
+  doc: number;
+  from_doc: number;
+  from_name: string;
+  rows: number;
+  cols: number;
+  moving: boolean;
+  within_ms: number;
+}
+/** How a drop on the other window ended. */
+export type DropOutcome = { kind: "done"; rows: number; width: number; added: number } | { kind: "refused"; message: string } | { kind: "too_late" };
+
 export type Change =
   | { op: "insert_rows"; at: number; count: number }
   | { op: "delete_rows"; at: number; count: number }
@@ -2346,6 +2380,20 @@ export interface Backend {
   /** The second window closes; its tabs go back to the main window. */
   windowCloseSelf(): Promise<void>;
   onHandover(handler: () => void): void;
+  /** Gap #6: this window's tabs' places (empty when hidden). */
+  setTabStrip(rects: TabRect[]): Promise<void>;
+  /** The other window's tab under a point of this window's viewport (outside it), or null. */
+  tabAt(x: number, y: number): Promise<OtherTab | null>;
+  otherWindowTabs(): Promise<OtherTab[]>;
+  /** Start a drop of blocks on a tab of the other window (privacy, cap and line-up checked in the shell); its id. */
+  dropBegin(doc: number, areas: DropArea[], hidden: number[], dst: number, moving: boolean): Promise<number>;
+  dropWait(id: number): Promise<DropOutcome>;
+  dropRefuse(id: number, message: string): Promise<void>;
+  /** Take a drop into `dst` at the spec's cell (the shell reads the source and pastes). */
+  dropPaste(dst: number, id: number, spec: PasteSpec): Promise<OpReport>;
+  focusDoc(doc: number): Promise<void>;
+  onDropCells(handler: (n: DropNotice) => void): void;
+  onSelectDoc(handler: (doc: number) => void): void;
   onCloseRequested(handler: () => void): void;
   computePreview(doc: number, spec: ComputeSpec): Promise<ComputePreview>;
   /** The filter panel's counts (an older count still running is cancelled). */
@@ -3232,6 +3280,36 @@ class TauriBackend implements Backend {
   onHandover(handler: () => void) {
     void listenHere("handover", handler);
   }
+  setTabStrip(rects: TabRect[]) {
+    return call<void>("set_tab_strip", { rects });
+  }
+  tabAt(x: number, y: number) {
+    return call<OtherTab | null>("tab_at", { x, y });
+  }
+  otherWindowTabs() {
+    return call<OtherTab[]>("other_window_tabs");
+  }
+  dropBegin(doc: number, areas: DropArea[], hidden: number[], dst: number, moving: boolean) {
+    return call<number>("drop_begin", { doc, areas, hidden, dst, moving });
+  }
+  dropWait(id: number) {
+    return call<DropOutcome>("drop_wait", { id });
+  }
+  dropRefuse(id: number, message: string) {
+    return call<void>("drop_refuse", { id, message });
+  }
+  dropPaste(dst: number, id: number, spec: PasteSpec) {
+    return call<OpReport>("drop_paste", { dst, id, spec });
+  }
+  focusDoc(doc: number) {
+    return call<void>("focus_doc", { doc });
+  }
+  onDropCells(handler: (n: DropNotice) => void) {
+    void listenHere("drop-cells", handler);
+  }
+  onSelectDoc(handler: (doc: number) => void) {
+    void listenHere("select-doc", handler);
+  }
   onCloseRequested(handler: () => void) {
     void listenHere("close-requested", handler);
   }
@@ -3608,6 +3686,7 @@ let instance: Backend | null = null;
  *  button, a panel, the editor). A test lists every method that returns a
  *  document's state and makes sure each is on this list or on the safe one. */
 export const WRITE_METHODS: readonly string[] = [
+  "dropPaste",
   "setCells",
   "repairRow",
   "fixAll",

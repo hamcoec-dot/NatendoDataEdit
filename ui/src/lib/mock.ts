@@ -14,6 +14,7 @@ import { mockDrill, mockItems, mockPivot, type ItemList, type PivotField, type P
 import { isIsoDate, shapeRegex } from "./lint";
 import { shapeOf } from "./insights";
 import type { ChipChange, ChipInfo, Explode, ExplodeDetect, ExplodePreview, ExplodeReport, ExplodeScan, FillOrder, FilterChips } from "./backend";
+import type { DropArea, DropNotice, DropOutcome, OtherTab, PasteSpec, TabRect } from "./backend";
 import { EXPLODE_BASE } from "./explode";
 import type {
   JumpResult,
@@ -5257,6 +5258,164 @@ export class MockBackend implements Backend {
     this.onHandoverHandler?.();
   }
   onCloseRequested(): void {}
+  // ---- gap #6: drops on the other window (stub: two pages share a BroadcastChannel) ----
+  // The other page stands in for window 2, placed to the right of this one:
+  // a point past this viewport's right edge is in its viewport, shifted by
+  // this viewport's width. Its files get ids from 100,000 up here. The text
+  // travels in the channel only in the stub; the real app's shell reads it.
+  /** Tests: how long the other window has to take a drop (the shell's 10 s). */
+  static DROP_DEADLINE_MS = 10_000;
+  private readonly win = Math.random().toString(36).slice(2);
+  private chan: BroadcastChannel | null = null;
+  private otherStrip: { rects: TabRect[]; names: Record<number, string>; priv: Record<number, boolean> } | null = null;
+  private dropHandler: ((n: DropNotice) => void) | null = null;
+  private selectHandler: ((doc: number) => void) | null = null;
+  private dropsIn = new Map<number, { text: string; deadline: number; from: string; taken: boolean }>();
+  private dropsOut = new Map<number, (o: DropOutcome) => void>();
+  private dropsTaken = new Set<number>();
+  private dropsEarly = new Map<number, DropOutcome>();
+  private nextDrop = 1;
+  private channel(): BroadcastChannel | null {
+    if (this.chan || typeof BroadcastChannel === "undefined") return this.chan;
+    this.chan = new BroadcastChannel("nde-stub-windows");
+    this.chan.onmessage = (e: MessageEvent) => this.heard(e.data);
+    return this.chan;
+  }
+  private post(m: Record<string, unknown>): void {
+    this.channel()?.postMessage({ ...m, from: this.win });
+  }
+  private heard(m: { from: string; type: string; [k: string]: unknown }): void {
+    if (m.from === this.win) return;
+    const g = globalThis as { __ndeDropFreeze?: boolean; __ndeDropDelay?: number };
+    if (m.type === "strip") this.otherStrip = m as unknown as typeof this.otherStrip;
+    else if (m.type === "drop" && m.to === this.win) {
+      (g as { __ndeDropsHeard?: number }).__ndeDropsHeard = ((g as { __ndeDropsHeard?: number }).__ndeDropsHeard ?? 0) + 1;
+      if (g.__ndeDropFreeze) return;
+      const n = m.notice as DropNotice;
+      this.dropsIn.set(n.id, { text: m.text as string, deadline: m.deadline as number, from: m.from, taken: false });
+      setTimeout(() => this.dropHandler?.(n), g.__ndeDropDelay ?? 0);
+    } else if (m.type === "taken" && m.to === this.win) this.dropsTaken.add(m.id as number);
+    else if (m.type === "result" && m.to === this.win) {
+      const w = this.dropsOut.get(m.id as number);
+      if (w) w(m.outcome as DropOutcome);
+      else this.dropsEarly.set(m.id as number, m.outcome as DropOutcome);
+    }
+    else if (m.type === "select" && m.to === this.win) this.selectHandler?.(m.doc as number);
+  }
+  async setTabStrip(rects: TabRect[]): Promise<void> {
+    const names: Record<number, string> = {};
+    const priv: Record<number, boolean> = {};
+    for (const r of rects) {
+      if (!this.docs.has(r.doc)) continue;
+      names[r.doc] = this.get(r.doc).info.name;
+      const p = await this.privateState(r.doc);
+      priv[r.doc] = p.file || p.folder || !!(await this.encryptedOrigin(r.doc));
+    }
+    this.post({ type: "strip", rects, names, priv });
+  }
+  /** Tests: tabAt calls, and the most at once (the window keeps one in flight). */
+  tabAtCalls = 0;
+  tabAtMost = 0;
+  private tabAtNow = 0;
+  async tabAt(x: number, y: number): Promise<OtherTab | null> {
+    this.tabAtCalls++;
+    this.tabAtMost = Math.max(this.tabAtMost, ++this.tabAtNow);
+    // A round trip to the shell takes a moment.
+    await new Promise((r) => setTimeout(r, 15));
+    this.tabAtNow--;
+    const s = this.otherStrip;
+    const w = typeof window === "undefined" ? 0 : window.innerWidth;
+    if (!s || x < w) return null;
+    const r = s.rects.find((r) => x - w >= r.x && x - w < r.x + r.w && y >= r.y && y < r.y + r.h);
+    return r ? { doc: 100_000 + r.doc, name: s.names[r.doc] ?? "" } : null;
+  }
+  async otherWindowTabs(): Promise<OtherTab[]> {
+    const s = this.otherStrip;
+    return s ? s.rects.map((r) => ({ doc: 100_000 + r.doc, name: s.names[r.doc] ?? "" })) : [];
+  }
+  async dropBegin(doc: number, areas: DropArea[], hidden: number[], dst: number, moving: boolean): Promise<number> {
+    const s = this.otherStrip;
+    if (!s || dst < 100_000 || !(dst - 100_000 in s.names)) throw err("window", "that file's window is not open");
+    const sameRows = areas.every((a) => a.row === areas[0]!.row && a.rows === areas[0]!.rows);
+    const sameCols = areas.every((a) => a.col === areas[0]!.col && a.cols === areas[0]!.cols);
+    if (areas.length > 1 && !sameRows && !sameCols) throw err("invalid", "dragging several blocks needs them to line up");
+    const p = await this.privateState(doc);
+    if ((p.file || p.folder || (await this.encryptedOrigin(doc))) && !s.priv[dst - 100_000])
+      throw err("private", `${this.get(doc).info.name} is private (or from an encrypted file), so its cells are not copied into ${s.names[dst - 100_000]}, which is not. Make ${s.names[dst - 100_000]} private first, or copy them by hand.`);
+    const parts = await Promise.all(areas.map(async (a) => parseTsv(await this.copyCells(doc, a.row, a.rows, a.col, a.cols, hidden))));
+    const rows = areas.length > 1 && sameRows ? parts[0]!.map((_, i) => parts.flatMap((g) => g[i] ?? [])) : parts.flat();
+    const id = this.nextDrop++ + Math.floor(Math.random() * 1e6) * 1000;
+    const notice: DropNotice = { id, doc: dst - 100_000, from_doc: doc, from_name: this.get(doc).info.name, rows: rows.length, cols: Math.max(0, ...rows.map((r) => r.length)), moving, within_ms: MockBackend.DROP_DEADLINE_MS };
+    const deadline = Date.now() + MockBackend.DROP_DEADLINE_MS;
+    this.post({ type: "drop", to: this.otherWin(), notice, text: toTsv(rows), deadline });
+    this.dropDeadline.set(id, deadline);
+    return id;
+  }
+  private dropDeadline = new Map<number, number>();
+  private otherWin(): string {
+    return (this.otherStrip as unknown as { from: string } | null)?.from ?? "";
+  }
+  dropWait(id: number): Promise<DropOutcome> {
+    return new Promise((resolve) => {
+      const done = (o: DropOutcome) => {
+        this.dropsOut.delete(id);
+        resolve(o);
+      };
+      const early = this.dropsEarly.get(id);
+      if (early) {
+        this.dropsEarly.delete(id);
+        return resolve(early);
+      }
+      this.dropsOut.set(id, done);
+      const check = () => {
+        if (!this.dropsOut.has(id)) return;
+        // Not taken by the deadline: too late, for good (a late take is refused there).
+        if (Date.now() >= (this.dropDeadline.get(id) ?? 0) && !this.dropsTaken.has(id)) done({ kind: "too_late" });
+        else setTimeout(check, 50);
+      };
+      setTimeout(check, 50);
+    });
+  }
+  async dropRefuse(id: number, message: string): Promise<void> {
+    const d = this.dropsIn.get(id);
+    if (!d || d.taken) return;
+    this.dropsIn.delete(id);
+    this.post({ type: "result", to: d.from, id, outcome: { kind: "refused", message } });
+  }
+  async dropPaste(dst: number, id: number, spec: PasteSpec): Promise<OpReport> {
+    const d = this.dropsIn.get(id);
+    if (!d || d.taken) throw err("too_late", "that drop is no longer waiting");
+    if (Date.now() >= d.deadline) {
+      this.dropsIn.delete(id);
+      this.post({ type: "result", to: d.from, id, outcome: { kind: "too_late" } });
+      throw err("too_late", "the drop came too late, so nothing was put here");
+    }
+    d.taken = true;
+    this.post({ type: "taken", to: d.from, id });
+    const before = this.get(dst).info.rows;
+    try {
+      const rep = await this.dataOp(dst, { op: "paste", spec, text: d.text });
+      const rows = parseTsv(d.text);
+      this.post({ type: "result", to: d.from, id, outcome: { kind: "done", rows: rows.length, width: Math.max(0, ...rows.map((r) => r.length)), added: Math.max(0, (rep.info?.rows ?? before) - before) } });
+      return rep;
+    } catch (e) {
+      this.post({ type: "result", to: d.from, id, outcome: { kind: "refused", message: String((e as { message?: string }).message ?? e) } });
+      throw e;
+    } finally {
+      this.dropsIn.delete(id);
+    }
+  }
+  async focusDoc(doc: number): Promise<void> {
+    if (doc >= 100_000) this.post({ type: "select", to: this.otherWin(), doc: doc - 100_000 });
+  }
+  onDropCells(handler: (n: DropNotice) => void): void {
+    this.dropHandler = handler;
+    this.channel();
+  }
+  onSelectDoc(handler: (doc: number) => void): void {
+    this.selectHandler = handler;
+    this.channel();
+  }
 
   /** Documents with a counting or grouping job running: like the backend, a
    *  second one is refused until the first ends. */

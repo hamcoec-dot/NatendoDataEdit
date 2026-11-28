@@ -10,6 +10,7 @@ mod assoc;
 mod batch;
 mod diskwatch;
 mod docs;
+mod drops;
 mod extras;
 mod imports;
 mod links;
@@ -3490,6 +3491,285 @@ async fn copy_cells(
     blocking(move || docs.copy_skipping(doc, row, rows, col, cols, &skip)).await
 }
 
+// ---- cells dropped on a tab in the other window (gap #6) ----
+
+/// The other window's label.
+fn other_label(label: &str) -> &'static str {
+    if label == windows::MAIN {
+        windows::SECOND
+    } else {
+        windows::MAIN
+    }
+}
+
+/// A window's place on the screen (physical px) and scale.
+fn geom_of(w: &WebviewWindow) -> Option<drops::Geom> {
+    let o = w.outer_position().ok()?;
+    let sz = w.outer_size().ok()?;
+    let i = w.inner_position().ok()?;
+    Some(drops::Geom {
+        outer: (o.x as f64, o.y as f64, sz.width as f64, sz.height as f64),
+        inner: (i.x as f64, i.y as f64),
+        scale: w.scale_factor().ok()?,
+        visible: w.is_visible().unwrap_or(false),
+        minimized: w.is_minimized().unwrap_or(true),
+    })
+}
+
+/// A tab in the other window (for a drop or the keyboard path).
+#[derive(Serialize)]
+struct OtherTab {
+    doc: u32,
+    name: String,
+}
+
+/// A window reports its tabs' places in its viewport (empty: hidden or
+/// minimised, so nothing there can be a drop target).
+#[tauri::command]
+fn set_tab_strip(
+    window: WebviewWindow,
+    drops: State<'_, Arc<drops::Drops>>,
+    rects: Vec<drops::TabRect>,
+) {
+    let shown = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true);
+    drops.set_strip(window.label(), if shown { rects } else { Vec::new() });
+}
+
+/// The other window's tab under `(x, y)`, a point in this window's viewport
+/// (CSS px, outside it while a drag has left the window).
+#[tauri::command]
+async fn tab_at(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    drops: State<'_, Arc<drops::Drops>>,
+    x: f64,
+    y: f64,
+) -> CmdResult<Option<OtherTab>> {
+    let Some(other) = app.get_webview_window(other_label(window.label())) else {
+        return Ok(None);
+    };
+    let (Some(src), Some(dst)) = (geom_of(&window), geom_of(&other)) else {
+        return Ok(None);
+    };
+    let Some(doc) = drops::hit(&src, x, y, &dst, &drops.strip(other.label())) else {
+        return Ok(None);
+    };
+    // The name never waits for a change in progress (the last reading will do).
+    let docs = docs.inner().clone();
+    blocking(move || {
+        Ok(docs
+            .info_now(doc)
+            .ok()
+            .map(|i| OtherTab { doc, name: i.name }))
+    })
+    .await
+}
+
+/// The files open in the other window (the keyboard path lists them).
+#[tauri::command]
+async fn other_window_tabs(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    docs: DocsState<'_>,
+    wins: State<'_, windows::Windows>,
+) -> CmdResult<Vec<OtherTab>> {
+    let other = other_label(window.label());
+    if app.get_webview_window(other).is_none() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<u32> = docs
+        .ids()
+        .into_iter()
+        .filter(|&d| wins.owner_of(d) == other)
+        .collect();
+    let docs = docs.inner().clone();
+    blocking(move || {
+        Ok(ids
+            .into_iter()
+            .filter_map(|doc| {
+                Some(OtherTab {
+                    doc,
+                    name: docs.info_now(doc).ok()?.name,
+                })
+            })
+            .collect())
+    })
+    .await
+}
+
+/// Whether a tab's cells count as private: a private file or folder, or a
+/// file that came from an encrypted one (the same rule as within a window).
+fn sensitive(docs: &Docs, recent: &Recent, doc: u32) -> CmdResult<bool> {
+    let state = docs
+        .path_of(doc)?
+        .map(|p| recent.private_state(&p))
+        .unwrap_or_default();
+    Ok(state.file || state.folder || docs.is_private(doc)? || docs.encrypted_from(doc)?.is_some())
+}
+
+/// Checks for a drop from `doc` on `dst`, made by the shell before the other
+/// window hears of it: the blocks line up, the cell cap, and privacy (private
+/// cells never go into a file that is not). The packed block's size.
+fn drop_check(
+    docs: &Docs,
+    recent: &Recent,
+    doc: u32,
+    areas: &[drops::Area],
+    dst: u32,
+    moving: bool,
+) -> CmdResult<(bool, u64, u64)> {
+    if doc == dst {
+        return Err(CmdError::new("invalid", "drop the cells on another file"));
+    }
+    let side = drops::line_up(areas).map_err(|m| CmdError::new("invalid", m))?;
+    let (rows, cols) = drops::packed_size(areas, side);
+    let cap = natendo_engine::ops::MAX_BLOCK_CELLS / if moving { 2 } else { 1 };
+    if rows.saturating_mul(cols) > cap {
+        return Err(CmdError::new(
+            "too_large",
+            format!(
+                "a drop takes up to {} cells at once; use Copy and Paste for more",
+                docs::group(cap)
+            ),
+        ));
+    }
+    if sensitive(docs, recent, doc)? && !sensitive(docs, recent, dst)? {
+        let (from, to) = (docs.info(doc)?.name, docs.info(dst)?.name);
+        return Err(CmdError::new(
+            "private",
+            format!(
+                "{from} is private (or from an encrypted file), so its cells are not copied into {to}, which is not. Make {to} private first, or copy them by hand."
+            ),
+        ));
+    }
+    Ok((side, rows, cols))
+}
+
+/// Start a drop of blocks `areas` of `doc` on tab `dst` in the other window
+/// (checked by [`drop_check`] first). The other window is told which file,
+/// how big and by when; it never gets the cells.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn drop_begin(
+    app: tauri::AppHandle,
+    docs: DocsState<'_>,
+    recent: RecentState<'_>,
+    drops: State<'_, Arc<drops::Drops>>,
+    wins: State<'_, windows::Windows>,
+    doc: u32,
+    areas: Vec<drops::Area>,
+    hidden: Vec<u32>,
+    dst: u32,
+    moving: bool,
+) -> CmdResult<u64> {
+    let label = wins.owner_of(dst);
+    let (docs, recent, drops) = (
+        docs.inner().clone(),
+        recent.inner().clone(),
+        drops.inner().clone(),
+    );
+    // The checks read both documents, so they run off the window's thread.
+    blocking(move || {
+        let (side, rows, cols) = drop_check(&docs, &recent, doc, &areas, dst, moving)?;
+        if app.get_webview_window(&label).is_none() {
+            return Err(CmdError::new("window", "that file's window is not open"));
+        }
+        let from_name = docs.info(doc)?.name;
+        let id = drops.begin(
+            drops::Source {
+                doc,
+                dst,
+                areas,
+                side_by_side: side,
+                hidden,
+            },
+            std::time::Instant::now(),
+        );
+        let notice = drops::DropNotice {
+            id,
+            doc: dst,
+            from_doc: doc,
+            from_name,
+            rows,
+            cols,
+            moving,
+            within_ms: drops::DEADLINE.as_millis() as u64,
+        };
+        if app.emit_to(label.as_str(), "drop-cells", notice).is_err() {
+            drops.refuse(id, "the other window could not be reached".into());
+        }
+        Ok(id)
+    })
+    .await
+}
+
+/// The source window waits for how drop `id` ended (at most its deadline,
+/// or longer once the other window took it in time).
+#[tauri::command]
+async fn drop_wait(drops: State<'_, Arc<drops::Drops>>, id: u64) -> CmdResult<drops::Outcome> {
+    let drops = drops.inner().clone();
+    blocking(move || Ok(drops.wait(id))).await
+}
+
+/// The target window says no to drop `id` (read-only, busy, Cancel).
+#[tauri::command]
+fn drop_refuse(drops: State<'_, Arc<drops::Drops>>, id: u64, message: String) {
+    drops.refuse(id, message);
+}
+
+/// The target window takes drop `id` into `dst` at `spec`'s cell: the shell
+/// reads the source blocks and pastes them, so the cells never pass through a
+/// window. Refused after the deadline.
+#[tauri::command]
+async fn drop_paste(
+    docs: DocsState<'_>,
+    drops: State<'_, Arc<drops::Drops>>,
+    id: u64,
+    dst: u32,
+    spec: natendo_engine::ops::PasteSpec,
+) -> CmdResult<OpReport> {
+    let source = drops
+        .take(id, dst, std::time::Instant::now())
+        .map_err(|m| CmdError::new("too_late", m))?;
+    let d = docs.inner().clone();
+    let drops = drops.inner().clone();
+    blocking(move || {
+        let before = d.info(dst).map(|i| i.rows).unwrap_or(0);
+        let (rows, width) = drops::packed_size(&source.areas, source.side_by_side);
+        let result = drops::read_packed(&d, &source)
+            .and_then(|text| d.data_op(dst, DataOp::Paste { spec, text }));
+        drops.finish(
+            id,
+            match &result {
+                Ok(rep) => drops::Outcome::Done {
+                    rows,
+                    width,
+                    added: rep
+                        .info
+                        .as_ref()
+                        .map_or(0, |i| i.rows.saturating_sub(before)),
+                },
+                Err(e) => drops::Outcome::Refused {
+                    message: e.message.clone(),
+                },
+            },
+        );
+        result
+    })
+    .await
+}
+
+/// Bring the window holding `doc` to the front on that tab ("Go to").
+#[tauri::command]
+fn focus_doc(app: tauri::AppHandle, wins: State<'_, windows::Windows>, doc: u32) {
+    let label = wins.owner_of(doc);
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_focus();
+        let _ = app.emit_to(label.as_str(), "select-doc", doc);
+    }
+}
+
 /// Row and column structure changes and undo/redo, in one command.
 #[derive(serde::Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -5548,6 +5828,7 @@ pub fn run() {
             Ok(())
         })
         .manage(windows::Windows::default())
+        .manage(Arc::new(drops::Drops::default()))
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                 open_paths(window.app_handle(), paths.clone(), false);
@@ -5636,6 +5917,14 @@ pub fn run() {
             hidden_between,
             move_cells,
             copy_cells,
+            set_tab_strip,
+            tab_at,
+            other_window_tabs,
+            drop_begin,
+            drop_wait,
+            drop_refuse,
+            drop_paste,
+            focus_doc,
             change,
             save,
             json_check,
@@ -5952,6 +6241,242 @@ mod private_copy_tests {
         std::fs::write(&out, b"x").unwrap();
         assert!(!private_copy(&docs, &recent, j, &out).unwrap());
         assert!(!recent.is_private(&out));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn open(docs: &Docs, p: &Path) -> u32 {
+        let id = docs.open_path(p, false).unwrap().id;
+        while docs.info(id).map(|i| !i.indexed).unwrap_or(false) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        id
+    }
+
+    #[test]
+    fn the_shell_decides_privacy_and_does_the_copy() {
+        let dir = crate::testdir::path("natendo-drops");
+        std::fs::create_dir_all(&dir).unwrap();
+        let voters = dir.join("voters.csv");
+        std::fs::write(
+            &voters,
+            b"name,id\r\nZed Made-up,9001\r\nYa Made-up,9002\r\n",
+        )
+        .unwrap();
+        let plain = dir.join("plain.csv");
+        std::fs::write(&plain, b"a,b\r\n1,2\r\n").unwrap();
+        let notes = dir.join("notes.csv");
+        std::fs::write(&notes, b"a,b,c\r\n1,2,3\r\n").unwrap();
+        let recent = Arc::new(Recent::default());
+        recent.load(&dir);
+        recent.set_private(&voters, true).unwrap();
+        recent.set_private(&notes, true).unwrap();
+        let docs = Docs::default();
+        let r2 = recent.clone();
+        docs.set_private_check(Arc::new(move |p: &Path| r2.is_private(p)));
+        let (v, p, n) = (
+            open(&docs, &voters),
+            open(&docs, &plain),
+            open(&docs, &notes),
+        );
+        let one = [drops::Area {
+            row: 1,
+            rows: 2,
+            col: 0,
+            cols: 2,
+        }];
+        // A private source to a plain target: refused here, before any window.
+        let e = drop_check(&docs, &recent, v, &one, p, false).unwrap_err();
+        assert_eq!(e.kind, "private");
+        // Plain into private, and private into private: allowed (as today).
+        assert!(drop_check(&docs, &recent, p, &one, v, false).is_ok());
+        assert!(drop_check(&docs, &recent, v, &one, n, true).is_ok());
+        // Blocks that do not line up, and the same file: refused.
+        let crooked = [
+            one[0],
+            drops::Area {
+                row: 5,
+                rows: 1,
+                col: 1,
+                cols: 1,
+            },
+        ];
+        assert!(drop_check(&docs, &recent, p, &crooked, v, false).is_err());
+        assert!(drop_check(&docs, &recent, p, &one, p, false).is_err());
+        // The shell reads the source and pastes (two blocks side by side).
+        let drops = drops::Drops::default();
+        let src = drops::Source {
+            doc: v,
+            dst: n,
+            areas: vec![
+                drops::Area {
+                    row: 1,
+                    rows: 2,
+                    col: 1,
+                    cols: 1,
+                },
+                drops::Area {
+                    row: 1,
+                    rows: 2,
+                    col: 0,
+                    cols: 1,
+                },
+            ],
+            side_by_side: true,
+            hidden: vec![],
+        };
+        let id = drops.begin(src.clone(), std::time::Instant::now());
+        let s = drops.take(id, n, std::time::Instant::now()).unwrap();
+        let text = drops::read_packed(&docs, &s).unwrap();
+        assert_eq!(text, "9001\tZed Made-up\r\n9002\tYa Made-up\r\n");
+        let spec: natendo_engine::ops::PasteSpec = serde_json::from_str(
+            r#"{"row":1,"col":0,"op":"none","skip_blanks":false,"transpose":false}"#,
+        )
+        .unwrap();
+        docs.data_op(n, DataOp::Paste { spec, text }).unwrap();
+        drops.finish(
+            id,
+            drops::Outcome::Done {
+                rows: 2,
+                width: 2,
+                added: 1,
+            },
+        );
+        assert_eq!(
+            drops.wait(id),
+            drops::Outcome::Done {
+                rows: 2,
+                width: 2,
+                added: 1
+            }
+        );
+        assert_eq!(
+            docs.copy(n, 1, 2, 0, 3).unwrap(),
+            "9001\tZed Made-up\t3\r\n9002\tYa Made-up\t\r\n"
+        );
+        // Nothing on the drop path logs, audits or writes a file.
+        let lib = include_str!("lib.rs");
+        let a = lib
+            .find("// ---- cells dropped on a tab in the other window")
+            .unwrap();
+        let b = a + lib[a..]
+            .find("/// Row and column structure changes")
+            .unwrap();
+        for code in [&lib[a..b], include_str!("drops.rs")] {
+            for word in [
+                "applog", "audit", "std::fs", "File::", "println", "eprintln", "log::",
+            ] {
+                assert!(!code.contains(word), "the drop path uses {word}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod drop_bench {
+    use super::*;
+
+    /// Gap #6 speed: a 100,000-cell drop through the shell (read the source,
+    /// paste) against today's same-window drop (copy as text, paste the text),
+    /// and the size of what the other window is sent. Release build:
+    /// `cargo test --release -p natendo-data-edit --lib drop_bench -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn a_100k_cell_drop() {
+        let dir = crate::testdir::path("natendo-drop-bench");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut text = String::from("a,b,c,d,e,f,g,h,i,j\r\n");
+        for r in 0..20_000 {
+            text.push_str(&format!(
+                "Town {r},Person {r},{r},x{r},y{r},z{r},{},q,w,e\r\n",
+                r * 7
+            ));
+        }
+        std::fs::write(dir.join("from.csv"), &text).unwrap();
+        std::fs::write(dir.join("to.csv"), "a,b\r\n1,2\r\n").unwrap();
+        let docs = Docs::default();
+        let open = |p: &std::path::Path| {
+            let id = docs.open_path(p, false).unwrap().id;
+            while docs.info(id).map(|i| !i.indexed).unwrap_or(false) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            id
+        };
+        let (s, d) = (open(&dir.join("from.csv")), open(&dir.join("to.csv")));
+        let area = drops::Area {
+            row: 1,
+            rows: 10_000,
+            col: 0,
+            cols: 10,
+        };
+        let spec: natendo_engine::ops::PasteSpec = serde_json::from_str(
+            r#"{"row":1,"col":0,"op":"none","skip_blanks":false,"transpose":false}"#,
+        )
+        .unwrap();
+        let median = |mut v: Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            v[v.len() / 2]
+        };
+        let (mut same, mut cross, mut bytes) = (Vec::new(), Vec::new(), 0usize);
+        for _ in 0..7 {
+            // Same window today: the text comes to the window and goes back.
+            let t = std::time::Instant::now();
+            let text = docs
+                .copy_skipping(s, area.row, area.rows, area.col, area.cols, &[])
+                .unwrap();
+            bytes = text.len();
+            let back = text.clone();
+            docs.data_op(
+                d,
+                DataOp::Paste {
+                    spec: spec.clone(),
+                    text: back,
+                },
+            )
+            .unwrap();
+            same.push(t.elapsed().as_secs_f64() * 1000.0);
+            docs.undo(d).unwrap();
+            // Through the shell: read the source and paste, nothing sent.
+            let t = std::time::Instant::now();
+            let src = drops::Source {
+                doc: s,
+                dst: d,
+                areas: vec![area],
+                side_by_side: true,
+                hidden: vec![],
+            };
+            let text = drops::read_packed(&docs, &src).unwrap();
+            docs.data_op(
+                d,
+                DataOp::Paste {
+                    spec: spec.clone(),
+                    text,
+                },
+            )
+            .unwrap();
+            cross.push(t.elapsed().as_secs_f64() * 1000.0);
+            docs.undo(d).unwrap();
+        }
+        let notice = serde_json::to_string(&drops::DropNotice {
+            id: 1,
+            doc: d,
+            from_doc: s,
+            from_name: "from.csv".into(),
+            rows: 10_000,
+            cols: 10,
+            moving: true,
+            within_ms: 10_000,
+        })
+        .unwrap();
+        println!("100,000 cells, same window (text to the window and back): {:.1} ms; {} bytes of text each way", median(same.clone()), bytes);
+        println!("100,000 cells, the other window (shell reads and pastes): {:.1} ms; event sent: {} bytes", median(cross.clone()), notice.len());
+        println!("ratio {:.2}", median(cross) / median(same));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

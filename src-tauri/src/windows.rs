@@ -247,7 +247,6 @@ impl Windows {
     }
 
     /// Which window a file is in.
-    #[cfg(test)]
     pub fn owner_of(&self, doc: u32) -> String {
         self.lock()
             .owner

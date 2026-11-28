@@ -10473,7 +10473,7 @@ fn lines_word(n: u32) -> String {
     }
 }
 
-fn group(n: u64) -> String {
+pub(crate) fn group(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, ch) in s.chars().enumerate() {

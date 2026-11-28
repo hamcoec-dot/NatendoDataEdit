@@ -1103,6 +1103,8 @@
     blocked?: boolean;
     /** The pointer is outside the grid (maybe over a tab). */
     outside?: boolean;
+    /** Several blocks (gap #6): they can go onto another file's tab only. */
+    multi?: boolean;
   };
   let moving: Moving | null = null;
   const MOVE_SLOP = 4;
@@ -1115,8 +1117,8 @@
   }
 
   /** The selection's outline on screen, where a block can be picked up. */
-  function onSelOutline(px: number, py: number): boolean {
-    if (tab.extra.length) return false;
+  function onSelOutline(px: number, py: number, anyBlocks = false): boolean {
+    if (tab.extra.length && !anyBlocks) return false;
     const r = tab.drawRect;
     if (tab.info.rows === 0 || wholeColsSel(r) || wholeRowsSel(r)) return false;
     const b = screenBox(r.row, r.col, r.row + r.rows - 1, r.col + r.cols - 1, viewW(), viewH());
@@ -2425,10 +2427,13 @@
           break;
         }
         // The outline first, Ctrl or not: Ctrl+drag copies the block.
-        if (!e.shiftKey && e.detail === 1 && onMoveCells && !readOnly && !tab.extra.length && onSelOutline(x, y)) {
+        // Several blocks (Ctrl not held: Ctrl+click adds a block) can be
+        // dragged by the active one's outline onto another file's tab.
+        const multi = tab.extra.length > 0;
+        if (!e.shiftKey && e.detail === 1 && onMoveCells && !readOnly && !(multi && e.ctrlKey) && onSelOutline(x, y, multi)) {
           const from = tab.drawRect;
-          moving = { kind: "cells", from, startX: x, startY: y, active: false, grab: { row: h.row, col: h.col }, to: null, px: x, py: y, offset: 0 };
-          if (tab.columns.hiddenIn(from.col, from.col + from.cols)) moving.refuse = "The selection has hidden columns, so it can't be dragged. Show them first (Ctrl+Shift+0).";
+          moving = { kind: "cells", from, startX: x, startY: y, active: false, grab: { row: h.row, col: h.col }, to: null, px: x, py: y, offset: 0, multi };
+          if (tab.areas.some((a) => tab.columns.hiddenIn(a.col, a.col + a.cols))) moving.refuse = "The selection has hidden columns, so it can't be dragged. Show them first (Ctrl+Shift+0).";
           break;
         }
         if (e.ctrlKey && !e.shiftKey && onOpenLink) {
@@ -2683,7 +2688,7 @@
         !readOnly &&
         ((h.area === "col" && h.edge === null && !!onMoveCols && wholeColsSel(r) && h.col >= r.col && h.col < r.col + r.cols) ||
           (h.area === "row" && !!onMoveRows && wholeRowsSel(r) && h.row >= r.row && h.row < r.row + r.rows) ||
-          (h.area === "cell" && !!onMoveCells && !editing && onSelOutline(x, y)));
+          (h.area === "cell" && !!onMoveCells && !editing && onSelOutline(x, y, true)));
       const fz = onFreezeEdge(x, y);
       if (!fz && !onHandle(x, y) && h.area === "row" && h.edge !== undefined) {
         cursor = "row-resize";
@@ -2871,6 +2876,9 @@
         if (m.active && m.kind === "cells") onCellsDropOutside?.(m.from, e.clientX, e.clientY, e.shiftKey);
       } else if (m.active && !m.to && m.blocked) {
         onMessage("Cells can't be dropped over hidden columns. Show them first (Ctrl+Shift+0).");
+      } else if (m.active && m.to && m.multi) {
+        // As in Excel and Google Sheets: several blocks have no one place to land here.
+        onMessage("Several blocks can be dragged onto another file's tab, not within this file. Click once to select a single block to move it here.");
       } else if (m.active && m.to) {
         if (m.kind === "cols") onMoveCols?.(m.from.col, m.from.cols, m.to.col);
         else if (m.kind === "rows") onMoveRows?.(m.from.row, m.from.rows, m.to.row);

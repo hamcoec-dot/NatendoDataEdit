@@ -166,7 +166,7 @@ const url = process.argv[3] || "http://localhost:5213";
   }, ids[0]);
   await selectBlock();
   await dragTo(1, { shift: true });
-  ok(/not removed from .*changed meanwhile/.test(await status()), `a source changed after the copy keeps its cells (${await status()})`);
+  ok(/Copied, not moved: .*not removed from .*changed meanwhile/.test(await status()), `a source changed after the copy keeps its cells (${await status()})`);
   ok((await block(ids[0], 2, 2, 1, 2)).replace(/\r/g, "") === src.replace(/\r/g, ""), "the source cells are still there");
   await p.evaluate(() => {});
 
@@ -195,7 +195,7 @@ const url = process.argv[3] || "http://localhost:5213";
   await dragTo(1, { shift: true });
   const same = await p.evaluate(() => window.__pos === window.__posAfter);
   ok(same, "(set up: the undo position is the same again after edit, undo, edit)");
-  ok(/not removed from .*changed meanwhile/.test(await status()), `a different edit made during the move keeps the source cells (${await status()})`);
+  ok(/Copied, not moved: .*not removed from .*changed meanwhile/.test(await status()), `a different edit made during the move keeps the source cells (${await status()})`);
   ok((await block(ids[0], 2, 2, 1, 2)) === src, "the source cells were not cleared");
 
   // ---- a clear that fails says copied, not removed ----
@@ -212,7 +212,7 @@ const url = process.argv[3] || "http://localhost:5213";
   }, ids[0]);
   await selectBlock();
   await dragTo(1, { shift: true });
-  ok(/Copied 4 cells to .*, not removed from/.test(await status()), `a failed clear says copied, not removed (${await status()})`);
+  ok(/Copied, not moved: 4 cells went to .*not removed from .*could not be cleared/.test(await status()), `a failed clear says copied, not removed (${await status()})`);
 
   // ---- the commands (keyboard and menu path) and the refusals ----
   await showTab(0);

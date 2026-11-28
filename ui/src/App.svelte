@@ -8,7 +8,7 @@ import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type 
   import { namesFromText } from "./lib/columnNames";
   import { onMount, tick, untrack } from "svelte";
   import { fade } from "svelte/transition";
-  import { backend, writeGuard, errorText, isCmdError, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout, type Checkpoint, type EncodingChoice, type DateScan } from "./lib/backend";
+  import { backend, writeGuard, errorText, isCmdError, type DropNotice, type OtherTab, type TabRect, type HandOver, type ModifiedReport, type AppInfo, type Change, type DocInfo, type Layout, type Checkpoint, type EncodingChoice, type DateScan } from "./lib/backend";
   import { Tab, exportHandTab, importHandTab, type HandTab, type RowMap } from "./lib/tab.svelte";
 import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowheights";
   import { SECOND_WINDOW } from "./lib/windowRole";
@@ -21,6 +21,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   import { prefs, customFont, enterStep, ACCENTS, FONTS, type Theme } from "./lib/prefs.svelte";
   import { Registry, altOf, keyOf, keyOfLoose, watchAlt, type Command, type Menu, SELECTION_FREE } from "./lib/commands";
   import { parseTsv, toTsv } from "./lib/tsv";
+  import { lineUp, pack, type DropBlocks } from "./lib/drops";
   import { colLetters, parseGoto } from "./lib/goto";
   import { cellCount, type Rect, cellCountAreas, colsOfAreas, disjoint, MAX_AREAS } from "./lib/selection";
   import { dropIndex, MOUSE_MOVES } from "./lib/dragmove";
@@ -2976,7 +2977,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     return n > 0 ? ` ${plural(n, "hidden row")} between them ${n === 1 ? "was" : "were"} left as ${n === 1 ? "it was" : "they were"}.` : "";
   }
 
-  async function runOp(op: DataOp, label: string, of?: Tab): Promise<OpReport | null> {
+  async function runOp(op: DataOp, label: string, of?: Tab, call?: (op: DataOp) => Promise<OpReport>): Promise<OpReport | null> {
     const t = of ?? tab;
     if (!t) return null;
     if (writeBlocked(t)) return null;
@@ -2991,7 +2992,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       t.whatNext = label.toLowerCase();
       t.wideNext = true;
       const before = CHIP_OPS.has(op.op) && t.info.has_filter ? await backend().filterChips(t.id).catch(() => null) : null;
-      const rep = await runJob(label, () => backend().dataOp(t.id, op));
+      const rep = await runJob(label, () => (call ? call(op) : backend().dataOp(t.id, op)));
       if (!rep) return null;
       hiddenAfter = about;
       if (rep.info) {
@@ -4476,6 +4477,51 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
 
   /** The tab the cell drag is over (outlined in the bar), if any. */
   let cellDropTab = $state<number | null>(null);
+  /** A tab of the other window the cell drag is over, if any (gap #6). */
+  let otherDrop = $state<OtherTab | null>(null);
+  /** The other window has files open (the keyboard path offers them). */
+  let otherWindowOpen = $state(false);
+
+  // Gap #6: this window's tab strip, for a drag from the other window; sent
+  // once the bar settles, and empty while the page is hidden or minimised.
+  let stripTimer: ReturnType<typeof setTimeout> | null = null;
+  function publishStrip(): void {
+    if (stripTimer) clearTimeout(stripTimer);
+    stripTimer = setTimeout(() => {
+      stripTimer = null;
+      const rects: TabRect[] = document.hidden
+        ? []
+        : [...document.querySelectorAll<HTMLElement>("[data-tab-index]")].flatMap((el, i) => {
+            // The bar draws the tabs in order: the i-th is tabs[i].
+            const t = tabs[i];
+            const r = el.getBoundingClientRect();
+            return t && r.width > 0 ? [{ doc: t.id, x: r.left, y: r.top, w: r.width, h: r.height }] : [];
+          });
+      void backend()
+        .setTabStrip(rects)
+        .catch(() => {});
+      void backend()
+        .otherWindowTabs()
+        .then((o) => (otherWindowOpen = o.length > 0))
+        .catch(() => {});
+    }, 100);
+  }
+  $effect(() => {
+    // Again whenever the tabs, their order or their names change.
+    void tabs.map((t) => `${t.id}:${t.info.name}`).join("\u0001");
+    publishStrip();
+  });
+  onMount(() => {
+    const again = () => publishStrip();
+    window.addEventListener("resize", again);
+    document.addEventListener("visibilitychange", again);
+    tabBar?.addEventListener("scroll", again);
+    return () => {
+      window.removeEventListener("resize", again);
+      document.removeEventListener("visibilitychange", again);
+      tabBar?.removeEventListener("scroll", again);
+    };
+  });
 
   /** The tab under a point in the tab bar (not the active one: dropping on
    *  the tab the cells come from does nothing). */
@@ -4486,8 +4532,39 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     return t && t !== tab ? t : null;
   }
 
+  /** Where the cell drag is: over a tab of this window (outlined in the bar)
+   *  or, once the pointer has left the window, over a tab of the other one
+   *  (asked of the shell, one ask at a time; the latest point is asked next). */
+  let tabAtAsking = false;
+  let tabAtNext: [number, number] | null = null;
+  function outsideWindow(x: number, y: number): boolean {
+    return x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight;
+  }
   function cellsOver(x: number | null, y: number | null): void {
     cellDropTab = x === null || y === null ? null : (tabUnder(x, y)?.id ?? null);
+    if (x === null || y === null || !outsideWindow(x, y)) {
+      tabAtNext = null;
+      if (otherDrop) otherDrop = null;
+      return;
+    }
+    tabAtNext = [x, y];
+    if (!tabAtAsking) void askTabAt();
+  }
+  async function askTabAt(): Promise<void> {
+    tabAtAsking = true;
+    try {
+      while (tabAtNext) {
+        const [x, y] = tabAtNext;
+        tabAtNext = null;
+        const t = await backend()
+          .tabAt(x, y)
+          .catch(() => null);
+        if (t?.doc !== otherDrop?.doc && t) say(`Let go to copy the cells to ${t.name} in the other window (hold Shift to move them).`);
+        otherDrop = t;
+      }
+    } finally {
+      tabAtAsking = false;
+    }
   }
 
   /** Why a tab's cells may not go to another file, or "". Private and
@@ -4768,31 +4845,73 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   // lands on the same undo position but not on the same key.)
   const sourceKey = (t: Tab): string => `${t.info.data_revision ?? 0}|${t.info.history_pos}|${t.info.rows}|${t.info.total_rows}|${JSON.stringify(t.filter ?? null)}`;
 
-  /** Cells dropped on another tab: copied to that tab's active cell (Shift
-   *  or "Move": then cleared here, but only once the other file has them;
-   *  two files, so two undo steps). The source tab is the one the drag began
-   *  in, whatever tab is active when the drop finishes. */
-  async function dropCellsOnTab(src: Tab, r: Rect, dst: Tab, move: boolean): Promise<void> {
-    if (dst === src) return;
-    if (!src.info.indexed || !dst.info.indexed || src.busy || dst.busy) {
+  /** The selected blocks to drop on another tab, in the order Copy packs
+   *  them, or null (said why): several blocks must line up as for Copy. */
+  function dropBlocks(t: Tab): DropBlocks | null {
+    const b = lineUp(t.areas);
+    if (!b && t.areas.length > 1) say("Dragging several blocks needs them to line up: all with the same rows (side by side) or all with the same columns (one under the other). Select blocks that line up, or drag one block at a time.");
+    return b;
+  }
+
+  /** Checks the source side of a drop can make alone; false: said why. */
+  function dropSourceOk(src: Tab, b: DropBlocks, move: boolean): boolean {
+    if (!src.info.indexed || src.busy) {
       say("Please wait until both files have been read, then try again.");
-      return;
+      return false;
     }
-    if (dst.info.read_only || dst.peeking || dst.info.peeking) {
-      say(`${dst.info.name} is read-only (or showing an earlier step), so nothing can be put in it.`);
-      return;
-    }
-    const n = cellCount(r);
+    const n = cellCountAreas(b.areas);
     if (n * (move ? 2 : 1) > MAX_CELLS_PER_CHANGE) {
       say(
         move
           ? `Moving cells to another file works on up to ${(MAX_CELLS_PER_CHANGE / 2).toLocaleString()} at once. Use Copy and Paste for more.`
           : `Dropping cells on a tab copies up to ${MAX_CELLS_PER_CHANGE.toLocaleString()} cells at once. For more, use Copy (Ctrl+C) and Paste (Ctrl+V).`,
       );
+      return false;
+    }
+    if (b.areas.some((r) => src.columns.hiddenIn(r.col, r.col + r.cols))) {
+      say("The selection has hidden columns, so it can't be dropped on another file. Show them first (Ctrl+Shift+0).");
+      return false;
+    }
+    return true;
+  }
+
+  /** After the other file has the cells: clear every dropped block here, as
+   *  one undo step, but only if this tab is still what was copied (same
+   *  changes, rows and filter); all or nothing. */
+  async function clearDropped(src: Tab, b: DropBlocks, key: string): Promise<"cleared" | "changed" | "failed"> {
+    if (!tabs.includes(src) || sourceKey(src) !== key) return "changed";
+    src.whatNext = "moving cells to another file";
+    const r = b.areas[0]!;
+    const ok = await reg.withMulti(async () =>
+      b.areas.length === 1
+        ? !!(await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, "", hiddenColsOf(x)), true, src))
+        : !!(await apply((x) => backend().fillAreas(x.id, b.areas, "", hiddenColsOf(x)), true, src)),
+    );
+    return ok ? "cleared" : "failed";
+  }
+
+  /** What a move says: the cells are always there; here they were cleared,
+   *  or (the file changed, or the clear failed) left as they were. */
+  function movedWords(how: "cleared" | "changed" | "failed", written: number, to: string, src: Tab, added: string): string {
+    if (how === "cleared") return `Moved ${plural(written, "cell")} to ${to}${added}. Ctrl+Z in each file undoes its half.`;
+    const why = how === "changed" ? `${src.info.name} changed meanwhile, so its cells were left as they were` : `they could not be cleared from ${src.info.name}, so they are still there too`;
+    return `Copied, not moved: ${plural(written, "cell")} went to ${to}${added}, not removed from ${src.info.name}: ${why}.`;
+  }
+
+  /** Cells dropped on another tab of this window: copied to that tab's
+   *  active cell (Shift or "Move": then cleared here, but only once the other
+   *  file has them; two files, so two undo steps). Several blocks that line
+   *  up go in packed, as Copy packs them. The source tab is the one the drag
+   *  began in, whatever tab is active when the drop finishes. */
+  async function dropCellsOnTab(src: Tab, b: DropBlocks, dst: Tab, move: boolean): Promise<void> {
+    if (dst === src) return;
+    if (!dropSourceOk(src, b, move)) return;
+    if (!dst.info.indexed || dst.busy) {
+      say("Please wait until both files have been read, then try again.");
       return;
     }
-    if (src.columns.hiddenIn(r.col, r.col + r.cols)) {
-      say("The selection has hidden columns, so it can't be dropped on another file. Show them first (Ctrl+Shift+0).");
+    if (dst.info.read_only || dst.peeking || dst.info.peeking) {
+      say(`${dst.info.name} is read-only (or showing an earlier step), so nothing can be put in it.`);
       return;
     }
     if ((await sensitive(src)) && !(await sensitive(dst))) {
@@ -4802,13 +4921,14 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const key = sourceKey(src);
     let text: string;
     try {
-      text = await backend().copyCells(src.id, r.row, r.rows, r.col, r.cols, hiddenColsOf(src));
+      const parts = await Promise.all(b.areas.map(async (a) => parseTsv(await backend().copyCells(src.id, a.row, a.rows, a.col, a.cols, hiddenColsOf(src)))));
+      text = toTsv(pack(parts, b.side));
     } catch (e) {
       say(errorText(e));
       return;
     }
     const at = dst.cell;
-    const put = await pasteInto(dst, text, at.row, at.col);
+    const put = await reg.withMulti(() => pasteInto(dst, text, at.row, at.col));
     if (!put) {
       say(`Nothing was copied to ${dst.info.name}.`);
       return;
@@ -4820,35 +4940,94 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
       const i = tabs.indexOf(dst);
       if (i >= 0) active = i;
     };
-    if (!move) {
-      say(`Copied ${plural(written, "cell")} to ${dst.info.name}${added}. Undo there with Ctrl+Z.`);
-      messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
-      return;
-    }
-    // Move: the other file has the cells; only now clear the source tab,
-    // which must still be what was copied (same changes, same rows, same filter).
-    if (!tabs.includes(src) || sourceKey(src) !== key) {
-      say(`Copied ${plural(written, "cell")} to ${dst.info.name}${added}, not removed from ${src.info.name}: it changed meanwhile.`);
-      messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
-      return;
-    }
-    src.whatNext = "moving cells to another file";
-    const cleared = await apply((x) => backend().fillCells(x.id, r.row, r.rows, r.col, r.cols, "", hiddenColsOf(x)), true, src);
-    if (!cleared) {
-      say(`Copied ${plural(written, "cell")} to ${dst.info.name}${added}, not removed from ${src.info.name}.`);
-      messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
-      return;
-    }
-    say(`Moved ${plural(written, "cell")} to ${dst.info.name}${added}. Ctrl+Z in each file undoes its half.`);
+    messageAction = null;
+    if (!move) say(`Copied ${plural(written, "cell")} to ${dst.info.name}${added}. Undo there with Ctrl+Z.`);
+    else say(movedWords(await clearDropped(src, b, key), written, dst.info.name, src, added));
     messageAction = { label: `Go to ${dst.info.name}`, run: goTo };
   }
 
-  /** Released outside the grid: on a tab means drop there (Shift: move). */
-  function cellsDropOutside(from: Rect, x: number, y: number, shift: boolean): void {
+  /** Cells dropped on a tab of the other window (gap #6). The shell checks
+   *  privacy and the blocks, tells the other window, and copies the cells
+   *  itself when that window takes the drop; what is said here is what the
+   *  shell says happened. A move clears here only after that, all or none. */
+  async function dropOnOtherWindow(src: Tab, b: DropBlocks, dstDoc: number, dstName: string, move: boolean): Promise<void> {
+    if (!dropSourceOk(src, b, move)) return;
+    const key = sourceKey(src);
+    let id: number;
+    try {
+      id = await backend().dropBegin(src.id, b.areas, hiddenColsOf(src), dstDoc, move);
+    } catch (e) {
+      say(errorText(e));
+      return;
+    }
+    say(`Putting the cells in ${dstName} in the other window…`);
+    const out = await backend()
+      .dropWait(id)
+      .catch((e) => ({ kind: "refused" as const, message: errorText(e) }));
+    const goTo = { label: `Go to ${dstName}`, run: () => void backend().focusDoc(dstDoc) };
+    messageAction = null;
+    if (out.kind === "too_late") {
+      say(`Nothing was copied to ${dstName}: the other window did not take the cells in time. Nothing changed in either file.`);
+      return;
+    }
+    if (out.kind === "refused") {
+      say(`Nothing was copied to ${dstName}: ${out.message}.`);
+      return;
+    }
+    const written = out.rows * out.width;
+    const added = out.added > 0 ? `, added ${plural(out.added, "row")}` : "";
+    if (!move) say(`Copied ${plural(written, "cell")} to ${dstName} (in the other window)${added}. Undo there with Ctrl+Z.`);
+    else say(movedWords(await clearDropped(src, b, key), written, `${dstName} (in the other window)`, src, added));
+    messageAction = goTo;
+  }
+
+  /** The other window dropped cells on a tab of this one: pasted at that
+   *  tab's selected cell by the shell (the cells never pass through here),
+   *  or refused with why. Only before the drop's deadline. */
+  async function takeDrop(n: DropNotice): Promise<void> {
+    const dst = tabs.find((t) => t.id === n.doc);
+    const no = (why: string) => void backend().dropRefuse(n.id, why).catch(() => {});
+    if (!dst) return no("that file is no longer open in the other window");
+    if (!dst.info.indexed || dst.busy) return no(`${dst.info.name} is busy; try again when it has finished`);
+    if (dst.info.read_only || dst.peeking || dst.info.peeking) return no(`${dst.info.name} is read-only (or showing an earlier step)`);
+    const at = dst.cell;
+    const fit = await askOverflow(dst, at.row, n.rows, dst.info.name);
+    if (!fit) return no(`the paste was cancelled in the other window`);
+    const before = dst.info.rows;
+    const spec = { row: at.row, col: at.col, op: "none" as const, skip_blanks: false, transpose: false, stop_at_end: fit === "stop" };
+    const rep = await reg.withMulti(() => runOp({ op: "paste", spec, text: "" }, "Pasting", dst, (op) => backend().dropPaste(n.doc, n.id, (op as { spec: typeof spec }).spec)));
+    if (!rep) return;
+    const added = Math.max(0, dst.info.rows - before);
+    // Only what happened here: whether the other window then cleared its
+    // cells (a move) is said there.
+    say(`Put ${plural(n.rows * n.cols, "cell")} from ${n.from_name} (in the other window) into ${dst.info.name}${added ? `, added ${plural(added, "row")}` : ""}. Ctrl+Z here undoes this half.`);
+  }
+
+  /** Released outside the grid: on a tab (of this window, or of the other
+   *  one once the pointer has left this window) means drop there (Shift:
+   *  move). */
+  function cellsDropOutside(_from: Rect, x: number, y: number, shift: boolean): void {
     cellDropTab = null;
+    const wasOther = otherDrop;
+    otherDrop = null;
+    tabAtNext = null;
     const src = tab;
+    if (!src) return;
+    const done = () => void tick().then(() => grid?.focus());
     const dst = tabUnder(x, y);
-    if (src && dst) void dropCellsOnTab(src, from, dst, shift).finally(() => void tick().then(() => grid?.focus()));
+    if (!dst && !outsideWindow(x, y)) return;
+    const b = dropBlocks(src);
+    if (!b) return;
+    if (dst) {
+      void dropCellsOnTab(src, b, dst, shift).finally(done);
+      return;
+    }
+    // Asked again at the drop (the pointer may have moved since the last answer).
+    void backend()
+      .tabAt(x, y)
+      .catch(() => wasOther)
+      .then((o) => (o ? dropOnOtherWindow(src, b, o.doc, o.name, shift) : undefined))
+      .finally(done);
   }
 
   /** Copy or move the selection to a tab picked from a list (the keyboard
@@ -4856,8 +5035,10 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   async function cellsToTab(move: boolean): Promise<void> {
     const src = tab;
     if (!src || !ready()) return;
-    // Most recently used first.
-    const others = tabs.filter((x) => x !== src).sort((a, b) => (usedAt.get(b.id) ?? 0) - (usedAt.get(a.id) ?? 0));
+    // Most recently used first, then the other window's files.
+    const here = tabs.filter((x) => x !== src).sort((a, b) => (usedAt.get(b.id) ?? 0) - (usedAt.get(a.id) ?? 0));
+    const there = await backend().otherWindowTabs().catch(() => [] as OtherTab[]);
+    const others: { name: string; local: Tab | null; doc: number }[] = [...here.map((t) => ({ name: t.info.name, local: t, doc: t.id })), ...there.map((o) => ({ name: `${o.name} (other window)`, local: null, doc: o.doc }))];
     if (!others.length) {
       say("Open a second file first.");
       return;
@@ -4866,12 +5047,14 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const a = await ask(
       move ? "Move the selected cells to which file?" : "Copy the selected cells to which file?",
       `They go in at that file's selected cell${move ? ", and are cleared here once they are there" : ""}.${others.length > shown.length ? ` (Only the first ${shown.length} other files are listed.)` : ""}`,
-      [...shown.map((x, i) => ({ id: String(i), label: x.info.name, primary: i === 0 })), { id: "cancel", label: "Cancel" }],
+      [...shown.map((x, i) => ({ id: String(i), label: x.name, primary: i === 0 })), { id: "cancel", label: "Cancel" }],
       "cancel",
     );
     const dst = a === "cancel" ? undefined : shown[Number(a)];
-    const from = oneBlock(src);
-    if (dst && from && tabs.includes(src)) await dropCellsOnTab(src, from, dst, move);
+    const blocks = dropBlocks(src);
+    if (!dst || !blocks || !tabs.includes(src)) return;
+    if (dst.local) await dropCellsOnTab(src, blocks, dst.local, move);
+    else await dropOnOtherWindow(src, blocks, dst.doc, dst.name.replace(/ \(other window\)$/, ""), move);
   }
 
   // ---- file tabs: drag one along the bar to put it elsewhere -----------------
@@ -7718,8 +7901,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     })),
     { id: "window.next", label: "Next file", keys: ["Ctrl+PageDown", "Ctrl+Tab", "Ctrl+Shift+PageDown"], run: () => switchTab(1), enabled: () => tabs.length > 1 },
     { id: "window.prev", label: "Previous file", keys: ["Ctrl+PageUp", "Ctrl+Shift+Tab", "Ctrl+Shift+PageUp"], run: () => switchTab(-1), enabled: () => tabs.length > 1 },
-    { id: "edit.copyToTab", label: "Copy selection to another file…", run: () => void cellsToTab(false), enabled: () => ready() && tabs.length > 1 },
-    { id: "edit.moveToTab", label: "Move selection to another file…", run: () => void cellsToTab(true), enabled: () => ready() && !tab?.info.read_only && tabs.length > 1 },
+    { id: "edit.copyToTab", label: "Copy selection to another file…", run: () => void cellsToTab(false), enabled: () => ready(), multiArea: true },
+    { id: "edit.moveToTab", label: "Move selection to another file…", run: () => void cellsToTab(true), enabled: () => ready() && !tab?.info.read_only, multiArea: true },
     { id: "window.moveToNew", label: "Move tab to a new window", run: () => void moveTabToWindow(), enabled: () => !SECOND_WINDOW && ready() },
     { id: "window.moveToMain", label: "Move tab back to the main window", run: () => void moveTabBack(), enabled: () => SECOND_WINDOW && !!tab },
     { id: "window.moveTabLeft", label: "Move file tab left", keys: ["Ctrl+Alt+Shift+PageUp"], run: () => moveTab(-1), enabled: () => active > 0 },
@@ -9164,6 +9347,11 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     // Windows and a second launch.
     backend().onHandover(() => void takeHandovers());
     void takeHandovers();
+    backend().onDropCells((n) => void takeDrop(n));
+    backend().onSelectDoc((doc) => {
+      const i = tabs.findIndex((t) => t.id === doc);
+      if (i >= 0) active = i;
+    });
     if (SECOND_WINDOW) {
       prefs.onBlockedSave = () => say("Settings are changed in the main window.");
     } else {
