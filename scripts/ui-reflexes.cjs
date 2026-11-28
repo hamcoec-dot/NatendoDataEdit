@@ -128,9 +128,10 @@ const url = process.argv[3] || "http://localhost:5321";
   // From a column heading's menu: Sum this column in the totals row.
   const hp = await nde(() => window.__nde.grid.headerPoint(2));
   await p.mouse.click(hp.x - 30, hp.y - 8, { button: "right" });
+  await p.waitForSelector(".context [role=menuitem]", { timeout: 3000 }).catch(() => {});
   await wait(300);
   const colItems = await p.$$eval(".context [role=menuitem]", (e) => e.map((x) => x.textContent.trim()));
-  ok(colItems.some((x) => /Sum this column in the totals row/.test(x)), "the heading menu has Sum this column in the totals row");
+  ok(colItems.some((x) => /Sum this column in the totals row/.test(x)), `the heading menu has Sum this column in the totals row (${colItems.length} items: ${colItems.slice(0, 4).join(" | ")})`);
   await p.click(".context [role=menuitem]:has-text('Sum this column in the totals row')");
   await wait(400);
   ok((await nde(() => window.__nde.tab.totalsOn)) === true && (await nde(() => window.__nde.tab.columns.totals.get(2))) === "sum", "it turns the row on with Sum there");
