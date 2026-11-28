@@ -163,6 +163,12 @@ pub struct ExportReport {
     /// Files written, when parts went to files of their own.
     #[serde(default)]
     pub files: Vec<String>,
+    /// PDF: characters no installed font has (drawn as an empty box), and
+    /// whether any of them are Chinese, Japanese or Korean. A count only.
+    #[serde(default)]
+    pub missing_chars: u64,
+    #[serde(default)]
+    pub missing_cjk: bool,
 }
 
 enum Piece {
@@ -960,7 +966,7 @@ impl Document {
             rows: rows.end - rows.start,
             sheets: 1,
             bytes: w.n,
-            files: Vec::new(),
+            ..Default::default()
         })
     }
 }

@@ -1935,6 +1935,10 @@ export interface DbfOptions {
   show_deleted: boolean;
 }
 /** What the "exactly as written" import guards did: counts and column names only, never cell values. */
+/** A new tab from an import; a workbook also gives its own row heights:
+ *  (document row, pixels 14..400), set as the tab opens (not an undo step). */
+export type Imported = DocInfo & { row_heights?: [number, number][]; row_heights_over?: number };
+
 export interface ImportNotes {
   kept_big: number;
   lost_digits: number;
@@ -2022,6 +2026,16 @@ export interface ExportReport {
   bytes: number;
   /** Files written when parts went to files of their own. */
   files?: string[];
+  /** PDF: characters no installed font has (drawn as an empty box); whether any are Chinese, Japanese or Korean. */
+  missing_chars?: number;
+  missing_cjk?: boolean;
+}
+
+/** What a PDF could not print, for the status line (a count, never the text). */
+export function missingNote(r: { missing_chars?: number; missing_cjk?: boolean }): string {
+  const n = r.missing_chars ?? 0;
+  if (!n) return "";
+  return ` ${n.toLocaleString()} ${n === 1 ? "character" : "characters"} could not be printed: no installed font has ${n === 1 ? "it" : "them"}${r.missing_cjk ? " (no font for Chinese, Japanese or Korean is installed)" : ""}.`;
 }
 
 export interface Backend {
@@ -2035,7 +2049,7 @@ export interface Backend {
   importInspect(id: number, format: ImportFormat | null): Promise<ImportInfo>;
   importPreview(id: number, options: ImportOptions): Promise<string[][]>;
   importNotes(id: number, options: ImportOptions): Promise<ImportNotes>;
-  importFinish(id: number, options: ImportOptions): Promise<DocInfo>;
+  importFinish(id: number, options: ImportOptions): Promise<Imported>;
   /** Say what column `col` holds (Auto: guess again). Not an edit: nothing in the file changes. */
   setColumnType(doc: number, col: number, kind: ColumnType): Promise<DocInfo>;
   /** Put all the column types back (Undo, a saved view, a session). */
@@ -2655,7 +2669,7 @@ class TauriBackend implements Backend {
     return call<ImportNotes>("import_notes", { id, options });
   }
   importFinish(id: number, options: ImportOptions) {
-    return call<DocInfo>("import_finish", { id, options });
+    return call<Imported>("import_finish", { id, options });
   }
   setColumnType(doc: number, col: number, kind: ColumnType) {
     return call<DocInfo>("set_column_type", { doc, col, kind });

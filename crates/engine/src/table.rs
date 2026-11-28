@@ -25,7 +25,15 @@ pub struct Sink {
     cols: u32,
     pending: u64,
     limit: Option<u64>,
+    /// Row heights the source gives (spreadsheets): (first row, rows, points),
+    /// rows numbered as this table writes them.
+    heights: Vec<(u64, u64, f32)>,
+    /// Ranges noted (a long sheet of single rows stops being noted well past the cap).
+    height_ranges: u64,
 }
+
+/// Most rows a source's own row heights are kept for (the grid's cap).
+pub const MAX_ROW_HEIGHTS: u64 = 100_000;
 
 impl Sink {
     /// `limit`: stop taking rows after this many (previews).
@@ -37,7 +45,64 @@ impl Sink {
             cols: 0,
             pending: 0,
             limit,
+            heights: Vec::new(),
+            height_ranges: 0,
         }
+    }
+
+    /// The next `n` rows (the row about to be written, and copies of it)
+    /// have their own height in the source, `pt` points. Called by a reader
+    /// in its own row loop, so a height always lands on the row it belongs
+    /// to; rows that turn out to be the empty tail are left out at the end.
+    pub fn row_height(&mut self, pt: f32, n: u64) {
+        self.row_height_after(0, pt, n);
+    }
+
+    /// [`Sink::row_height`] for rows `skip` rows further on (a row with no
+    /// cells whose number the source gives: the rows before it are written
+    /// as empty rows when the next row with data comes).
+    pub fn row_height_after(&mut self, skip: u64, pt: f32, n: u64) {
+        if n == 0 || !pt.is_finite() || pt <= 0.0 {
+            return;
+        }
+        let at = self.rows.saturating_add(self.pending).saturating_add(skip);
+        if at >= MAX_TABLE_CELLS {
+            return;
+        }
+        if let Some(last) = self.heights.last_mut() {
+            if last.0 + last.1 == at && last.2 == pt {
+                last.1 = last.1.saturating_add(n);
+                return;
+            }
+        }
+        // More ranges than the cap could ever use are not kept (each range is
+        // at least one row; some may fall in the empty tail, hence the room).
+        if self.height_ranges >= MAX_ROW_HEIGHTS * 2 {
+            return;
+        }
+        self.height_ranges += 1;
+        self.heights.push((at, n, pt));
+    }
+
+    /// The row heights within the rows written (the held-back empty tail
+    /// left out), one entry per row in hundredths of a point, at most
+    /// [`MAX_ROW_HEIGHTS`]; and how
+    /// many rows with a height were left out past that.
+    pub fn heights(&self) -> (Vec<(u64, u32)>, u64) {
+        let mut out = Vec::new();
+        let mut over = 0u64;
+        for &(at, n, pt) in &self.heights {
+            let end = at.saturating_add(n).min(self.rows);
+            if at >= end {
+                continue;
+            }
+            let room = MAX_ROW_HEIGHTS - out.len() as u64;
+            let take = (end - at).min(room);
+            let cpt = (pt * 100.0).round() as u32;
+            out.extend((at..at + take).map(|r| (r, cpt)));
+            over += end - at - take;
+        }
+        (out, over)
     }
 
     /// Make room for `n` more bytes up front (at most the size cap), so a

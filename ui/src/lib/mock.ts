@@ -706,10 +706,14 @@ export class MockBackend implements Backend {
       summary: `1 number of more than 15 digits kept exactly as the file stores them (“score”).${applied ? " 3 numbers written with leading zeros, as the spreadsheet shows them." : ""}`,
     };
   }
-  async importFinish(id: number, o: ImportOptions): Promise<DocInfo> {
+  /** Row heights the next workbook import gives (tests): (row, px). */
+  static workbookHeights: [number, number][] = [];
+  async importFinish(id: number, o: ImportOptions): Promise<import("./backend").Imported> {
     const s = this.session(id);
     const rows = mockImport(s.text, o.format ?? s.format, o.part);
-    return this.fromRows(s.name.replace(/\.[^.]*$/, ""), rows);
+    const info = this.fromRows(s.name.replace(/\.[^.]*$/, ""), rows);
+    const sheet = (o.format ?? s.format) === "spreadsheet";
+    return sheet && MockBackend.workbookHeights.length ? { ...info, row_heights: MockBackend.workbookHeights.filter(([r]) => r < info.rows), row_heights_over: 0 } : info;
   }
   async importProgress(): Promise<number | null> {
     return null;
