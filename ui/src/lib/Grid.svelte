@@ -17,7 +17,7 @@
   import { backend, errorText, type Dir } from "./backend";
   import { PALETTE } from "./views";
   import { localDays } from "./m8";
-  import { formatCell, linkOf, MAX_ROW_LINES, pickMatches, tickOf, toggled, wrapLines } from "./m9";
+  import { codeColorCss, displayFor, formatCell, isDarkColor, linkOf, MAX_ROW_LINES, pickMatches, tickOf, toggled, wrapLines } from "./m9";
   import { barSpan, completion, scaleColour, scalePos, valueType, valueTypeFor } from "./m10";
   import { readNumberFor, typeBadge, typeName, typeOf as columnTypeOf } from "./readers";
   import { colLetters } from "./goto";
@@ -351,6 +351,8 @@
     view.scrollX = Math.min(Math.max(0, view.scrollX), maxScrollX());
   }
 
+  /** Windows high contrast: custom codes' colours are not drawn. */
+  const forced = matchMedia("(forced-colors: active)");
   // ---- theme colours (read from CSS so themes and accents just work) ----
   let colors = { bg: "#fff", surface: "#fff", border: "#ddd", text: "#000", muted: "#666", accent: "#1f7a6d", header: "#f3f4f6" };
   function readColors(): void {
@@ -1552,6 +1554,9 @@
       }
     }
     const typeColour = { number: "#2f6fd0", date: "#2e8b57" } as const;
+    // Custom codes' colours ([Red] ...): the readable shade for this grid, none in high contrast.
+    const darkGrid = isDarkColor(colors.surface);
+    const forcedColors = forced.matches;
     // Problem cells: a red fill, a wavy underline or both (View > Show problems as).
     const problemStyle = prefs.data.problemStyle;
     const underline = problemStyle !== "fill" && tab.problems.size > 0;
@@ -1680,18 +1685,23 @@
         } else if (t !== "") {
           const header = tab.header && r === 0;
           const invisible = (prefs.data.showInvisible || xray) && !header;
-          const shown = invisible ? t : fmt && !header ? formatCell(t, fmt) : t;
+          // Time, date and time and custom codes: shown when the code reads the cell (the same text counts too).
+          const coded = !!fmt && !header && (fmt.kind === "custom" || fmt.kind === "time" || fmt.kind === "datetime");
+          const painted = coded && !invisible ? (displayFor(fmt!)?.render(t) ?? null) : null;
+          const shown = painted ? painted.text : invisible ? t : fmt && !header && !coded ? formatCell(t, fmt) : t;
+          const formatted = coded ? painted !== null : !!fmt && shown !== t;
+          const codeColor = painted ? codeColorCss(painted.color, darkGrid, forcedColors) : null;
           const link = !fmt && !header && /[.@:]/.test(t) ? linkOf(t) : null;
           const kind = tab.valueTypes && !header && !link ? typeOf(t, c) : "text";
           // Text on a colour-scale fill is always dark, so it reads on every shade.
-          ctx.fillStyle = filled ? "#111" : link ? colors.accent : kind === "number" || kind === "date" ? typeColour[kind] : colors.text;
+          ctx.fillStyle = filled ? "#111" : codeColor ? codeColor : link ? colors.accent : kind === "number" || kind === "date" ? typeColour[kind] : colors.text;
           const cut = tab.cache.isTruncated(r, c);
           // Where the text lines up: the column's choice, or numbers and
           // dates on the right (as in Excel) and the rest on the left.
           // A formatted value (number, percent, currency or date) counts as
           // what it was formatted as.
-          const auto = !header && !link && prefs.data.alignNumbers && (fmt ? shown !== t && fmt.kind !== "checkbox" : typeOf(t, c) !== "text");
-          const side = align ?? (auto || (fmt && shown !== t && fmt.kind !== "date" && !header) ? "right" : "left");
+          const auto = !header && !link && prefs.data.alignNumbers && (fmt ? formatted && fmt.kind !== "checkbox" : typeOf(t, c) !== "text");
+          const side = align ?? (auto || (fmt && formatted && fmt.kind !== "date" && fmt.kind !== "time" && fmt.kind !== "datetime" && !header) ? "right" : "left");
           const at = (w: number): number =>
             side === "right" ? Math.max(x + pad, x + cw - pad - w) : side === "center" ? Math.max(x + pad, x + (cw - w) / 2) : x + pad;
           if (invisible && !filled) {
@@ -3440,6 +3450,7 @@
       redraw();
     };
     media.addEventListener("change", onScheme);
+    forced.addEventListener("change", onScheme);
     window.addEventListener("mouseup", onMouseUp);
     // A block dragged out of the grid (onto a tab) is followed over the rest
     // of the window; the canvas only hears the pointer while it is on it.
@@ -3486,6 +3497,7 @@
       ro.disconnect();
       host.removeEventListener("scroll", noNativeScroll);
       media.removeEventListener("change", onScheme);
+      forced.removeEventListener("change", onScheme);
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("mousemove", onWindowMove);
       if (frame) cancelAnimationFrame(frame);

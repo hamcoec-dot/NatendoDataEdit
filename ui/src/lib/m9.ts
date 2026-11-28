@@ -2,6 +2,7 @@
 // display formats, tick boxes, wrapped text and pick lists. Pure functions,
 // so they are tested without a grid.
 
+import { type CodeColor, codeProblem, DATE_STYLE_CODES, type Display, displayOf, MAX_CODE, type Shown, TIME_STYLE_CODES } from "./numfmt";
 import type { Totals } from "./backend";
 import type { TotalKind } from "./prefs.svelte";
 import type { Step } from "./clean";
@@ -77,8 +78,9 @@ export function linkOf(text: string): string | null {
 
 // ---- display formats (view only: never written to the file) ---------------------
 
-export type FormatKind = "number" | "percent" | "currency" | "date" | "checkbox";
+export type FormatKind = "number" | "percent" | "currency" | "date" | "checkbox" | "time" | "datetime" | "custom";
 export type DateStyle = "iso" | "mdy" | "dmy" | "long" | "medium";
+export type TimeStyle = "hm12" | "hm24" | "hms12" | "hms24";
 export interface DisplayFormat {
   kind: FormatKind;
   /** 0 to 10 (number, percent, currency). */
@@ -87,7 +89,30 @@ export interface DisplayFormat {
   /** Currency sign, at most 4 characters. */
   symbol: string;
   date: DateStyle;
+  /** Time and date and time. */
+  time: TimeStyle;
+  /** A custom code (see numfmt.ts); "" for the other kinds. */
+  code: string;
 }
+
+export const TIME_STYLES: { id: TimeStyle; label: string }[] = [
+  { id: "hm12", label: "2:30 PM" },
+  { id: "hm24", label: "14:30" },
+  { id: "hms12", label: "2:30:15 PM" },
+  { id: "hms24", label: "14:30:15" },
+];
+
+/** Starter codes the dialog offers. */
+export const STARTER_CODES: { code: string; label: string }[] = [
+  { code: "00000", label: "ZIP or ID with leading zeros" },
+  { code: "000-000-0000", label: "Phone 615-555-1234" },
+  { code: "(000) 000-0000", label: "Phone (615) 555-1234" },
+  { code: "#,##0.00;[Red]-#,##0.00", label: "Negatives in red" },
+  { code: "#,##0;(#,##0)", label: "Negatives in brackets" },
+  { code: "0.0%", label: "Percent, one decimal" },
+  { code: "yyyy-mm-dd hh:mm", label: "Date and time" },
+  { code: '"ID "0000', label: "Text before a number" },
+];
 
 export const DATE_STYLES: { id: DateStyle; label: string }[] = [
   { id: "iso", label: "2026-03-14" },
@@ -98,22 +123,30 @@ export const DATE_STYLES: { id: DateStyle; label: string }[] = [
 ];
 
 export function defaultFormat(kind: FormatKind): DisplayFormat {
-  return { kind, decimals: kind === "percent" ? 0 : 2, thousands: true, symbol: "$", date: "iso" };
+  return { kind, decimals: kind === "percent" ? 0 : 2, thousands: true, symbol: "$", date: kind === "datetime" ? "medium" : "iso", time: "hm12", code: kind === "custom" ? "#,##0.00" : "" };
 }
 
 /** A display format from a view or the UI (untrusted), or null if unusable. */
 export function cleanFormat(raw: unknown): DisplayFormat | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Partial<DisplayFormat>;
-  const kinds: FormatKind[] = ["number", "percent", "currency", "date", "checkbox"];
+  const kinds: FormatKind[] = ["number", "percent", "currency", "date", "checkbox", "time", "datetime", "custom"];
   if (!kinds.includes(r.kind as FormatKind)) return null;
   const d = defaultFormat(r.kind!);
+  let code = "";
+  if (r.kind === "custom") {
+    // A code from a view, the session or another window is untrusted: one that does not compile drops the format.
+    if (typeof r.code !== "string" || r.code.length > 4 * MAX_CODE || codeProblem(r.code) !== null) return null;
+    code = r.code;
+  }
   return {
     kind: r.kind!,
     decimals: typeof r.decimals === "number" && Number.isFinite(r.decimals) ? Math.min(10, Math.max(0, Math.round(r.decimals))) : d.decimals,
     thousands: typeof r.thousands === "boolean" ? r.thousands : d.thousands,
     symbol: typeof r.symbol === "string" ? [...r.symbol].slice(0, 4).join("").replace(/[\u0000-\u001f]/g, "") : d.symbol,
     date: DATE_STYLES.some((s) => s.id === r.date) ? r.date! : d.date,
+    time: TIME_STYLES.some((s) => s.id === r.time) ? r.time! : d.time,
+    code,
   };
 }
 
@@ -187,8 +220,23 @@ function significantDigits(text: string): number {
 
 /** How a cell shows under a display format. Values the format does not fit
  *  (text in a number column) show as they are. */
+/** The display of a time, date and time or custom format (compiled once per text). */
+export function displayFor(f: DisplayFormat): Display | null {
+  if (f.kind === "custom") return displayOf(f.code, "", "");
+  if (f.kind === "time") return displayOf("", "", TIME_STYLE_CODES[f.time] ?? "");
+  if (f.kind === "datetime") return displayOf("", DATE_STYLE_CODES[f.date] ?? "", TIME_STYLE_CODES[f.time] ?? "");
+  return null;
+}
+
+/** How a cell shows, and its colour when a custom code gives one. */
+export function formatCellColored(text: string, f: DisplayFormat): Shown {
+  if (f.kind === "custom" || f.kind === "time" || f.kind === "datetime") return displayFor(f)?.render(text) ?? { text, color: null };
+  return { text: formatCell(text, f), color: null };
+}
+
 export function formatCell(text: string, f: DisplayFormat): string {
   if (f.kind === "checkbox") return text;
+  if (f.kind === "custom" || f.kind === "time" || f.kind === "datetime") return displayFor(f)?.render(text)?.text ?? text;
   if (f.kind === "date") {
     const d = readDate(text);
     if (!d) return text;
@@ -228,6 +276,12 @@ export function formatSteps(f: DisplayFormat): Step[] {
   switch (f.kind) {
     case "checkbox":
       return [];
+    case "custom":
+      return [{ tool: "format", code: f.code }];
+    case "time":
+      return [{ tool: "format", time: TIME_STYLE_CODES[f.time] }];
+    case "datetime":
+      return [{ tool: "format", date: DATE_STYLE_CODES[f.date], time: TIME_STYLE_CODES[f.time] }];
     case "date": {
       const formats: Record<DateStyle, string> = { iso: "yyyy-mm-dd", mdy: "mm/dd/yyyy", dmy: "dd/mm/yyyy", medium: "mmm d, yyyy", long: "dddd, mmmm d, yyyy" };
       return [{ tool: "dates", format: formats[f.date] }];
@@ -258,6 +312,14 @@ export function describeFormat(f: DisplayFormat): string {
       return `date like ${DATE_STYLES.find((s) => s.id === f.date)?.label}`;
     case "checkbox":
       return "tick boxes";
+    case "time":
+      return `time like ${TIME_STYLES.find((s) => s.id === f.time)?.label}`;
+    case "datetime":
+      return `date and time like ${DATE_STYLES.find((s) => s.id === f.date)?.label} ${TIME_STYLES.find((s) => s.id === f.time)?.label}`;
+    case "custom": {
+      const c = [...f.code];
+      return `custom ${c.length > 40 ? `${c.slice(0, 40).join("")}…` : f.code}`;
+    }
   }
 }
 
@@ -510,4 +572,41 @@ export type Autosaved =
 export function autosaveDue(now: number, last: number | null, minutes: number, modified: boolean, ready: boolean): boolean {
   if (!modified || !ready) return false;
   return last === null || now - last >= Math.max(1, minutes) * 60_000;
+}
+
+// ---- colours of custom codes ([Red] and the rest) ----------------------------------
+
+const CODE_COLORS: Record<CodeColor, [string, string]> = {
+  red: ["#c62828", "#ff7b7b"],
+  blue: ["#1f5fbf", "#8ab4ff"],
+  green: ["#2e7d32", "#81c784"],
+  black: ["#000000", "#d8d8d8"],
+  white: ["#8a8a8a", "#ffffff"],
+  yellow: ["#8a6d00", "#ffd54f"],
+  magenta: ["#ad1457", "#f48fb1"],
+  cyan: ["#00727d", "#4dd0e1"],
+};
+
+/** A code's colour as drawn on a light or a dark grid (each readable there).
+ *  Under Windows high contrast (forced colours) none is drawn: the minus sign
+ *  or brackets the code writes carry the meaning, never the colour alone. */
+export function codeColorCss(c: CodeColor | null, dark: boolean, forced: boolean): string | null {
+  if (!c || forced) return null;
+  return CODE_COLORS[c][dark ? 1 : 0];
+}
+
+/** A colour (#rgb or #rrggbb or rgb()) is dark: for the grid's surface. */
+export function isDarkColor(css: string): boolean {
+  let r = 255,
+    g = 255,
+    b = 255;
+  const h = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(css.trim());
+  if (h) {
+    const x = h[1]!.length === 3 ? [...h[1]!].map((c) => c + c).join("") : h[1]!;
+    [r, g, b] = [0, 2, 4].map((i) => parseInt(x.slice(i, i + 2), 16)) as [number, number, number];
+  } else {
+    const m = /rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i.exec(css);
+    if (m) [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  }
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128;
 }

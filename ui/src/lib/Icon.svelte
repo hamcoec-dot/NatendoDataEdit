@@ -26,6 +26,7 @@
     panel: "M3 3h14v14h-14z M3 12.5h14 M5.5 14.8h6",
     theme: "M10 3a7 7 0 1 0 0 14z M10 3a7 7 0 0 1 0 14",
     close: "M5.5 5.5l9 9 M14.5 5.5l-9 9",
+    brush: "M3 3.5h11v4h-11z M14 5.5h2.5v4.5h-7v2 M8.5 12h2v5.5h-2z",
   };
 </script>
 

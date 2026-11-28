@@ -91,11 +91,52 @@ export class Columns {
     this.rebuild();
   }
 
+  /** The width a column has when shown (a hidden one: its width before it was hidden). */
+  shownWidth(c: number): number {
+    return this.isHidden(c) ? (this.hiddenWas.get(c) ?? this.defaultWidth) : this.width(c);
+  }
+
+  /** Set many widths at once (one rebuild: pasting a look onto 16,384 columns
+   *  stays quick). Widths of 0 are not taken: this never hides a column. */
+  setWidths(list: [number, number][]): void {
+    let changed = false;
+    for (const [c, w] of list) {
+      const width = Math.max(1, Math.round(w));
+      if (width === this.defaultWidth) changed = this.widths.delete(c) || changed;
+      else if (this.widths.get(c) !== width) {
+        this.widths.set(c, width);
+        changed = true;
+      }
+      this.hiddenWas.delete(c);
+    }
+    if (changed) this.rebuild();
+  }
+
   /** A short text that changes whenever `snapshot` would (cheap to compare:
    *  only the overrides, which are few unless many columns were resized). */
   key(): string {
-    const f: [number, DisplayFormat][] = [...this.formats];
-    return JSON.stringify([this.defaultWidth, [...this.widths], [...this.hiddenWas], f, [...this.wraps], [...this.aligns], [...this.clips], [...this.totals]]);
+    // Each distinct format once (a look pasted onto thousands of columns stays small).
+    const seen = new Map<string, number>();
+    const f: [number, number][] = [...this.formats].map(([c, x]) => {
+      const j = JSON.stringify(x);
+      let i = seen.get(j);
+      if (i === undefined) seen.set(j, (i = seen.size));
+      return [c, i];
+    });
+    return JSON.stringify([this.defaultWidth, [...this.widths], [...this.hiddenWas], [...seen.keys()], f, [...this.wraps], [...this.aligns], [...this.clips], [...this.totals]]);
+  }
+
+  /** The formats, sorted, with one copy of each distinct format shared by its columns. */
+  private formatsCopy(): [number, DisplayFormat][] {
+    const one = new Map<string, DisplayFormat>();
+    return [...this.formats]
+      .sort((a, b) => a[0] - b[0])
+      .map(([c, f]) => {
+        const j = JSON.stringify(f);
+        let g = one.get(j);
+        if (!g) one.set(j, (g = structuredClone(f)));
+        return [c, g];
+      });
   }
 
   /** A copy of the widths, hidden columns, formats and wrapping (for undo). */
@@ -104,7 +145,7 @@ export class Columns {
       defaultWidth: this.defaultWidth,
       widths: [...this.widths].sort((a, b) => a[0] - b[0]),
       hiddenWas: [...this.hiddenWas].sort((a, b) => a[0] - b[0]),
-      formats: [...this.formats].sort((a, b) => a[0] - b[0]).map(([c, f]) => [c, structuredClone(f)]),
+      formats: this.formatsCopy(),
       wraps: [...this.wraps].sort((a, b) => a - b),
       aligns: [...this.aligns].sort((a, b) => a[0] - b[0]),
       clips: [...this.clips].sort((a, b) => a - b),

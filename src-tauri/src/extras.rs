@@ -545,6 +545,20 @@ pub enum FormatKind {
     Currency,
     Date,
     Checkbox,
+    Time,
+    Datetime,
+    Custom,
+}
+
+/// How times show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeStyle {
+    #[default]
+    Hm12,
+    Hm24,
+    Hms12,
+    Hms24,
 }
 
 /// How dates show.
@@ -567,6 +581,28 @@ pub struct DisplayFormat {
     pub thousands: bool,
     pub symbol: String,
     pub date: DateStyle,
+    /// Time and date-and-time formats (older views have none).
+    #[serde(default)]
+    pub time: TimeStyle,
+    /// A custom format code (`000-000-0000`, `#,##0.00;[Red]-#,##0.00`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
+}
+
+impl DisplayFormat {
+    /// Why the format cannot be shown (the Ctrl+1 dialog's message), if so.
+    pub fn problem(&self) -> Option<String> {
+        if self.decimals > 10 || self.symbol.chars().count() > 4 {
+            return Some("a column's display format is not valid".into());
+        }
+        match self.kind {
+            FormatKind::Custom => natendo_engine::numfmt::Code::compile(&self.code)
+                .err()
+                .map(|e| e.to_string()),
+            _ if !self.code.is_empty() => Some("a column's display format is not valid".into()),
+            _ => None,
+        }
+    }
 }
 
 /// A saved view: layout, sort, filter and highlight rules.
@@ -632,6 +668,19 @@ fn one() -> u32 {
 }
 
 impl View {
+    /// Take off display formats that cannot be shown (a damaged or hand-made
+    /// view file): the column opens without one, as in the grid. How many.
+    pub fn drop_bad_formats(&mut self) -> usize {
+        let mut n = 0;
+        for c in &mut self.columns {
+            if c.format.as_ref().is_some_and(|f| f.problem().is_some()) {
+                c.format = None;
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Every bound, for views from the webview or from a file.
     pub fn check(&self) -> CmdResult<()> {
         let bad = |m: &str| Err(CmdError::new("bad_request", m.to_string()));
@@ -649,12 +698,12 @@ impl View {
         {
             return bad("the view lists too many or too long columns");
         }
-        if self.columns.iter().any(|c| {
-            c.format
-                .as_ref()
-                .is_some_and(|f| f.decimals > 10 || f.symbol.chars().count() > 4)
-        }) {
-            return bad("a column's display format is not valid");
+        if let Some(p) = self
+            .columns
+            .iter()
+            .find_map(|c| c.format.as_ref().and_then(DisplayFormat::problem))
+        {
+            return bad(&p);
         }
         if self.record_pins.len() > MAX_RECORD_PINS
             || self.record_pins.iter().any(|t| t.chars().count() > 1_000)
@@ -718,12 +767,13 @@ impl View {
                 "a view file can be at most 4 MB",
             ));
         }
-        let v: View = serde_json::from_slice(bytes).map_err(|e| {
+        let mut v: View = serde_json::from_slice(bytes).map_err(|e| {
             CmdError::new(
                 "bad_request",
                 format!("this is not a view file Natendo can read: {e}"),
             )
         })?;
+        v.drop_bad_formats();
         v.check()?;
         Ok(v)
     }
@@ -908,6 +958,76 @@ mod tests {
         }
         let big = vec![b' '; MAX_VIEW_FILE as usize + 1];
         assert!(View::from_json(&big).is_err());
+    }
+
+    /// Time, date-and-time and custom formats round trip; a view file with a
+    /// code that cannot be shown opens without that column's format.
+    #[test]
+    fn display_formats_in_a_view_are_checked() {
+        let fmt = |kind: &str, extra: &str| {
+            format!(
+                r#"{{"kind":"{kind}","decimals":2,"thousands":true,"symbol":"$","date":"iso"{extra}}}"#
+            )
+        };
+        let view = |formats: &[String]| {
+            let cols: Vec<String> = formats
+                .iter()
+                .enumerate()
+                .map(|(i, f)| format!(r#"{{"title":"c{i}","format":{f}}}"#))
+                .collect();
+            format!(r#"{{"columns":[{}]}}"#, cols.join(","))
+        };
+        let good = [
+            fmt("time", r#","time":"hm24""#),
+            fmt("datetime", r#","time":"hms12""#),
+            fmt("custom", r#","code":"000-000-0000""#),
+            fmt("custom", r##","code":"#,##0.00;[Red]-#,##0.00""##),
+            // An older view: no time, no code.
+            fmt("number", ""),
+        ];
+        let v = View::from_json(view(&good).as_bytes()).unwrap();
+        let back = View::from_json(&serde_json::to_vec(&v).unwrap()).unwrap();
+        assert_eq!(v, back);
+        let f = |i: usize| v.columns[i].format.clone().unwrap();
+        assert_eq!((f(0).kind, f(0).time), (FormatKind::Time, TimeStyle::Hm24));
+        assert_eq!(f(2).code, "000-000-0000");
+        assert_eq!(f(4).time, TimeStyle::Hm12);
+        assert!(!serde_json::to_string(&f(4)).unwrap().contains("code"));
+        let ten_k = "0".repeat(10_000);
+        let bad_codes = [
+            ten_k.as_str(),
+            &"0".repeat(201),
+            "0;0;0;@;0",
+            "[$-409]0",
+            "\"abc",
+            "\"ok\"0;\"x",
+            "",
+        ];
+        for code in bad_codes {
+            let bad = fmt(
+                "custom",
+                &format!(r#","code":{}"#, serde_json::to_string(code).unwrap()),
+            );
+            let v = View::from_json(view(&[bad, fmt("time", "")]).as_bytes()).unwrap();
+            assert!(v.columns[0].format.is_none(), "{code:?}");
+            assert_eq!(v.columns[1].format.as_ref().unwrap().kind, FormatKind::Time);
+        }
+        // A code on a kind that has none is not valid either.
+        let v = View::from_json(view(&[fmt("number", r#","code":"0""#)]).as_bytes()).unwrap();
+        assert!(v.columns[0].format.is_none());
+        // From the webview (no dropping), the dialog's message comes back.
+        let mut v = View::from_json(view(&[fmt("time", "")]).as_bytes()).unwrap();
+        v.columns[0].format.as_mut().unwrap().kind = FormatKind::Custom;
+        v.columns[0].format.as_mut().unwrap().code = "0.0E+0".into();
+        let e = v.check().err().unwrap();
+        assert!(
+            e.message
+                .contains("Not supported at character 4: scientific notation (E+)."),
+            "{}",
+            e.message
+        );
+        // An unknown time style is not a view this build can read.
+        assert!(View::from_json(view(&[fmt("time", r#","time":"hm99""#)]).as_bytes()).is_err());
     }
 
     #[test]

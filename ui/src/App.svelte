@@ -25,6 +25,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   import { lineUp, pack, type DropBlocks } from "./lib/drops";
   import { colLetters, parseGoto } from "./lib/goto";
   import { cellCount, type Rect, cellCountAreas, colsOfAreas, disjoint, MAX_AREAS } from "./lib/selection";
+  import { copyLook, MAX_LOOK_COLS, pasteLook, type CopiedLook } from "./lib/painter";
   import { dropIndex, MOUSE_MOVES } from "./lib/dragmove";
   import { headerCertainty, looksLikeHeader, titleLines } from "./lib/header";
   import type { NotePlace } from "./lib/backend";
@@ -141,7 +142,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   import ToolsDialog, { type ToolsRun } from "./lib/ToolsDialog.svelte";
   import { fillOrders, orderFromCells, unchangedTabs, type FromCells, type ScaleKind, type ToolKind } from "./lib/m10";
   import { autosaveDue, type RecoveryItem, type Suggestion, type Suggestions, type VersionItem } from "./lib/m9";
-  import { BASIC_KEYS, cleanFormat, defaultFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat } from "./lib/m9";
+  import { BASIC_KEYS, cleanFormat, defaultFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat, type FormatKind } from "./lib/m9";
   import { canvasMeasure, defaultPage, FIT_SAMPLE_ROWS, measureWidths, newCheck, printBlock, printFit, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS, type PrintView } from "./lib/m8";
   import type { Check, CheckReport, CheckSpec, ComputeSpec, PageSetup, TableCheck } from "./lib/backend";
   import { exportDefaults } from "./lib/transfer";
@@ -253,7 +254,10 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   /** Clean-up suggestions: what the last scan found (null while scanning). */
   let suggest = $state<{ found: Suggestions | null; busy: boolean } | null>(null);
   /** Display format screen for these columns. */
-  let formatFor = $state<{ cols: number[]; what: string; current: DisplayFormat | null; samples: string[] } | null>(null);
+  /** The format painter: the look copied (Copy column look or the brush), and the brush's state. */
+  let copiedLook = $state<CopiedLook | null>(null);
+  let brush = $state<"off" | "once" | "locked">("off");
+  let formatFor = $state<{ cols: number[]; what: string; current: DisplayFormat | null; start?: FormatKind; samples: string[] } | null>(null);
   let highlightOpen = $state(false);
   /** The Tools dialog that is open, if any. */
   let toolsKind = $state<ToolKind | null>(null);
@@ -278,6 +282,10 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
 
   // The fill handle may follow the user's custom orders: the app keeps a copy,
   // sent whenever they change (names, values, order or the fill tick).
+  // The brush is on: the grid shows a copy cursor while columns are picked.
+  $effect(() => {
+    document.body.classList.toggle("brush-on", brush !== "off");
+  });
   $effect(() => {
     const orders = fillOrders(prefs.data.sortLists);
     void backend().setFillOrders(orders).catch(() => {});
@@ -3652,8 +3660,8 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     grid.scrollIntoView(next);
   }
 
-  /** Ctrl+Shift+1, 3, 4, 5: a display format for the selected columns in one key (as in Google Sheets). */
-  function quickFormat(kind: "number" | "date" | "currency" | "percent"): void {
+  /** Ctrl+Shift+1, 2, 3, 4, 5: a display format for the selected columns in one key (as in Google Sheets and Excel). */
+  function quickFormat(kind: "number" | "date" | "currency" | "percent" | "time" | "datetime"): void {
     const t = tab;
     if (!t) return;
     setFormat(selectedCols(t), defaultFormat(kind));
@@ -5134,7 +5142,10 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     const behind = src.highlights.some((h) => inRange(h.col)) || src.scales.some((s) => inRange(s.col)) || src.checks.some((c) => inRange(c.col));
     dst.shiftCols(to, r.cols);
     widths.forEach((w, k) => w !== undefined && dst.columns.setWidth(to + k, w));
-    formats.forEach((f, k) => f && dst.columns.formats.set(to + k, { ...f }));
+    formats.forEach((f, k) => {
+      const g = f ? cleanFormat(f) : null;
+      if (g) dst.columns.formats.set(to + k, g);
+    });
     if (done.src) src.shiftCols(r.col, -r.cols);
     if (done.src) src.update(done.src, true);
     const rep = done.report;
@@ -6386,7 +6397,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     };
   }
 
-  function openFormat(): void {
+  function openFormat(kind?: FormatKind): void {
     const t = tab;
     if (!t) return;
     const cols = selectedCols(t);
@@ -6402,8 +6413,78 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
       cols,
       what: cols.length === 1 ? columnTitle(t, c0) : `${cols.length} columns`,
       current: t.columns.formats.get(c0) ?? null,
+      start: kind,
       samples,
     };
+  }
+
+  /** The columns of the first block of the selection (not hidden). */
+  function firstBlockCols(t: Tab): number[] {
+    const out: number[] = [];
+    for (const c of colsOfAreas(t.areas.slice(0, 1))) {
+      if (out.length >= MAX_LOOK_COLS) break;
+      if (!t.columns.isHidden(c)) out.push(c);
+    }
+    return out;
+  }
+
+  /** Copy column look: the display format, alignment, wrapping, cut-off and width of the selected columns. */
+  function copyColumnLook(): boolean {
+    const t = tab;
+    if (!t) return false;
+    const cols = menuCol !== null && !selectedCols(t).includes(menuCol) ? [menuCol] : firstBlockCols(t);
+    if (!cols.length) return false;
+    copiedLook = copyLook(t.columns, cols);
+    say(`Copied the look of ${plural(cols.length, "column")}. Paste column look (Ctrl+Alt+Shift+V) gives it to other columns; the file does not change.`);
+    return true;
+  }
+
+  /** Paste column look onto the selected columns (all blocks): one look undo step, nothing in the file. */
+  function pasteColumnLook(): void {
+    const t = tab;
+    const look = copiedLook;
+    if (!t || !look) return;
+    const cols = menuCol !== null && !selectedCols(t).includes(menuCol) ? [menuCol] : selectedCols(t);
+    const n = pasteLook(t.columns, cols, look);
+    if (!n) {
+      say(cols.length ? "Those columns already look like that." : "Select the columns to give the look to.");
+      return;
+    }
+    t.bump();
+    say(`Gave ${plural(n, "column")} the copied look. Ctrl+Z takes it back; the file does not change.`);
+  }
+
+  /** The brush on the toolbar: a click copies the selection's look and pastes it on the next
+   *  columns picked; a double-click keeps it on until Esc or another click. */
+  function brushClick(locked: boolean): void {
+    if (brush !== "off" && !locked) {
+      brush = "off";
+      say("The format brush is off.");
+      return;
+    }
+    if (brush === "off" && !copyColumnLook()) return;
+    brush = locked ? "locked" : "once";
+    say(locked ? "The format brush stays on: pick columns to give them the look; Esc or the brush turns it off." : "Pick the columns to give the look to (Esc cancels).");
+  }
+
+  /** A pick in the grid while the brush is on: the picked columns take the look. */
+  function onBrushUp(e: PointerEvent): void {
+    if (brush === "off" || e.button !== 0) return;
+    const el = e.target as HTMLElement | null;
+    if (!el?.closest?.(".grid")) return;
+    void tick().then(() => {
+      if (brush === "off") return;
+      pasteColumnLook();
+      tab?.recordView();
+      if (brush === "once") brush = "off";
+    });
+  }
+
+  function onBrushKey(e: KeyboardEvent): void {
+    if (brush !== "off" && e.key === "Escape") {
+      brush = "off";
+      say("The format brush is off.");
+    }
   }
 
   function setFormat(cols: number[], f: DisplayFormat | null): void {
@@ -8143,11 +8224,25 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     { id: "format.rowHeightFit", label: "Fit the selected rows to their text", run: fitSelectedRows, enabled: hasTab },
     { id: "format.rowHeightReset", label: "Reset the height of the selected rows", run: resetSelectedRows, enabled: () => !!tab && !tab.rowHeights.empty },
     { id: "format.fitRows", label: "Fit row height to wrapped text", run: () => grid?.fitRowLines(), enabled: () => !!tab && tab.columns.wraps.size > 0 },
-    { id: "format.display", label: "&Display format (numbers, dates, tick boxes)…", keys: ["Ctrl+1"], run: openFormat, enabled: hasTab },
+    { id: "format.display", label: "&Display format (numbers, dates, times, custom codes, tick boxes)…", keys: ["Ctrl+1"], run: () => openFormat(), enabled: hasTab },
+    { id: "format.customCode", label: "Custom display code (000-000-0000, [Red])…", run: () => openFormat("custom"), enabled: hasTab },
+    { id: "format.asTime", label: "Show as time (2:30 PM)", multiArea: true, keys: ["Ctrl+Shift+2", "Ctrl+Shift+@"], run: () => quickFormat("time"), enabled: hasTab },
+    { id: "format.asDateTime", label: "Show as date and time (Mar 14, 2026 2:30 PM)", multiArea: true, run: () => quickFormat("datetime"), enabled: hasTab },
     { id: "format.asNumber", label: "Show as number (1,234.00)", multiArea: true, keys: ["Ctrl+Shift+1", "Ctrl+Shift+!"], run: () => quickFormat("number"), enabled: hasTab },
     { id: "format.asDate", label: "Show as date", multiArea: true, keys: ["Ctrl+Shift+3", "Ctrl+Shift+#"], run: () => quickFormat("date"), enabled: hasTab },
     { id: "format.asCurrency", label: "Show as currency ($1,234.00)", multiArea: true, keys: ["Ctrl+Shift+4", "Ctrl+Shift+$"], run: () => quickFormat("currency"), enabled: hasTab },
     { id: "format.asPercent", label: "Show as percent (12%)", multiArea: true, keys: ["Ctrl+Shift+5", "Ctrl+Shift+%"], run: () => quickFormat("percent"), enabled: hasTab },
+    { id: "format.copyLook", label: "Copy column look", multiArea: true, keys: ["Ctrl+Alt+Shift+C"], run: () => void copyColumnLook(), enabled: hasTab },
+    {
+      id: "format.pasteLook",
+      label: "Paste column look",
+      multiArea: true,
+      keys: ["Ctrl+Alt+Shift+V"],
+      run: pasteColumnLook,
+      enabled: () => !!tab && !!copiedLook,
+      why: () => (copiedLook ? "" : "Copy a column's look first (Copy column look, Ctrl+Alt+Shift+C)."),
+    },
+    { id: "format.brush", label: "Format brush (copy the look, then pick columns)", multiArea: true, run: () => brushClick(false), enabled: hasTab, checked: () => brush !== "off" },
     { id: "format.bakeDisplay", label: "Write the display format into the cells", run: () => void bakeFormats(), enabled: () => !!tab && !tab.busy && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
     { id: "format.clearDisplay", label: "Remove display format", multiArea: true, keys: ["Ctrl+\\"], run: () => { if (tab) setFormat(selectedCols(tab), null); }, enabled: () => !!tab && selectedCols(tab).some((c) => tab!.columns.formats.has(c)) },
     { id: "view.banded", label: "Alternating row &colours", run: toggleBanded, enabled: hasTab, checked: () => !!tab?.banded },
@@ -8311,7 +8406,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
       ],
     },
     { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.symbol"] },
-    { label: "F&ormat", items: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "format.typesAnyway", "-", "format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "format.forgetHeader", "format.forgetHeaders", "format.askHeader", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
+    { label: "F&ormat", items: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "format.typesAnyway", "-", "format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "format.forgetHeader", "format.forgetHeaders", "format.askHeader", "-", "format.display", "format.customCode", "format.asTime", "format.asDateTime", "format.bakeDisplay", "format.clearDisplay", "-", "format.copyLook", "format.pasteLook", "format.brush", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
     {
       label: "&Data",
       items: [
@@ -8358,23 +8453,23 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   const contextItems: Record<string, string[]> = {
     totals: [...TOTAL_CHOICES.map(([c]) => `view.total.${c}`), "view.total.auto", "-", "view.copyTotal", "view.copyTotals", "-", "view.totalsRow"],
     tab: ["file.save", "file.saveAs", "-", "data.compareLists", "data.patchSave", "data.patchApply", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.orderFromCells", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear", "-", "file.printSel"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "format.pasteLook", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.orderFromCells", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear", "-", "file.printSel"],
     row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "edit.copyToTab", "edit.moveToTab", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "data.headersStartHere", "data.setAsideFoot", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "data.explode", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "edit.copyToTab", "edit.moveToTab", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "data.explode", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "edit.copyToTab", "edit.moveToTab", "-", "format.display", "format.copyLook", "format.pasteLook", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
 
   const toolbar: (string | "-")[] = [
-    "file.new", "file.open", "file.save", "-", "edit.undo", "edit.redo", "-", "edit.cut", "edit.copy", "edit.paste", "-",
+    "file.new", "file.open", "file.save", "-", "edit.undo", "edit.redo", "-", "edit.cut", "edit.copy", "edit.paste", "format.brush", "-",
     "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-",
     "format.header", "view.freeze", "-", "data.sortAsc", "data.sortDesc", "data.filter", "find.find", "-",
     "view.zoomOut", "view.zoomIn", "view.cellBar",
   ];
   const icons: Record<string, string> = {
     "file.new": "new", "file.open": "open", "file.save": "save", "edit.undo": "undo", "edit.redo": "redo",
-    "edit.cut": "cut", "edit.copy": "copy", "edit.paste": "paste", "insert.rowsAbove": "rowAbove", "insert.rowsBelow": "rowBelow",
+    "edit.cut": "cut", "edit.copy": "copy", "edit.paste": "paste", "format.brush": "brush", "insert.rowsAbove": "rowAbove", "insert.rowsBelow": "rowBelow",
     "edit.deleteRows": "rowDelete", "insert.colsLeft": "colLeft", "insert.colsRight": "colRight", "edit.deleteCols": "colDelete",
     "format.header": "header", "view.freeze": "freeze", "data.sortAsc": "sortAsc", "data.sortDesc": "sortDesc",
     "data.filter": "filter", "find.find": "find", "view.zoomOut": "zoomOut", "view.zoomIn": "zoomIn", "view.cellBar": "panel",
@@ -8524,6 +8619,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   let altAlone = false;
 
   function onKeyDown(e: KeyboardEvent): void {
+    onBrushKey(e);
     if (dialog || sortDialog || filterMenu || opDialog || formRow !== null || symbols || saveAsReq || exportOpen || importing || joinKind) return;
     if (cleanTool || splitNameOpen || insertAsk || search !== null || shortcutsOpen || highlightOpen || subtotalOpen || batchOpen || pivotDoc !== null || prompt) return;
     if ((openMenu !== null || context) && menuKey(e)) return;
@@ -9641,7 +9737,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     const ghostItem = "find.ghosts";
     // The counts items (and their line) only in a counts tab.
     const counts = !!tab?.countsOf;
-    let items = (contextItems[area] ?? []).filter((i) => (tab?.cut || !cutItems.has(i)) && (i !== ghostItem || findOpen) && (counts || (i !== "data.countsShow" && i !== "data.countsHide")) && (i !== "data.pivotRefresh" || (!!tab && pivotOf.has(tab.id))));
+    let items = (contextItems[area] ?? []).filter((i) => (tab?.cut || !cutItems.has(i)) && (area !== "cell" || i !== "format.pasteLook" || !!copiedLook) && (i !== ghostItem || findOpen) && (counts || (i !== "data.countsShow" && i !== "data.countsHide")) && (i !== "data.pivotRefresh" || (!!tab && pivotOf.has(tab.id))));
     if (!counts && items[0] === "-") items = items.slice(1);
     // Nothing is picked until the pointer or an arrow key moves onto an item.
     context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items, index: -1 };
@@ -9798,6 +9894,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   onkeyup={onKeyUp}
   onpaste={onPaste}
   onpointerupcapture={lookBoundary}
+  onpointerup={onBrushUp}
   onpointerdowncapture={(e) => {
     if (extendMode && !(e.target as HTMLElement | null)?.closest?.("footer")) extendMode = false;
   }}
@@ -9882,7 +9979,8 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
           aria-label={plain(c?.label ?? id)}
           disabled={!reg.enabled(id)}
           onmousedown={(e) => e.preventDefault()}
-          onclick={() => void runCmd(id)}><Icon name={icons[id] ?? ""} /></button
+          onclick={(e) => { if (id === "format.brush") { if (e.detail <= 1) brushClick(false); } else void runCmd(id); }}
+          ondblclick={() => { if (id === "format.brush") brushClick(true); }}><Icon name={icons[id] ?? ""} /></button
         >
       {/if}
     {/each}
@@ -10743,6 +10841,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   <FormatDialog
     what={f.what}
     current={f.current}
+    start={f.start}
     samples={f.samples}
     onDone={(fm) => { const cols = f.cols; formatFor = null; setFormat(cols, fm); grid?.focus(); }}
     onClose={() => { formatFor = null; grid?.focus(); }}
@@ -11294,6 +11393,9 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
 {/if}
 
 <style>
+  :global(body.brush-on .grid) {
+    cursor: copy !important;
+  }
   .acting {
     white-space: nowrap;
   }

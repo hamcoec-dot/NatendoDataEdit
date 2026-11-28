@@ -1,6 +1,7 @@
 // Cleaning tools and cleaners: the shapes the engine reads (see the
 // engine's `clean` module), the tool list the screen shows, and helpers.
 
+import { displayOf } from "./numfmt";
 import type { Pattern, ReadOptions, Scope } from "./backend";
 import type { Program } from "./rule";
 import { sanitizeText, USUAL_SANITIZE, type SanitizeOptions } from "./invisible";
@@ -43,6 +44,8 @@ export type Step =
   | { tool: "pad"; width: number; with: string; right: boolean }
   | { tool: "remove"; what: Remove }
   | { tool: "reverse" }
+  /** Write cells as a display format shows them (see numfmt.ts). */
+  | { tool: "format"; code?: string; date?: string; time?: string }
   | { tool: "spaces"; how: SpacesHow }
   | ({ tool: "sanitize" } & SanitizeOptions)
   | { tool: "fix_mojibake" }
@@ -280,6 +283,8 @@ export function describe(s: Step): string {
     }
     case "reverse":
       return "Reverse the text";
+    case "format":
+      return `Write as ${s.code || [s.date, s.time].filter(Boolean).join(" ")}`;
     case "spaces":
       return SPACE_WORDS[s.how];
     case "fix_mojibake":
@@ -453,6 +458,8 @@ export function runStep(s: Step, t: string, index: number): string {
     }
     case "reverse":
       return [...t].reverse().join("");
+    case "format":
+      return displayOf(s.code ?? "", s.date ?? "", s.time ?? "")?.render(t)?.text ?? t;
     case "fix_mojibake":
       return fixMojibake(t) ?? t;
     case "sanitize":

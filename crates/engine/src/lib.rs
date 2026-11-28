@@ -65,6 +65,7 @@ pub mod logs;
 pub mod lookalike;
 pub mod mail;
 pub mod notes;
+pub mod numfmt;
 pub mod ops;
 pub mod patch;
 pub mod pdf;

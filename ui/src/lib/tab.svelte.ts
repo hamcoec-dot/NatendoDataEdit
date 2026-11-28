@@ -9,6 +9,7 @@ import type { ColumnScale } from "./m10";
 import type { SortSpec } from "./backend";
 import { backend, type DocInfo, type FilterSpec } from "./backend";
 import { CellCache } from "./cache";
+import { cleanFormat, type DisplayFormat } from "./m9";
 import { Columns, type ColSnap } from "./columns";
 import { RowHeights, type RowHeightSnap } from "./rowheights";
 import type { ColumnTypes } from "./readers";
@@ -1067,6 +1068,13 @@ export function exportHandTab(t: Tab): HandTab {
 
 /** Put a tab's look and place (from `exportHandTab`) on a new tab. */
 export function importHandTab(t: Tab, h: HandTab): void {
+  // The other window's display formats are checked as a view file's are: a
+  // code that cannot be shown is dropped (that column shows its text).
+  const cols = h.snap.look.cols;
+  cols.formats = cols.formats.flatMap(([c, f]): [number, DisplayFormat][] => {
+    const g = cleanFormat(f);
+    return g ? [[c, g]] : [];
+  });
   // The look, the data checks and the sort; the filter's rows are already
   // the engine's.
   t.restoreView(h.snap, false);

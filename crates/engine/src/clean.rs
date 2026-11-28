@@ -257,6 +257,18 @@ pub enum Step {
         #[serde(default)]
         decimal_comma: bool,
     },
+    /// Write cells as a display format shows them: a custom code (`0.00`,
+    /// `000-000-0000`, `yyyy-mm-dd`), or a time style code (`h:mm AM/PM`),
+    /// with a date style code for date and time (see `numfmt`). Cells it does
+    /// not fit (and numbers of more than 15 digits) are left as they were.
+    Format {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        code: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        date: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        time: String,
+    },
     /// Add text.
     Add {
         text: String,
@@ -592,6 +604,9 @@ impl Step {
                 check_pattern(find)?;
                 check_text("the replacement", with)
             }
+            Step::Format { code, date, time } => crate::numfmt::Display::new(code, date, time)
+                .map(|_| ())
+                .map_err(|e| bad(e.to_string())),
             Step::Dates { format, .. } | Step::Now { format, .. } => {
                 if format.chars().count() > 200 {
                     return Err(bad("a date format can be at most 200 characters"));
@@ -729,6 +744,11 @@ impl Step {
             }
             Step::Dates { format, from, .. } => format!("Dates from {from} as {format}"),
             Step::Numbers { .. } => "Rewrite numbers".into(),
+            Step::Format { code, .. } if !code.is_empty() => format!("Format as {code}"),
+            Step::Format { date, time, .. } => format!(
+                "Format as {}",
+                [date.as_str(), time.as_str()].join(" ").trim()
+            ),
             Step::Add { text, .. } => format!("Add \"{text}\""),
             Step::Random { length, .. } => format!("Random text ({length} characters)"),
             Step::Pad { width, .. } => format!("Pad to {width} characters"),
@@ -886,6 +906,7 @@ enum CStep {
     /// The stretched key, and whether spaces, punctuation and case are ignored.
     Scramble(crate::privacy::Keyed, bool),
     DateBand(DateTo),
+    Format(Box<crate::numfmt::Display>),
     Now {
         when: String,
         at_end: bool,
@@ -965,6 +986,10 @@ impl Compiled {
                     CStep::Scramble(crate::privacy::Keyed::from_secret(phrase), *loose)
                 }
                 Step::DateBand { to } => CStep::DateBand(*to),
+                Step::Format { code, date, time } => CStep::Format(Box::new(
+                    crate::numfmt::Display::new(code, date, time)
+                        .map_err(|e| bad(e.to_string()))?,
+                )),
                 other => CStep::Plain(other.clone()),
             });
         }
@@ -1138,6 +1163,24 @@ impl Compiled {
                     *left = true;
                 }
                 r
+            }
+            CStep::Format(d) => {
+                if t.trim().is_empty() {
+                    return Ok(None);
+                }
+                match d.render(t) {
+                    Some(s) if s.text == t => None,
+                    Some(s) => {
+                        if s.text.len() > MAX_RESULT_CELL_BYTES {
+                            return Err(too_long());
+                        }
+                        Some(s.text)
+                    }
+                    None => {
+                        *left = true;
+                        None
+                    }
+                }
             }
             CStep::Plain(p) => plain(p, t, ctx, self.read, left)?,
         })
@@ -1412,7 +1455,8 @@ fn plain(
         | Step::Dates { .. }
         | Step::Now { .. }
         | Step::Scramble { .. }
-        | Step::DateBand { .. } => None,
+        | Step::DateBand { .. }
+        | Step::Format { .. } => None,
     })
 }
 
@@ -5582,5 +5626,107 @@ mod date_review_tests {
         );
         d.undo();
         assert_eq!(column(&d), before);
+    }
+
+    #[test]
+    fn a_format_code_written_into_cells_is_one_undo_step_and_leaves_what_it_cannot_show() {
+        // Header, phone digits, a 16-digit ID, text, a hidden row, a time.
+        let body = "p\r\n6155551234\r\n1234567890123456\r\nn/a\r\n6155550000\r\n123\r\n\r\n";
+        let mut d = Document::from_bytes(
+            body.as_bytes().to_vec(),
+            crate::OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        d.hide_rows(4, 1).unwrap();
+        let bytes = |d: &Document| {
+            let mut out = Vec::new();
+            d.write_copy(&mut out).unwrap();
+            out
+        };
+        let before = bytes(&d);
+        let spec = |code: &str| CleanSpec {
+            cleaner: Cleaner {
+                version: 1,
+                name: String::new(),
+                steps: vec![Step::Format {
+                    code: code.into(),
+                    date: String::new(),
+                    time: String::new(),
+                }],
+            },
+            scope: Scope::Columns { cols: vec![0] },
+            skip_first: true,
+            read: ReadOptions::default(),
+        };
+        let plan = d
+            .plan_clean(&spec("[Red]000-000-0000"), 20_000.0, 1, 0, &Progress::new())
+            .unwrap();
+        // The 16-digit ID and the text are left (and counted); the hidden row is not touched.
+        assert_eq!((plan.changed, plan.left), (2, 2));
+        let undo_before = d.can_undo();
+        d.apply_clean(plan).unwrap();
+        let col: Vec<String> = (0..5).map(|r| d.cell(r, 0).unwrap_or_default()).collect();
+        assert_eq!(
+            col,
+            [
+                "p",
+                "615-555-1234",
+                "1234567890123456",
+                "n/a",
+                "000-000-0123"
+            ]
+        );
+        let saved = String::from_utf8(bytes(&d)).unwrap();
+        assert!(
+            saved.contains("\r\n6155550000\r\n"),
+            "the hidden row is as it was: {saved:?}"
+        );
+        assert!(
+            !saved.contains("[Red]") && !saved.to_lowercase().contains("red"),
+            "no colour is written"
+        );
+        assert!(d.can_undo());
+        d.undo();
+        assert_eq!(bytes(&d), before, "one undo brings back the exact bytes");
+        assert_eq!(d.can_undo(), undo_before, "only the format step was undone");
+        assert_eq!(
+            d.cell(4, 0).as_deref(),
+            Some("123"),
+            "the hidden row is still hidden"
+        );
+        // A bad code is refused before anything runs, with the dialog's message.
+        let e = d
+            .plan_clean(&spec("0.0E+0"), 20_000.0, 1, 0, &Progress::new())
+            .err()
+            .unwrap();
+        assert!(
+            e.to_string()
+                .contains("Not supported at character 4: scientific notation (E+)."),
+            "{e}"
+        );
+        // Time and date and time styles.
+        let mut d2 = Document::from_bytes(
+            b"t\n2026-03-14 14:30\n2026-03-14\n9:05\nsoon\n".to_vec(),
+            crate::OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        let mut s2 = spec("");
+        s2.cleaner.steps = vec![Step::Format {
+            code: String::new(),
+            date: "mmm d, yyyy".into(),
+            time: "h:mm AM/PM".into(),
+        }];
+        let plan = d2
+            .plan_clean(&s2, 20_000.0, 1, 0, &Progress::new())
+            .unwrap();
+        assert_eq!((plan.changed, plan.left), (3, 1));
+        d2.apply_clean(plan).unwrap();
+        let col: Vec<String> = (1..5).map(|r| d2.cell(r, 0).unwrap()).collect();
+        assert_eq!(
+            col,
+            ["Mar 14, 2026 2:30 PM", "Mar 14, 2026", "9:05 AM", "soon"]
+        );
     }
 }

@@ -100,7 +100,9 @@ const ALLOWED: Record<string, number> = {
   "./views.ts": 1, // formats a number for a label
   "./totalsRow.ts": 1, // rounds an engine total for copying
   // The one reader of cell text as numbers and dates (the parsers, and the typed wrappers around them).
-  "./m9.ts": 12,
+  "./m9.ts": 15, // (3 of them: the grid surface colour's rgb() parts, for custom code colours)
+  // The display format codes' own reader of numbers, dates and times (the engine's numfmt.rs, same cases).
+  "./numfmt.ts": 14,
   "./readers.ts": 3,
   "./m10.ts": 4, // value-type colours: Auto columns use the parsers, typed columns use valueTypeFor
   "./m8.ts": 1, // print: the number class on Auto columns (textCols leaves Text and Id columns out)

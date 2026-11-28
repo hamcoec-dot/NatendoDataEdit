@@ -1308,6 +1308,51 @@ fn main() {
     check.budget("five-step cleaner, 1M cells", t.elapsed(), budget(3.0));
     assert_eq!(changed, small_rows);
     drop(m6);
+    // Write a display format into 1M number cells: the rewrite-numbers step
+    // and a custom code (`Step::Format`) on the same numbers.
+    let mut text = String::from("id,amount\r\n");
+    for i in 0..small_rows {
+        text.push_str(&format!(
+            "{i},{}.{:02}\r\n",
+            (i * 7919) % 1_000_000,
+            i % 100
+        ));
+    }
+    let mut times = Vec::new();
+    for step in [
+        Step::Numbers {
+            decimals: Some(2),
+            thousands: true,
+            decimal_comma: false,
+        },
+        Step::Format {
+            code: "#,##0.00;[Red]-#,##0.00".into(),
+            date: String::new(),
+            time: String::new(),
+        },
+    ] {
+        let mut nd = Document::from_bytes(
+            text.clone().into_bytes(),
+            OpenOptions::default(),
+            Some("csv"),
+        )
+        .unwrap();
+        let what = if matches!(step, Step::Numbers { .. }) {
+            "rewrite numbers"
+        } else {
+            "format code #,##0.00"
+        };
+        let t = Instant::now();
+        let changed = run(&mut nd, vec![step]);
+        let took = t.elapsed();
+        check.budget(&format!("{what}, 1M cells"), took, budget(1.5));
+        assert!(changed > small_rows / 2, "{what}: {changed}");
+        times.push(took.as_secs_f64());
+    }
+    println!(
+        "format code / rewrite numbers: {:.3}x",
+        times[1] / times[0].max(1e-9)
+    );
     // Fill by example: 1M names, three examples typed.
     let mut text = String::from("first,last,full\r\n");
     for i in 0..small_rows {

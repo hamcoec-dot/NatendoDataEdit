@@ -300,9 +300,10 @@ everything is also in command search.
   row ("city 250"). While a filter is on, rows are found by the numbers shown
   on screen (the whole file's), and the name box shows them too.
 - **More Excel and Google Sheets keys:** Shift+F10 or the Menu key opens the
-  right-click menu; Ctrl+1 opens Display format; Ctrl+Shift+1, 3, 4 and 5 show
-  columns as number, date, currency or percent, and Ctrl+\ removes the
-  format; Ctrl+' starts an edit with the value of the cell above; Ctrl+; and
+  right-click menu; Ctrl+1 opens Display format; Ctrl+Shift+1, 2, 3, 4 and 5
+  show columns as number, time, date, currency or percent (by the key's
+  place, so they work on UK and German keyboards too; an AltGr key press is
+  never taken for them), and Ctrl+\ removes the format; Ctrl+' starts an edit with the value of the cell above; Ctrl+; and
   Ctrl+Shift+; start an edit with today's date or the time (add to it, or Esc);
   Ctrl+A selects the block of data around the cell first and everything on
   the second press (Ctrl+Shift+* selects the block); Ctrl+Backspace scrolls
@@ -408,8 +409,56 @@ everything is also in command search.
   inside the selection (Unhide all columns shows every one).
 - Light, dark or system theme with an accent colour, font and font size, zoom.
 - Alternating row colours, wrapped text, row height in lines.
-- **Display formats** per column (numbers, percent, currency, dates, tick
-  boxes) that change only how cells look, never the file.
+- **Display formats** per column (numbers, percent, currency, dates, times,
+  dates with times, custom codes, tick boxes) that change only how cells look,
+  never the file: copying, saving, export, print, sorting, filtering and the
+  cell editor all use the text as it is in the file. Each change is one Ctrl+Z
+  step. Format > Write the display format into the cells writes what you see
+  into the file instead (one undo step), for every kind.
+  - **Time** (Ctrl+Shift+2) and **date and time** show a time written as
+    `14:30`, `2:30 PM`, `14:30:15` or `2026-03-14T14:30:00Z` in the style you
+    pick (2:30 PM, 14:30, with or without seconds). The clock time shows as
+    written: a time zone (`Z`, `+05:30`) is not shown and not converted.
+    Seconds are cut, never rounded, so 14:30:59.9 shows 14:30:59. A minute
+    needs two digits (`1:2` stays as it is). Under a time, a date with no time
+    shows as it is; under date and time, a date alone shows the date and a
+    time alone the time. Numbers such as Excel's 45000.5 are not read as dates
+    or times.
+  - **Custom codes** (Format > Custom display code…, or Custom code in Ctrl+1)
+    use a part of Excel's code language, with a live preview and starter codes:
+    `0` a digit (leading zeros kept: `00000` shows ZIP 1234 as 01234), `#` a
+    digit if there is one, `?` a digit or a space; `.` and `,` as in
+    `#,##0.00`, and a comma at the end divides by 1,000; `%` times 100; text in
+    quotes or after `\`, and `$ - + ( ) : / '` and space as written, so
+    `000-000-0000` and `(000) 000-0000` show phone numbers; up to four parts
+    split by `;` for positive, negative, zero and text (`@` stands for the
+    text); `[Red]`, `[Blue]`, `[Green]`, `[Black]`, `[White]`, `[Yellow]`,
+    `[Magenta]` and `[Cyan]` colours; up to two conditions like `[>100]`
+    (the first that holds, else the first part with none); and `y m d h s
+    AM/PM` for dates and times (`m` after `h` or before `s` is minutes).
+    Rounding is half away from zero, on the digits as written (0.125 with two
+    decimals shows 0.13). A number of more than 15 digits shows as it is. A
+    code the app cannot show is refused with the character it stops at:
+    locale tags (`[$-409]`), fill (`*`), spacing (`_`), scientific notation
+    (`E+`), fractions (`?/?`), elapsed time (`[h]`), number and date parts in
+    one part, more than 30 digits on either side of the point, and codes over
+    200 characters. Colours are drawn in a shade that reads on the light and
+    the dark theme, and not at all in Windows high contrast; a minus sign or
+    brackets always say a number is negative, never the colour alone.
+    Views keep custom codes; a view file holding a code that cannot be shown
+    opens without that column's format.
+- **Copy a column's look** (Format > Copy column look, Ctrl+Alt+Shift+C, and
+  Paste column look, Ctrl+Alt+Shift+V, also on the column heading's
+  right-click menu, and Paste column look on the cell menu once a look is
+  copied): gives other columns the display format, alignment, wrapping, "cut
+  off long text" and width of the selected ones. One copied column goes onto
+  every selected column; several repeat across them in order. It works across
+  tabs in the same window. Hidden state, column type, protection, totals,
+  highlight rules, colour scales and data checks are not carried, nor any
+  cell text. One Ctrl+Z takes the whole paste back; the file does not change.
+  The **format brush** on the toolbar copies the selection's look; the next
+  columns you pick (a heading click or drag) take it. Double-click the brush
+  to keep it on for several picks; Esc or another click turns it off.
 - Value types shown in colour (Ctrl+F8), colour scales and data bars.
 - **X-ray gremlins** (View > X-ray gremlins, Ctrl+Shift+X): everything "Show
   invisible characters" shows, plus smart quotes, tabs and line breaks inside

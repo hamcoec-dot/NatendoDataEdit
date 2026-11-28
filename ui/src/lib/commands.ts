@@ -88,6 +88,8 @@ export function keyOfLoose(e: KeyboardEvent): string {
 }
 
 function keyText(e: KeyboardEvent, alt: boolean): string {
+  // AltGr types a character (@ on German, Ć on Polish): never a shortcut.
+  if (e.getModifierState?.("AltGraph") || e.key === "AltGraph") return "";
   const parts: string[] = [];
   if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
   if (alt) parts.push("Alt");
@@ -95,6 +97,9 @@ function keyText(e: KeyboardEvent, alt: boolean): string {
   let k = e.key;
   if (k === " ") k = "Space";
   else if (k.length === 1) k = k.toUpperCase();
+  // Ctrl+Shift with a number key is the number key's place, whatever Shift
+  // types on the layout (" on UK and German for 2, £ on UK for 3).
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && !alt && /^Digit[0-9]$/.test(e.code ?? "")) k = e.code.slice(5);
   if (k === "Control" || k === "Shift" || k === "Alt" || k === "Meta") return parts.join("+");
   parts.push(k);
   return parts.join("+");
