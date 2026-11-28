@@ -2192,6 +2192,18 @@ impl Docs {
     }
 
     fn insert(&self, doc: Document, line_by_line: bool) -> CmdResult<(u32, Arc<Entry>)> {
+        self.insert_with(doc, line_by_line, false, false)
+    }
+
+    /// `insert`, with the private and encrypted-copy marks set before the file is listed (so nothing can see a
+    /// private file's copy as not private, not even for a moment).
+    pub(crate) fn insert_with(
+        &self,
+        doc: Document,
+        line_by_line: bool,
+        private: bool,
+        encrypted_copy: bool,
+    ) -> CmdResult<(u32, Arc<Entry>)> {
         let mut map = self.map();
         if map.len() >= MAX_DOCS {
             return Err(CmdError::new(
@@ -2232,10 +2244,10 @@ impl Docs {
             closed: AtomicBool::new(false),
             changed_at: AtomicU64::new(0),
             autosaving: AtomicBool::new(false),
-            private: AtomicBool::new(false),
-            private_origin: AtomicBool::new(false),
+            private: AtomicBool::new(private),
+            private_origin: AtomicBool::new(private),
             encrypted_from: Mutex::new(None),
-            encrypted_copy: AtomicBool::new(false),
+            encrypted_copy: AtomicBool::new(encrypted_copy),
             golden: Mutex::new(None),
             patch: Mutex::new(None),
             recipe: Mutex::new(RecipeLog::default()),

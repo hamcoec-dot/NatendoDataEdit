@@ -54,14 +54,8 @@ impl Docs {
             .is_some()
             || entry.encrypted_copy.load(Ordering::SeqCst);
         drop(entry);
-        let (nid, new) = self.insert(copy, false)?;
-        // Private before anything else can look at it (a recovery copy).
-        if private || encrypted {
-            new.private.store(true, Ordering::SeqCst);
-            new.private_origin.store(true, Ordering::SeqCst);
-        }
-        new.encrypted_copy.store(encrypted, Ordering::SeqCst);
-        drop(new);
+        // Private from the moment it is listed (nothing, not a recovery copy or another window, sees it otherwise).
+        let (nid, _) = self.insert_with(copy, false, private || encrypted, encrypted)?;
         self.inherit_private(nid, &[id], &[]);
         self.set_title_of(nid, title);
         crate::recovery::forget(nid);
@@ -124,6 +118,47 @@ mod tests {
         );
         assert!(!docs.is_private(c.id).unwrap());
         assert!(!docs.encrypted_copy(c.id).unwrap());
+    }
+
+    #[test]
+    fn a_private_files_copy_is_never_listed_as_not_private() {
+        // Review note 1: watch the list of open files while copies are made; each copy must be private the first
+        // time it is seen there.
+        let docs = Docs::default();
+        let p = dir().join("p.csv");
+        std::fs::write(&p, "ssn\r\n000-00-0000\r\n").unwrap();
+        let id = open(&docs, &p);
+        docs.get(id).unwrap().private.store(true, Ordering::SeqCst);
+        let done = AtomicBool::new(false);
+        let seen_open = std::thread::scope(|s| {
+            let w = s.spawn(|| {
+                let mut bad = 0u32;
+                let mut looks = 0u32;
+                while !done.load(Ordering::SeqCst) {
+                    for (k, e) in docs.map().iter() {
+                        if *k != id {
+                            looks += 1;
+                            if !e.private.load(Ordering::SeqCst) {
+                                bad += 1;
+                            }
+                        }
+                    }
+                }
+                (bad, looks)
+            });
+            for _ in 0..200 {
+                let c = docs.duplicate(id, "copy").unwrap();
+                assert!(docs.is_private(c.id).unwrap());
+                docs.close(c.id);
+            }
+            done.store(true, Ordering::SeqCst);
+            w.join().unwrap()
+        });
+        assert_eq!(
+            seen_open.0, 0,
+            "a copy was listed as not private ({} looks)",
+            seen_open.1
+        );
     }
 
     #[test]
