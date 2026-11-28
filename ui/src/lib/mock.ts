@@ -1403,6 +1403,14 @@ export class MockBackend implements Backend {
     if (mv) done.src = await this.change(src, { op: "delete_rows", at, count });
     return done;
   }
+  /** The browser stand-in: the clipboard text itself, as a number (it changes when the text does). */
+  async clipboardSeq(): Promise<number | null> {
+    const s = await navigator.clipboard.readText().catch(() => null);
+    if (s === null) return null;
+    let h = 7;
+    for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) >>> 0;
+    return h || 1;
+  }
   private insertGuard(dst: number, src: number | null): void {
     const t = this.get(dst).info;
     const shut = (d: number) => {

@@ -19,6 +19,10 @@ export interface CopyRec {
   shut: boolean;
 }
 
+/** The clipboard as it is now, against this app's last copy: true unchanged, false another program changed it,
+ *  null not known (it is checked again when the insert runs). */
+export type ClipNow = boolean | null;
+
 /** The insert-copied key: Ctrl+Shift++ on the main keyboard (code Equal with Shift, key "+") or on the number pad,
  *  and Ctrl+NumpadAdd. Never with Alt or AltGr (Ctrl+Alt is AltGr on Windows, which types characters). */
 export function isInsertCopiedKey(e: Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey"> & { getModifierState?: (k: string) => boolean }): boolean {
@@ -27,16 +31,12 @@ export function isInsertCopiedKey(e: Pick<KeyboardEvent, "key" | "code" | "ctrlK
   return e.shiftKey && e.key === "+" && e.code === "Equal";
 }
 
-/** Clipboard text compared loosely (line ends, a trailing line break), as Paste compares a cut. */
-export const sameClip = (s: string): string => s.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
-
 export type Offer = { ok: true; kind: "rows" | "cols"; count: number } | { ok: false; why: string };
 
-/** Whether Insert copied may run now, and why not. `clipNow`: the clipboard text read now (null: not read yet, or it
- *  could not be read; the insert reads it again). */
-export function insertOffer(rec: CopyRec | null, clipNow: string | null): Offer {
+/** Whether Insert copied may run now, and why not. */
+export function insertOffer(rec: CopyRec | null, now: ClipNow): Offer {
   if (!rec) return { ok: false, why: "Copy whole rows or whole columns first (Ctrl+C), then pick where they go" };
-  if (clipNow !== null && sameClip(clipNow) !== sameClip(rec.clip)) return { ok: false, why: "The clipboard holds something from another program" };
+  if (now === false) return { ok: false, why: "The clipboard holds something from another program" };
   return { ok: true, kind: rec.kind, count: rec.kind === "rows" ? rec.rect.rows : rec.rect.cols };
 }
 

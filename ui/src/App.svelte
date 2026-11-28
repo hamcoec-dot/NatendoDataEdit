@@ -141,7 +141,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   import ToolsDialog, { type ToolsRun } from "./lib/ToolsDialog.svelte";
   import { fillOrders, orderFromCells, unchangedTabs, type FromCells, type ScaleKind, type ToolKind } from "./lib/m10";
   import { buildHtml, HTML_CELL_CHARS, MAX_HTML_CELLS } from "./lib/cliphtml";
-  import { insertLabel, insertOffer, isInsertCopiedKey, type CopyRec } from "./lib/clipinsert";
+  import { insertLabel, insertOffer, isInsertCopiedKey, type ClipNow, type CopyRec } from "./lib/clipinsert";
   import { autosaveDue, type RecoveryItem, type Suggestion, type Suggestions, type VersionItem } from "./lib/m9";
   import { BASIC_KEYS, cleanFormat, defaultFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat } from "./lib/m9";
   import { canvasMeasure, defaultPage, FIT_SAMPLE_ROWS, measureWidths, newCheck, printBlock, printFit, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS, type PrintView } from "./lib/m8";
@@ -218,8 +218,10 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   let copiedFrom: number | null = null;
   /** The last copy of whole rows or columns, for Insert copied (null after any other copy or cut). */
   let copyRec = $state<CopyRec | null>(null);
-  /** The clipboard text as last read (when a menu opened), for greying Insert copied. */
-  let clipNow = $state<string | null>(null);
+  /** The clipboard against this app's last copy, as last asked (when a menu opened), for greying Insert copied. */
+  let clipNow = $state<ClipNow>(null);
+  /** The clipboard's change count right after this app's last copy or cut (null: unknown). */
+  let ourSeq: number | null = null;
   let editKind = $state<EditKind | null>(null);
   /** The cleaning screen, open at a tool. */
   let cleanTool = $state<ToolId | null>(null);
@@ -2619,11 +2621,13 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     if (inside) {
       clip = `Natendo Data Edit: ${what} marked to move. Paste them inside the app with Ctrl+V.`;
       await navigator.clipboard.writeText(clip).catch(() => {});
+      await noteOurClip();
     } else {
       try {
         if (cellCount(r) >= LARGE_COPY && !(await privacyGate("The copy goes to the clipboard, where other programs can read it.", [r.col, r.cols]))) return;
         clip = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols, hiddenColsOf(t));
         clipNote = await writeClip(t, r, clip);
+        await noteOurClip();
         copiedFrom = t.id;
       } catch (e) {
         say(errorText(e));
@@ -3809,20 +3813,27 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     if (t?.cut && t.cut.kind !== "cells") return `Move the cut ${t.cut.kind === "rows" ? "rows" : "columns"} here`;
     return insertLabel(insertOffer(copyRec, clipNow));
   }
-  async function readClipNow(): Promise<string | null> {
-    clipNow = await navigator.clipboard.readText().catch(() => null);
+  /** Has anything changed the clipboard since this app's last copy or cut? (Asked of Windows' change count, so
+   *  the window never reads the clipboard, which would ask the user first.) */
+  async function readClipNow(): Promise<ClipNow> {
+    const n = await backend().clipboardSeq().catch(() => null);
+    clipNow = n === null || ourSeq === null ? null : n === ourSeq;
     return clipNow;
+  }
+  /** Note the clipboard's change count after this app wrote to it. */
+  async function noteOurClip(): Promise<void> {
+    ourSeq = await backend().clipboardSeq().catch(() => null);
   }
 
   /** Ctrl+Shift++ (and Ctrl+NumpadAdd): with whole rows or columns copied (or cut here) and still on the clipboard,
    *  they go in; otherwise the Insert box, as before. */
   async function insertCopiedOrSmart(): Promise<void> {
-    const text = await readClipNow();
+    const now = await readClipNow();
     const t = tab;
     const cutHere = !!t?.cut && t.cut.kind !== "cells";
     const other = t ? tabs.find((x) => x !== t && x.cut && x.cut.kind !== "cells") : undefined;
     if (other && !cutHere) return say(`What was cut in ${other.info.name} moves only inside that file, so nothing was moved. To move it here, drag it onto this tab (or Edit › Move to another file); to put a copy here, copy it (Ctrl+C) instead.`);
-    void runCmd(cutHere || (text !== null && insertOffer(copyRec, text).ok) ? "insert.copied" : "insert.smart");
+    void runCmd(cutHere || (now !== false && insertOffer(copyRec, now).ok) ? "insert.copied" : "insert.smart");
   }
 
   /** Insert what was copied: whole rows above the selected row, or whole columns before the selected column, as one
@@ -3832,9 +3843,10 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   async function insertCopied(): Promise<void> {
     const t = tab;
     if (!t || !ready()) return;
-    const text = await readClipNow();
+    const now = await readClipNow();
     if (t.cut && t.cut.kind !== "cells") {
-      if (!(await pasteCut(text))) say("What was cut is no longer on the clipboard, so nothing was moved. Cut it again (Ctrl+X).");
+      // (Something else on the clipboard: the cut is dropped, as Paste drops it.)
+      if (!(await pasteCut(now === false ? "\u0000" : null))) say("What was cut is no longer on the clipboard, so nothing was moved. Cut it again (Ctrl+X).");
       return;
     }
     const other = tabs.find((x) => x !== t && x.cut && x.cut.kind !== "cells");
@@ -3843,9 +3855,10 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
       return;
     }
     const rec = copyRec;
-    if (text === null) return say("The clipboard could not be read. Copy again (Ctrl+C), then try again.");
-    const offer = insertOffer(rec, text);
+    const offer = insertOffer(rec, now);
     if (!rec || !offer.ok) return say(`${offer.ok ? "" : offer.why}. Copy whole rows or columns here (Ctrl+C) to insert them.`);
+    // Nothing changed the clipboard since the copy, so it holds exactly what was copied.
+    const text = rec.clip;
     const r = oneBlock(t);
     if (!r) return;
     const src = tabs.find((x) => x.id === rec.from) ?? null;

@@ -8,6 +8,7 @@ mod agent;
 mod applog;
 mod assoc;
 mod batch;
+mod clip;
 mod diskwatch;
 mod docs;
 mod drops;
@@ -3342,6 +3343,12 @@ async fn xfer_cols(
         .await
 }
 
+/// The clipboard's change count: Insert copied is offered only while nothing has changed it since this app's copy.
+#[tauri::command]
+fn clipboard_seq() -> Option<u32> {
+    clip::sequence()
+}
+
 /// Insert copied rows: the clipboard's rows right above the shown row `before` (one undo step).
 #[tauri::command]
 async fn insert_copied_rows(
@@ -6006,6 +6013,7 @@ pub fn run() {
             xfer_cols,
             xfer_rows,
             insert_copied_rows,
+            clipboard_seq,
             insert_copied_cols,
             example_learn,
             example_preview,

@@ -169,6 +169,7 @@ const NOT_WRITES = [
   "tabFolders",
   "firstRowCell",
   "firstRowNames",
+  "clipboardSeq",
   "columnNamesLine",
   "folderList",
   "folderOpen",

@@ -2143,6 +2143,8 @@ export interface Backend {
   insertCopiedRows(doc: number, before: number, text: string, src: number | null, wider: Wider): Promise<XferDone>;
   /** Insert copied columns at logical column `at`; `titles` go in the title row when `keepFirst`. */
   insertCopiedCols(doc: number, at: number, text: string, titles: string[], keepFirst: boolean, src: number | null): Promise<XferDone>;
+  /** The clipboard's change count (any program's change; null where unknown), so the window need not read it. */
+  clipboardSeq(): Promise<number | null>;
   /** C10 rule card: the rule fill by example would use (spec.program when given), or the example that breaks it. */
   exampleLearn(doc: number, spec: ExampleSpec): Promise<LearnReport>;
   /** C10: the first empty cells a rule fills (the first 1,000 rows looked at). */
@@ -2842,6 +2844,9 @@ class TauriBackend implements Backend {
   }
   insertCopiedCols(doc: number, at: number, text: string, titles: string[], keepFirst: boolean, src: number | null) {
     return call<XferDone>("insert_copied_cols", { doc, at, text, titles, keepFirst, src });
+  }
+  clipboardSeq() {
+    return call<number | null>("clipboard_seq");
   }
   exampleLearn(doc: number, spec: ExampleSpec) {
     return call<LearnReport>("example_learn", { doc, spec });
