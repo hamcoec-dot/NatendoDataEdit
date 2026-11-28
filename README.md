@@ -563,7 +563,7 @@ everything is also in command search.
   numbers marks each place they are missing (point at it for how many; click it
   to show rows hidden by hand), and the status bar says how many rows edits act
   on. It turns amber while an open screen includes hidden rows.
-  ![A dotted line under row 2 where rows 3 to 5 are hidden, and the status bar saying edits act on 999,997 shown rows](docs/screenshots/hidden-rows-marked.png)
+  ![A made-up member list with rows 4 to 6 hidden: a dotted line under row 3 in the row numbers, and the status bar saying edits act on 13 shown rows (3 hidden, untouched)](docs/screenshots/hidden-rows-marked.png)
 - **Paste into filtered rows**: while a filter is on or rows are hidden,
   Paste, Paste Special, fill, Ctrl+Enter, Delete and Copy work on the rows you
   can see, and hidden rows are left as they were (the status line says how
@@ -1093,7 +1093,7 @@ everything is also in command search.
   give it a value past its end. After columns are added, removed or moved,
   saving writes every row at the same width, so the commands are greyed until
   that change is undone.
-  ![A bar saying 2 rows have a different number of fields than most, with Review and Repair buttons](docs/screenshots/shifted-rows.png)
+  ![A made-up visits file whose rows have 3 fields: a bar says 2 rows have a different number of fields than most (usual: 3), with Review and Repair; row 4 is one field short and row 6 has an extra field](docs/screenshots/shifted-rows.png)
 - **Repair bar** (Data menu or the right-click menu on a ragged row, **Repair
   this row**, or **Repair…** on the note): the row's text as it is in the file,
   its fields with a mark between each two, and what the row will be. Click marks
