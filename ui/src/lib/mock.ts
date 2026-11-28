@@ -1348,12 +1348,16 @@ export class MockBackend implements Backend {
     const mine = this.rowCount(t) - tFirst;
     const vals = Array.from({ length: count }, (_, k) => Array.from({ length: n }, (_, i) => this.value(s, sFirst + i, at + k)));
     const titles = srcKeepFirst ? Array.from({ length: count }, (_, k) => this.value(s, 0, at + k)) : [];
+    const steps = t.undo.length;
     await this.change(dst, { op: "insert_cols", at: to, count });
     if (n > mine) await this.change(dst, { op: "insert_rows", at: this.rowCount(t), count: n - mine });
     const cells: [number, number, string][] = [];
     if (dstKeepFirst) titles.forEach((v, k) => v && cells.push([0, to + k, v]));
     vals.forEach((col, k) => col.forEach((v, i) => v && cells.push([tFirst + i, to + k, v])));
-    const info = cells.length ? await this.setCells(dst, cells) : this.refresh(t);
+    if (cells.length) await this.setCells(dst, cells);
+    // One undo step there, as the engine's.
+    this.fold(t, steps);
+    const info = this.refresh(t);
     const report = { cols: count, rows: n, added_rows: Math.max(0, n - mine), added_cols: 0, hidden_carried: 0, title_left_out: !dstKeepFirst && titles.some((x) => x), by_title: false, lengths_differ: n !== mine };
     const done: XferDone = { report, dst: info, src: null, kept: null };
     if (mv) done.src = await this.change(src, { op: "delete_cols", at, count });
@@ -1380,13 +1384,16 @@ export class MockBackend implements Backend {
       }
     }
     const extra = Math.max(0, sw - tw);
+    const steps = t.undo.length;
     if (extra && !byTitle && wider === "add_columns") await this.change(dst, { op: "insert_cols", at: tw, count: extra });
     const pos = after === null ? this.rowCount(t) : after + 1;
     await this.change(dst, { op: "insert_rows", at: pos, count });
     const width = this.get(dst).info.cols;
     const cells: [number, number, string][] = [];
     rows.forEach((r, i) => r.forEach((v, k) => v && dest[k]! < width && cells.push([pos + i, dest[k]!, v])));
-    const info = cells.length ? await this.setCells(dst, cells) : this.refresh(t);
+    if (cells.length) await this.setCells(dst, cells);
+    this.fold(t, steps);
+    const info = this.refresh(t);
     const report = { cols: 0, rows: count, added_rows: 0, added_cols: wider === "add_columns" && !byTitle ? extra : 0, hidden_carried: 0, title_left_out: false, by_title: byTitle, lengths_differ: false };
     const done: XferDone = { report, dst: info, src: null, kept: null };
     if (mv) done.src = await this.change(src, { op: "delete_rows", at, count });
@@ -1601,6 +1608,30 @@ export class MockBackend implements Backend {
     };
     VIEW_STEPS.add(apply);
     return this.push(d, apply);
+  }
+
+  /** The undo steps made since `from` become one (as one engine step). */
+  private fold(d: MockDoc, from: number): void {
+    const steps = d.undo.splice(from);
+    if (steps.length <= 1) {
+      d.undo.push(...steps);
+      return;
+    }
+    const applies = steps.map((s) => s.apply);
+    const apply = () => {
+      const inv = applies.map((a) => a());
+      return () => {
+        for (let i = inv.length - 1; i >= 0; i--) inv[i]!();
+      };
+    };
+    markOf.set(apply, ++markSeq);
+    d.undo.push({
+      apply,
+      inverse: () => {
+        for (let i = steps.length - 1; i >= 0; i--) steps[i]!.inverse();
+      },
+    });
+    if (d.clean > d.undo.length - 1) d.clean = -1;
   }
 
   private push(d: MockDoc, apply: () => () => void): DocInfo {

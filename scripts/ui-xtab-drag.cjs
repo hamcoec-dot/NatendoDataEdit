@@ -37,6 +37,7 @@ const url = process.argv[3] || "http://localhost:5321";
     add("may", [["name", "state"], ["Ann", "IA"], ["Bo", "OR"], ["Cy", "WY"]]);
     add("other", [["zip", "id", "city"], ["10001", "9", "Nyc"]]);
     add("narrow", [["x"], ["9"]]);
+    add("june", [["id", "city", "zip"], ["7", "Gil", "11111"], ["8", "Hy", "22222"]]);
   });
   await settle();
   const idx = async (name) => p.evaluate((name) => window.__nde.tabs.findIndex((t) => t.info.name === name), name);
@@ -68,7 +69,7 @@ const url = process.argv[3] || "http://localhost:5321";
       },
       [name, row, col],
     );
-  for (const n of ["other", "march", "april", "may", "narrow"]) {
+  for (const n of ["other", "march", "april", "may", "narrow", "june"]) {
     await show(n);
     await select(n, 1, 0);
   }
@@ -127,6 +128,13 @@ const url = process.argv[3] || "http://localhost:5321";
     await settle();
   };
 
+  // The city column has a display format and a highlight here (review note 2).
+  await p.evaluate(() => {
+    const t = window.__nde.tab;
+    t.columns.formats.set(1, { kind: "number", decimals: 2, thousands: true, symbol: "$", date: "iso" });
+    t.highlights = [{ col: 1, rule: { type: "values", values: ["Ames"], blanks: false }, color: 1, whole_row: false }];
+    t.bump();
+  });
   // ---- a column, copied: the words while over the tab, live with Shift ----
   await p.mouse.click(cx(1), hy); // the city heading: the whole column
   await settle();
@@ -137,8 +145,30 @@ const url = process.argv[3] || "http://localhost:5321";
   ok((await rows("march")).join("|") === "name,city,state|Ann,Ames,IA|Bo,Bly,OR|Cy,Cody,WY", `the column went in right of name, with its title (${(await rows("march")).join("|")})`);
   ok((await rows("people"))[0] === "id,city,zip", "and stayed here (a copy)");
   let st = await status();
-  ok(/Copied 1 column into march, after its column 1 \(name\)\. Undo there with Ctrl\+Z\./.test(st), `the message (${st})`);
+  ok(/Copied 1 column into march, after its column 1 \(name\)\. (Highlights and checks stay in people\. )?Undo there with Ctrl\+Z\./.test(st), `the message (${st})`);
   ok((await p.getByRole("button", { name: /^Go to march/ }).count()) === 1, "with Go to march");
+  ok(/Highlights and checks stay in people\./.test(st), `the message says the highlight stayed behind (${st})`);
+  const fmtIn = (name, c) => p.evaluate(([name, c]) => window.__nde.tabs.find((x) => x.info.name === name).columns.formats.get(c)?.kind ?? null, [name, c]);
+  ok((await fmtIn("march", 1)) === "number", "its display format went with it");
+  ok((await p.evaluate(() => window.__nde.tabs.find((x) => x.info.name === "march").highlights.length)) === 0, "its highlight did not");
+  // One Ctrl+Z there takes the format out with the column.
+  await show("march");
+  await p.evaluate(() => window.__nde.grid?.focus());
+  await p.keyboard.press("Control+z");
+  await settle();
+  ok((await rows("march"))[0] === "name,state" && (await fmtIn("march", 1)) === null, `Undo there takes the column and its format out (${(await rows("march"))[0]}; ${await fmtIn("march", 1)})`);
+  await p.keyboard.press("Control+y");
+  await settle();
+  ok((await rows("march"))[0] === "name,city,state" && (await fmtIn("march", 1)) === "number", "and Ctrl+Y puts both back");
+  await p.keyboard.press("Control+z");
+  await settle();
+  await show("people");
+  await p.evaluate(() => {
+    const t = window.__nde.tab;
+    t.columns.formats.delete(1);
+    t.highlights = [];
+    t.bump();
+  });
   // (One Ctrl+Z in each file is checked on the real app: the stand-in makes several steps.)
 
   // ---- Shift: moved ----
@@ -182,6 +212,25 @@ const url = process.argv[3] || "http://localhost:5321";
   ok((await rows("other")).join("|") === "zip,id,city|10001,9,Nyc|97622,2,Bly|82414,3,Cody", `under the matching titles (${(await rows("other")).join("|")})`);
   st = await status();
   ok(/Copied 2 rows into other, below its row 2 under the matching titles\./.test(st), `the message says how (${st})`);
+
+  // ---- rows onto a tab with rows hidden: they go in and show, and the message says so (review note 3) ----
+  await p.evaluate(async () => {
+    const n = window.__nde;
+    const t = n.tabs.find((x) => x.info.name === "june");
+    t.update(await n.backend.change(t.id, { op: "hide_rows", at: 2, count: 1 }), true);
+  });
+  await show("people");
+  await p.mouse.click(nx, ry(1));
+  await p.keyboard.down("Shift");
+  await p.mouse.click(nx, ry(2));
+  await p.keyboard.up("Shift");
+  await settle();
+  await dragTo(nx, ry(1), "june");
+  st = await status();
+  ok(/Copied 2 rows into june/.test(st) && /The new rows are shown even if the filter there would hide them\./.test(st), `rows on a tab with rows hidden: the message says they show (${st})`);
+  const june = await p.evaluate(() => window.__nde.tabs.find((x) => x.info.name === "june").info);
+  ok(june.total_rows === 5 && june.rows === 4, `they went in and show: 4 of 5 rows shown, the hidden one still hidden (${june.rows} of ${june.total_rows})`);
+  ok((await rows("june")).join("|") === "id,city,zip|7,Gil,11111|2,Bly,97622|3,Cody,82414", `the shown rows (${(await rows("june")).join("|")})`);
 
   // ---- wider rows ask ----
   await show("people");

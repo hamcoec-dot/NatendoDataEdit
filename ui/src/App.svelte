@@ -5115,10 +5115,15 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     });
     if (!done) return;
     dst.update(done.dst, true);
-    // Their widths go with them (read before the source shifts).
+    // Their widths and display formats go with them (read before the source shifts); Undo there takes them out with
+    // the columns. Highlights, colour scales and data checks stay in the source, and the message says so.
     const widths = Array.from({ length: r.cols }, (_, k) => src.columns.customWidth(r.col + k));
+    const formats = Array.from({ length: r.cols }, (_, k) => src.columns.formats.get(r.col + k));
+    const inRange = (c: number | null) => c !== null && c >= r.col && c < r.col + r.cols;
+    const behind = src.highlights.some((h) => inRange(h.col)) || src.scales.some((s) => inRange(s.col)) || src.checks.some((c) => inRange(c.col));
     dst.shiftCols(to, r.cols);
     widths.forEach((w, k) => w !== undefined && dst.columns.setWidth(to + k, w));
+    formats.forEach((f, k) => f && dst.columns.formats.set(to + k, { ...f }));
     if (done.src) src.shiftCols(r.col, -r.cols);
     if (done.src) src.update(done.src, true);
     const rep = done.report;
@@ -5133,7 +5138,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const verb = done.src ? "Moved" : "Copied";
     const kept = move && !done.src ? ` Not taken out here: ${done.kept ?? (src.info.read_only ? "this file is read-only" : "")}.` : "";
     const undo = done.src ? " Ctrl+Z in each file undoes its half." : ` Undo there with Ctrl+Z.`;
-    say(`${verb} ${plural(r.cols, "column")} into ${dst.info.name}, ${place}${extra}.${lineUp}${kept}${undo}`);
+    const stayed = behind ? ` Highlights and checks stay in ${src.info.name}.` : "";
+    say(`${verb} ${plural(r.cols, "column")} into ${dst.info.name}, ${place}${extra}.${lineUp}${stayed}${kept}${undo}`);
     messageAction = { label: `Go to ${dst.info.name}`, run: goToTab(dst) };
   }
 
@@ -5160,6 +5166,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     }
     const after = dst.header && dst.cell.row < 1 ? 0 : dst.cell.row;
     const place = rowPlace(dst);
+    // Rows added there always show, whatever its filter (as rows typed in do).
+    const filteredThere = rowsHidden(dst) || dst.info.filtered;
     const done = await runJob("Copying rows", () => backend().xferRows(src.id, r.row, r.rows, src.header, dst.id, after, dst.header, wider, move && !src.info.read_only), dst.id).catch((e: unknown) => {
       say(errorText(e));
       return null;
@@ -5173,7 +5181,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     const verb = done.src ? "Moved" : "Copied";
     const kept = move && !done.src ? ` Not taken out here: ${done.kept ?? (src.info.read_only ? "this file is read-only" : "")}.` : "";
     const undo = done.src ? " Ctrl+Z in each file undoes its half." : " Undo there with Ctrl+Z.";
-    say(`${verb} ${plural(r.rows, "row")} into ${dst.info.name}, ${place}${how}${added}.${kept}${undo}`);
+    const shown = filteredThere ? " The new rows are shown even if the filter there would hide them." : "";
+    say(`${verb} ${plural(r.rows, "row")} into ${dst.info.name}, ${place}${how}${added}.${shown}${kept}${undo}`);
     messageAction = { label: `Go to ${dst.info.name}`, run: goToTab(dst) };
   }
 
