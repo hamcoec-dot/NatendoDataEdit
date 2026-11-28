@@ -216,6 +216,37 @@ everything is also in command search.
 ![Renaming the first_name column after double-clicking its heading](docs/screenshots/rename-column.png)
 *Double-click a heading to rename the column.*
 
+- **Copy as a table, and insert copied rows or columns:** Copy (and Copy
+  with column names) also puts the cells on the clipboard as a table, so
+  pasting into an e-mail, Word or a web page gives a ruled table, not
+  text with tabs. Values show as the grid shows them (dates, numbers and
+  currency in their display formats; highlights and colour scales don't
+  travel). Excel and Google Sheets keep what they get: only plain numbers
+  stay numbers, and every other cell is marked as text, so leading zeros,
+  long IDs, 1-2 and values starting with = + - @ arrive as they are (the
+  same as pasting the text). The table is left out, and only the text goes
+  on the clipboard, for more than 20,000 cells (the message says so), a
+  cell longer than 32,767 characters, and any private or encrypted tab;
+  untick Options > Editing > Copy also puts a table on the clipboard to
+  turn it off. After copying
+  whole rows or whole columns, Ctrl+Shift++ (or Ctrl and the number pad's
+  +, or Insert > Copied rows or columns, also on the right-click menus)
+  puts them in above the selected row, or before the selected column, as
+  one Ctrl+Z step, instead of pasting over the cells there. Copied columns
+  bring their title (into the title row, only when this file has one; the
+  message says when it was left out), width and display format; rows
+  inserted into a filtered file show even if the filter would hide them,
+  and columns are refused there with why. The values are always what was
+  copied; if the file they came from changed or closed since, they go in
+  as copied, without its widths and formats, and the message says so.
+  Once another program puts something on the clipboard the entry is greyed
+  ("the clipboard holds something from another program") and Ctrl+Shift++
+  opens the Insert box as before. After a Cut of whole rows or columns,
+  the same key moves them here (as Paste does); a cut from another file is
+  never moved this way: it is refused with words and stays where it was
+  (drag it onto this tab, or Edit > Move selection to another file, to
+  move it). Cells from a private or encrypted file go only into another
+  private or encrypted one.
 - **Save As options** with a live preview: separator, quoting (as is, only
   where needed, every value, text but not numbers), quote character, encoding
   and line breaks.

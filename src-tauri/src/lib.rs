@@ -3342,6 +3342,35 @@ async fn xfer_cols(
         .await
 }
 
+/// Insert copied rows: the clipboard's rows right above the shown row `before` (one undo step).
+#[tauri::command]
+async fn insert_copied_rows(
+    docs: DocsState<'_>,
+    doc: u32,
+    before: u64,
+    text: String,
+    src: Option<u32>,
+    wider: natendo_engine::xfer::Wider,
+) -> CmdResult<docs::xfer::XferDone> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.insert_copied_rows(doc, before, &text, src, wider)).await
+}
+
+/// Insert copied columns at logical column `at`, with `titles` when the tab has a title row.
+#[tauri::command]
+async fn insert_copied_cols(
+    docs: DocsState<'_>,
+    doc: u32,
+    at: u32,
+    text: String,
+    titles: Vec<String>,
+    keep_first: bool,
+    src: Option<u32>,
+) -> CmdResult<docs::xfer::XferDone> {
+    let docs = docs.inner().clone();
+    blocking(move || docs.insert_copied_cols(doc, at, &text, titles, keep_first, src)).await
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn xfer_rows(
@@ -5976,6 +6005,8 @@ pub fn run() {
             fix_all,
             xfer_cols,
             xfer_rows,
+            insert_copied_rows,
+            insert_copied_cols,
             example_learn,
             example_preview,
             example_outliers,

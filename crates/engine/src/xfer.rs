@@ -73,6 +73,29 @@ pub struct ColsOut {
     pub hidden: u64,
 }
 
+impl ColsOut {
+    /// Columns from a grid of values (the clipboard text: rows of cells), with titles when known.
+    pub fn from_grid(grid: &[Vec<String>], titles: Vec<String>) -> Result<ColsOut, Error> {
+        let width = grid.iter().map(Vec::len).max().unwrap_or(0);
+        let mut cols: Vec<Packed> = (0..width)
+            .map(|_| Packed::with_capacity(grid.len()))
+            .collect();
+        for row in grid {
+            for (k, col) in cols.iter_mut().enumerate() {
+                if !col.push(row.get(k).map_or("", String::as_str)) {
+                    return Err(too_big());
+                }
+            }
+        }
+        Ok(ColsOut {
+            titles,
+            cols,
+            rows: grid.len() as u64,
+            hidden: 0,
+        })
+    }
+}
+
 /// Whole rows copied out of a document: the shown rows asked for, all their columns.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RowsOut {
@@ -87,6 +110,33 @@ impl RowsOut {
     fn cell(&self, i: usize, k: usize) -> &str {
         self.cells.get(i * self.width as usize + k)
     }
+
+    /// Rows from a grid of values (the clipboard text), by position; ragged rows are padded.
+    pub fn from_grid(grid: &[Vec<String>]) -> Result<RowsOut, Error> {
+        let width = grid.iter().map(Vec::len).max().unwrap_or(0) as u32;
+        let mut cells = Packed::with_capacity(grid.len() * width as usize);
+        for row in grid {
+            for k in 0..width as usize {
+                if !cells.push(row.get(k).map_or("", String::as_str)) {
+                    return Err(too_big());
+                }
+            }
+        }
+        Ok(RowsOut {
+            titles: Vec::new(),
+            cells,
+            width,
+            rows: grid.len() as u64,
+        })
+    }
+}
+
+/// Where rows go in.
+#[derive(Debug, Clone, Copy)]
+enum RowPlace {
+    After(u64),
+    Before(u64),
+    End,
 }
 
 /// What putting columns or rows into a document will do.
@@ -355,6 +405,18 @@ impl Document {
         wider: Wider,
         progress: &Progress,
     ) -> Result<(JoinPlan, XferReport), Error> {
+        let place = after.map_or(RowPlace::End, RowPlace::After);
+        self.plan_rows_at(place, data, by_title, wider, progress)
+    }
+
+    fn plan_rows_at(
+        &self,
+        place: RowPlace,
+        data: &RowsOut,
+        by_title: bool,
+        wider: Wider,
+        progress: &Progress,
+    ) -> Result<(JoinPlan, XferReport), Error> {
         self.ready_for_bulk()?;
         let mine = self.col_count();
         let by = if by_title {
@@ -397,14 +459,29 @@ impl Document {
             rows.push(row);
         }
         progress.step(0)?;
-        match after {
-            Some(r) => {
+        match place {
+            RowPlace::After(r) => {
                 let id = self.id_at(r).ok_or(Error::OutOfRange)?;
                 plan.after.push((id, rows));
             }
-            None => plan.append = rows,
+            RowPlace::Before(r) => {
+                let id = self.id_at(r).ok_or(Error::OutOfRange)?;
+                plan.before.push((id, rows));
+            }
+            RowPlace::End => plan.append = rows,
         }
         Ok((plan, rep))
+    }
+
+    /// Insert `data`'s rows right above the shown row `before` (Insert copied rows), by position.
+    pub fn plan_insert_rows_above(
+        &self,
+        before: u64,
+        data: &RowsOut,
+        wider: Wider,
+        progress: &Progress,
+    ) -> Result<(JoinPlan, XferReport), Error> {
+        self.plan_rows_at(RowPlace::Before(before), data, false, wider, progress)
     }
 }
 

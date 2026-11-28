@@ -94,6 +94,7 @@ export const FEATURE_LINKS: Record<string, string[]> = {
   "text safe saving": ["file.save"],
   "repairs broken files": ["file.open"],
   "copy column names": ["edit.copyNames", "edit.copyNamesText", "edit.copyWithNames", "edit.pasteNames"],
+  "copy as a table and insert copied rows or columns": ["edit.copy", "edit.copyWithNames", "insert.copied"],
   "title row or not": ["format.header", "format.makeHeader", "format.renameCol", "format.forgetHeader", "format.forgetHeaders", "format.askHeader", "format.askHeaderAgain", "file.options"],
   "save as options": ["file.saveAs"],
   "never lose work": ["file.recover", "file.versions", "file.revert"],

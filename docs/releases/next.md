@@ -1,5 +1,6 @@
 ## Not yet released
 
+- **Copy as a table, and insert copied rows or columns:** Copy now also puts a ruled table on the clipboard for e-mail and Word (Excel keeps leading zeros and text as they are; up to 20,000 cells; never from a private tab). After copying whole rows or columns, Ctrl+Shift++ inserts them above the selected row or before the selected column, as one undo step, with the columns' titles, widths and formats.
 - **Chinese, Japanese and Korean in PDFs:** Save as PDF (and the print screen's PDF), labels and letters now print these characters with the Windows font for each, embedding only the characters used.
 - **Row heights from workbooks:** opening an Excel or OpenDocument file keeps the row heights it set (as part of opening, not an undo step).
 - **Drag cells to the other window, and several blocks:** drag a block out onto a tab of the other window to copy it there (Shift moves it); blocks that line up can be dragged together onto another file's tab in either window. The keyboard way (Edit > Copy selection to another file) lists the other window's files too.

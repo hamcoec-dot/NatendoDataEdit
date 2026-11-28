@@ -32,6 +32,8 @@ export interface PrefsData {
   insights: boolean;
   /** Where Enter moves after typing (Shift+Enter goes the other way). */
   enterMove: EnterMove;
+  /** Copy also puts a table on the clipboard (for e-mail and Word), up to 20,000 cells. */
+  copyTable: boolean;
   /** Columns with a list of allowed values show the list arrow on every
    *  cell (as in Google Sheets), not only on the active one. */
   listArrows: boolean;
@@ -155,6 +157,7 @@ const DEFAULTS: PrefsData = {
   colLetters: false,
   insights: false,
   enterMove: "down",
+  copyTable: true,
   listArrows: false,
   spellcheck: true,
   agentLink: false,
@@ -209,6 +212,7 @@ export function parsePrefs(raw: string | null): PrefsData {
       insights: p.insights === true,
       listArrows: p.listArrows === true,
       enterMove: ENTER_MOVES.includes(p.enterMove as EnterMove) ? (p.enterMove as EnterMove) : "down",
+      copyTable: p.copyTable !== false,
       spellcheck: p.spellcheck !== false,
       agentLink: p.agentLink === true,
       shortcuts: p.shortcuts && typeof p.shortcuts === "object" ? p.shortcuts : {},

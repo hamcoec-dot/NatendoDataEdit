@@ -40,6 +40,8 @@ const INCLUDES_HIDDEN: Record<string, string> = {
   fixAll: "every row of the same shape, counted, hidden ones too",
   xferCols: "whole columns carry every row, hidden ones too, and say how many; refused into a tab with rows hidden (docs_xfer tests)",
   xferRows: "the shown rows picked; a move deletes those same rows (docs_xfer tests)",
+  insertCopiedRows: "goes in above the shown row picked; hidden rows before it stay before it (docs_xfer tests)",
+  insertCopiedCols: "whole columns over every row; refused while rows are hidden (docs_xfer tests)",
   removeEmptyExtraColumns: "a column operation",
   encodingApply: "reads the whole file again in another encoding",
   updatesAccept: "compares and changes every row; hidden ones are marked, a hidden delete needs its own tick",

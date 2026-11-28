@@ -401,6 +401,7 @@ export const BASIC_KEYS: { label: string; keys: string }[] = [
   { label: "Line break in a cell", keys: "Alt+Enter" },
   { label: "Put the value in every selected cell", keys: "Ctrl+Enter" },
   { label: "Move columns, rows or cells somewhere else", keys: "Ctrl+X, pick the place, Ctrl+V" },
+  { label: "Insert copied whole rows above, or whole columns before, the selection", keys: "Ctrl+C, pick the place, Ctrl+Shift++ (or Ctrl+number pad +)" },
   { label: "Pick from the column's values (or its list of allowed values)", keys: "Alt+Down" },
   { label: "Tick or untick a tick box", keys: "Space" },
   { label: "Open the right-click menu", keys: "Shift+F10 or the Menu key" },

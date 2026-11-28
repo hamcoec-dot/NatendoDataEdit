@@ -3,7 +3,7 @@
   import { actingWords, hiddenRows, hiddenWords, kindOfOp } from "./lib/shown.svelte";
   import { forgetHeaders, recallColumnTypes, recallHeader, recallJsonBlanks, rememberColumnTypes, rememberedHeaders, rememberHeader, rememberJsonBlanks, type TypeMemory } from "./lib/headerMemory";
   import JsonSaveDialog from "./lib/JsonSaveDialog.svelte";
-import { readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type ColumnType } from "./lib/readers";
+import { isTextLike, readDateFor, readNumberFor, textCols, typeOf as typeAt, typeName, type ColumnType } from "./lib/readers";
   import { sessionToOffer } from "./lib/sessionOffer";
   import { namesFromText } from "./lib/columnNames";
   import { onMount, tick, untrack } from "svelte";
@@ -140,6 +140,8 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   import RecoveryDialog from "./lib/RecoveryDialog.svelte";
   import ToolsDialog, { type ToolsRun } from "./lib/ToolsDialog.svelte";
   import { fillOrders, orderFromCells, unchangedTabs, type FromCells, type ScaleKind, type ToolKind } from "./lib/m10";
+  import { buildHtml, HTML_CELL_CHARS, MAX_HTML_CELLS } from "./lib/cliphtml";
+  import { insertLabel, insertOffer, isInsertCopiedKey, type CopyRec } from "./lib/clipinsert";
   import { autosaveDue, type RecoveryItem, type Suggestion, type Suggestions, type VersionItem } from "./lib/m9";
   import { BASIC_KEYS, cleanFormat, defaultFormat, describeFormat, formatSteps, keyGroups, MAX_ROW_LINES, type DisplayFormat } from "./lib/m9";
   import { canvasMeasure, defaultPage, FIT_SAMPLE_ROWS, measureWidths, newCheck, printBlock, printFit, printHtml, PRINT_MAX_CELLS, PRINT_MAX_ROWS, type PrintView } from "./lib/m8";
@@ -214,6 +216,10 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   let privacyProblem = $state("");
   /** The tab the clipboard was last filled from (cleared when a private tab closes). */
   let copiedFrom: number | null = null;
+  /** The last copy of whole rows or columns, for Insert copied (null after any other copy or cut). */
+  let copyRec = $state<CopyRec | null>(null);
+  /** The clipboard text as last read (when a menu opened), for greying Insert copied. */
+  let clipNow = $state<string | null>(null);
   let editKind = $state<EditKind | null>(null);
   /** The cleaning screen, open at a tool. */
   let cleanTool = $state<ToolId | null>(null);
@@ -2565,6 +2571,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
         : texts.flat();
       await navigator.clipboard.writeText(toTsv(rows));
       copiedFrom = t.id;
+      copyRec = null;
     } catch (e) {
       say(errorText(e));
       return;
@@ -2592,6 +2599,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     }
     const epoch = ++cutEpoch;
     const pos = t.info.history_pos;
+    copyRec = null;
     for (const x of tabs) {
       if (x.cut || x.copied) {
         x.cut = null;
@@ -2607,6 +2615,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     // something copied elsewhere is never taken for this cut.
     const inside = kind === "cols" || kind === "rows" ? cellCount(r) >= LARGE_COPY : false;
     let clip: string;
+    let clipNote = "";
     if (inside) {
       clip = `Natendo Data Edit: ${what} marked to move. Paste them inside the app with Ctrl+V.`;
       await navigator.clipboard.writeText(clip).catch(() => {});
@@ -2614,7 +2623,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
       try {
         if (cellCount(r) >= LARGE_COPY && !(await privacyGate("The copy goes to the clipboard, where other programs can read it.", [r.col, r.cols]))) return;
         clip = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols, hiddenColsOf(t));
-        await navigator.clipboard.writeText(clip);
+        clipNote = await writeClip(t, r, clip);
         copiedFrom = t.id;
       } catch (e) {
         say(errorText(e));
@@ -2625,8 +2634,10 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
       if (epoch === cutEpoch && t.info.history_pos === pos) {
         t.copied = { ...r };
         t.bump();
+        const shape = sendShape(t, r);
+        if (shape !== "cells") copyRec = { from: t.id, kind: shape, rect: { ...r }, clip, pos, header: t.header, shut: await sensitive(t) };
       }
-      say(`Copied ${what}. Esc takes the outline away.`);
+      say(`Copied ${what}.${clipNote} Esc takes the outline away.`);
       return;
     }
     // Esc (or another change) while the copy was being made: no cut.
@@ -3782,6 +3793,141 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     }
   }
 
+  // ---- insert copied rows or columns (Ctrl+Shift++ after a copy) ----
+  /** Why Insert copied can't run now ("" when it can). */
+  function copiedWhy(): string {
+    const t = tab;
+    if (!t) return "";
+    if (t.cut && t.cut.kind !== "cells") return "";
+    const other = tabs.find((x) => x !== t && x.cut && x.cut.kind !== "cells");
+    if (other) return `What was cut in ${other.info.name} moves only inside that file`;
+    const o = insertOffer(copyRec, clipNow);
+    return o.ok ? "" : o.why;
+  }
+  function copiedLabel(): string {
+    const t = tab;
+    if (t?.cut && t.cut.kind !== "cells") return `Move the cut ${t.cut.kind === "rows" ? "rows" : "columns"} here`;
+    return insertLabel(insertOffer(copyRec, clipNow));
+  }
+  async function readClipNow(): Promise<string | null> {
+    clipNow = await navigator.clipboard.readText().catch(() => null);
+    return clipNow;
+  }
+
+  /** Ctrl+Shift++ (and Ctrl+NumpadAdd): with whole rows or columns copied (or cut here) and still on the clipboard,
+   *  they go in; otherwise the Insert box, as before. */
+  async function insertCopiedOrSmart(): Promise<void> {
+    const text = await readClipNow();
+    const t = tab;
+    const cutHere = !!t?.cut && t.cut.kind !== "cells";
+    const other = t ? tabs.find((x) => x !== t && x.cut && x.cut.kind !== "cells") : undefined;
+    if (other && !cutHere) return say(`What was cut in ${other.info.name} moves only inside that file, so nothing was moved. To move it here, drag it onto this tab (or Edit › Move to another file); to put a copy here, copy it (Ctrl+C) instead.`);
+    void runCmd(cutHere || (text !== null && insertOffer(copyRec, text).ok) ? "insert.copied" : "insert.smart");
+  }
+
+  /** Insert what was copied: whole rows above the selected row, or whole columns before the selected column, as one
+   *  undo step. A cut here moves (the existing move); a cut in another file is refused with words, never "moved"
+   *  while it stays there. The values are the clipboard text; the source is read (titles, widths, formats) only
+   *  while it is unchanged since the copy. */
+  async function insertCopied(): Promise<void> {
+    const t = tab;
+    if (!t || !ready()) return;
+    const text = await readClipNow();
+    if (t.cut && t.cut.kind !== "cells") {
+      if (!(await pasteCut(text))) say("What was cut is no longer on the clipboard, so nothing was moved. Cut it again (Ctrl+X).");
+      return;
+    }
+    const other = tabs.find((x) => x !== t && x.cut && x.cut.kind !== "cells");
+    if (other) {
+      say(`What was cut in ${other.info.name} moves only inside that file, so nothing was moved. To move it here, drag it onto this tab (or Edit › Move to another file); to put a copy here, copy it (Ctrl+C) instead.`);
+      return;
+    }
+    const rec = copyRec;
+    if (text === null) return say("The clipboard could not be read. Copy again (Ctrl+C), then try again.");
+    const offer = insertOffer(rec, text);
+    if (!rec || !offer.ok) return say(`${offer.ok ? "" : offer.why}. Copy whole rows or columns here (Ctrl+C) to insert them.`);
+    const r = oneBlock(t);
+    if (!r) return;
+    const src = tabs.find((x) => x.id === rec.from) ?? null;
+    const same = !!src && src.info.history_pos === rec.pos;
+    if (rec.shut && !(await sensitive(t))) return say(`These come from a private or encrypted file, and ${t.info.name} is not private: make it private first.`);
+    const asCopied = same ? "" : " (As copied: the file they came from has changed or closed since.)";
+    if (rec.kind === "rows") {
+      const grid0 = parseTsv(text);
+      if (!grid0.length) return;
+      let wider: Wider = "add_columns";
+      const width = widest(grid0);
+      if (width > t.info.cols) {
+        const a = await ask(
+          "These rows are wider",
+          `${t.info.name} has ${plural(t.info.cols, "column")}; these rows have ${width}.`,
+          [
+            { id: "add", label: `Add ${plural(width - t.info.cols, "column")}`, primary: true },
+            { id: "cut", label: `Cut them to ${t.info.cols}` },
+            { id: "cancel", label: "Cancel" },
+          ],
+          "cancel",
+        );
+        if (a === "cancel") return;
+        wider = a === "cut" ? "cut" : "add_columns";
+      }
+      // Never above the title row.
+      const before = t.header && r.row < 1 ? 1 : r.row;
+      const filtered = rowsHidden(t) || t.info.filtered;
+      const done = await runJob("Inserting copied rows", () => backend().insertCopiedRows(t.id, before, text, src && src !== t ? src.id : null, wider), t.id).catch((e: unknown) => {
+        say(errorText(e));
+        return null;
+      });
+      if (!done) return;
+      t.update(done.dst, true);
+      const n = grid0.length;
+      grid?.select({ row: before, col: 0 }, { row: before + n - 1, col: Math.max(0, t.info.cols - 1) });
+      const added = done.report.added_cols ? `, adding ${plural(done.report.added_cols, "column")}` : "";
+      const shown = filtered ? " The new rows are shown even if the filter would hide them." : "";
+      say(`Inserted ${plural(n, "copied row")} above row ${(before + 1).toLocaleString()}${added}.${asCopied}${shown} Undo (Ctrl+Z) takes ${n === 1 ? "it" : "them"} out.`);
+      return;
+    }
+    if (rowsHidden(t) || t.info.filtered) return say(`${t.info.name} has a filter on or rows hidden: show every row first, so you can see where the values go.`);
+    let grid0 = parseTsv(text);
+    if (!grid0.length) return;
+    // Titles: the copy's own title row, or the source's titles while it is unchanged.
+    let titles: string[] = [];
+    let body = text;
+    if (rec.header && rec.rect.row === 0) {
+      titles = grid0[0] ?? [];
+      grid0 = grid0.slice(1);
+      body = toTsv(grid0);
+    } else if (same && src?.header) {
+      const first = await backend().firstRowNames(src.id).catch(() => [] as string[]);
+      titles = Array.from({ length: rec.rect.cols }, (_, k) => first[rec.rect.col + k] ?? "");
+    }
+    if (!grid0.length) return say("The copy holds only the title row: copy the columns with their values.");
+    const at = r.col;
+    const count = Math.max(widest(grid0), titles.length);
+    // Widths and display formats go with them while the source is unchanged (read before anything shifts).
+    const widths = same && src ? Array.from({ length: rec.rect.cols }, (_, k) => src.columns.customWidth(rec.rect.col + k)) : [];
+    const formats = same && src ? Array.from({ length: rec.rect.cols }, (_, k) => src.columns.formats.get(rec.rect.col + k)) : [];
+    const inRange = (c: number | null) => c !== null && c >= rec.rect.col && c < rec.rect.col + rec.rect.cols;
+    const behind = same && src ? src.highlights.some((h) => inRange(h.col)) || src.scales.some((s) => inRange(s.col)) || src.checks.some((c) => inRange(c.col)) : false;
+    const done = await runJob("Inserting copied columns", () => backend().insertCopiedCols(t.id, at, body, titles, t.header, src && src !== t ? src.id : null), t.id).catch((e: unknown) => {
+      say(errorText(e));
+      return null;
+    });
+    if (!done) return;
+    t.update(done.dst, true);
+    t.shiftCols(at, count);
+    widths.forEach((w, k) => w !== undefined && t.columns.setWidth(at + k, w));
+    formats.forEach((f, k) => f && t.columns.formats.set(at + k, { ...f }));
+    grid?.select({ row: t.firstRow, col: at }, { row: Math.max(t.firstRow, t.info.rows - 1), col: at + count - 1 });
+    const rep = done.report;
+    const notes: string[] = [];
+    if (rep.added_rows) notes.push(`added ${plural(rep.added_rows, "row")}`);
+    if (!t.header && titles.some((x) => x)) notes.push(`the titles were left out: ${t.info.name} has no title row`);
+    const extra = notes.length ? ` (${notes.join("; ")})` : "";
+    const stayed = behind && src ? ` Highlights and checks stay in ${src === t ? "the columns copied" : src.info.name}.` : "";
+    say(`Inserted ${plural(count, "copied column")} before column ${at + 1}${extra}.${asCopied}${stayed} Undo (Ctrl+Z) takes ${count === 1 ? "it" : "them"} out.`);
+  }
+
   /** Excel's Ctrl++ / Ctrl+-: whole columns selected act on columns, otherwise rows. */
   /** Ctrl+Plus: whole columns or rows go in at once; part of a row asks
    *  how (shift cells right or down, or entire rows or columns), as in Excel. */
@@ -4625,6 +4771,50 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
   }
   function rowPlace(dst: Tab): string {
     return `below its row ${(dst.cell.row + 1).toLocaleString()}`;
+  }
+
+  // ---- the table a Copy also puts on the clipboard (for e-mail and Word) ----
+  /** The HTML table for a copied block, or null (option off, a private or encrypted tab, too big, a cell too long).
+   *  `note` is said with the copy's message when there is no table because it was too big. Counted before anything
+   *  is read: over the cap no table work happens at all. */
+  async function clipHtml(t: Tab, r: Rect, names: string[] | null): Promise<{ html: string | null; note: string }> {
+    const none = { html: null, note: "" };
+    if (!prefs.data.copyTable) return none;
+    if (await sensitive(t)) return none;
+    const hidden = new Set(hiddenColsOf(t));
+    const cols: number[] = [];
+    for (let c = r.col; c < r.col + r.cols; c++) if (!hidden.has(c)) cols.push(c);
+    if (!cols.length) return none;
+    if (r.rows * cols.length > MAX_HTML_CELLS) return { html: null, note: ` (Too many cells for an e-mail table: only the text is on the clipboard.)` };
+    const v = await backend().viewport(t.id, r.row, r.rows, r.col, r.cols, HTML_CELL_CHARS);
+    if (v.truncated.some((x) => x)) return none;
+    let rows: string[][] = [];
+    for (let i = 0; i < v.rows; i++) rows.push(cols.map((c) => v.cells[i * v.cols + (c - r.col)] ?? ""));
+    // The title row inside the selection is the table's header row.
+    let titles = names;
+    if (!titles && t.header && r.row === 0 && rows.length) {
+      titles = rows[0]!;
+      rows = rows.slice(1);
+    }
+    const typed = t.info.typed;
+    const html = buildHtml({ titles, rows, formats: cols.map((c) => t.columns.formats.get(c)), text: cols.map((c) => isTextLike(typeAt(typed, c))) });
+    return { html, note: "" };
+  }
+
+  /** Put the copy on the clipboard: the text always, and the table when there is one. Returns what to add to the
+   *  copy's message. */
+  async function writeClip(t: Tab, r: Rect, text: string, names: string[] | null = null): Promise<string> {
+    const { html, note } = await clipHtml(t, r, names).catch(() => ({ html: null, note: "" }));
+    if (html) {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ "text/plain": new Blob([text], { type: "text/plain" }), "text/html": new Blob([html], { type: "text/html" }) })]);
+        return "";
+      } catch {
+        // Only the text, as before.
+      }
+    }
+    await navigator.clipboard.writeText(text);
+    return note;
   }
 
   /** Why a tab's cells may not go to another file, or "". Private and
@@ -5513,11 +5703,14 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     clearCopyMarks();
     const epoch = cutEpoch;
     const pos = t.info.history_pos;
+    let clipNote = "";
     try {
       const names = await backend().columnNamesLine(t.id, cols, "\t");
       const body = await backend().copyCells(t.id, r.row, r.rows, r.col, r.cols, hiddenColsOf(t));
-      await navigator.clipboard.writeText(`${names}\r\n${body}`);
+      const first = await backend().firstRowNames(t.id).catch(() => [] as string[]);
+      clipNote = await writeClip(t, r, `${names}\r\n${body}`, cols.map((c) => first[c] ?? ""));
       copiedFrom = t.id;
+      copyRec = null;
     } catch (e) {
       say(errorText(e));
       return;
@@ -5527,7 +5720,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
       t.copied = { ...r };
       t.bump();
     }
-    say(`Copied ${cellCount(r).toLocaleString()} cell${cellCount(r) === 1 ? "" : "s"} with the column names on top. Esc takes the outline away.`);
+    say(`Copied ${cellCount(r).toLocaleString()} cell${cellCount(r) === 1 ? "" : "s"} with the column names on top.${clipNote} Esc takes the outline away.`);
   }
 
   /** Edit › Paste as column names: copied names (a row, a line of a text
@@ -8132,6 +8325,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     { id: "edit.moveColsLeft", label: "Move columns left", keys: ["Alt+Shift+ArrowLeft"], run: () => moveCols(-1), enabled: ready, repeatable: true },
     { id: "edit.moveColsRight", label: "Move columns right", keys: ["Alt+Shift+ArrowRight"], run: () => moveCols(1), enabled: ready, repeatable: true },
 
+    { id: "insert.copied", label: "C&opied rows or columns", run: insertCopied, enabled: () => ready() && !copiedWhy(), why: copiedWhy },
     { id: "insert.smart", label: "&Cells…", keys: ["Ctrl+Shift++", "Ctrl+Shift+=", "Ctrl++"], run: insertSmart, enabled: ready, repeatable: true },
     { id: "insert.cellsAsk", label: "Insert cells…", run: () => { shiftAsk = { insert: true }; }, enabled: ready },
     { id: "insert.rowsAbove", label: "&Rows above", run: () => insertRows(false), enabled: ready, repeatable: true },
@@ -8459,7 +8653,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
         ...ACCENTS.map((a) => `view.accent.${a.name.toLowerCase()}`), "-", ...FONTS.map((f) => `view.font.${f.name.toLowerCase()}`), "view.fontOther",
       ],
     },
-    { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.symbol"] },
+    { label: "&Insert", items: ["insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "-", "insert.copied", "-", "insert.symbol"] },
     { label: "F&ormat", items: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "format.typesAnyway", "-", "format.header", "format.makeHeader", "format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "format.forgetHeader", "format.forgetHeaders", "format.askHeader", "-", "format.display", "format.bakeDisplay", "format.clearDisplay", "-", "format.alignLeft", "format.alignCenter", "format.alignRight", "format.alignAuto", "format.wrap", "format.clip", "format.rowHeight", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "format.fitRows", "-", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "format.showAllCols", "-", "format.protectCols", "-", "format.hideRows", "format.showRows", "format.showAllRows"] },
     {
       label: "&Data",
@@ -8508,10 +8702,10 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     tabcolour: [...TAB_COLOURS.map((c) => `file.tabColour.${c.name}`), "-", "file.tabColour.none"],
     totals: [...TOTAL_CHOICES.map(([c]) => `view.total.${c}`), "view.total.auto", "-", "view.copyTotal", "view.copyTotals", "-", "view.totalsRow"],
     tab: ["file.save", "file.saveAs", "-", "data.compareLists", "data.patchSave", "data.patchApply", "tools.encoding", "edit.checkpoint", "edit.sinceCheckpoint", "data.pivotRefresh", "view.panelSteps", "tools.recipe", "tools.recipeFiles", "-", "file.rename", "file.duplicate", "file.tabColour", "file.copyPath", "file.showFolder", "format.forgetHeader", "-", "window.moveTabLeft", "window.moveTabRight", "window.moveToNew", "window.moveToMain", "-", "file.close", "file.closeOthers", "file.closeRight", "file.closeUnchanged", "file.reopenClosed"],
-    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.orderFromCells", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear", "-", "file.printSel"],
-    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "edit.copyToTab", "edit.moveToTab", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "data.headersStartHere", "data.setAsideFoot", "-", "edit.clear"],
+    cell: ["data.countsShow", "data.countsHide", "-", "edit.cut", "edit.copy", "edit.copyWithNames", "edit.paste", "edit.pasteNames", "edit.moveCut", "edit.cancelCut", "edit.pasteSpecial", "edit.copyToTab", "edit.moveToTab", "edit.clear", "-", "edit.cell", "edit.pickList", "edit.note", "edit.gotoSpecial", "view.panelRecord", "data.repairRow", "data.checkDates", "data.reviewDates", "data.nextDate", "data.dateMarksOff", "data.nextLeftBlank", "data.fillMarksOff", "edit.checkpoint", "edit.sinceCheckpoint", "-", "find.thisValue", "find.replaceValue", "find.allInColumn", "find.ghosts", "-", "data.filterBySel", "data.sortAsc", "data.sortDesc", "data.orderFromCells", "data.gaps", "clean.matrixHere", "view.totalsRow", "-", "insert.cellsAsk", "insert.copied", "edit.deleteCellsAsk", "-", "insert.rowsAbove", "insert.rowsBelow", "edit.deleteRows", "-", "insert.colsLeft", "insert.colsRight", "edit.deleteCols", "-", "format.hideRows", "format.hideCols", "-", "edit.fillDown", "edit.fillRight", "-", "view.showEdits", "edit.changes", "-", "data.nextProblem", "data.diffNext", "data.diffPrev", "data.diffClear", "-", "file.printSel"],
+    row: ["edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "view.panelRecord", "-", "insert.rowsAbove", "insert.rowsBelow", "insert.rowsMany", "insert.copied", "edit.deleteRows", "-", "edit.moveRowsUp", "edit.moveRowsDown", "edit.copyToTab", "edit.moveToTab", "-", "format.hideRows", "format.showRows", "-", "format.rowHeightSet", "format.rowHeightFit", "format.rowHeightReset", "-", "data.shuffle", "data.repairRow", "data.ragged", "-", "format.makeHeader", "data.headersStartHere", "data.setAsideFoot", "-", "edit.clear"],
     type: ["col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId"],
-    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "data.explode", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "edit.copyToTab", "edit.moveToTab", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.autoSumCol", "view.panelSummary", "-", "edit.clear"],
+    col: ["format.renameCol", "format.tidyTitles", "format.askHeaderAgain", "-", "edit.copyNames", "edit.pasteNames", "-", "edit.cut", "edit.copy", "edit.paste", "edit.moveCut", "edit.cancelCut", "-", "col.typeAuto", "col.typeText", "col.typeNumber", "col.typeDate", "col.typeDateDmy", "col.typeDateMdy", "col.typeId", "-", "data.sortAsc", "data.sortDesc", "data.filterMenu", "data.filterFormula", "data.counts", "data.profile", "data.checkDates", "data.reviewDates", "data.gaps", "clean.matrixHere", "data.values", "data.valuesLookalikes", "data.explode", "-", "data.changeFormula", "-", "insert.colsLeft", "insert.colsRight", "insert.colsMany", "insert.copied", "edit.deleteCols", "-", "edit.moveColsLeft", "edit.moveColsRight", "edit.copyToTab", "edit.moveToTab", "-", "format.display", "format.wrap", "format.autofit", "format.colWidth", "format.hideCols", "format.showCols", "-", "format.protectCols", "data.compareCols", "data.compareLists", "data.relations", "data.uniqueTogether", "data.existsCheck", "data.tableChecks", "-", "view.autoSumCol", "view.panelSummary", "-", "edit.clear"],
     pill: ["data.patternMatch", "data.patternOdd", "data.patternOddBlanks", "-", "data.patternCheck", "data.patternCopy"],
     corner: ["edit.selectAll", "edit.copy", "edit.copyNames", "edit.copyWithNames", "edit.pasteNames", "-", "format.header", "format.askHeaderAgain", "format.forgetHeader", "format.showAllCols"],
   };
@@ -8547,6 +8741,8 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     const cols = r.cols === 1 ? `column ${colName(r.col)}` : `columns ${colName(r.col)}–${colName(r.col + r.cols - 1)}`;
     const nCols = r.cols === 1 ? "1 column" : `${r.cols.toLocaleString()} columns`;
     switch (id) {
+      case "insert.copied":
+        return copiedLabel();
       case "insert.rowsAbove":
         return `Insert ${nRows} above`;
       case "insert.rowsBelow":
@@ -8711,6 +8907,12 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     // Ctrl+V, and Ctrl+Shift+V (paste values, as in Excel and Google Sheets: a paste here is always values): let the
     // browser deliver a paste event (handled below). In a text box it is that box's own paste.
     if (key === "Ctrl+V" || key === "Ctrl+Shift+V") return;
+    // Ctrl+Shift++ (by key code, never AltGr): insert what was copied, else the Insert box.
+    if (!field && isInsertCopiedKey(e)) {
+      e.preventDefault();
+      void insertCopiedOrSmart();
+      return;
+    }
 
     const cmd = reg.forKey(key);
     if (cmd && (!field || SAFE_IN_FIELDS.test(cmd.id))) {
@@ -9800,6 +10002,7 @@ import { applyWorkbookHeights } from "./lib/workbookheights";
     const counts = !!tab?.countsOf;
     let items = (contextItems[area] ?? []).filter((i) => (tab?.cut || !cutItems.has(i)) && (i !== ghostItem || findOpen) && (counts || (i !== "data.countsShow" && i !== "data.countsHide")) && (i !== "data.pivotRefresh" || (!!tab && pivotOf.has(tab.id))));
     if (!counts && items[0] === "-") items = items.slice(1);
+    if (items.includes("insert.copied")) void readClipNow();
     // Nothing is picked until the pointer or an arrow key moves onto an item.
     context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items, index: -1 };
     // A long menu moves up until it fits (it scrolls when it is taller than the window).

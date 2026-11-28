@@ -1403,6 +1403,58 @@ export class MockBackend implements Backend {
     if (mv) done.src = await this.change(src, { op: "delete_rows", at, count });
     return done;
   }
+  private insertGuard(dst: number, src: number | null): void {
+    const t = this.get(dst).info;
+    const shut = (d: number) => {
+      const p = this.privateDocs.get(this.privateKey(d));
+      return !!(p?.file || p?.folder || this.encryptedFrom.has(d));
+    };
+    if (src !== null && src !== dst && this.docs.has(src) && shut(src) && !shut(dst)) throw err("private", "cells from a private or encrypted tab may only go into another private or encrypted tab");
+    if (t.read_only) throw err("read_only", "the file is read-only");
+  }
+  async insertCopiedRows(dst: number, before: number, text: string, src: number | null, wider: Wider): Promise<XferDone> {
+    this.calls.push("insertCopiedRows");
+    this.insertGuard(dst, src);
+    const rows = parseTsv(text);
+    if (!rows.length) throw err("invalid", "the clipboard holds no rows");
+    const t = this.get(dst);
+    const sw = Math.max(...rows.map((r) => r.length));
+    const tw = t.info.cols;
+    const extra = Math.max(0, sw - tw);
+    const steps = t.undo.length;
+    if (extra && wider === "add_columns") await this.change(dst, { op: "insert_cols", at: tw, count: extra });
+    await this.change(dst, { op: "insert_rows", at: before, count: rows.length });
+    const width = this.get(dst).info.cols;
+    const cells: [number, number, string][] = [];
+    rows.forEach((r, i) => r.forEach((v, k) => v && k < width && cells.push([before + i, k, v])));
+    if (cells.length) await this.setCells(dst, cells);
+    this.fold(t, steps);
+    const info = this.refresh(t);
+    const report = { cols: 0, rows: rows.length, added_rows: 0, added_cols: wider === "add_columns" ? extra : 0, hidden_carried: 0, title_left_out: false, by_title: false, lengths_differ: false };
+    return { report, dst: info, src: null, kept: null };
+  }
+  async insertCopiedCols(dst: number, at: number, text: string, titles: string[], keepFirst: boolean, src: number | null): Promise<XferDone> {
+    this.calls.push("insertCopiedCols");
+    this.insertGuard(dst, src);
+    const t = this.get(dst);
+    if (t.info.rows < t.info.total_rows) throw err("filtered", "this file has a filter on or rows hidden: show every row first, so you can see where the values go");
+    const grid = parseTsv(text);
+    if (!grid.length) throw err("invalid", "the clipboard holds no columns");
+    const count = Math.max(...grid.map((r) => r.length));
+    const first = keepFirst ? 1 : 0;
+    const mine = this.rowCount(t) - first;
+    const steps = t.undo.length;
+    await this.change(dst, { op: "insert_cols", at, count });
+    if (grid.length > mine) await this.change(dst, { op: "insert_rows", at: this.rowCount(t), count: grid.length - mine });
+    const cells: [number, number, string][] = [];
+    if (keepFirst) titles.forEach((v, k) => v && k < count && cells.push([0, at + k, v]));
+    grid.forEach((r, i) => r.forEach((v, k) => v && cells.push([first + i, at + k, v])));
+    if (cells.length) await this.setCells(dst, cells);
+    this.fold(t, steps);
+    const info = this.refresh(t);
+    const report = { cols: count, rows: grid.length, added_rows: Math.max(0, grid.length - mine), added_cols: 0, hidden_carried: 0, title_left_out: !keepFirst && titles.some((x) => x), by_title: false, lengths_differ: grid.length !== mine };
+    return { report, dst: info, src: null, kept: null };
+  }
   async removeEmptyExtraColumns(doc: number): Promise<DocInfo> {
     this.calls.push("removeEmptyExtraColumns");
     return this.refresh(this.get(doc));

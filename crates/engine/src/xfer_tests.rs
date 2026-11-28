@@ -288,3 +288,46 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+    /// Insert copied rows (from the clipboard's grid) gives what inserting rows by hand above the same row and
+    /// typing their values gives; Insert copied columns the same for columns.
+    #[test]
+    fn insert_copied_equals_inserting_by_hand(
+        dst in prop::collection::vec(prop::collection::vec("[a-z0-9]{0,3}", 2), 1..8),
+        grid in prop::collection::vec(prop::collection::vec("[a-z\" ,é\t]{0,4}", 1..3), 1..5),
+        before in 0u64..8, at in 0u32..3,
+    ) {
+        let before = before.min(dst.len() as u64 - 1);
+        let mut d = doc(&table(&dst));
+        let data = RowsOut::from_grid(&grid).unwrap();
+        let (plan, _) = d.plan_insert_rows_above(before, &data, Wider::Cut, &p()).unwrap();
+        d.apply_join(plan).unwrap();
+        let mut by_hand = doc(&table(&dst));
+        let padded: Vec<Vec<String>> = grid.iter().map(|r| (0..2).map(|k| r.get(k).cloned().unwrap_or_default()).collect()).collect();
+        by_hand.insert_rows(before, padded).unwrap();
+        prop_assert_eq!(rows(&d), rows(&by_hand));
+
+        let at = at.min(2);
+        let count = grid.iter().map(Vec::len).max().unwrap() as u32;
+        let mut c = doc(&table(&dst));
+        let cols = ColsOut::from_grid(&grid, Vec::new()).unwrap();
+        let (plan, _) = c.plan_insert_cols(at, &cols, false, &p()).unwrap();
+        c.apply_join(plan).unwrap();
+        let mut by_hand = doc(&table(&dst));
+        by_hand.insert_cols(at, count).unwrap();
+        let mine = by_hand.row_count();
+        if (grid.len() as u64) > mine {
+            by_hand.insert_rows(mine, vec![Vec::new(); grid.len() - mine as usize]).unwrap();
+        }
+        let mut cells = Vec::new();
+        for (r, row) in grid.iter().enumerate() {
+            for k in 0..count {
+                cells.push((r as u64, at + k, row.get(k as usize).cloned().unwrap_or_default()));
+            }
+        }
+        by_hand.set_cells(cells).unwrap();
+        prop_assert_eq!(rows(&c), rows(&by_hand));
+    }
+}

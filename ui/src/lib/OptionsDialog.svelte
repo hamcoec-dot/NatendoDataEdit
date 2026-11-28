@@ -135,6 +135,10 @@
       </select></label
     >
     <p class="note">Shift+Enter moves the other way. Inside a selected block, Enter moves within the block (unless set to stay).</p>
+    <label class="row"
+      ><input type="checkbox" bind:checked={prefs.data.copyTable} onchange={() => prefs.save()} /> Copy also puts a table on the clipboard (for e-mail and Word)</label
+    >
+    <p class="note">Up to 20,000 cells, never from a private or encrypted file. Values that are not plain numbers go in as text, so Excel keeps leading zeros, long IDs and values starting with = as they are.</p>
   </fieldset>
   <fieldset>
     <legend>Autosave and recovery</legend>

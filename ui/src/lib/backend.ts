@@ -2138,6 +2138,11 @@ export interface Backend {
   xferCols(src: number, at: number, count: number, srcKeepFirst: boolean, dst: number, to: number, dstKeepFirst: boolean, mv: boolean): Promise<XferDone>;
   /** Shown rows at..at+count into another open file, after its shown row `after` (null: at the end). */
   xferRows(src: number, at: number, count: number, srcKeepFirst: boolean, dst: number, after: number | null, dstKeepFirst: boolean, wider: Wider, mv: boolean): Promise<XferDone>;
+  /** Insert copied rows: the clipboard text's rows right above shown row `before`, one undo step. `src`: the tab
+   *  they were copied from (the private rule; the values are always the text). */
+  insertCopiedRows(doc: number, before: number, text: string, src: number | null, wider: Wider): Promise<XferDone>;
+  /** Insert copied columns at logical column `at`; `titles` go in the title row when `keepFirst`. */
+  insertCopiedCols(doc: number, at: number, text: string, titles: string[], keepFirst: boolean, src: number | null): Promise<XferDone>;
   /** C10 rule card: the rule fill by example would use (spec.program when given), or the example that breaks it. */
   exampleLearn(doc: number, spec: ExampleSpec): Promise<LearnReport>;
   /** C10: the first empty cells a rule fills (the first 1,000 rows looked at). */
@@ -2831,6 +2836,12 @@ class TauriBackend implements Backend {
   }
   xferRows(src: number, at: number, count: number, srcKeepFirst: boolean, dst: number, after: number | null, dstKeepFirst: boolean, wider: Wider, mv: boolean) {
     return call<XferDone>("xfer_rows", { src, at, count, srcKeepFirst, dst, after, dstKeepFirst, wider, mv });
+  }
+  insertCopiedRows(doc: number, before: number, text: string, src: number | null, wider: Wider) {
+    return call<XferDone>("insert_copied_rows", { doc, before, text, src, wider });
+  }
+  insertCopiedCols(doc: number, at: number, text: string, titles: string[], keepFirst: boolean, src: number | null) {
+    return call<XferDone>("insert_copied_cols", { doc, at, text, titles, keepFirst, src });
   }
   exampleLearn(doc: number, spec: ExampleSpec) {
     return call<LearnReport>("example_learn", { doc, spec });
@@ -3747,6 +3758,8 @@ export const WRITE_METHODS: readonly string[] = [
   "fixAll",
   "xferCols",
   "xferRows",
+  "insertCopiedRows",
+  "insertCopiedCols",
   "removeEmptyExtraColumns",
   "encodingApply",
   "fillCells",

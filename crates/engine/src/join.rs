@@ -884,6 +884,8 @@ pub struct JoinPlan {
     /// Extra rows (every match), right after a row, in logical columns
     /// after the insert.
     pub(crate) after: Vec<(u32, Vec<Vec<String>>)>,
+    /// Extra rows right before a row (Insert copied rows: above the row picked, hidden rows before it stay before).
+    pub(crate) before: Vec<(u32, Vec<Vec<String>>)>,
     pub(crate) append: Vec<Vec<String>>,
     /// Rows that get their group's values (or the not-found text, group
     /// [`NOT_FOUND`]) in the new columns. Kept as group numbers so a wide
@@ -906,6 +908,7 @@ impl JoinPlan {
             changes: Vec::new(),
             remove: Vec::new(),
             after: Vec::new(),
+            before: Vec::new(),
             append: Vec::new(),
             filled: Vec::new(),
             src: None,
@@ -1246,6 +1249,7 @@ impl Document {
             changes: Vec::new(),
             remove: Vec::new(),
             after: Vec::new(),
+            before: Vec::new(),
             append: Vec::new(),
             filled: Vec::new(),
             src: None,
@@ -1671,7 +1675,12 @@ impl Document {
         }
         let is_gone =
             |id: u32| (id as usize) < base && (gone[(id >> 6) as usize] >> (id & 63)) & 1 == 1;
-        let new_rows: u64 = plan.after.iter().map(|(_, r)| r.len() as u64).sum();
+        let new_rows: u64 = plan
+            .after
+            .iter()
+            .chain(plan.before.iter())
+            .map(|(_, r)| r.len() as u64)
+            .sum();
         let first = self.new_row_ids(u32::try_from(new_rows).map_err(|_| Error::TooManyRows)?)?;
         let mut next = first;
         let mut after: HashMap<u32, (u32, u32)> = HashMap::with_capacity(plan.after.len());
@@ -1683,11 +1692,23 @@ impl Document {
                 next += 1;
             }
         }
-        let order = if plan.remove.is_empty() && after.is_empty() {
+        let mut before: HashMap<u32, (u32, u32)> = HashMap::with_capacity(plan.before.len());
+        for (id, rows) in plan.before {
+            let n = rows.len() as u32;
+            before.insert(id, (next, n));
+            for r in rows {
+                states.push((next, Some(Edit::Full(full(self, r)?))));
+                next += 1;
+            }
+        }
+        let order = if plan.remove.is_empty() && after.is_empty() && before.is_empty() {
             None
         } else {
             let mut o = Vec::with_capacity(self.total_rows() as usize + new_rows as usize);
             for id in self.ids() {
+                if let Some(&(s, n)) = before.get(&id) {
+                    o.extend(s..s + n);
+                }
                 if is_gone(id) {
                     continue;
                 }
