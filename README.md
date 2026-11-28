@@ -44,7 +44,7 @@ touch.
 
 ## Install
 
-1. Download `Natendo.Data.Edit_0.6.0_x64-setup.exe` from the
+1. Download `Natendo.Data.Edit_0.7.0_x64-setup.exe` from the
    [Releases page](https://github.com/hamcoec-dot/NatendoDataEdit/releases).
 2. Run it. It installs for your Windows account only, so it does not need
    administrator rights.
@@ -563,6 +563,7 @@ everything is also in command search.
   numbers marks each place they are missing (point at it for how many; click it
   to show rows hidden by hand), and the status bar says how many rows edits act
   on. It turns amber while an open screen includes hidden rows.
+  ![A dotted line under row 2 where rows 3 to 5 are hidden, and the status bar saying edits act on 999,997 shown rows](docs/screenshots/hidden-rows-marked.png)
 - **Paste into filtered rows**: while a filter is on or rows are hidden,
   Paste, Paste Special, fill, Ctrl+Enter, Delete and Copy work on the rows you
   can see, and hidden rows are left as they were (the status line says how
@@ -1092,6 +1093,7 @@ everything is also in command search.
   give it a value past its end. After columns are added, removed or moved,
   saving writes every row at the same width, so the commands are greyed until
   that change is undone.
+  ![A bar saying 2 rows have a different number of fields than most, with Review and Repair buttons](docs/screenshots/shifted-rows.png)
 - **Repair bar** (Data menu or the right-click menu on a ragged row, **Repair
   this row**, or **Repair…** on the note): the row's text as it is in the file,
   its fields with a mark between each two, and what the row will be. Click marks
@@ -1284,6 +1286,7 @@ everything is also in command search.
   500 allowed values a column (200 columns), 20 other titles a column, a 4 MB
   contract file; a rule that names a column the file does not have is listed
   as not run. `natendo-cli drift` checks a file from the command line.
+  ![A new month's file of made-up voters: a bar says it looks like the Monthly voters contract, with a renamed, a new and a moved column, and a Review button](docs/screenshots/contract-banner.png)
 - **Check fields with patterns:** one simple screen with a pattern box next to
   each column and ready-made patterns (e-mail, ZIP, phone, web address,
   letters, digits). Then show the rows that fail or pass, put failing rows
@@ -1610,6 +1613,7 @@ selection, a column or the whole table:
   instead, to the right; it is greyed with the reason when the rule has no
   formula form (a column read as numbers or dates, two columns with the same
   title). Learning stops after 2 seconds; a rule has at most 32 pieces.
+  ![The rule fill by example learned for a short-name column, as a form: the first letter of first, a dot, then last, with what it would write and three results that look odd](docs/screenshots/rule-card.png)
 - **Masking:** mask all but the last few characters, turn dates into a year or
   an age band, or scramble with a secret phrase (the same value always gives
   the same scramble, so joins and counts still work).
