@@ -8285,7 +8285,7 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     { id: "view.banded", label: "Alternating row &colours", run: toggleBanded, enabled: hasTab, checked: () => !!tab?.banded },
     { id: "view.filterChips", label: "Filter c&hips", run: () => { prefs.data.filterChips = !prefs.data.filterChips; prefs.save(); }, checked: () => prefs.data.filterChips },
     { id: "view.totalsRow", label: "Tota&ls row (under the shown rows)", run: () => { if (tab) { tab.totalsOn = !tab.totalsOn; tab.bump(); } }, enabled: hasTab, checked: () => !!tab?.totalsOn },
-    { id: "view.autoSum", label: "AutoSum (totals row with Sum)", multiArea: true, keys: ["Alt+="], run: () => autoSum(null), enabled: () => ready() && autoSumWhy(null) === "", why: () => autoSumWhy(null) },
+    { id: "view.autoSum", label: "AutoSum (totals row with Sum)", keys: ["Alt+="], run: () => autoSum(null), enabled: () => ready() && autoSumWhy(null) === "", why: () => autoSumWhy(null) },
     { id: "view.autoSumCol", label: "Sum this column in the totals row", run: () => autoSum(totalColumn()), enabled: () => ready() && autoSumWhy(totalColumn()) === "", why: () => autoSumWhy(totalColumn()) },
     { id: "view.total.sum", ...totalCommand("sum") },
     { id: "view.total.average", ...totalCommand("average") },
@@ -9790,6 +9790,13 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
     if (!counts && items[0] === "-") items = items.slice(1);
     // Nothing is picked until the pointer or an arrow key moves onto an item.
     context = { x: Math.min(x, window.innerWidth - 260), y: Math.min(y, window.innerHeight - 420), items, index: -1 };
+    // A long menu moves up until it fits (it scrolls when it is taller than the window).
+    void tick().then(() => {
+      const el = document.querySelector<HTMLElement>(".menu.context");
+      if (!el || !context) return;
+      const h = el.getBoundingClientRect().height;
+      if (context.y + h > window.innerHeight - 4) context.y = Math.max(4, window.innerHeight - 4 - h);
+    });
   }
 
   // ---- the totals row ------------------------------------------------------
@@ -11510,6 +11517,8 @@ import { MAX_CUSTOM_ROWS, MAX_ROW_PX, MIN_ROW_PX, RowHeights } from "./lib/rowhe
   .context {
     position: fixed;
     top: 0;
+    max-height: calc(100vh - 8px);
+    overflow-y: auto;
   }
   .item {
     display: grid;
