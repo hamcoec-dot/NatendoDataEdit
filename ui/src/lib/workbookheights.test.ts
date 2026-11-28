@@ -1,5 +1,5 @@
 // Gap #7: a workbook's own row heights are set as its tab opens: not an undo
-// step, not a change to the file, the title row's left out with titles on.
+// step, no new change to the file, the title row's left out with titles on.
 import { afterEach, describe, expect, it } from "vitest";
 import { MockBackend } from "./mock";
 import { Tab } from "./tab.svelte";

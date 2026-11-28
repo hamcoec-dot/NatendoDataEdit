@@ -271,6 +271,7 @@ pub(crate) fn cjk_for(text: &str, han: HanFont) -> Cjk {
 }
 
 /// The Han font for a Windows display language (a LANGID).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn han_for_langid(id: u16) -> HanFont {
     match (id & 0x3FF, id) {
         (0x11, _) => HanFont::Japanese,
@@ -573,7 +574,9 @@ impl Fonts {
             let here = self.place(c, s, &mut slot).map(|(k, _)| k);
             if here.is_none() && !self.main_has(c) {
                 u.missing += 1;
-                if is_cjk(c) {
+                // "No font for Chinese, Japanese or Korean" only when none could
+                // be used at all (one that lacks a rare character is not that).
+                if is_cjk(c) && CJK_ALL.iter().all(|&k| self.loaded(k).is_none()) {
                     u.missing_cjk += 1;
                 }
             }
@@ -689,6 +692,7 @@ fn write_fallback<W: Write>(
     k: Cjk,
     used: &[u32],
     missing: &mut u64,
+    missing_cjk: &mut u64,
 ) -> Result<(), Error> {
     let base = slot_base(k);
     let pairs: Vec<(usize, u32)> = used
@@ -708,8 +712,11 @@ fn write_fallback<W: Write>(
     let file = match font.subset(&glyphs) {
         Ok(b) => b,
         Err(_) => {
+            // The font is damaged where these glyphs are: every glyph empty
+            // (no closure walk), and their characters counted as not printed.
             *missing += pairs.len() as u64;
-            font.subset(&[])?
+            *missing_cjk += pairs.len() as u64;
+            font.empty_subset()?
         }
     };
     let name = format!("{}+{}", subset_tag(&glyphs), f.name);
@@ -924,7 +931,7 @@ pub(crate) fn finish<W: Write>(
 ) -> Result<(), Error> {
     for k in CJK_ALL {
         let used = std::mem::take(&mut u.fallbacks[k as usize]);
-        write_fallback(o, fonts, k, &used, &mut u.missing)?;
+        write_fallback(o, fonts, k, &used, &mut u.missing, &mut u.missing_cjk)?;
     }
     let used = &u.main;
     match &fonts.main {
@@ -1981,8 +1988,22 @@ pub(crate) mod tests {
         let rows = ["Ann", "Bob", "Zoë"];
         let (b, r) = pdf(&doc_of(&rows), PageSetup::default());
         check_structure(&b);
-        let text = String::from_utf8_lossy(&b);
-        assert!(!text.contains("/F2") && !text.contains("/F3") && !text.contains("/F4"));
+        // Every page lists only /F1, and the fallback slots (objects 9 to 23) are null.
+        for (listed, drawn) in page_fonts(&b) {
+            assert_eq!(listed, vec!["/F1"]);
+            assert_eq!(drawn, vec!["/F1"]);
+        }
+        for id in 9..FIRST_PAGE_OBJ {
+            let o = String::from_utf8_lossy(object(&b, id)).into_owned();
+            assert_eq!(
+                o.trim_end(),
+                format!(
+                    "{id} 0 obj
+null"
+                ),
+                "object {id}"
+            );
+        }
         assert_eq!(r.missing_chars, 0);
     }
 
@@ -2142,5 +2163,65 @@ pub(crate) mod tests {
                 d[off + 8..off + 10].copy_from_slice(&v.to_be_bytes());
             }
         }
+    }
+
+    #[test]
+    fn a_cjk_font_that_lacks_one_rare_character_gets_the_plain_message() {
+        // U+3134A (Extension G) is in none of the fonts tried.
+        let rare = "\u{3134A}";
+        if let Some(dir) = cjk_dir() {
+            let fonts = Fonts::with(load_face(), HanFont::Simplified, Some(dir));
+            let mut u = Usage::new(vec![0; 65536]);
+            fonts.show(&format!("王{rare}"), 9.0, &mut u, &mut Vec::new());
+            assert_eq!(
+                (u.missing, u.missing_cjk),
+                (1, 0),
+                "a usable CJK font was there"
+            );
+        }
+        // With none usable, the same characters name Chinese, Japanese and Korean.
+        let none = Fonts::with(load_face(), HanFont::Simplified, None);
+        let mut u = Usage::new(vec![0; 65536]);
+        none.show(&format!("王{rare}"), 9.0, &mut u, &mut Vec::new());
+        assert_eq!((u.missing, u.missing_cjk), (2, 2));
+    }
+
+    #[test]
+    fn a_fallback_whose_glyphs_cannot_be_taken_safely_is_written_empty_and_counted() {
+        let Some((font, g)) = crate::ttf::tests::looped_font() else {
+            return;
+        };
+        let fonts = Fonts::with(load_face(), HanFont::Simplified, None);
+        let _ = fonts.slots[Cjk::Chinese as usize].set(Some(Fallback {
+            font,
+            name: "Looped".into(),
+        }));
+        let mut used = vec![0u32; 65536];
+        used[g as usize] = '王' as u32;
+        used[3] = '李' as u32;
+        let mut out = Vec::new();
+        let (mut o, _) = Out::start(&mut out, &fonts.main).unwrap();
+        let (mut missing, mut missing_cjk) = (0, 0);
+        write_fallback(
+            &mut o,
+            &fonts,
+            Cjk::Chinese,
+            &used,
+            &mut missing,
+            &mut missing_cjk,
+        )
+        .unwrap();
+        assert_eq!((missing, missing_cjk), (2, 2));
+        // The font file is there, and every glyph in it is empty.
+        let t = String::from_utf8_lossy(&out).into_owned();
+        assert!(t.contains("+Looped") && t.contains("/FontFile2 22 0 R"));
+        let at = out.windows(8).position(|w| w == b"22 0 obj").unwrap();
+        let f = Font::parse(stream_of(&out[at..])).unwrap();
+        // Only glyph 0 is kept by a closure, and with nothing left to loop a full subset works.
+        assert_eq!(
+            f.glyph_closure(&[]).unwrap().iter().filter(|&&k| k).count(),
+            1
+        );
+        assert!(f.subset(&(0..f.num_glyphs()).collect::<Vec<_>>()).is_ok());
     }
 }

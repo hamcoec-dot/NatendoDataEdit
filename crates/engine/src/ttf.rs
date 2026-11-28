@@ -277,15 +277,13 @@ impl Font {
     }
 
     /// Glyph 0, `used`, and every glyph their composites are made of. A
-    /// composite that contains itself, or nests deeper than the font says
-    /// (and never more than 16), is refused rather than followed.
+    /// composite that contains itself, or nests more than 16 deep, is
+    /// refused rather than followed.
     pub fn glyph_closure(&self, used: &[u16]) -> Result<Vec<bool>, Error> {
         let n = self.num_glyphs as usize;
         let mut keep = vec![false; n];
-        let limit = match u16_at(&self.data, self.tables.maxp.0 + 30) {
-            Ok(v) if self.tables.maxp.1 >= 32 && v > 0 => (v as usize).min(MAX_COMPONENT_DEPTH),
-            _ => MAX_COMPONENT_DEPTH,
-        };
+        // A fixed limit: a font's own maxComponentDepth is often wrong.
+        let limit = MAX_COMPONENT_DEPTH;
         fn walk(
             f: &Font,
             g: u16,
@@ -338,6 +336,23 @@ impl Font {
             return Err(damaged());
         }
         let keep = self.glyph_closure(used)?;
+        Ok(self.build(&keep))
+    }
+
+    /// A font file in which every glyph is empty (the box drawn as nothing):
+    /// used when the glyphs a PDF needs cannot be taken safely. No glyph is
+    /// read, so no damaged composite can stop it.
+    pub fn empty_subset(&self) -> Result<Vec<u8>, Error> {
+        if self.no_subsetting() {
+            return Err(Error::Invalid(
+                "the font's licence does not allow a subset".into(),
+            ));
+        }
+        Ok(self.build(&vec![false; self.num_glyphs as usize]))
+    }
+
+    /// The font file holding the glyphs `keep` marks (the others empty).
+    fn build(&self, keep: &[bool]) -> Vec<u8> {
         let d = &self.data;
         let slice = |(at, len): (usize, usize)| -> &[u8] { &d[at..at + len] };
         let mut glyf = Vec::new();
@@ -386,7 +401,7 @@ impl Font {
             }
         }
         tables.sort_by_key(|t| t.0);
-        Ok(write_font(&tables))
+        write_font(&tables)
     }
 
     /// The glyph for a character (0, the "missing" box, when there is none).
@@ -574,7 +589,7 @@ fn write_font(tables: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn system_font() -> Option<Vec<u8>> {
@@ -801,6 +816,16 @@ mod tests {
     }
 
     /// The composite records of glyph `g`, as (flags, component) byte offsets in the file.
+    /// A system font with one composite glyph made of itself (a damaged font a
+    /// subset must refuse), and that glyph.
+    pub(crate) fn looped_font() -> Option<(Font, u16)> {
+        let data = system_font()?;
+        let (g, rec) = composite_of(&Font::parse(data.clone()).ok()?)?;
+        let mut d = data;
+        d[rec + 2..rec + 4].copy_from_slice(&g.to_be_bytes());
+        Some((Font::parse(d).ok()?, g))
+    }
+
     fn composite_of(f: &Font) -> Option<(u16, usize)> {
         (0..f.num_glyphs()).find_map(|g| {
             let r = f.glyph_range(g)?;
